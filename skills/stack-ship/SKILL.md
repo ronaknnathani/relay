@@ -1,9 +1,9 @@
 ---
-name: stacked-pr-delivery
+name: stack-ship
 description: Use when given a design doc or feature goal to deliver end-to-end as a stack of small PRs, or to resume an active stack. Decompose into acceptance criteria and an interface-first PR plan, delegate build and monitor work, keep durable state, use native loop/goal harnesses when available, use Copilot monitor ticks when not, surface author decisions, cascade stack changes, auto-merge only on human approval, and stop when the goal is delivered.
 ---
 
-# Stacked PR Delivery
+# Stack Ship
 
 Drive a design or feature goal from intake to "all PRs merged" with **near-zero steering**. The
 orchestrator is a **router, not a worker**: it owns the plan, state, delegation, and author-facing
