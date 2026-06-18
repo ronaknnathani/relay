@@ -6,22 +6,28 @@ relevant ones into every subagent prompt. Violating one is a failure even if the
 ## 1. Never speak as the author
 Every comment, reply, or review the agent posts MUST be prefixed:
 `🤖 <agent-name> on behalf of <author-handle>`. Never post anything that could read as the human's
-own words.
+own words. PR bodies and automated status posts must also disclose agent authorship (for example,
+`Opened by <agent-name> on behalf of <author-handle>`) instead of implying the human wrote them.
 
 ## 2. Never decide what's the author's to decide
-For every review comment and every fork in the design, **classify**: *obvious gap-fix* vs
-*author decision* (see [comment-handling](monitor-loop.md#classifying-a-comment)). Implement only
-obvious fixes. For decisions: reply asking for input, add a row to the pending-decisions table,
-leave the thread **open**, and move on. **When you cannot cleanly tell, it is a decision — surface
-it.** A concrete direction from a human owner on a surfaced thread *is* the decision — implement it
-as stated and confirm.
+For every review comment/body and every fork in the design, **classify**: *obvious gap-fix* vs
+*author decision* (see [comment-handling](monitor-loop.md#classifying-a-comment-or-review-body)).
+Implement only obvious fixes. For decisions: reply asking for input, add a row to the
+pending-decisions table, leave the thread **open**, and move on. **When you cannot cleanly tell, it
+is a decision — surface it.** A concrete direction from a human owner on a surfaced thread *is* the
+decision — implement it as stated and confirm.
 
-## 3. Detection must be complete — both endpoints AND new replies
-`gh pr view --json comments` returns only conversation comments. Inline diff comments live on
-`pulls/{n}/comments`. A new reply on an already-answered thread is invisible to a "top-level comment
-without a reply" scan. Every tick, scan **both** endpoints and flag a thread whose **latest activity**
-is from a human and is newer than the agent's last response on it — keyed by `comment id + updatedAt`,
-not by "top-level & unreplied". Include replies on already-answered threads.
+## 3. Detection must be complete — PR-level feedback, inline threads, AND new replies
+`gh pr view --json comments` is not enough. Every tick must paginate and inspect:
+- PR conversation comments (`issues/{n}/comments`).
+- PR-level review bodies/summaries (`pulls/{n}/reviews`) — comments on the PR itself, not directly on
+  code, including CHANGES_REQUESTED / COMMENTED review summaries.
+- Inline diff comments (`pulls/{n}/comments`) and GraphQL review threads.
+
+A new reply on an already-answered thread is invisible to a "top-level comment without a reply" scan.
+Flag a thread/comment/review whose **latest activity** is from a human and is newer than the agent's
+last response on it — keyed by source + `id + updatedAt`, not by "top-level & unreplied". Include
+replies on already-answered threads.
 
 ## 4. Inspect before any destructive action
 Never delete, dismiss, overwrite, or force-replace something you did not create — a review, a
@@ -67,16 +73,34 @@ branch. Do this in a subagent, serialized per branch (rule 5).
 
 ## 11. Idempotency & resumability
 Assume the orchestrator can be compacted/restarted at any moment. Every decision, addressed-comment
-id, commit hash, and open question is written to a state file the instant it happens, so any tick
-re-run is a safe no-op on already-done work. Never rely on "I remember I already did X."
+id, comment/review `updatedAt`, commit hash, PR base/head, loop id, and open question is written to
+`state.json` plus the human-readable state files the instant it happens, so any tick re-run is a safe
+no-op on already-done work. The orchestrator is the only shared-state writer; worker subagents return
+digests and never edit state files directly. Never rely on "I remember I already did X."
 
 ## 12. Stop at the goal boundary
 When the acceptance criteria are met and all PRs are merged: **stop.** Do not start the next design
 slice, do not expand scope. Discovered work → `follow-ups.md`. Ending cleanly is part of the job.
 
+## 13. Approved tooling only
+Use only approved/verified skills, hooks, MCP integrations, and tools already available in the
+environment. Do not install or run unreviewed third-party plugins, hooks, MCP integrations, or scripts
+from the internet as part of this workflow. If required tooling is missing, surface that as a blocker
+instead of improvising.
+
+## 14. Preserve native harness quality; fallback honestly
+Detect and record runtime capabilities in `state.json`. If `/goal`, `/loop`, or an equivalent
+approved scheduler exists, use it; never downgrade a native Claude/Codex-style harness to a fallback
+because another runtime lacks that primitive. If no native loop exists, use Copilot
+**monitor-tick mode** automatically on normal resume/invocation of an active stack: run one tick,
+write `nextTickAfter`, report the outcome, and stop. Do not require the author to type a special mode
+prompt, and do not claim continuous monitoring unless a real approved loop/scheduler is running.
+
 ## Subagent prompt hygiene (orchestrator responsibility)
 Every delegated prompt must: (a) name the exact worktree/branch and forbid touching others;
 (b) restate the relevant guardrails above; (c) demand red-before-green for any fix; (d) require a
 **structured digest** back (what changed, commit hash, new tip, test results, push status, and any
-question to surface) — not a human-flavored essay; (e) forbid self-approve / impersonation / silent
-truncation. Keep the orchestrator blind to file dumps — subagents return conclusions, not contents.
+question to surface) — not a human-flavored essay; (e) forbid editing shared state files unless the
+subagent is explicitly the singleton loop controller for that tick; (f) forbid self-approve /
+impersonation / silent truncation. Keep the orchestrator blind to file dumps — subagents return
+conclusions, not contents.

@@ -21,6 +21,20 @@ git push --force-with-lease origin <descendant-branch>
 After every cascade: confirm each descendant's **base ref did not collapse** (e.g. D's base must
 stay the parent feature branch, not jump to master) — a collapsed base silently squashes the stack.
 
+## Advance the next front PR after its parent merges
+Do **not** rely on GitHub auto-retargeting. Once the old front PR merges to `master`, explicitly move
+the next PR onto `master`, then cascade its descendants:
+```bash
+git fetch origin
+git checkout <next-branch>
+git rebase --onto origin/master <merged-parent-tip> <next-branch>
+git push --force-with-lease origin <next-branch>
+gh pr edit <next-pr> --base master
+gh pr view <next-pr> --json baseRefName,headRefName,mergeStateStatus
+```
+Confirm `baseRefName == "master"` for the new front PR. Then verify each descendant PR still targets
+its intended parent feature branch, not `master`, unless it is now the front PR.
+
 ## Freshness / staleness
 A time/distance-based freshness check (PR open too long, or N commits behind) trips even at 1 commit
 behind. Remedy: rebase the branch onto fresh `origin/master` so the **new head re-triggers** the
@@ -31,8 +45,9 @@ check; force-push; cascade descendants. Conclusion of the stale check is typical
   owns the strategy — that flag is rejected; "already queued to merge" = armed, queue owns it).
 - Auto-merge silently turns **OFF** after force-pushes and after CHANGES_REQUESTED→APPROVED.
   **Re-verify and re-arm every tick** when the PR is approved + clean.
-- As each PR squash-merges to master, GitHub auto-retargets the next PR's base to master. Verify it
-  rebased cleanly, then arm auto-merge on it (now master-base) and start its loop.
+- As each PR merges to master, explicitly advance the next PR with the procedure above. Only after it
+  is verified base=`master` should auto-merge be armed and native loop monitoring started, or the
+  next monitor tick recorded for a runtime without native loops.
 - Never `gh pr merge` to merge-now, never self-approve, never dismiss a review to unblock.
 
 ## Resolve a review thread (GraphQL — REST can't)
@@ -44,6 +59,8 @@ gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$
 # resolve one after fix is pushed + replied
 gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -F t=<threadId>
 ```
+The `first:100` query is a page, not a guarantee of completeness; follow cursors when there are more
+threads/comments.
 
 ## Reply on a thread (inline) — marked, never resolve when asking
 ```bash
@@ -53,13 +70,16 @@ gh api repos/<owner>/<repo>/pulls/<n>/comments/<rootCommentId>/replies \
 Pre-check for a stray PENDING review first (it 422s replies); if one exists, **inspect before
 deleting** (guardrail 4) — only delete if genuinely empty and not the author's draft.
 
-## Detecting all comments (both endpoints)
+## Detecting all PR-visible feedback
 ```bash
+gh api repos/<owner>/<repo>/issues/<n>/comments --paginate   # PR conversation comments
+gh api repos/<owner>/<repo>/pulls/<n>/reviews   --paginate   # PR-level review bodies/summaries
 gh api repos/<owner>/<repo>/pulls/<n>/comments  --paginate   # inline diff comments
-gh api repos/<owner>/<repo>/issues/<n>/comments --paginate   # conversation comments
 ```
-Needs-response = thread whose latest human comment is newer than the agent's last reply on it
-(track by id+updatedAt). Include replies on already-answered threads.
+Also fetch GraphQL review threads for resolution state. PR-level review bodies are comments on the PR
+itself, not directly on code; do not miss them by only scanning inline comments. Needs-response =
+thread/comment/review whose latest human activity is newer than the agent's last reply/ack for that
+source (track by source + id + updatedAt). Include replies on already-answered threads.
 
 ## Merge-queue note
 With a merge queue, the queue controls squash/rebase and serializes merges. `--auto` hands the PR to

@@ -84,7 +84,7 @@ asking only the questions that actually change the plan.
 ## Coding/PR preferences to bake into every PR (author's house style)
 - One intent per PR; no dead code "for the next PR"; no adjacent refactors.
 - PR summary = 1–2 prose paragraphs on *why/what*, never a per-file table; `Testing Done` = the
-  commands run, no preamble.
+  commands run, no preamble; PR bodies disclose agent authorship.
 - Match surrounding style; surgical changes only; every changed line traces to the goal/comment.
 - Tests: behavior-named, red-before-green, cover the cross-revision / unreferenced / paused cases.
 - Regenerate any generated build/codegen files after adding/removing files; run the **scoped** test

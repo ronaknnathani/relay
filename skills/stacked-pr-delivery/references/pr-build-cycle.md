@@ -4,8 +4,9 @@ Each PR is delivered by **one PR-builder subagent** that drives the PR through t
 own build pipeline by **invoking the `/build:*` skills** (via the Skill tool) in that PR's isolated
 worktree, then opens the PR. The subagent does **not** re-implement these phases — it executes the
 author's skills so the PR gets the author's exact workflow, prompts, and standards. The orchestrator
-spawns these subagents, tracks them in `progress.md`, and routes any surfaced questions — it does
-**not** run the cycle itself.
+spawns these subagents, records their digests in `state.json`/`progress.md`, and routes any surfaced
+questions — it does **not** run the cycle itself. PR-builders do not append to shared state files
+directly.
 
 ## The build cycle — invoke the author's `/build:*` skills (no ship confirmation)
 In order, the subagent **calls each skill** and only falls back to doing the work in-prompt for a
@@ -25,13 +26,15 @@ the whole clarify→…→ship pipeline, prefer invoking that; otherwise run the
 
 **Run `/build:ship` without asking for confirmation** — the author has pre-authorized ship for this
 orchestrated flow. (If `/build:ship` itself has an interactive "ready to ship?" gate, the subagent is
-authorized to proceed past it; record that it did so in `tradeoffs.md`.)
+authorized to proceed past it and must report that in its digest so the orchestrator can record it in
+`tradeoffs.md`.)
 
 **Ship semantics (the handoff to Phase 2):**
 - base = the parent branch (or `master` if this is the front PR).
 - If base is `master` → arm auto-merge (`gh pr merge --auto`). If base is another feature branch →
   **do not** arm auto-merge (rule 6).
-- Commit messages: `type(scope): imperative` + the author's co-author trailer. PR body is prose.
+- Commit messages: `type(scope): imperative` + the author's co-author trailer. PR body is prose and
+  must disclose agent authorship, e.g. `Opened by <agent> on behalf of <author>`.
 - Report back a digest: branch, tip hash, PR number, base, which acceptance criteria it claims, and
   any open question. The orchestrator records it and may immediately start the next dependent PR.
 
@@ -55,10 +58,12 @@ it **stops that phase and returns the question** to the orchestrator. The orches
 the **pending-decisions table** (`questions.md`), shows the updated table to the author, asks
 (`AskUserQuestion` or a tracking issue), and **pauses only that PR** — other PRs keep moving. Resume
 the PR (via a fresh subagent with the answer) once the author responds, and **remove the row** from
-the table. Never let a subagent invent the answer to keep moving (guardrail 2).
+the table while recording the answer in `progress.md`. Never let a subagent invent the answer to keep
+moving (guardrail 2).
 
 ## When a PR-builder finishes
-Orchestrator updates `progress.md` (PR opened, tip, base, criteria claimed), appends any trade-offs
-the subagent reported to `tradeoffs.md`, any newly-discovered work to `follow-ups.md`, and decides
-the next delegation (start a dependent PR; or, if this is the front PR on master, **start its monitor
-loop** — Phase 2).
+The PR-builder returns a structured digest only. The orchestrator updates `state.json` and
+`progress.md` (PR opened, tip, base, criteria claimed), appends any trade-offs the subagent reported
+to `tradeoffs.md`, any newly-discovered work to `follow-ups.md`, and decides the next delegation
+(start a dependent PR; or, if this is the front PR on master, start native loop monitoring or set the
+next Copilot monitor tick according to `runtime.monitorMode` — Phase 2).
