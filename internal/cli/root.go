@@ -27,6 +27,7 @@ type rootFlags struct {
 	noLaunch bool
 	name     string
 	agent    string
+	workflow string
 }
 
 func newRootCmd() *cobra.Command {
@@ -60,6 +61,7 @@ func newRootCmd() *cobra.Command {
 				quick:    flags.quick,
 				noLaunch: flags.noLaunch,
 				agent:    flags.agent,
+				workflow: flags.workflow,
 			})
 		},
 	}
@@ -69,6 +71,7 @@ func newRootCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&flags.noLaunch, "no-launch", false, "create project but don't launch the coding agent")
 	cmd.Flags().StringVarP(&flags.name, "name", "n", "", "custom project slug")
 	cmd.Flags().StringVar(&flags.agent, "agent", "", "coding agent to launch (default from config)")
+	cmd.Flags().StringVar(&flags.workflow, "workflow", defaultWorkflow, "workflow skill to launch (deliver-pr or stack-ship)")
 
 	cmd.AddCommand(
 		newCmdNew(flags),

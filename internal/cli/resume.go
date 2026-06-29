@@ -49,23 +49,28 @@ func runResume(slug string) error {
 		return err
 	}
 
-	batch := project.PhaseToBatch(m.Phase)
+	// Relaunch the project's workflow skill; it is resume-first and reconstructs
+	// its position from `relay state`. Fall back to the legacy phase→batch
+	// mapping for older manifests written before the workflow field existed.
+	cmd := m.Workflow
+	if cmd == "" {
+		cmd = project.PhaseToBatch(m.Phase)
+	}
 	fmt.Println()
 	fmt.Printf("  %s\n", ui.Color(ui.Bold+ui.White, "Resuming project"))
 	ui.PrintField("Slug", slug)
-	ui.PrintField("Phase", ui.PhaseColor(m.Phase))
-	ui.PrintField("Batch", batch)
+	ui.PrintField("Workflow", cmd)
 	fmt.Println()
 	fmt.Printf("  %s\n", ui.Color(ui.Dim, fmt.Sprintf("Launching %s…", a.Name())))
 	fmt.Println()
 
-	systemPrompt := fmt.Sprintf("Active relay project: %s. Phase: %s.", slug, m.Phase)
+	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s.", slug, cmd)
 	return launcher.Launch(a, agent.LaunchOptions{
 		Worktree:        *m.Worktree,
 		ProjectDir:      filepath.Dir(path),
 		SystemPrompt:    systemPrompt,
 		SessionName:     "relay:" + slug,
-		Command:         batch,
+		Command:         cmd,
 		CommandArgs:     slug,
 		SkipPermissions: cfg.DangerouslySkipPermissions,
 	})
