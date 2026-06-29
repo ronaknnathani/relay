@@ -10,12 +10,13 @@ own words. PR bodies and automated status posts must also disclose agent authors
 `Opened by <agent-name> on behalf of <author-handle>`) instead of implying the human wrote them.
 
 ## 2. Never decide what's the author's to decide
-For every review comment/body and every fork in the design, **classify**: *obvious gap-fix* vs
-*author decision* (see [comment-handling](monitor-loop.md#classifying-a-comment-or-review-body)).
-Implement only obvious fixes. For decisions: reply asking for input, add a row to the
-pending-decisions table, leave the thread **open**, and move on. **When you cannot cleanly tell, it
+Per-comment classification (*obvious gap-fix* vs *author decision*) and the reply/resolve mechanics are
+owned by `pr-fix`, which `pr-monitor` delegates to during a tick — it implements obvious fixes, and for
+a decision replies asking for input and leaves the thread **open**. The **orchestrator's** residual
+duty is the cross-PR funnel: keep the **pending-decisions table** in `questions.md`, surface every
+open decision to the author, and never let a sub-agent guess one. **When you cannot cleanly tell, it
 is a decision — surface it.** A concrete direction from a human owner on a surfaced thread *is* the
-decision — implement it as stated and confirm.
+decision — route it back so the fix is implemented as stated and confirmed.
 
 ## 3. Detection must be complete — PR-level feedback, inline threads, AND new replies
 `gh pr view --json comments` is not enough. Every tick must paginate and inspect:

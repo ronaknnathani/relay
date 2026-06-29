@@ -1,69 +1,51 @@
-# Phase 1 — Building the Stack
+# Phase 1 — Build the stack (per-PR build cycle)
 
-Each PR is delivered by **one PR-builder subagent** that drives the PR through the author's
-own build pipeline by **invoking the `/build:*` skills** (via the Skill tool) in that PR's isolated
-worktree, then opens the PR. The subagent does **not** re-implement these phases — it executes the
-author's skills so the PR gets the author's exact workflow, prompts, and standards. The orchestrator
-spawns these subagents, records their digests in `state.json`/`progress.md`, and routes any surfaced
-questions — it does **not** run the cycle itself. PR-builders do not append to shared state files
-directly.
+Each PR in the stack is built by a **`deliver-pr` sub-agent** — it owns the single-PR pipeline
+(`clarify → plan → implement → simplify → review → validate → open-pr`). stack-ship does not
+re-implement those phases; this file covers only what the **stack** adds on top.
 
-## The build cycle — invoke the author's `/build:*` skills (no ship confirmation)
-In order, the subagent **calls each skill** and only falls back to doing the work in-prompt for a
-phase that has no dedicated skill installed. If a single umbrella skill (e.g. `/build:build`) runs
-the whole clarify→…→ship pipeline, prefer invoking that; otherwise run the phase skills in sequence:
+## Per PR
 
-| Phase | Action | Skill to invoke |
-|-------|--------|-----------------|
-| clarify | restate intent + this PR's acceptance criteria; list assumptions | (in-prompt, or `/build:build`'s clarify) |
-| plan | implementation plan for this one PR's scope | **`/build:plan`** |
-| execute | write code + tests (red-before-green), regen generated build files | **`/build:implement`** |
-| simplify | cut to the minimum correct diff; remove orphans the change created | **`/build:improve`** |
-| review | review the diff against the author's standards | author's review skill (e.g. a `code-review` / `review-pr` skill) |
-| fix | address review findings (same worktree) | re-invoke `/build:implement` or fix in-prompt |
-| validate | scoped build + tests green; verify this PR's acceptance criteria | **`/build:validate`** |
-| ship | open the PR, set base correctly | **`/build:ship`** |
+Create the PR's worktree first — stack-ship owns worktrees; `deliver-pr` runs **in** one, it does not
+create its own — then spawn the `deliver-pr` sub-agent and hand it:
 
-**Run `/build:ship` without asking for confirmation** — the author has pre-authorized ship for this
-orchestrated flow. (If `/build:ship` itself has an interactive "ready to ship?" gate, the subagent is
-authorized to proceed past it and must report that in its digest so the orchestrator can record it in
-`tradeoffs.md`.)
+- **a per-PR slug** — e.g. `<goalSlug>-<pr-id>`. `deliver-pr` runs `relay state init` under this slug
+  and owns a **separate, nested `state.json`** from the stack run's; keep the slugs distinct.
+- **intent + scope** — the one thing this PR does, and what it deliberately does not touch.
+- **acceptance criteria** — the `goal.md` criteria this PR satisfies. These **seed** `deliver-pr`'s
+  `clarify` phase (confirm/refine them against the code), so it does not re-derive criteria you already
+  pinned in `plan.md`.
+- **branch + base** — `<prefix>/<slug>`, based on its parent branch (or `master` for the front PR).
+- the worktree path, and a prohibition on touching any other worktree.
 
-**Ship semantics (the handoff to Phase 2):**
-- base = the parent branch (or `master` if this is the front PR).
-- If base is `master` → arm auto-merge (`gh pr merge --auto`). If base is another feature branch →
-  **do not** arm auto-merge (rule 6).
-- Commit messages: `type(scope): imperative` + the author's co-author trailer. PR body is prose and
-  must disclose agent authorship, e.g. `Opened by <agent> on behalf of <author>`.
-- Report back a digest: branch, tip hash, PR number, base, which acceptance criteria it claims, and
-  any open question. The orchestrator records it and may immediately start the next dependent PR.
-
-## Parallel fan-out vs pipeline
-- **Independent PRs** (`depends-on: []`): spawn their PR-builder subagents in a single message so they
-  run concurrently, each in its **own worktree** (rule 5 — never share a branch).
-- **Dependent PRs**: a child may branch off the parent and scaffold, but its `execute`/`validate`
-  can't truly pass until the parent's surface exists. Prefer to **start the child after the parent's
-  surface is stable** (parent shipped or at least its API committed), then rebase the child onto the
-  parent. Use `pipeline()`-style staging if you orchestrate via a Workflow script; otherwise spawn
-  the child once the parent reports its API committed.
+It runs the pipeline, opens the PR, and returns a **structured digest**: branch, tip hash, PR number,
+base, the criteria it claims, and any blocking question. You read the digest — not the work.
 
 ## Worktrees
-One worktree per branch, named predictably (`<.worktrees>/<branch-with-slashes-as-underscores>`).
-The subagent is told its exact worktree and **forbidden from touching any other**. For parallel
-file-mutating agents, use isolated worktrees so they never collide.
 
-## Surfacing questions during the build
-If a PR-builder hits a real decision (ambiguous API shape, a behavior the design doesn't pin down),
-it **stops that phase and returns the question** to the orchestrator. The orchestrator: adds a row to
-the **pending-decisions table** (`questions.md`), shows the updated table to the author, asks
-(`ask_user` or a tracking issue), and **pauses only that PR** — other PRs keep moving. Resume
-the PR (via a fresh subagent with the answer) once the author responds, and **remove the row** from
-the table while recording the answer in `progress.md`. Never let a subagent invent the answer to keep
-moving (guardrail 2).
+One worktree per branch: `<.worktrees>/<branch-with-slashes-as-underscores>`. A sub-agent is forbidden
+from touching any other worktree. Serialize all writes to a given branch (guardrails.md #5).
 
-## When a PR-builder finishes
-The PR-builder returns a structured digest only. The orchestrator updates `state.json` and
-`progress.md` (PR opened, tip, base, criteria claimed), appends any trade-offs the subagent reported
-to `tradeoffs.md`, any newly-discovered work to `follow-ups.md`, and decides the next delegation
-(start a dependent PR; or, if this is the front PR on master, start native loop monitoring or set the
-next Copilot monitor tick according to `runtime.monitorMode` — Phase 2).
+## Parallel vs pipelined
+
+- **Independent PRs** (`depends-on: []`) → spawn their `deliver-pr` sub-agents in one message so they
+  run concurrently, each in its own worktree.
+- **Dependent PRs** → start the child after the parent's surface is stable (parent opened, or its API
+  committed), then rebase the child onto the parent. A child can scaffold early but cannot compile
+  until the parent's surface is real.
+
+## Ship semantics for stacked bases
+
+`deliver-pr` ends at an open PR. For the stack:
+
+- The PR's **base** is its parent branch (or `master` if it is the front PR).
+- Arm auto-merge **only** when the base is `master` — never on a PR based on another feature branch
+  (that collapses the stack). `pr-monitor` enforces this; see [guardrails.md](guardrails.md) #6.
+- Commit messages: `type(scope): imperative` + the author's co-author trailer; the PR body is prose
+  with agent-authorship disclosure.
+
+## Surfacing questions
+
+If a `deliver-pr` sub-agent hits a real author decision, it stops that phase and returns the question.
+You add a row to `questions.md`, surface it to the author, and pause **only that PR** — the rest of the
+stack keeps moving. Resume the PR when the author answers.
