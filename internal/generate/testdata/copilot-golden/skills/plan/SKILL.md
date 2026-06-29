@@ -70,7 +70,6 @@ independent subsystems, or has "and" in the title — each of those is two tasks
 - A file named only in prose, or a path written as a placeholder rather than the real one.
 - "Add appropriate error handling / validation / edge cases" — say the concrete behavior instead.
 - A test step with no assertion, or a "see Task N" cross-reference instead of the actual content.
-- A task with "and" in its title, 4+ acceptance criteria, or that touches independent subsystems.
 - Missing Testing Decisions or Out of Scope sections, or many low test seams where one high one fits.
 - A Success criterion from the clarified artifact with no task that satisfies it.
 - Clarifying requirements, writing production code, or invoking `clarify`/`implement` — all out of scope.

@@ -1,6 +1,6 @@
 ---
 name: validate
-description: Verify a change is ready to ship by checking it against its acceptance criteria and running the repo's own quality gates in order, then report a pass/fail verdict with the exact failures. Use after a change is implemented, before opening or shipping a PR, to decide go/no-go. It reports — it does not fix (route failures to `pr-fix`/`implement`) and does not ship.
+description: Verify a change is ready to ship by checking it against its acceptance criteria and running the repo's own quality gates in order, then report a pass/fail verdict with the exact failures. Use to decide go/no-go right before shipping — when you want a pass/fail verdict against acceptance criteria and the repo's quality gates (lint/build/test), not a code critique (use `review` for that). It reports — it does not fix (route failures to `pr-fix`/`implement`) and does not ship.
 ---
 
 # Validate
