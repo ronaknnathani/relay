@@ -6,7 +6,7 @@ description: Bring a PR to mergeable — fix CI failures, address review comment
 # PR Fix
 
 Drive a PR to a mergeable state: a green CI, every review comment fixed-and-resolved or
-replied-and-flagged, and no merge conflicts with the base. This supersedes `pr-check`. Work the three
+replied-and-flagged, and no merge conflicts with the base. Work the three
 fronts — CI, comments, conflicts — and loop until all are clear. Fix root causes, never silence
 failures or guess an author's intent. Use `review`'s shared severity vocabulary (Critical / Important /
 Suggestion). Run independent investigations as sub-agents when available; otherwise do them inline.

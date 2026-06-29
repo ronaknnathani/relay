@@ -15,7 +15,7 @@ import (
 // source as a skill. Body holds the full SKILL.md contents (frontmatter +
 // markdown), so the renderer can emit it without reconstructing frontmatter.
 // Bundled holds any sibling files under the skill directory (e.g.
-// review-pr/agents/*.md), keyed by their path relative to the skill dir, so a
+// review/agents/*.md), keyed by their path relative to the skill dir, so a
 // self-contained skill travels with its companion prompts.
 type Entry struct {
 	Name    string // skill directory name, e.g. "plan" or "rebase"
