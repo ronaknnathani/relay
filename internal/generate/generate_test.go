@@ -9,8 +9,11 @@ import (
 	"github.com/ronaknnathani/relay/internal/agent"
 )
 
-// phaseSkills are the deterministic entry points migrated from commands.
-var phaseSkills = []string{"build", "plan", "implement", "improve", "validate", "ship", "todo"}
+// coreSkills are foundation skills that must always render into the package.
+var coreSkills = []string{
+	"explore", "clarify", "plan", "implement", "simplify", "review",
+	"validate", "commit", "rebase", "open-pr", "pr-fix",
+}
 
 // repoRoot returns the module root (two levels up from internal/generate).
 func repoRoot(t *testing.T) string {
@@ -37,17 +40,17 @@ func generateClaude(t *testing.T) (root, out string) {
 	return root, out
 }
 
-// TestGenerateSkillsOnly asserts the migrated Claude package is skills-only:
-// every phase entry point is present as a skill and there is no commands/ dir.
+// TestGenerateSkillsOnly asserts the package is skills-only (no commands/ dir)
+// and that every core foundation skill renders.
 func TestGenerateSkillsOnly(t *testing.T) {
 	_, out := generateClaude(t)
 
 	if _, err := os.Stat(filepath.Join(out, "commands")); !os.IsNotExist(err) {
 		t.Errorf("generated package has a commands/ dir; expected skills-only")
 	}
-	for _, name := range phaseSkills {
+	for _, name := range coreSkills {
 		if _, err := os.Stat(filepath.Join(out, "skills", name, "SKILL.md")); err != nil {
-			t.Errorf("phase entry %q missing as a skill: %v", name, err)
+			t.Errorf("core skill %q missing from package: %v", name, err)
 		}
 	}
 }
@@ -71,70 +74,6 @@ func TestClaudeGolden(t *testing.T) {
 	}
 
 	compareTree(t, golden, out)
-}
-
-// TestPhaseSkillsBehavioralParity asserts the migrated phase entry points keep
-// Claude's behavior: each is a slash-only (disable-model-invocation) skill with
-// the right name and argument-hint, the auto-chain order is intact, and the
-// subagent/opus usage is preserved.
-func TestPhaseSkillsBehavioralParity(t *testing.T) {
-	_, out := generateClaude(t)
-
-	read := func(name string) string {
-		t.Helper()
-		b, err := os.ReadFile(filepath.Join(out, "skills", name, "SKILL.md"))
-		if err != nil {
-			t.Fatalf("read skill %s: %v", name, err)
-		}
-		return string(b)
-	}
-
-	// Every phase entry point is a deterministic, slash-only skill with its name.
-	for _, name := range phaseSkills {
-		body := read(name)
-		fm, ok := frontmatter(body)
-		if !ok {
-			t.Errorf("%s: missing frontmatter", name)
-			continue
-		}
-		if !strings.Contains(fm, "disable-model-invocation: true") {
-			t.Errorf("%s: not slash-only (missing disable-model-invocation: true)", name)
-		}
-		if !strings.Contains(fm, "name: "+name) {
-			t.Errorf("%s: frontmatter name does not match", name)
-		}
-		if !strings.Contains(fm, "argument-hint:") {
-			t.Errorf("%s: missing argument-hint", name)
-		}
-	}
-
-	// Auto-chain order: implement → improve → validate, and the ship pipeline.
-	wantChains := map[string][]string{
-		"plan":      {"/implement $SLUG"},
-		"implement": {"/improve $SLUG"},
-		"improve":   {"/validate $SLUG"},
-		"validate":  {"/ship $SLUG", "/improve"},
-		"ship":      {"rebase → create PR → CI → code review"},
-	}
-	for name, wants := range wantChains {
-		body := read(name)
-		for _, w := range wants {
-			if !strings.Contains(body, w) {
-				t.Errorf("%s: auto-chain reference %q missing", name, w)
-			}
-		}
-	}
-
-	// Subagent + opus usage preserved in the batch phases.
-	for _, name := range []string{"implement", "improve", "validate"} {
-		body := read(name)
-		if !strings.Contains(body, `model: "opus"`) {
-			t.Errorf("%s: lost opus subagent usage", name)
-		}
-	}
-	if !strings.Contains(read("todo"), `model: "haiku"`) {
-		t.Errorf("todo: lost haiku subagent usage")
-	}
 }
 
 func TestGenerateUnsupportedAgent(t *testing.T) {

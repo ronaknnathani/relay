@@ -1,89 +1,78 @@
 ---
 name: validate
-description: "Batch 2.7: Validate — goal-backward verification, then user checkpoint before ship"
-argument-hint: "SLUG"
-disable-model-invocation: true
+description: Verify a change is ready to ship by checking it against its acceptance criteria and running the repo's own quality gates in order, then report a pass/fail verdict with the exact failures. Use after a change is implemented, before opening or shipping a PR, to decide go/no-go. It reports — it does not fix (route failures to `pr-fix`/`implement`) and does not ship.
 ---
 
-# Validate — Batch 2.7: Validate
+# Validate
 
-Runs the validate phase as a subagent with fresh context. On FAIL, loops back to `/improve` (max 2 retries). On PASS, prompts the user with "Ready to ship?" and invokes `/ship` on approval.
+Decide whether a change is ready to ship and report the verdict — pass, or fail with the exact
+failures someone else can act on. The bar: every acceptance criterion from `clarify`/`plan` is
+demonstrably met, and every quality gate the repo defines is green, each shown by a command or
+observation rather than asserted. This skill is a gate, not a fixer: on failure it hands precise
+error-feedback to `pr-fix` or `implement` and stops. It does **not** edit code and does **not** ship.
 
-## Setup
+## Process
 
-Read `$ARGUMENTS` as the project slug. Load project context:
+1. **Gather the acceptance criteria.** Read the Success criteria from the `clarify`/`plan` artifacts.
+   These are the goal-backward targets — what must be TRUE about the codebase. If no artifact exists,
+   reconstruct the criteria from the task description and list them, so the verdict is checkable.
+2. **Discover the repo's own gate commands.** Find how *this* repo lints, type-checks, tests, builds,
+   and audits — from its scripts/manifest/CI config (`explore` when it isn't obvious). Use the repo's
+   actual commands; never substitute a generic command or invent a gate the repo doesn't define. A
+   gate the repo doesn't have is skipped as not-applicable (and noted), not faked.
+3. **Run every applicable quality gate — none skippable.** The gates, in report order:
+   **lint → typecheck → unit tests → build → integration → e2e → security/audit → bundle-size**. This
+   sequence is the *reporting/intent order*, not a stop-on-first-failure barrier: run independent gates
+   in parallel when the tooling allows (dispatch sub-agents when available; otherwise inline), **never
+   stop at the first failure**, and capture every gate's output so the report is complete in one pass.
+4. **Check each acceptance criterion, goal-backward.** For each criterion, name the test, command, or
+   direct observation that demonstrates it holds — and run/observe it. A criterion with no evidence is
+   a FAIL, not a pass-by-assertion; "looks done" is not evidence.
+5. **Render the verdict.** PASS only if every applicable gate is green AND every acceptance criterion
+   has passing evidence. Otherwise FAIL. Report, for each failure: the **exact command run**, its
+   **error output**, and the **location** (file/line/criterion) — this is the error-feedback `pr-fix`
+   or `implement` consumes. Do not attempt deep fixes here; a one-line obvious typo is still routed
+   out, not silently patched.
 
-```bash
-SLUG="$ARGUMENTS"
-PROJ="$HOME/.relay/active/$SLUG"
+## Never mask a failure to go green
+
+Disabling a test, skipping a spec, loosening a lint rule, or lowering a threshold to make a gate pass
+is a hard red flag — it converts a real failure into a hidden one. If a gate fails, report it as a
+FAIL with its evidence and route it out. The only legitimate "skip" is a gate the repo genuinely does
+not define, recorded as not-applicable.
+
+## Output schema (the verdict)
+
+```markdown
+# Validation: <task>  — VERDICT: PASS | FAIL
+## Gates
+  - <gate>: PASS | FAIL | N/A — `<exact command>`  (on FAIL: error + location)
+## Acceptance criteria
+  - [x] <criterion> — evidence: <test/command/observation>
+  - [ ] <criterion> — FAIL: <what's missing + where>
+## Failures (for pr-fix / implement)
+  - `<exact command>` → <error output> @ <file:line | criterion>
 ```
 
-Read `$PROJ/manifest.json`. Confirm phase is `validate`. If the phase is past validate, tell the user to run `/ship $SLUG` instead.
+A PASS verdict means nothing in the Failures section. List every failure, not just the first — one
+pass should give the fixer everything to act on.
 
-Announce: "Validating against plan goals."
+## Red flags
 
-## Context Management Rules
+- Skipping a gate that applies, or running them out of order, instead of the full lint→…→bundle-size sequence.
+- Disabling/loosening a test, spec, lint rule, or threshold to turn a gate green.
+- Substituting a generic command for the repo's own gate command, or inventing a gate the repo lacks.
+- Marking an acceptance criterion PASS without a test/command/observation behind it.
+- Editing code to fix a failure here instead of routing it to `pr-fix`/`implement`.
+- Reporting only the first failure when later gates also failed — the fixer needs the whole set.
+- Shipping, merging, or invoking the next skill — `validate` returns a verdict and stops.
 
-- **Orchestrator stays lean (~10-15% context).** Pass file paths only to subagents — never paste file content into prompts.
-- **Each subagent uses `model: "opus"`** for maximum context (1M).
-- Subagents read plan.md from disk themselves.
+## Verification checklist
 
-## Phase: Validate
-
-Launch a subagent (Agent tool, model: "opus") with this prompt:
-
-> Read the plan at `$PROJ/plan.md`.
-> Apply goal-backward verification — for each requirement, ask: "What must be TRUE about the codebase?"
-> 1. Run the full test suite — capture output
-> 2. Run linter/build commands — capture output
-> 3. Verify each requirement from the plan is satisfied
-> 4. Write a verification report to `$PROJ/verification.md` with:
->    - Each requirement: PASS or FAIL with evidence
->    - Test results
->    - Overall verdict: PASS or FAIL
-
-Wait for completion. Read `$PROJ/verification.md`.
-
-## Failure handling
-
-Track validation attempts via `$PROJ/validate-attempts.txt`. Read the file (default 0 if missing).
-
-```bash
-ATTEMPTS_FILE="$PROJ/validate-attempts.txt"
-ATTEMPTS=$(cat "$ATTEMPTS_FILE" 2>/dev/null || echo 0)
-```
-
-If the verification verdict shows ANY requirement FAILS:
-
-- Increment the counter and write it back:
-  ```bash
-  ATTEMPTS=$((ATTEMPTS + 1))
-  echo "$ATTEMPTS" > "$ATTEMPTS_FILE"
-  ```
-- If `ATTEMPTS < 3`: append the failing requirements from `$PROJ/verification.md` to `$PROJ/review-summary.md` under a `## Validation Failures` heading (replace the section if it already exists from a previous retry), so the Fix subagent in `/improve` will see them. Then reset the phase to `fix` and invoke `/improve`. The improve command will auto-chain back to `/validate` for re-verification.
-  ```bash
-  relay update "$SLUG" --phase fix --remove phases_completed=fix --add phases_remaining=fix
-  ```
-  Then invoke `/improve $SLUG`.
-- If `ATTEMPTS >= 3`: stop. Display the verification failures from `$PROJ/verification.md` and ask the user how to proceed (use AskUserQuestion).
-
-## Manifest update on PASS
-
-If the verification verdict is PASS, reset the retry counter and update the manifest:
-
-```bash
-rm -f "$ATTEMPTS_FILE"
-relay update "$SLUG" --phase rebase --add phases_completed=validate --remove phases_remaining=validate
-```
-
-## Checkpoint
-
-After validation passes:
-
-1. Read `$PROJ/verification.md` and display a summary to the user
-2. Run `git diff --stat main...HEAD` and display the output
-3. Use AskUserQuestion: "Implementation complete and validated. Ready to ship?"
-
-## On approval
-
-When the user approves, invoke `/ship $SLUG`.
+- [ ] Acceptance criteria came from the `clarify`/`plan` artifact (or were reconstructed and listed).
+- [ ] Gate commands are the repo's own, discovered from its config — not generic or invented.
+- [ ] Every applicable gate ran in order; results captured; none skipped or masked to go green.
+- [ ] Each acceptance criterion is backed by a named test/command/observation, not assertion.
+- [ ] The verdict is PASS only with all gates green and all criteria evidenced; else FAIL.
+- [ ] Each failure reports exact command + error + location for `pr-fix`/`implement` to consume.
+- [ ] No code was edited, nothing was shipped, and no next skill was invoked.

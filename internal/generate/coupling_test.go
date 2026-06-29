@@ -50,30 +50,20 @@ func TestRenderedPackageHasNoCouplings(t *testing.T) {
 	}
 }
 
-// TestVendoredSkillsRendered asserts the seven newly vendored skills (plus the
-// already-owned rebase) render into the package, and that review-pr ships its
-// six bundled agent prompts so it is self-contained.
-func TestVendoredSkillsRendered(t *testing.T) {
+// TestReviewLibraryRendered asserts the review skill ships its full bundled
+// reviewer-role library, so a self-contained skill travels with its companion
+// prompts through the generator.
+func TestReviewLibraryRendered(t *testing.T) {
 	_, out := generateClaude(t)
 
-	vendored := []string{
-		"writing-plans", "executing-plans", "commit", "code-review",
-		"review-pr", "submit", "pr-check", "rebase",
-	}
-	for _, name := range vendored {
-		if _, err := os.Stat(filepath.Join(out, "skills", name, "SKILL.md")); err != nil {
-			t.Errorf("vendored skill %q missing: %v", name, err)
-		}
-	}
-
 	agents := []string{
-		"code-reviewer", "pr-test-analyzer", "comment-analyzer",
-		"silent-failure-hunter", "type-design-analyzer", "code-simplifier",
+		"code-reviewer", "silent-failure-hunter", "type-design-analyzer",
+		"pr-test-analyzer", "comment-analyzer", "security", "git-history", "prior-pr-history",
 	}
 	for _, a := range agents {
-		p := filepath.Join(out, "skills", "review-pr", "agents", a+".md")
+		p := filepath.Join(out, "skills", "review", "agents", a+".md")
 		if _, err := os.Stat(p); err != nil {
-			t.Errorf("review-pr bundled agent %q missing: %v", a, err)
+			t.Errorf("review bundled agent %q missing: %v", a, err)
 		}
 	}
 }

@@ -76,19 +76,7 @@ func TestCopilotPackageInvariants(t *testing.T) {
 		t.Errorf("hooks.json should not be generated, stat err = %v", err)
 	}
 
-	// Subagent directives render to Copilot's task mechanism, never inline. The
-	// large-context tier is engaged by the adapter's --context launch flag, not as
-	// task-tool prose, so the body must NOT carry a bogus --context clause.
-	impl := readFile(t, filepath.Join(out, "skills", "implement", "SKILL.md"))
-	if !strings.Contains(impl, "Launch a subagent (task tool)") {
-		t.Errorf("implement did not render a task subagent")
-	}
-	if strings.Contains(impl, "--context") {
-		t.Errorf("implement carries a bogus --context clause (it is a launch flag, not a task param)")
-	}
-	if strings.Contains(impl, "inline (no subagent available)") {
-		t.Errorf("implement was downgraded to inline")
-	}
+	// The subagent directive renders to Copilot's task mechanism, never inline.
 	todo := readFile(t, filepath.Join(out, "skills", "todo", "SKILL.md"))
 	if !strings.Contains(todo, "Launch a subagent (task tool) with this prompt") {
 		t.Errorf("todo did not render a plain task subagent")
@@ -103,9 +91,9 @@ func TestCopilotPackageInvariants(t *testing.T) {
 	if fm, _ := frontmatter(plan); strings.Contains(fm, "disable-model-invocation") {
 		t.Errorf("plan kept disable-model-invocation: Copilot would not be able to invoke it by prose")
 	}
-	val := readFile(t, filepath.Join(out, "skills", "validate", "SKILL.md"))
-	if strings.Contains(val, "AskUserQuestion") || !strings.Contains(val, "ask_user") {
-		t.Errorf("validate did not lowercase AskUserQuestion → ask_user")
+	ss := readFile(t, filepath.Join(out, "skills", "stack-ship", "SKILL.md"))
+	if strings.Contains(ss, "AskUserQuestion") || !strings.Contains(ss, "ask_user") {
+		t.Errorf("stack-ship did not lowercase AskUserQuestion → ask_user")
 	}
 }
 
