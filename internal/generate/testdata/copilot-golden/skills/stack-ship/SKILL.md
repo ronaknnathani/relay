@@ -11,14 +11,18 @@ decisions; subagents own execution and return structured digests.
 
 The [guardrails](references/guardrails.md) are non-negotiable — **read them before acting.**
 
+> Throughout this skill `master` denotes the repository's **default branch**; substitute the real
+> default (`main`, etc.). Auto-merge is armed only on a default-branch-based PR — which, in a stack, is
+> exactly the front PR.
+
 ## The one-paragraph model
 
 You (orchestrator) turn a goal into an **acceptance-criteria list** and a **stacked PR plan**
-(`api → utils → stitch`, smallest single-intent PRs). You spawn a **PR-builder subagent** per PR to
-run the full build cycle and open the PR. You monitor whichever PR currently sits on `master` (the
-front of the stack): use a native `/loop` harness when available, otherwise automatically run a
-single Copilot monitor tick whenever this skill resumes an active stack. Each tick delegates detection
-and remediation and returns a digest. You never write code, never post in your own voice, never
+(`api → utils → stitch`, smallest single-intent PRs). You spawn a **`deliver-pr` sub-agent** per PR to
+run the full single-PR pipeline and open the PR. You drive whichever PR currently sits on `master` (the
+front of the stack) to merged with the **`pr-monitor`** skill — a native `/loop` when available, else
+one tick per resume — and add only the stack-specific front-advance and cascade. You never write code,
+never post in your own voice, never
 approve, never make author-owned design decisions, and never install unreviewed tooling — you route
 work and surface questions. You stop when every acceptance criterion is met and every PR is merged.
 
@@ -86,36 +90,28 @@ sign-off on `plan.md`** if the design left genuine ambiguity (use `ask_user`); o
 proceed with the smallest-PRs default and log the call in `tradeoffs.md`.
 
 ### Phase 1 — Build the stack  →  [references/pr-build-cycle.md](references/pr-build-cycle.md)
-For each PR, spawn a **PR-builder subagent** that drives the PR through the author's build
-pipeline by **invoking the `/build:*` skills directly** (`clarify → plan → execute → simplify →
-review → fix → validate → ship`) in that PR's worktree, then opens the PR. The subagent does **not**
-re-implement those phases — it calls the actual skills (`/build:plan`, `/build:implement`,
-`/build:improve`, `/build:validate`, `/build:ship`, …). **No ship confirmation.** Parallelize
-independent PRs (one subagent each, isolated worktrees); pipeline dependent ones (the API surface
-must land before consumers compile). The subagent **surfaces blocking questions back to you** rather
-than guessing; you route them to the pending-decisions table + the author and pause that PR only.
+For each PR, spawn a **`deliver-pr` sub-agent** that runs the full single-PR pipeline
+(`clarify → plan → implement → simplify → review → validate → open-pr`) in that PR's worktree and opens
+the PR. You do **not** re-implement those phases — `deliver-pr` owns them; you hand it this PR's intent,
+scope, acceptance criteria, branch, and base. Parallelize independent PRs (one sub-agent each, isolated
+worktrees); pipeline dependent ones (the API surface must land before consumers compile). `deliver-pr`
+**surfaces blocking questions back to you** rather than guessing; you route them to the
+pending-decisions table + the author and pause that PR only.
 
 ### Phase 2 — Monitor the front PR  →  [references/monitor-loop.md](references/monitor-loop.md)
-The PR currently based on `master` (the front of the stack) is monitored by the best available
-runtime harness:
-- **Native loop mode**: if `/loop` (or an equivalent approved scheduler) exists, run the delegated
-  monitor loop there and ensure exactly one healthy loop is running.
-- **Copilot monitor-tick mode**: if no native loop exists, any normal resume/invocation of this skill
-  for an active stack reconstructs state, runs exactly one tick, writes `nextTickAfter`, reports a
-  digest, and stops. Do **not** ask the author to type a special mode prompt.
+The PR currently based on `master` (the front of the stack) is driven to merged by the **`pr-monitor`**
+skill — it owns the tick routine (detect → delegate remediation to `pr-fix` → reconcile → re-arm
+auto-merge → stop at merge), in native-loop mode or one tick per resume. Run exactly one `pr-monitor`
+against the front PR at a time; never monitor a non-front PR as a merge candidate (it can't merge yet).
 
-Each tick:
-1. Delegates **detection** to a scout subagent → returns a structured issue digest covering PR
-   conversation comments, PR-level review bodies/summaries (comments on the PR, not directly on code),
-   inline review threads, new replies, CI state, staleness, and merge conflicts.
-2. For each issue, delegates **remediation** to a fresh subagent (preserving context):
-   obvious gaps get fixed + replied + the thread **resolved**; author decisions get a reply asking
-   for input + an entry in `questions.md`, thread left **open**.
-3. Re-verifies and **re-arms auto-merge** (it silently turns off); handles freshness/conflict
-   rebases; **cascades** any content change into descendant PRs via subagents.
-On approval → auto-merge fires. On merge → explicitly rebase/retarget the next PR to `master`, verify
-descendant bases did not collapse, start the next native loop or set the next Copilot monitor tick,
-and propagate the merge through the stack.
+You add only the two **stack-specific** parts `pr-monitor` deliberately leaves out:
+- **Front-advance:** when the front PR merges, explicitly rebase/retarget the next PR onto `master`,
+  verify descendant base refs did not collapse, then point `pr-monitor` at the new front PR.
+- **Cascade:** after any content change to a PR that has descendants, rebase each descendant
+  (`git rebase --onto <new-tip> <old-tip> <descendant>`), build+test, force-push, and verify base refs.
+
+Author decisions that `pr-fix` surfaces are routed to the pending-decisions table + the author. See
+[stacked-mechanics.md](references/stacked-mechanics.md) for the rebase/auto-merge machinery.
 
 ### Phase 3 — Converge & stop
 When **all acceptance criteria in `goal.md` are checked** and **all PRs are merged**, run a final
