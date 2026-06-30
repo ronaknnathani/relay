@@ -94,4 +94,4 @@ Rebased onto origin/<BASE_BRANCH>.
   Push: <force-with-lease | initial -u | skipped (already in sync)>
 ```
 
-If invoked as part of `/ship`, the PR will automatically update.
+If the branch already has an open PR, the force-push updates it automatically.

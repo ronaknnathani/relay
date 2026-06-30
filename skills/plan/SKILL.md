@@ -1,99 +1,88 @@
 ---
 name: plan
-description: "Batch 1: Plan — discuss requirements, design approach, write implementation plan"
-argument-hint: "SLUG"
-disable-model-invocation: true
+description: Turn a clarified requirements artifact into a concrete, executable implementation plan — a decisive architecture blueprint and a phased build sequence with exact file paths. Use after requirements are pinned down (e.g. by `clarify`) and before writing code, whenever a multi-step change needs a design and a task breakdown. Its output feeds `implement`.
 ---
 
-# Plan — Batch 1: Planning
+# Plan
 
-Interactive planning phase. Discuss requirements with the user, design an approach, and write a detailed implementation plan.
+Given a clarified requirements artifact, produce an implementation plan concrete enough that someone
+with no prior context could execute it. The bar: exact file paths and names, one committed
+architecture decision, and a phased build sequence `implement` consumes step by step — no abstract
+advice, no "add appropriate error handling". This is a peer phase: it grounds itself in the code via
+`explore`, picks ONE approach and commits, then hands a plan to `implement`. It does **not** clarify
+requirements (that's `clarify`, upstream) and does **not** write production code (that's `implement`,
+downstream). It does not invoke either.
 
-**Do NOT use Claude's built-in plan mode.** This command controls the planning flow directly.
+## Process
 
-## Setup
+1. **Ground in the codebase first.** Read the clarified artifact (`clarify`'s requirements + success
+   criteria), then call `explore` (dispatch a sub-agent when available; otherwise inline) and consume
+   its **essential-files list and `file:line` citations** as the starting set for the existing
+   patterns, conventions, and integration points this work touches. Cite each finding as
+   `path/to/file.ext:line` — the blueprint
+   is built on what's actually there, not what you assume.
+2. **Decide the architecture and commit.** Survey the realistic approaches, then pick **ONE** and
+   write the decision plus a one-paragraph rationale grounded in the patterns from step 1. Do not
+   hedge with "Option A or B" — a plan is a decision. Record approaches you rejected in one line each
+   only if a reader would otherwise wonder why; don't relitigate.
+3. **Choose the test seams up front.** Pick where behavior gets verified, preferring a single highest
+   seam (one integration/end-to-end point) over many low ones. Decide what's tested and what isn't,
+   and capture it in an explicit **Testing Decisions** section. New behavior gets a test; a bug fix
+   gets a test that fails without the fix.
+4. **Design the components.** For each unit of work name the file(s), its single responsibility, and
+   its dependencies on other units. Split by responsibility, not by technical layer; files that change
+   together live together; follow the established structure rather than restructuring it.
+5. **Write the Implementation Map** — every concrete create/modify action with its exact path:
+   `Create src/x.ext` / `Modify src/y.ext:120-150` / `Test tests/x_test.ext`. No file is named only
+   in prose; if it changes, it's in the map.
+6. **Sequence the build into phases.** Order the work so each phase produces something verifiable,
+   following dependency order (data/contracts → logic → wiring/config). Emit it as the **Build
+   Sequence** checklist below — this is the executable artifact `implement` works through.
+7. **Pin the critical details.** State the concrete error-handling behavior, state/data shape, and
+   verification command for each phase. Add an **Out of Scope** section listing what this plan
+   deliberately does not touch, so `implement` doesn't wander.
+8. **Self-review with fresh eyes.** Walk every Success criterion in the clarified artifact and point to
+   the task that satisfies it — list and fix any gap. Scan for placeholders (TBD, TODO, "handle edge
+   cases", a test step with no assertion) and remove them. Confirm names/signatures used in a later
+   task match what an earlier task defines. Fix inline; don't re-review.
 
-Read `$ARGUMENTS` as the project slug. Load project context:
+## Task template
 
-```bash
-SLUG="$ARGUMENTS"
-PROJ="$HOME/.relay/active/$SLUG"
+Each unit of work in the Build Sequence follows this shape:
+
+```markdown
+### Task N: <imperative title, no "and">
+- **Description:** what this builds and why it's one unit.
+- **Acceptance criteria:** 3–5 testable assertions (each checkable by a test, command, or observation).
+- **Verification:** the exact command(s) to run and the expected result.
+- **Dependencies:** task numbers this needs first (or "none").
+- **Files:** Create/Modify/Test with exact paths (mirrors the Implementation Map).
+- **Size:** XS · S · M · L · XL.
+- [ ] step(s) — one concrete action each (write failing test, implement, run, commit)
 ```
 
-Read these files:
-- `$PROJ/task.md` — the original task description
-- `$PROJ/manifest.json` — current project state
+**Break a task down if** it spans more than ~2 hours, needs 4+ acceptance criteria, touches
+independent subsystems, or has "and" in the title — each of those is two tasks wearing one hat.
 
-Confirm the phase is `plan` or `discuss`. If not, tell the user which command to run instead.
+## Red flags
 
-`cd` into the worktree path from the manifest.
+- Hedging between approaches instead of committing to one decision with a rationale.
+- A file named only in prose, or a path written as a placeholder rather than the real one.
+- "Add appropriate error handling / validation / edge cases" — say the concrete behavior instead.
+- A test step with no assertion, or a "see Task N" cross-reference instead of the actual content.
+- A task with "and" in its title, 4+ acceptance criteria, or that touches independent subsystems.
+- Missing Testing Decisions or Out of Scope sections, or many low test seams where one high one fits.
+- A Success criterion from the clarified artifact with no task that satisfies it.
+- Clarifying requirements, writing production code, or invoking `clarify`/`implement` — all out of scope.
 
-## Phase 1: Brainstorm
+## Verification checklist
 
-**Quick mode**: If the system prompt contains `Mode: quick`, skip brainstorming. Read the codebase to understand relevant patterns, then proceed directly to writing the plan.
-
-Do NOT invoke a separate brainstorming skill. Follow the inline brainstorming flow below instead.
-
-<HARD-GATE>
-Do NOT write any code, scaffold any project, or take any implementation action until you have presented a design and the user has approved it. This applies to EVERY project regardless of perceived simplicity. Even "simple" projects get a design — it can be short (a few sentences), but you MUST present it and get approval.
-</HARD-GATE>
-
-### Understanding the idea
-
-- Explore the current project state first (files, docs, recent commits)
-- Before asking detailed questions, assess scope: if the request describes multiple independent subsystems, flag this immediately. Don't refine details of a project that needs decomposition first.
-- If the project is too large for a single spec, help the user decompose into sub-projects. Each gets its own spec → plan → implementation cycle. Brainstorm the first sub-project.
-- Ask questions one at a time to refine the idea
-- Prefer multiple choice questions when possible, but open-ended is fine too
-- Only one question per message
-- Focus on understanding: purpose, constraints, success criteria
-
-### Exploring approaches
-
-- Propose 2-3 different approaches with trade-offs
-- Present options conversationally with your recommendation and reasoning
-- Lead with your recommended option and explain why
-
-### Presenting the design
-
-- Scale each section to its complexity: a few sentences if straightforward, up to 200-300 words if nuanced
-- Ask after each section whether it looks right so far
-- Cover: architecture, components, data flow, error handling, testing as relevant
-- Be ready to go back and clarify if something doesn't make sense
-
-### Design principles
-
-- Break the system into smaller units with one clear purpose, well-defined interfaces, testable independently
-- Explore the current structure before proposing changes. Follow existing patterns.
-- Where existing code has problems that affect the work, include targeted improvements — no unrelated refactoring
-- YAGNI ruthlessly — remove unnecessary features from all designs
-
-### After design approval
-
-Once the user approves the design:
-
-1. Write the spec to `$PROJ/spec.md`
-2. **Spec self-review** — look at the spec with fresh eyes:
-   - **Placeholder scan:** Any "TBD", "TODO", incomplete sections, or vague requirements? Fix them.
-   - **Internal consistency:** Do any sections contradict each other?
-   - **Scope check:** Focused enough for a single implementation plan?
-   - **Ambiguity check:** Could any requirement be interpreted two ways? Pick one and make it explicit.
-   Fix any issues inline. No user gate here — just fix and move on.
-
-## Phase 2: Write Plan
-
-Invoke the `writing-plans` skill to create a detailed implementation plan:
-- Numbered tasks with exact files to create/modify
-- **Bake design decisions from spec.md into task descriptions** — each task should be self-contained so executors don't need to reference spec.md separately
-- Size tasks so each can be completed within ~50% of an agent's context (2-3 tasks for complex work, up to 5 for simple work)
-- Include a validation section with specific commands to verify correctness
-- **Do NOT offer the execution handoff choice from writing-plans** — this command controls the next step
-
-Save the plan to `$PROJ/plan.md`.
-
-Update manifest and proceed directly to implementation:
-```bash
-relay update "$SLUG" --phase implement --status implementing --add phases_completed=plan,discuss --remove phases_remaining=plan,discuss
-```
-
-Then invoke `/implement $SLUG` to begin the implementation batch.
+- [ ] Every blueprint finding cites `file:line` from a real `explore` of the codebase.
+- [ ] Exactly one architecture approach is chosen, with a grounded rationale — no hedging.
+- [ ] Test seams are chosen up front and captured in a **Testing Decisions** section.
+- [ ] The Implementation Map lists every create/modify/test action with an exact path.
+- [ ] The Build Sequence is a phased checklist in dependency order, each phase independently verifiable.
+- [ ] Every task fits the template and the "break it down if" thresholds; none has "and" in the title.
+- [ ] Each Success criterion in the clarified artifact maps to a task; no placeholders remain.
+- [ ] An **Out of Scope** section bounds what the plan deliberately leaves untouched.
+- [ ] The skill stayed in scope: no requirement clarification, no implementation, no downstream invocation.
