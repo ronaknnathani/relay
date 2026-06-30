@@ -91,11 +91,9 @@ narrating each command.
 
 ## PR body conventions
 
-- **Summary is prose.** One or two short paragraphs on the **why** and **what** — not a bullet list and
-  not an enumeration of every file or caller touched. If a paragraph is explaining mechanism, cut it.
-- **Testing Done is just commands.** List the exact commands you ran, one per line. No preamble, no
-  per-test bullet descriptions, no checkbox theater.
-- **Trailer.** End the body with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
+The body format is in step 7; the red flags and checklist below guard it. The one rule not covered
+there:
+
 - **Disclose agent authorship** in any PR comment you post — mark it as written by an automated agent on
   the author's behalf; never phrase it as the author's own words.
 

@@ -1,6 +1,6 @@
 ---
 name: clarify
-description: Turn a vague or underspecified task into a crisp requirements + testable acceptance-criteria document by closing the gap between what was asked and what is actually wanted. Use at the start of any non-trivial task before planning, whenever the goal is fuzzy ("make it faster", "clean this up", "add validation"), or whenever you cannot predict how the user would judge "done". Its output feeds `plan`.
+description: Turn a vague or underspecified task into a crisp requirements + testable acceptance-criteria document by closing the gap between what was asked and what is actually wanted. Use at the start of any non-trivial task before planning, whenever the goal is fuzzy ("make it faster", "make it more robust", "add validation"), or whenever you cannot predict how the user would judge "done". Its output feeds `plan`. (For tidying existing code, use `simplify`, not clarify.)
 ---
 
 # Clarify
