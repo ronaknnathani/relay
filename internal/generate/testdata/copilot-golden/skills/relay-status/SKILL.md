@@ -1,11 +1,11 @@
 ---
-name: build-status
+name: relay-status
 description: Use when checking the status of active or archived development projects
 ---
 
-# Build Status — Project Status
+# Relay Status — Project Status
 
-Run the build-status CLI to display project status.
+Display the status of relay projects.
 
 ```bash
 relay status $ARGUMENTS
