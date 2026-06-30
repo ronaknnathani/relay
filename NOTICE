@@ -1,0 +1,26 @@
+Relay
+Copyright (c) 2026 Ronak Nathani
+Licensed under the MIT License (see LICENSE).
+
+This product includes skill content adapted from the following open-source projects.
+Each remains under its own license; we are grateful to their authors.
+
+- Anthropic "claude-plugins-official" (https://github.com/anthropics/claude-plugins-official)
+  The `review` reviewer-role library (skills/review/agents/: code-reviewer, silent-failure-hunter,
+  type-design-analyzer, pr-test-analyzer, comment-analyzer) and the `simplify` skill adapt the
+  pr-review-toolkit agents, the code-review command's confidence/false-positive engine, and the
+  code-simplifier agent. The explore/clarify/plan skills draw on the feature-dev code-explorer and
+  code-architect agents.
+
+- mattpocock/skills (https://github.com/mattpocock/skills)
+  Technique adapted into clarify (the one-question interview), plan/stack-ship (vertical-slice and
+  interface-first decomposition), implement (tracer-bullet TDD), simplify (the deletion test), and
+  pr-fix (red-loop-first diagnosis and merge-conflict handling).
+
+- addyosmani/agent-skills (https://github.com/addyosmani/agent-skills)
+  Technique adapted into clarify (vague→measurable criteria, the Q+GUESS interview), the uniform skill
+  anatomy, simplify (the three-bucket scan), review (the security/STRIDE role and the doubt-driven
+  adversarial delegation), validate (the ordered quality-gate sequence), and pr-fix (the Stop-the-Line
+  debugging loop and CI-error triage).
+
+Content was adapted and rewritten for Relay's agent-neutral, layered model; any errors are Relay's own.

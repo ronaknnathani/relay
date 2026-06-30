@@ -1,6 +1,6 @@
 ---
 name: open-pr
-description: Stage, commit, push, and open a pull request following the author's conventions — conventional-commit messages, a prose PR summary, and a Testing Done command list. Use when work is finished and the caller wants it committed and a PR opened (supersedes the older submit flow). Supports --draft and an optional local review before push.
+description: Stage, commit, push, and open a pull request following the author's conventions — conventional-commit messages, a prose PR summary, and a Testing Done command list. Use when work is finished and the caller wants it committed and a PR opened. Supports --draft and an optional local review before push.
 ---
 
 # Open PR
@@ -50,8 +50,8 @@ narrating each command.
    ```
 
 4. **Local review before push (skip with `--no-review`).** Review the full diff against the branch
-   point for correctness and leftover debris before it leaves your machine. Dispatch the `review` (or
-   `code-review`) skill as a sub-agent when available; otherwise scan it inline:
+   point for correctness and leftover debris before it leaves your machine. Dispatch the `review` skill
+   as a sub-agent when available; otherwise scan it inline:
 
    ```bash
    git diff "origin/$DEFAULT_BRANCH...HEAD"
