@@ -1,0 +1,5 @@
+bin/
+dist/
+.worktrees
+dashboard/dashboard-data.js
+.claude/logs/

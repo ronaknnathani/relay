@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Build Dashboard</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #141420;
+    --surface-hover: #1a1a2e;
+    --border: rgba(255,255,255,0.06);
+    --text: #e8e8ed;
+    --text-muted: #6b6b80;
+    --text-dim: #44445a;
+    --accent-blue: #5b8def;
+    --accent-amber: #e8a848;
+    --accent-purple: #a87bef;
+    --accent-green: #4ade80;
+    --accent-red: #f87171;
+    --accent-cyan: #67e8f9;
+    --radius: 16px;
+    --radius-sm: 8px;
+  }
+
+  [data-theme="light"] {
+    --bg: #f5f5f7;
+    --surface: #ffffff;
+    --surface-hover: #f0f0f5;
+    --border: rgba(0,0,0,0.08);
+    --text: #1d1d1f;
+    --text-muted: #86868b;
+    --text-dim: #aeaeb2;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 48px 32px;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 48px;
+  }
+
+  h1 {
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .refresh-indicator {
+    font-size: 12px;
+    color: var(--text-dim);
+    transition: opacity 0.3s;
+  }
+
+  .theme-toggle {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.2s;
+  }
+
+  .theme-toggle:hover {
+    color: var(--text);
+    border-color: rgba(255,255,255,0.12);
+  }
+
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-muted);
+    margin-bottom: 20px;
+  }
+
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px;
+    margin-bottom: 48px;
+  }
+
+  .card {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 24px;
+    border: 1px solid var(--border);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    cursor: default;
+  }
+
+  .card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    border-color: rgba(255,255,255,0.1);
+  }
+
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 16px;
+  }
+
+  .card-title {
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.2px;
+    line-height: 1.3;
+  }
+
+  .card-repo {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+
+  .phase-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 100px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+  }
+
+  .phase-badge.plan { background: rgba(91,141,239,0.15); color: var(--accent-blue); }
+  .phase-badge.discuss { background: rgba(91,141,239,0.15); color: var(--accent-blue); }
+  .phase-badge.implement { background: rgba(232,168,72,0.15); color: var(--accent-amber); }
+  .phase-badge.simplify { background: rgba(168,123,239,0.15); color: var(--accent-purple); }
+  .phase-badge.review { background: rgba(168,123,239,0.15); color: var(--accent-purple); }
+  .phase-badge.fix { background: rgba(248,113,113,0.15); color: var(--accent-red); }
+  .phase-badge.validate { background: rgba(103,232,249,0.15); color: var(--accent-cyan); }
+  .phase-badge.pr { background: rgba(74,222,128,0.15); color: var(--accent-green); }
+  .phase-badge.ci { background: rgba(74,222,128,0.15); color: var(--accent-green); }
+  .phase-badge.code-review { background: rgba(74,222,128,0.15); color: var(--accent-green); }
+  .phase-badge.done { background: rgba(74,222,128,0.15); color: var(--accent-green); }
+  .phase-badge.init { background: rgba(255,255,255,0.08); color: var(--text-muted); }
+
+  .progress-bar {
+    display: flex;
+    gap: 3px;
+    margin-bottom: 16px;
+  }
+
+  .progress-segment {
+    flex: 1;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255,255,255,0.06);
+    transition: background 0.5s;
+  }
+
+  .progress-segment.completed { background: var(--accent-green); }
+  .progress-segment.current { background: var(--accent-amber); animation: pulse 2s ease-in-out infinite; }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  .card-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  .card-meta .branch {
+    font-family: 'SF Mono', SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 200px;
+  }
+
+  .card-meta .time {
+    white-space: nowrap;
+  }
+
+  .pr-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 12px;
+    font-size: 13px;
+    color: var(--accent-blue);
+    text-decoration: none;
+    transition: opacity 0.2s;
+  }
+
+  .pr-link:hover { opacity: 0.8; }
+
+  .ci-badge {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+
+  .ci-badge.passing { background: var(--accent-green); }
+  .ci-badge.failing { background: var(--accent-red); }
+  .ci-badge.pending { background: var(--accent-amber); animation: pulse 1.5s ease-in-out infinite; }
+
+  .archived-section {
+    margin-top: 32px;
+  }
+
+  .archived-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    cursor: pointer;
+    padding: 0;
+    margin-bottom: 20px;
+  }
+
+  .archived-toggle:hover { color: var(--text); }
+
+  .archived-toggle .chevron {
+    transition: transform 0.2s;
+    font-size: 10px;
+  }
+
+  .archived-toggle.open .chevron { transform: rotate(90deg); }
+
+  .archived-grid { display: none; }
+  .archived-grid.visible { display: grid; }
+
+  .card.archived {
+    opacity: 0.6;
+  }
+
+  .card.archived:hover {
+    opacity: 0.8;
+    transform: none;
+    box-shadow: none;
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: 80px 32px;
+    color: var(--text-muted);
+  }
+
+  .empty-state h2 {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: var(--text-dim);
+  }
+
+  .empty-state p {
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  .empty-state code {
+    font-family: 'SF Mono', SFMono-Regular, Menlo, monospace;
+    background: var(--surface);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+
+  .fade-in {
+    animation: fadeIn 0.3s ease-out;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @media (max-width: 480px) {
+    .container { padding: 24px 16px; }
+    .card-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 24px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Build Dashboard</h1>
+    <div class="header-right">
+      <span class="refresh-indicator" id="refresh-indicator"></span>
+      <button class="theme-toggle" onclick="toggleTheme()">Theme</button>
+    </div>
+  </header>
+  <div id="content"></div>
+</div>
+
+<script src="dashboard-data.js"></script>
+<script>
+const PHASES = ['init','plan','discuss','implement','simplify','review','fix','validate','rebase','pr','ci','code-review'];
+
+function relativeTime(ts) {
+  if (!ts) return '';
+  const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff/86400)}d ago`;
+  return `${Math.floor(diff/604800)}w ago`;
+}
+
+function phaseClass(phase) {
+  return (phase || 'init').replace('-', '-');
+}
+
+function renderCard(project, archived) {
+  const completedPhases = project.phases_completed || [];
+  const currentPhase = project.phase || 'init';
+
+  const progressSegments = PHASES.map(p => {
+    if (completedPhases.includes(p)) return '<div class="progress-segment completed"></div>';
+    if (p === currentPhase && !archived) return '<div class="progress-segment current"></div>';
+    return '<div class="progress-segment"></div>';
+  }).join('');
+
+  const prHtml = project.pr && project.pr.number
+    ? `<a class="pr-link" href="${project.pr.url || '#'}" target="_blank">
+        <span class="ci-badge ${project.pr.ci_status || 'pending'}"></span>
+        PR #${project.pr.number}
+       </a>`
+    : '';
+
+  const repoName = project.repo ? project.repo.split('/').pop() : '';
+
+  return `
+    <div class="card ${archived ? 'archived' : ''} fade-in">
+      <div class="card-header">
+        <div>
+          <div class="card-title">${escapeHtml(project.title || project.slug)}</div>
+          ${repoName ? `<div class="card-repo">${escapeHtml(repoName)}</div>` : ''}
+        </div>
+        <span class="phase-badge ${phaseClass(archived ? 'done' : currentPhase)}">
+          ${archived ? (project.status === 'archived' ? 'archived' : project.status) : currentPhase}
+        </span>
+      </div>
+      ${!archived ? `<div class="progress-bar">${progressSegments}</div>` : ''}
+      <div class="card-meta">
+        <span class="branch">${escapeHtml(project.branch || '')}</span>
+        <span class="time">${relativeTime(project.updated)}</span>
+      </div>
+      ${prHtml}
+    </div>
+  `;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function render(data) {
+  const content = document.getElementById('content');
+  const active = data.active || [];
+  const archived = data.archived || [];
+
+  if (active.length === 0 && archived.length === 0) {
+    content.innerHTML = `
+      <div class="empty-state">
+        <h2>No projects yet</h2>
+        <p>Start one with <code>/build &lt;task&gt;</code></p>
+      </div>
+    `;
+    return;
+  }
+
+  let html = '';
+
+  if (active.length > 0) {
+    html += `<div class="section-title">Active Projects</div>`;
+    html += `<div class="card-grid">`;
+    active.sort((a, b) => new Date(b.updated) - new Date(a.updated));
+    active.forEach(p => html += renderCard(p, false));
+    html += `</div>`;
+  }
+
+  if (archived.length > 0) {
+    html += `
+      <div class="archived-section">
+        <button class="archived-toggle" onclick="toggleArchived(this)">
+          <span class="chevron">&#9654;</span>
+          Archived Projects (${archived.length})
+        </button>
+        <div class="card-grid archived-grid">
+    `;
+    archived.sort((a, b) => new Date(b.archived || b.updated) - new Date(a.archived || a.updated));
+    archived.forEach(p => html += renderCard(p, true));
+    html += `</div></div>`;
+  }
+
+  content.innerHTML = html;
+}
+
+function toggleArchived(btn) {
+  btn.classList.toggle('open');
+  const grid = btn.nextElementSibling;
+  grid.classList.toggle('visible');
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', current === 'light' ? '' : 'light');
+  localStorage.setItem('theme', current === 'light' ? 'dark' : 'light');
+}
+
+// Restore theme
+if (localStorage.getItem('theme') === 'light') {
+  document.documentElement.setAttribute('data-theme', 'light');
+}
+
+function loadData() {
+  const data = window.__DASHBOARD_DATA__ || { active: [], archived: [] };
+  render(data);
+  document.getElementById('refresh-indicator').textContent =
+    data.generated ? `Data from ${new Date(data.generated).toLocaleTimeString()}` : '';
+}
+
+// Initial load from embedded script
+loadData();
+</script>
+</body>
+</html>
