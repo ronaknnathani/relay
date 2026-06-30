@@ -34,6 +34,29 @@ func TestLoadDefaultsAgent(t *testing.T) {
 	}
 }
 
+func TestLoadMigratesLegacyDangerouslySkip(t *testing.T) {
+	writeConfig(t, `{"branch_prefix":"x/","dangerously_skip_permissions":true}`)
+	cfg, ok, err := Load()
+	if err != nil || !ok {
+		t.Fatalf("Load: ok=%v err=%v", ok, err)
+	}
+	if cfg.PermissionMode != "bypass" {
+		t.Errorf("PermissionMode = %q, want bypass (migrated from dangerously_skip_permissions)", cfg.PermissionMode)
+	}
+}
+
+func TestLoadKeepsExplicitPermissionMode(t *testing.T) {
+	// An explicit permission_mode is not overridden by the legacy flag.
+	writeConfig(t, `{"branch_prefix":"x/","permission_mode":"default","dangerously_skip_permissions":true}`)
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PermissionMode != "default" {
+		t.Errorf("PermissionMode = %q, want default (explicit value wins over legacy)", cfg.PermissionMode)
+	}
+}
+
 func TestEnsureRejectsInvalidAgent(t *testing.T) {
 	writeConfig(t, `{"branch_prefix":"x/","default_agent":"nope"}`)
 	if _, err := Ensure(); err == nil {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/ronaknnathani/relay/internal/agent"
@@ -21,9 +22,12 @@ import (
 // Config is the on-disk schema. Field names match the existing JSON; do
 // not rename without migrating ~/.relay/config.json.
 type Config struct {
-	BranchPrefix               string `json:"branch_prefix"`
-	DefaultAgent               string `json:"default_agent,omitempty"`
-	DangerouslySkipPermissions bool   `json:"dangerously_skip_permissions"`
+	BranchPrefix string `json:"branch_prefix"`
+	DefaultAgent string `json:"default_agent,omitempty"`
+	// PermissionMode is the agent-specific permission mode chosen at setup
+	// (e.g. "auto" for Claude, "allow-all" for Copilot). Empty resolves to the
+	// agent's default at launch.
+	PermissionMode string `json:"permission_mode,omitempty"`
 }
 
 // WorktreePrefix derives the on-disk worktree directory prefix from the
@@ -51,9 +55,20 @@ func Load() (Config, bool, error) {
 	}
 	// Pre-seed defaults so a hand-written minimal config (e.g. only
 	// branch_prefix set) matches what the interactive prompt would have saved.
-	c := Config{DefaultAgent: agent.DefaultName, DangerouslySkipPermissions: true}
+	c := Config{DefaultAgent: agent.DefaultName}
 	if err := json.Unmarshal(data, &c); err != nil {
 		return Config{}, false, fmt.Errorf("parse %s: %w", path, err)
+	}
+	// Migrate the retired dangerously_skip_permissions flag: a config that had
+	// it enabled was bypassing all prompts, so preserve that as "bypass" rather
+	// than silently dropping to the new agent default.
+	if c.PermissionMode == "" {
+		var legacy struct {
+			Dangerous *bool `json:"dangerously_skip_permissions"`
+		}
+		if json.Unmarshal(data, &legacy) == nil && legacy.Dangerous != nil && *legacy.Dangerous {
+			c.PermissionMode = "bypass"
+		}
 	}
 	return c, true, nil
 }
@@ -112,6 +127,29 @@ func validateAgent(s string) (string, error) {
 	return s, nil
 }
 
+// promptPermissionMode asks the user to choose one of the agent's permission
+// modes, defaulting to the first. Returns "" when the agent declares no modes.
+func promptPermissionMode(reader *bufio.Reader, agentName string, modes []string) (string, error) {
+	if len(modes) == 0 {
+		return "", nil
+	}
+	for {
+		fmt.Printf("Permission mode for %s (%s) [%s]: ", agentName, strings.Join(modes, ", "), modes[0])
+		raw, err := reader.ReadString('\n')
+		if err != nil {
+			return "", fmt.Errorf("reading permission mode: %w", err)
+		}
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return modes[0], nil
+		}
+		if slices.Contains(modes, raw) {
+			return raw, nil
+		}
+		fmt.Printf("  invalid mode; choose one of: %s\n", strings.Join(modes, ", "))
+	}
+}
+
 // prompt runs the interactive first-time setup. If stdin is not a TTY, it
 // writes defaults silently (so scripted use does not hang) and prints the
 // path to stderr.
@@ -123,7 +161,7 @@ func prompt() (Config, error) {
 	defaultPrefix := defaultUser + "/"
 
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		cfg := Config{BranchPrefix: defaultPrefix, DefaultAgent: agent.DefaultName, DangerouslySkipPermissions: true}
+		cfg := Config{BranchPrefix: defaultPrefix, DefaultAgent: agent.DefaultName}
 		if err := Save(cfg); err != nil {
 			return Config{}, err
 		}
@@ -173,27 +211,16 @@ func prompt() (Config, error) {
 		break
 	}
 
-	var dangerously bool
-	for {
-		fmt.Print("Pass --dangerously-skip-permissions to claude? [Y/n]: ")
-		raw, err := reader.ReadString('\n')
-		if err != nil {
-			return Config{}, fmt.Errorf("reading flag: %w", err)
-		}
-		ans := strings.ToLower(strings.TrimSpace(raw))
-		switch ans {
-		case "", "y", "yes":
-			dangerously = true
-		case "n", "no":
-			dangerously = false
-		default:
-			fmt.Println("  please answer y or n")
-			continue
-		}
-		break
+	a, err := agent.Get(agentName)
+	if err != nil {
+		return Config{}, err
+	}
+	permMode, err := promptPermissionMode(reader, agentName, a.PermissionModes())
+	if err != nil {
+		return Config{}, err
 	}
 
-	cfg := Config{BranchPrefix: prefix, DefaultAgent: agentName, DangerouslySkipPermissions: dangerously}
+	cfg := Config{BranchPrefix: prefix, DefaultAgent: agentName, PermissionMode: permMode}
 	if err := Save(cfg); err != nil {
 		return Config{}, fmt.Errorf("saving config: %w", err)
 	}

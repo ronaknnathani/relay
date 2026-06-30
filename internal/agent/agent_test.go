@@ -11,11 +11,12 @@ import (
 
 func TestClaudeLaunchArgs(t *testing.T) {
 	base := LaunchOptions{
-		Worktree:     "/tmp/wt",
-		SystemPrompt: "Active relay project: demo. Phase: plan. Mode: full.",
-		SessionName:  "relay:demo",
-		Command:      "plan",
-		CommandArgs:  "demo",
+		Worktree:       "/tmp/wt",
+		SystemPrompt:   "Active relay project: demo. Phase: plan. Mode: full.",
+		SessionName:    "relay:demo",
+		Command:        "plan",
+		CommandArgs:    "demo",
+		PermissionMode: "default",
 	}
 
 	tests := []struct {
@@ -24,7 +25,7 @@ func TestClaudeLaunchArgs(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "without skip permissions",
+			name: "default mode (no permission flag)",
 			opts: base,
 			want: []string{
 				"--append-system-prompt", "Active relay project: demo. Phase: plan. Mode: full.",
@@ -33,8 +34,28 @@ func TestClaudeLaunchArgs(t *testing.T) {
 			},
 		},
 		{
-			name: "with skip permissions",
-			opts: func() LaunchOptions { o := base; o.SkipPermissions = true; return o }(),
+			name: "auto mode → acceptEdits",
+			opts: func() LaunchOptions { o := base; o.PermissionMode = "auto"; return o }(),
+			want: []string{
+				"--permission-mode", "acceptEdits",
+				"--append-system-prompt", "Active relay project: demo. Phase: plan. Mode: full.",
+				"-n", "relay:demo",
+				"/plan demo",
+			},
+		},
+		{
+			name: "empty mode falls back to auto",
+			opts: func() LaunchOptions { o := base; o.PermissionMode = ""; return o }(),
+			want: []string{
+				"--permission-mode", "acceptEdits",
+				"--append-system-prompt", "Active relay project: demo. Phase: plan. Mode: full.",
+				"-n", "relay:demo",
+				"/plan demo",
+			},
+		},
+		{
+			name: "bypass mode → dangerously-skip",
+			opts: func() LaunchOptions { o := base; o.PermissionMode = "bypass"; return o }(),
 			want: []string{
 				"--dangerously-skip-permissions",
 				"--append-system-prompt", "Active relay project: demo. Phase: plan. Mode: full.",
@@ -85,7 +106,6 @@ func TestClaudeCapabilities(t *testing.T) {
 		LifecycleHook:      HookNone,
 		ContextInjection:   ContextFlag,
 		ToolNames:          nil,
-		PermissionFlag:     "--dangerously-skip-permissions",
 	}
 	if got := (claude{}).Capabilities(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Capabilities mismatch:\n got: %#v\nwant: %#v", got, want)
@@ -129,6 +149,15 @@ func TestCopilotLaunchArgs(t *testing.T) {
 	got := (copilot{}).LaunchArgs(o2)
 	if got[len(got)-1] != `Run the relay "plan" skill.` {
 		t.Errorf("empty-args prompt = %q, want skill-named prose", got[len(got)-1])
+	}
+
+	// prompt mode omits the allow-all flags so Copilot asks before acting.
+	oPrompt := o
+	oPrompt.PermissionMode = "prompt"
+	for _, a := range (copilot{}).LaunchArgs(oPrompt) {
+		if a == "--allow-all-tools" || a == "--no-ask-user" {
+			t.Errorf("prompt mode emitted %q; should ask for permissions", a)
+		}
 	}
 }
 
@@ -188,9 +217,6 @@ func TestCopilotCapabilities(t *testing.T) {
 	}
 	if c.ContextInjection != ContextFile {
 		t.Errorf("ContextInjection = %v, want ContextFile", c.ContextInjection)
-	}
-	if c.PermissionFlag != "--allow-all-tools" {
-		t.Errorf("PermissionFlag = %q, want --allow-all-tools", c.PermissionFlag)
 	}
 	wantTools := map[string]string{
 		"Bash": "bash", "Read": "view", "Write": "create", "Edit": "edit",

@@ -10,7 +10,6 @@ type Capabilities struct {
 	LifecycleHook      HookKind        // how the per-session context line is injected at lifecycle events
 	ContextInjection   ContextKind     // how project context reaches the agent
 	ToolNames          ToolNameMap     // canonical tool name → this agent's name
-	PermissionFlag     string          // flag that skips permission prompts
 }
 
 // SubagentSupport is the mechanism an agent uses to run work in a child context.
