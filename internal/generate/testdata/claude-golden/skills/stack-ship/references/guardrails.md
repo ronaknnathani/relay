@@ -19,16 +19,11 @@ is a decision — surface it.** A concrete direction from a human owner on a sur
 decision — route it back so the fix is implemented as stated and confirmed.
 
 ## 3. Detection must be complete — PR-level feedback, inline threads, AND new replies
-`gh pr view --json comments` is not enough. Every tick must paginate and inspect:
-- PR conversation comments (`issues/{n}/comments`).
-- PR-level review bodies/summaries (`pulls/{n}/reviews`) — comments on the PR itself, not directly on
-  code, including CHANGES_REQUESTED / COMMENTED review summaries.
-- Inline diff comments (`pulls/{n}/comments`) and GraphQL review threads.
-
-A new reply on an already-answered thread is invisible to a "top-level comment without a reply" scan.
-Flag a thread/comment/review whose **latest activity** is from a human and is newer than the agent's
-last response on it — keyed by source + `id + updatedAt`, not by "top-level & unreplied". Include
-replies on already-answered threads.
+Detection completeness — PR conversation comments, PR-level review bodies, inline threads, AND new
+replies on already-answered threads, keyed by source + `id + updatedAt` (not "top-level & unreplied") —
+is owned by `pr-monitor`'s detect step; the orchestrator never re-implements it. The orchestrator's
+only residual duty is the cross-PR funnel in #2: every surfaced human comment lands as a tracked
+pending decision, none silently lost.
 
 ## 4. Inspect before any destructive action
 Never delete, dismiss, overwrite, or force-replace something you did not create — a review, a
@@ -58,9 +53,9 @@ they answer and you've acted.
 
 ## 8. No silencing failures
 Never make CI green by deleting/skipping a test, adding a lint-suppression, or muting a real error.
-Fix the root cause, with a test that's **red before, green after**. Infra flakes (dependency-download
-failure / TLS timeout / registry 5xx / sandbox limit) are the only "just retry" case —
-`gh run rerun --failed`, never cancel a queued run.
+Fix the root cause, with a test that's **red before, green after**. Infra flakes are the only
+"just retry" case (`gh run rerun --failed`, never cancel a queued run); `pr-monitor`/`pr-fix` own the
+flake-vs-real classification and the fix.
 
 ## 9. Wrap every `gh` call in a 3–4× retry (sleep 3)
 `gh` intermittently returns HTTP 401 with a valid token. Retry before concluding anything. Only

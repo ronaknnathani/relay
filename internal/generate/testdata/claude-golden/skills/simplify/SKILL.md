@@ -1,6 +1,6 @@
 ---
 name: simplify
-description: Reduce complexity in recently changed code — cut needless abstraction, dead code, and duplication; improve names and structure — WITHOUT changing behavior. Quality only; it does not hunt for bugs (use review for that). Use after implementing a chunk of work, before review, or whenever a diff feels more complicated than the problem it solves.
+description: Reduce complexity in recently changed code — cut needless abstraction, dead code, and duplication; improve names and structure — WITHOUT changing behavior. Quality only; it does not hunt for bugs (use review for that). Use after implementing a chunk of work, before review, or whenever a diff feels more complicated than the problem it solves. Triggers on "clean this up" / "tidy this" / "refactor this" when code already exists; for an underspecified goal with no code yet, use `clarify`.
 ---
 
 # Simplify

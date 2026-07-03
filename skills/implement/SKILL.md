@@ -38,12 +38,6 @@ wrong or missing, stop and surface it rather than quietly inventing a different 
    gates and owns the authoritative go/no-go. Report what was built and which verifications passed.
    Stop here — implementation is complete; a separate workflow handles review and the PR.
 
-## Cadence
-
-Typecheck and the targeted test files run continuously — after every red→green→refactor cycle. The full
-suite runs once at the end (and any time you suspect a broad regression). Stay in this loop; don't let
-work pile up between verifications.
-
 ## When to stop and ask
 
 Stop and surface the issue rather than guessing when you hit a real blocker: a missing dependency, a

@@ -1,6 +1,6 @@
 ---
 name: commit
-description: Create a git commit
+description: Create a single well-formed git commit from the working changes, following the repo's conventional-commit conventions. Use when the caller wants only to commit — not push and not open a PR (for that, use `open-pr`).
 ---
 
 # Commit
