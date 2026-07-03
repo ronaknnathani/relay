@@ -22,7 +22,11 @@ type newOpts struct {
 	quick    bool
 	noLaunch bool
 	agent    string
+	workflow string
 }
+
+// defaultWorkflow is the workflow skill launched when none is specified.
+const defaultWorkflow = "deliver-pr"
 
 // newCmdNew exposes `relay new <task>` explicitly. The public form is
 // `relay "<task>"`, so this command is hidden. Flags are local here since
@@ -33,6 +37,7 @@ func newCmdNew(_ *rootFlags) *cobra.Command {
 		quick     bool
 		noLaunch  bool
 		agentName string
+		workflow  string
 	)
 	cmd := &cobra.Command{
 		Use:    "new <task>",
@@ -46,6 +51,7 @@ func newCmdNew(_ *rootFlags) *cobra.Command {
 				quick:    quick,
 				noLaunch: noLaunch,
 				agent:    agentName,
+				workflow: workflow,
 			})
 		},
 	}
@@ -53,6 +59,7 @@ func newCmdNew(_ *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&noLaunch, "no-launch", false, "create project but don't launch the coding agent")
 	cmd.Flags().StringVarP(&name, "name", "n", "", "custom project slug")
 	cmd.Flags().StringVar(&agentName, "agent", "", "coding agent to launch (default from config)")
+	cmd.Flags().StringVar(&workflow, "workflow", defaultWorkflow, "workflow skill to launch (deliver-pr or stack-ship)")
 	return cmd
 }
 
@@ -125,6 +132,10 @@ func runNew(opts newOpts) error {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	wf := opts.workflow
+	if wf == "" {
+		wf = defaultWorkflow
+	}
 	m := project.Manifest{
 		Slug:            slug,
 		Title:           opts.task,
@@ -135,6 +146,7 @@ func runNew(opts newOpts) error {
 		StartSHA:        startSHA,
 		Worktree:        &worktreeDir,
 		Status:          "initialized",
+		Workflow:        wf,
 		Phase:           "plan",
 		Created:         now,
 		PR:              project.PRInfo{},
@@ -175,13 +187,13 @@ func runNew(opts newOpts) error {
 	if opts.quick {
 		mode = "quick"
 	}
-	systemPrompt := fmt.Sprintf("Active relay project: %s. Phase: plan. Mode: %s.", slug, mode)
+	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s. Mode: %s.", slug, wf, mode)
 	o := agent.LaunchOptions{
 		Worktree:        worktreeDir,
 		ProjectDir:      projDir,
 		SystemPrompt:    systemPrompt,
 		SessionName:     "relay:" + slug,
-		Command:         "plan",
+		Command:         wf,
 		CommandArgs:     slug,
 		SkipPermissions: cfg.DangerouslySkipPermissions,
 	}

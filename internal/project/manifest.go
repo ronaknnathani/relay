@@ -14,6 +14,7 @@ type Manifest struct {
 	StartSHA        string   `json:"start_sha,omitempty"`
 	Worktree        *string  `json:"worktree"`
 	Status          string   `json:"status"`
+	Workflow        string   `json:"workflow,omitempty"`
 	Phase           string   `json:"phase"`
 	Created         string   `json:"created"`
 	Updated         string   `json:"updated"`
