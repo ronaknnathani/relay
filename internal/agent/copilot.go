@@ -71,8 +71,8 @@ func gitExclude(worktree, pattern string) error {
 
 // Capabilities reports Copilot's real values: task-based subagents, a
 // long-context tier, prose (not deterministic-slash) invocation, no lifecycle
-// hook, context delivered via AGENTS.md, the Claude→Copilot lowercase
-// tool-name map, and --allow-all-tools to skip permission prompts.
+// hook, context delivered via AGENTS.md, and the Claude→Copilot lowercase
+// tool-name map. (Permission handling is mode-driven; see PermissionModes.)
 func (copilot) Capabilities() Capabilities {
 	return Capabilities{
 		Subagents:          SubagentTask,
@@ -91,7 +91,6 @@ func (copilot) Capabilities() Capabilities {
 			"WebFetch":        "web_fetch",
 			"AskUserQuestion": "ask_user",
 		},
-		PermissionFlag: "--allow-all-tools",
 	}
 }
 
@@ -111,11 +110,15 @@ func (copilot) LaunchArgs(o LaunchOptions) []string {
 	if o.ProjectDir != "" {
 		args = append(args, "--add-dir", o.ProjectDir)
 	}
-	args = append(args,
-		"--context", "long_context",
-		"--allow-all-tools",
-		"--no-ask-user",
-		"-p", prompt,
-	)
+	args = append(args, "--context", "long_context")
+	if resolvePermissionMode(copilot{}, o.PermissionMode) == "allow-all" {
+		args = append(args, "--allow-all-tools", "--no-ask-user")
+	}
+	// "prompt" mode: omit the allow-all flags so Copilot asks before acting.
+	args = append(args, "-p", prompt)
 	return args
 }
+
+// PermissionModes lists Copilot's permission modes; "allow-all" (the default)
+// grants all tools without prompting, "prompt" leaves Copilot's normal asks on.
+func (copilot) PermissionModes() []string { return []string{"allow-all", "prompt"} }

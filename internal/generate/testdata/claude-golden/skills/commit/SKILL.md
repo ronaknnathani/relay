@@ -1,6 +1,6 @@
 ---
 name: commit
-description: Create a single well-formed git commit from the working changes, following the repo's conventional-commit conventions. Use when the caller wants only to commit — not push and not open a PR (for that, use `open-pr`).
+description: Create a single well-formed git commit from the working changes, following the repo's AGENTS.md and recent commit-message conventions. Use when the caller wants only to commit — not push and not open a PR (for that, use `open-pr`).
 ---
 
 # Commit
@@ -21,12 +21,8 @@ First inspect the working tree. Run these read-only commands and read their outp
 Based on the changes above, create one commit:
 
 1. Stage the relevant files with `git add <specific-files>` (stage the files this change touches, not unrelated work).
-2. Write a clear, concise commit message that matches the repository's existing style. Lead with what changed and why.
-3. End the commit message with the trailer:
-
-   ```
-   Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
-   ```
+2. Read `<repo>/AGENTS.md` and `~/.config/agents/AGENTS.md` if present, then write a clear, concise commit message that matches those preferences and the repository's existing style. Lead with what changed and why.
+3. End the commit message with a `Co-authored-by` trailer for the actual model/agent currently doing the work. Use the runtime-provided model identity when available, and the agent's verified no-reply identity for the email. Never hardcode a model name.
 
 4. Commit with `git commit`.
 

@@ -104,3 +104,4 @@ func (stubAgent) Lookup() (string, error)                 { return "", nil }
 func (stubAgent) Prepare(agent.LaunchOptions) error       { return nil }
 func (stubAgent) LaunchArgs(agent.LaunchOptions) []string { return nil }
 func (stubAgent) Capabilities() agent.Capabilities        { return agent.Capabilities{} }
+func (stubAgent) PermissionModes() []string               { return nil }

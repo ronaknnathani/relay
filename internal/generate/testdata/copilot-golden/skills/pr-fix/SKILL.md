@@ -32,6 +32,13 @@ Suggestion). Run independent investigations as sub-agents when available; otherw
    Triage into the three fronts below. Detect the repo's OWN build/test/lint commands from its
    `Makefile`, `package.json` scripts, or CI config (`.github/workflows/*`) — never assume a toolchain.
 
+   Before editing, materialize the remote PR context onto the local filesystem so the fix is based on a
+   stable, inspectable record rather than scattered terminal output. Use a non-committed directory under
+   the git metadata dir, e.g. `CTX_DIR="$(git rev-parse --git-dir)/relay/pr-fix/$PR"`, and write at
+   least: PR metadata, `statusCheckRollup`, `gh pr checks`, inline review comments, review threads,
+   failed-run logs, the base-vs-head diff, and the discovered build/test commands. Re-read those files to
+   plan the fix. Refresh the bundle after every push before deciding the PR is clear.
+
 2. **CI failures — Stop-the-Line, red-loop-first.** Do not blindly do what the error message literally
    says; diagnose. For each failing check:
    - **Reproduce locally first.** Run the repo's own failing command to get a tight red loop. If it
@@ -84,10 +91,13 @@ Suggestion). Run independent investigations as sub-agents when available; otherw
 - Running `git rebase --abort` / `git merge --abort` instead of resolving the conflict.
 - Resolving a conflict by keeping one side without understanding why the other side exists.
 - Assuming `npm`/`make`/etc. instead of the command the repo's own config actually uses.
+- Fixing from transient terminal output instead of a local PR context bundle that can be re-read and
+  refreshed.
 
 ## Verification checklist
 
 - [ ] `gh pr checks` is fully green; each fix reproduced a local red loop and has a red-before/green-after regression test.
+- [ ] Remote PR context was captured locally before edits and refreshed after each push.
 - [ ] No failure was silenced (no skipped/deleted test, no lint-suppression, no loosened assertion).
 - [ ] Every review comment is fixed+resolved, or replied+flagged as an author decision left open.
 - [ ] Every agent reply discloses it is automated and does not impersonate the author.

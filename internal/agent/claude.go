@@ -33,14 +33,21 @@ func (claude) Capabilities() Capabilities {
 		LifecycleHook:      HookNone,
 		ContextInjection:   ContextFlag,
 		ToolNames:          nil, // canonical names are Claude's names
-		PermissionFlag:     "--dangerously-skip-permissions",
 	}
 }
 
+// PermissionModes lists Claude's permission modes; "auto" (the default)
+// auto-accepts edits, "bypass" skips all prompts, "default" prompts normally.
+func (claude) PermissionModes() []string { return []string{"auto", "bypass", "default"} }
+
 func (claude) LaunchArgs(o LaunchOptions) []string {
 	var args []string
-	if o.SkipPermissions {
+	switch resolvePermissionMode(claude{}, o.PermissionMode) {
+	case "auto":
+		args = append(args, "--permission-mode", "acceptEdits")
+	case "bypass":
 		args = append(args, "--dangerously-skip-permissions")
+		// "default": no flag — Claude prompts for permissions normally.
 	}
 	invocation := "/" + o.Command
 	if o.CommandArgs != "" {

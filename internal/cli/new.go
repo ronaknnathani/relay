@@ -189,13 +189,13 @@ func runNew(opts newOpts) error {
 	}
 	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s. Mode: %s.", slug, wf, mode)
 	o := agent.LaunchOptions{
-		Worktree:        worktreeDir,
-		ProjectDir:      projDir,
-		SystemPrompt:    systemPrompt,
-		SessionName:     "relay:" + slug,
-		Command:         wf,
-		CommandArgs:     slug,
-		SkipPermissions: cfg.DangerouslySkipPermissions,
+		Worktree:       worktreeDir,
+		ProjectDir:     projDir,
+		SystemPrompt:   systemPrompt,
+		SessionName:    "relay:" + slug,
+		Command:        wf,
+		CommandArgs:    slug,
+		PermissionMode: cfg.PermissionMode,
 	}
 	return launcher.Launch(a, o)
 }
