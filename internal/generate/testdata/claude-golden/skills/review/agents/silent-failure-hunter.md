@@ -85,7 +85,9 @@ Look for patterns that hide errors:
 
 ### 5. Validate Against Project Standards
 
-Ensure compliance with the project's error handling requirements (from the repo guideline files such as CLAUDE.md / AGENTS.md, if present):
+Ensure compliance with the project's error handling requirements (from repo guideline files such as
+AGENTS.md / CLAUDE.md, plus global `~/AGENTS.md` or `~/.config/agents/AGENTS.md` when provided; repo
+guidance takes precedence):
 - Never silently fail in production code
 - Always log errors using the project's standard logging functions
 - Include relevant context in error messages

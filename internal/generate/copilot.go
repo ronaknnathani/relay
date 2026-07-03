@@ -37,7 +37,7 @@ func renderCopilot(a agent.Agent, src *Source, out string) error {
 var copilotManifest = []byte(`{
   "name": "relay",
   "description": "AI-powered development workflow — plan, implement, ship",
-  "version": "2.0.0"
+  "version": "0.1.0"
 }
 `)
 

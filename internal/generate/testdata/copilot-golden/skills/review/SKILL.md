@@ -43,7 +43,12 @@ any different scale or posture a bundled role's own prompt describes.
 
 ## 1. Scope and the should-review gate
 
-Pin a fixed point and confirm there is something to review before doing anything:
+Load guidance before judging standards. Read the repo's `AGENTS.md` when present, then read global
+guidance from `~/AGENTS.md` or `~/.config/agents/AGENTS.md` when present. Repo guidance takes precedence
+over global guidance. Include the applicable guidance in each reviewer role's prompt so sub-agents review
+against the same rules instead of relying on memory.
+
+Pin a fixed point and confirm there is something to review:
 
 ```bash
 BASE=$(git merge-base HEAD origin/HEAD 2>/dev/null || git rev-parse HEAD~1)
@@ -77,9 +82,10 @@ comments/docs → **comment-analyzer**; any trust boundary, input parsing, auth,
 Every change is judged on two independent axes — do not let one contaminate the other, and do not
 merge them when reporting:
 
-- **Standards** — does it follow the repo's and author's documented conventions (CLAUDE.md / AGENTS.md
-  / guideline files)? Omit anything a linter or compiler already enforces; distinguish a hard
-  violation from a judgment call.
+- **Standards** — does it follow the repo's and author's documented conventions (repo `AGENTS.md`, then
+  global `~/AGENTS.md` or `~/.config/agents/AGENTS.md`, plus CLAUDE.md or equivalent guideline files)?
+  Omit anything a linter or compiler already enforces; distinguish a hard violation from a judgment
+  call.
 - **Spec** — does it do what the task/PRD/issue asked? Report three buckets: missing or partial
   requirements, changes nobody asked for, and implementations that look incorrect. Quote the spec.
 
@@ -158,12 +164,15 @@ gh api "repos/$REPO/pulls/$PR/comments" \
 
 - Posting a finding without verifying the line against the real diff.
 - Reporting style a linter already enforces, or a pre-existing issue on an untouched line.
+- Reviewing without loading repo/global AGENTS.md guidance when those files exist, or not passing that
+  guidance to reviewer sub-agents.
 - Telling a reviewer sub-agent the code is correct before it looks (anchoring it to agreement).
 - Demanding mandatory changes that block the PR — surface findings; the author decides.
 
 ## Verification checklist
 
 - [ ] Fixed point pinned; diff non-empty; should-review gate evaluated.
+- [ ] Repo `AGENTS.md` and global `~/AGENTS.md` or `~/.config/agents/AGENTS.md` guidance were loaded when present and passed to reviewer roles.
 - [ ] Every changed file covered by at least one role.
 - [ ] Every emitted finding scores ≥ 80, survives the exclusion list, and names a concrete fix.
 - [ ] No duplicate of an existing PR comment.

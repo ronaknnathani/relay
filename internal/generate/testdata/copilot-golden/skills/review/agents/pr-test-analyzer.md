@@ -61,7 +61,8 @@ Report under the review skill's shared contract — gap or brittle test, not a c
 **Important Considerations:**
 
 - Focus on tests that prevent real bugs, not academic completeness
-- Consider the project's testing standards from the repo guideline files if available
+- Consider the project's testing standards from repo guideline files and global `~/AGENTS.md` or
+  `~/.config/agents/AGENTS.md` when available; repo guidance takes precedence
 - Remember that some code paths may be covered by existing integration tests
 - Avoid suggesting tests for trivial getters/setters unless they contain logic
 - Consider the cost/benefit of each suggested test
