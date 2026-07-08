@@ -334,11 +334,7 @@ func prompt(defaultAgent string) (Config, error) {
 
 // SetupForAgent runs setup-time config initialization for one selected agent.
 func SetupForAgent(agentName string) (Config, error) {
-	agentName, err := validateAgent(agentName)
-	if err != nil {
-		return Config{}, err
-	}
-	a, err := agent.Get(agentName)
+	a, err := agent.Get(strings.TrimSpace(agentName))
 	if err != nil {
 		return Config{}, err
 	}
@@ -370,16 +366,13 @@ func SetupForAgent(agentName string) (Config, error) {
 }
 
 func ensureSetupPermissionMode(cfg Config, a agent.Agent) (Config, error) {
-	ok, err := supportsPermissionMode(a.Name(), cfg.PermissionModeFor(a.Name()))
-	if err != nil {
-		return Config{}, err
-	}
-	if ok {
+	modes := a.PermissionModes()
+	if slices.Contains(modes, cfg.PermissionModeFor(a.Name())) {
 		return cfg, nil
 	}
-	mode, err := defaultPermissionMode(a.Name())
-	if err != nil {
-		return Config{}, err
+	mode := ""
+	if len(modes) > 0 {
+		mode = modes[0]
 	}
 	return SetAgentPermissionMode(cfg, a.Name(), mode)
 }

@@ -38,6 +38,9 @@ func syncSkills(a Agent, opts SkillSyncOptions, link bool) error {
 		return fmt.Errorf("resolve package dir %s: %w", opts.PackageDir, err)
 	}
 	sourceDir := filepath.Join(packageDir, "skills")
+	if opts.Stdout == nil {
+		opts.Stdout = io.Discard
+	}
 	if link {
 		if err := os.MkdirAll(installedDir, 0755); err != nil {
 			return fmt.Errorf("mkdir skills dir %s: %w", installedDir, err)
@@ -68,41 +71,33 @@ func syncSkills(a Agent, opts SkillSyncOptions, link bool) error {
 
 func syncSkill(name, skillDir, installedDir string, opts SkillSyncOptions, link bool) error {
 	out := opts.Stdout
-	if out == nil {
-		out = io.Discard
-	}
 	target := filepath.Join(installedDir, name)
 	info, err := os.Lstat(target)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("stat installed skill %s: %w", target, err)
 	}
 	if err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			managed, err := existingLinkIsManaged(target, opts.ManagedRoots)
+		if info.Mode()&os.ModeSymlink == 0 {
+			fmt.Fprintf(out, "  skipping %s: %s exists and is not a symlink\n", name, target)
+			return nil
+		}
+		current, err := os.Readlink(target)
+		if err != nil {
+			return fmt.Errorf("readlink %s: %w", target, err)
+		}
+		if !isManagedTarget(current, opts.ManagedRoots) {
+			if !link {
+				fmt.Fprintf(out, "  keeping %s: %s -> %s is not managed by relay\n", name, target, current)
+				return nil
+			}
+			replace, err := promptReplaceForeign(name, target, current, opts, out)
 			if err != nil {
 				return err
 			}
-			if !managed {
-				if !link {
-					cur, err := os.Readlink(target)
-					if err != nil {
-						return fmt.Errorf("readlink %s: %w", target, err)
-					}
-					fmt.Fprintf(out, "  keeping %s: %s -> %s is not managed by relay\n", name, target, cur)
-					return nil
-				}
-				replace, err := promptReplaceForeign(name, target, opts, out)
-				if err != nil {
-					return err
-				}
-				if !replace {
-					fmt.Fprintf(out, "  skipping %s\n", name)
-					return nil
-				}
+			if !replace {
+				fmt.Fprintf(out, "  skipping %s\n", name)
+				return nil
 			}
-		} else {
-			fmt.Fprintf(out, "  skipping %s: %s exists and is not a symlink\n", name, target)
-			return nil
 		}
 	}
 
@@ -123,20 +118,8 @@ func syncSkill(name, skillDir, installedDir string, opts SkillSyncOptions, link 
 	return nil
 }
 
-func existingLinkIsManaged(target string, managedRoots []string) (bool, error) {
-	cur, err := os.Readlink(target)
-	if err != nil {
-		return false, fmt.Errorf("readlink %s: %w", target, err)
-	}
-	return isManagedTarget(cur, managedRoots), nil
-}
-
-func promptReplaceForeign(name, target string, opts SkillSyncOptions, out io.Writer) (bool, error) {
-	cur, err := os.Readlink(target)
-	if err != nil {
-		return false, fmt.Errorf("readlink %s: %w", target, err)
-	}
-	fmt.Fprintf(out, "  %s -> %s is not managed by relay\n", target, cur)
+func promptReplaceForeign(name, target, current string, opts SkillSyncOptions, out io.Writer) (bool, error) {
+	fmt.Fprintf(out, "  %s -> %s is not managed by relay\n", target, current)
 	if !opts.StdinIsTerminal {
 		fmt.Fprintln(out, "  (non-interactive: keeping existing symlink)")
 		return false, nil

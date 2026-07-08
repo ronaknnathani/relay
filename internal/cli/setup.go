@@ -37,8 +37,7 @@ func newCmdSetup() *cobra.Command {
 			if len(args) != 1 {
 				return fmt.Errorf("setup requires exactly one agent (supported: %s)", strings.Join(agent.Names(), ", "))
 			}
-			_, err := agent.Get(args[0])
-			return err
+			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a, err := agent.Get(args[0])
@@ -113,7 +112,6 @@ func discoverSourceDir(srcOverride string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("resolve source dir %s: %w", srcOverride, err)
 		}
-		sourceRoot = filepath.Clean(sourceRoot)
 		if _, err := generate.LoadSource(sourceRoot); err != nil {
 			return "", err
 		}
@@ -190,11 +188,12 @@ func setupManagedRoots(sourceRoot string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve managed source root %s: %w", sourceRoot, err)
 	}
-	relayRoot, err := filepath.Abs(project.RelayDir())
+	relayDir := project.RelayDir()
+	relayRoot, err := filepath.Abs(relayDir)
 	if err != nil {
-		return nil, fmt.Errorf("resolve relay dir %s: %w", project.RelayDir(), err)
+		return nil, fmt.Errorf("resolve relay dir %s: %w", relayDir, err)
 	}
-	return []string{filepath.Clean(sourceRoot), filepath.Clean(relayRoot)}, nil
+	return []string{sourceRoot, relayRoot}, nil
 }
 
 func isTerminalReader(r io.Reader) bool {
