@@ -1,5 +1,5 @@
 ---
-name: write-like-me-builder
+name: build-write-like-me
 description: >-
   Use this skill whenever the user wants to capture, clone, or codify their own
   (or someone's) writing voice into a reusable skill. Trigger phrases include:

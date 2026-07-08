@@ -1,5 +1,5 @@
 ---
-name: write-like-me-builder
+name: build-write-like-me
 description: >-
   Use this skill whenever the user wants to capture, clone, or codify their own
   (or someone's) writing voice into a reusable skill. Trigger phrases include:
@@ -32,7 +32,7 @@ something the person actually wrote. Quote them verbatim wherever you can.
 
 1. **Collect sources** from the invoker (interactive prompt).
 2. **Set up the workspace** (an output skill dir with a `source/` subdir for raw data).
-3. **Gather raw data** into `source/`: Launch a subagent (task tool) for delegated source workers where available, and use bundled scripts.
+3. **Gather raw data** into `source/`: Launch a subagent (Agent tool, model: "opus") for delegated source workers where available, and use bundled scripts.
 4. **Analyze** the data: run stylometrics, filter out content the person didn't
    actually write, and extract verbatim voice samples per register.
 5. **Synthesize** the personalized `SKILL.md` voice profile.
@@ -116,7 +116,7 @@ lets you re-run the analysis later without re-fetching.
 ## Step 3: Gather raw data
 
 For each chosen source, fetch the raw data into `source/`. For large fetches:
-Launch a subagent (task tool) with one worker per source (or per batch) so raw data
+Launch a subagent (Agent tool, model: "opus") with one worker per source (or per batch) so raw data
 does not fill your context. Use the bundled scripts for the fiddly parts.
 
 - **GitHub** — `scripts/fetch_github.py` handles authoring + commenting,
@@ -127,13 +127,13 @@ does not fill your context. Use the bundled scripts for the fiddly parts.
   aggressively and the script encodes the safe pattern.
 - **Google Docs** — only if a Docs-reading tool/skill exists (capability check in
   Step 1; commonly a document-reading MCP tool). If it does:
-  Launch a subagent (task tool) for each batch of ~3-4 doc IDs; each worker reads via the
+  Launch a subagent (Agent tool, model: "opus") for each batch of ~3-4 doc IDs; each worker reads via the
   available Docs reader (use the `full_text` field, ignore the verbose element
   map), assesses authorship, and returns distilled voice notes + verbatim quotes
   into `source/gdocs/`. If no Docs capability is available, skip and note it (or
   ask for an export/local copies).
 - **Local files** — read the markdown/text directly; for large file sets, start
-  delegated workers: Launch a subagent (task tool) to summarize voice per file. Save to
+  delegated workers: Launch a subagent (Agent tool, model: "opus") to summarize voice per file. Save to
   `source/notes/`. This path also handles any export the invoker drops on disk
   (mbox, Slack JSON, etc.).
 - **Session transcripts** — `scripts/extract_transcripts.py` pulls the person's
@@ -174,7 +174,7 @@ tell, templated PR bodies). The scripts tag suspected agent content; you decide
 the cutoffs and can eyeball borderline cases.
 
 **c) Read for voice.** Numbers don't capture voice. For large cleaned corpora:
-Launch a subagent (task tool) to read; otherwise read inline. Pull out, per
+Launch a subagent (Agent tool, model: "opus") to read; otherwise read inline. Pull out, per
 register: 4-6 verbatim sentences that best capture the voice, structural
 patterns, tone, and signature phrases. The verbatim quotes are the single most
 valuable thing in the final profile.
@@ -247,7 +247,7 @@ voice.
   and accurate mechanics matter more than any score.
 - **Delegate reading, synthesize yourself.** Reading 20 docs or 500 comments in
   your own context is wasteful and lossy. For large corpora, start reader
-  workers: Launch a subagent (task tool) and have them return distilled analyses;
+  workers: Launch a subagent (Agent tool, model: "opus") and have them return distilled analyses;
   you keep the conclusions, not the dumps.
 - **Be honest about gaps.** If a source was unusable or thin, say so in the
   handoff rather than papering over it with invented traits.
