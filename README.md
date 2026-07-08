@@ -63,8 +63,17 @@ cd relay
 make install
 ```
 
-First run prompts for a branch prefix and your default agent (saved to `~/.relay/config.json`). Project
-state lives under `~/.relay/projects/`; worktrees under `<repo>/.worktrees/`.
+`make install` installs the relay binary and links generated skills into each agent's personal skills
+directory: Claude uses `~/.claude/skills`, and Copilot uses `~/.copilot/skills`. To refresh only
+Copilot's skills, run `make install-copilot`. Skills relay does not own are never clobbered: a real
+file/dir with a colliding name is skipped, and a symlink that does not point into relay's own sources
+is flagged so you can choose whether to replace it.
+
+First run prompts for a branch prefix, your default agent, and that agent's permission mode (saved to
+`~/.relay/config.json`). Permission modes are stored per agent and are requested only the first time
+that agent is used. Update them with `relay config permission-mode <agent> <mode>`; update the
+default agent with `relay config default-agent <agent>`. Project state lives under
+`~/.relay/projects/`; worktrees under `<repo>/.worktrees/`.
 
 ## Multi-agent
 

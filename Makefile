@@ -2,9 +2,15 @@ BINARY      = relay
 CMD         = ./cmd/relay
 BIN_DIR     = $(HOME)/.local/bin
 COMMANDS_DIR = $(HOME)/.claude/commands/build
-SKILLS_DIR  = $(HOME)/.claude/skills
+CLAUDE_SKILLS_DIR = $(HOME)/.claude/skills
+COPILOT_SKILLS_DIR = $(HOME)/.copilot/skills
 REPO_DIR    = $(shell pwd)
-PKG_DIR     = $(REPO_DIR)/dist/claude
+CLAUDE_PKG_DIR = $(REPO_DIR)/dist/claude
+COPILOT_PKG_DIR = $(HOME)/.relay/agents/copilot
+MANAGE_SKILLS = $(REPO_DIR)/scripts/manage-skills.sh
+# Roots relay considers its own when replacing/removing skill symlinks: the repo
+# (Claude's dist package) and ~/.relay (per-agent generated packages).
+MANAGED_ROOTS = $(REPO_DIR) $(HOME)/.relay
 
 HOST_OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 HOST_ARCH_RAW := $(shell uname -m)
@@ -16,7 +22,7 @@ else
   HOST_ARCH := $(HOST_ARCH_RAW)
 endif
 
-.PHONY: all darwin linux host clean install uninstall generate generate-agents
+.PHONY: all darwin linux host clean install install-copilot uninstall generate generate-agents
 
 all: darwin linux
 
@@ -31,18 +37,19 @@ host:
 
 # generate renders the agent-neutral root source (plugin.json + skills/) into
 # the installable Claude package under dist/claude. install consumes that
-# generated package, so the on-disk plugin is generated, never hand-maintained.
+# generated package for Claude's ~/.claude/skills links, so the on-disk plugin
+# is generated, never hand-maintained.
 generate: host
-	@echo "Generating Claude package into $(PKG_DIR)..."
-	rm -rf $(PKG_DIR)
-	$(REPO_DIR)/bin/$(HOST_OS)/$(BINARY) generate --agent claude --src $(REPO_DIR) --out $(PKG_DIR)
+	@echo "Generating Claude package into $(CLAUDE_PKG_DIR)..."
+	rm -rf $(CLAUDE_PKG_DIR)
+	$(REPO_DIR)/bin/$(HOST_OS)/$(BINARY) generate --agent claude --src $(REPO_DIR) --out $(CLAUDE_PKG_DIR)
 
-# generate-agents renders every registered agent into its stable install path
-# under ~/.relay/agents/<agent>/, so path-loaded packages (e.g. Copilot's
-# --plugin-dir) resolve. The Claude on-disk plugin is still served via dist/claude
-# symlinks below; this only populates the per-agent install tree.
+# generate-agents renders every registered agent into its stable source path
+# under ~/.relay/agents/<agent>/. install links those generated skills into each
+# agent's personal skills directory.
 generate-agents: host
 	@echo "Generating all agent packages into their install paths..."
+	rm -rf $(HOME)/.relay/agents
 	$(REPO_DIR)/bin/$(HOST_OS)/$(BINARY) generate --src $(REPO_DIR)
 
 install: generate generate-agents
@@ -52,33 +59,26 @@ install: generate generate-agents
 	@echo "Removing legacy command install (package is skills-only)..."
 	rm -rf $(COMMANDS_DIR)
 	rm -f $(HOME)/.claude/commands/todo.md
-	@echo "Installing skills..."
-	mkdir -p $(SKILLS_DIR)
-	for d in $(PKG_DIR)/skills/*/; do \
-		name=$$(basename "$$d"); \
-		target="$(SKILLS_DIR)/$$name"; \
-		if [ -e "$$target" ] && [ ! -L "$$target" ]; then \
-			echo "  skipping $$name: $$target exists and is not a symlink"; \
-			continue; \
-		fi; \
-		rm -f "$$target"; \
-		ln -sf "$$d" "$$target"; \
-	done
-	@echo "Done. Run /reload-plugins or restart Claude Code."
+	@echo "Installing Claude skills..."
+	@sh $(MANAGE_SKILLS) link "$(CLAUDE_PKG_DIR)" "$(CLAUDE_SKILLS_DIR)" $(MANAGED_ROOTS)
+	@echo "Installing Copilot skills..."
+	@sh $(MANAGE_SKILLS) link "$(COPILOT_PKG_DIR)" "$(COPILOT_SKILLS_DIR)" $(MANAGED_ROOTS)
+	@echo "Done. Run /reload-plugins or restart Claude Code; restart Copilot sessions to pick up regenerated skills."
+
+install-copilot: host
+	@echo "Generating Copilot package into $(COPILOT_PKG_DIR)..."
+	rm -rf $(COPILOT_PKG_DIR)
+	$(REPO_DIR)/bin/$(HOST_OS)/$(BINARY) generate --agent copilot --src $(REPO_DIR) --out $(COPILOT_PKG_DIR)
+	@echo "Installing Copilot skills..."
+	@sh $(MANAGE_SKILLS) link "$(COPILOT_PKG_DIR)" "$(COPILOT_SKILLS_DIR)" $(MANAGED_ROOTS)
+	@echo "Done. Copilot skills are available from $(COPILOT_SKILLS_DIR)."
 
 uninstall:
 	rm -f $(BIN_DIR)/$(BINARY)
 	rm -rf $(COMMANDS_DIR)
 	rm -f $(HOME)/.claude/commands/todo.md
-	for d in $(PKG_DIR)/skills/*/; do \
-		name=$$(basename "$$d"); \
-		target="$(SKILLS_DIR)/$$name"; \
-		if [ -e "$$target" ] && [ ! -L "$$target" ]; then \
-			echo "  skipping $$name: $$target exists and is not a symlink"; \
-			continue; \
-		fi; \
-		rm -f "$$target"; \
-	done
+	@sh $(MANAGE_SKILLS) unlink "$(CLAUDE_PKG_DIR)" "$(CLAUDE_SKILLS_DIR)" $(MANAGED_ROOTS)
+	@sh $(MANAGE_SKILLS) unlink "$(COPILOT_PKG_DIR)" "$(COPILOT_SKILLS_DIR)" $(MANAGED_ROOTS)
 	@echo "Uninstalled."
 
 clean:

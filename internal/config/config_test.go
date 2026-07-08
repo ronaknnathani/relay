@@ -40,8 +40,8 @@ func TestLoadMigratesLegacyDangerouslySkip(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Load: ok=%v err=%v", ok, err)
 	}
-	if cfg.PermissionMode != "bypass" {
-		t.Errorf("PermissionMode = %q, want bypass (migrated from dangerously_skip_permissions)", cfg.PermissionMode)
+	if got := cfg.PermissionModeFor(agent.DefaultName); got != "bypass" {
+		t.Errorf("PermissionModeFor(default) = %q, want bypass (migrated from dangerously_skip_permissions)", got)
 	}
 }
 
@@ -52,8 +52,8 @@ func TestLoadKeepsExplicitPermissionMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.PermissionMode != "default" {
-		t.Errorf("PermissionMode = %q, want default (explicit value wins over legacy)", cfg.PermissionMode)
+	if got := cfg.PermissionModeFor(agent.DefaultName); got != "default" {
+		t.Errorf("PermissionModeFor(default) = %q, want default (explicit value wins over legacy)", got)
 	}
 }
 
@@ -92,7 +92,7 @@ func TestValidateAgent(t *testing.T) {
 func TestNonInteractivePromptDefaultsAgent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	cfg, err := prompt() // stdin is not a TTY under `go test`
+	cfg, err := prompt(agent.DefaultName) // stdin is not a TTY under `go test`
 	if err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
@@ -105,5 +105,62 @@ func TestNonInteractivePromptDefaultsAgent(t *testing.T) {
 	}
 	if reloaded.DefaultAgent != agent.DefaultName {
 		t.Errorf("persisted DefaultAgent = %q, want %q", reloaded.DefaultAgent, agent.DefaultName)
+	}
+}
+
+func TestNonInteractivePromptUsesPreferredAgent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg, err := prompt("copilot") // stdin is not a TTY under `go test`
+	if err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	if cfg.DefaultAgent != "copilot" {
+		t.Errorf("DefaultAgent = %q, want copilot", cfg.DefaultAgent)
+	}
+	if got := cfg.PermissionModeFor("copilot"); got != "allow-all" {
+		t.Errorf("PermissionModeFor(copilot) = %q, want allow-all", got)
+	}
+}
+
+func TestEnsureForAgentAddsMissingAgentPermissionMode(t *testing.T) {
+	writeConfig(t, `{"branch_prefix":"x/","default_agent":"claude","permission_mode":"auto"}`)
+	cfg, err := EnsureForAgent("copilot") // stdin is not a TTY under `go test`
+	if err != nil {
+		t.Fatalf("EnsureForAgent: %v", err)
+	}
+	if cfg.DefaultAgent != "claude" {
+		t.Errorf("DefaultAgent = %q, want existing default claude", cfg.DefaultAgent)
+	}
+	if got := cfg.PermissionModeFor("claude"); got != "auto" {
+		t.Errorf("PermissionModeFor(claude) = %q, want existing auto", got)
+	}
+	if got := cfg.PermissionModeFor("copilot"); got != "allow-all" {
+		t.Errorf("PermissionModeFor(copilot) = %q, want allow-all", got)
+	}
+}
+
+func TestEnsureForAgentKeepsExistingAgentPermissionMode(t *testing.T) {
+	writeConfig(t, `{"branch_prefix":"x/","default_agent":"claude","permission_modes":{"claude":"auto","copilot":"prompt"}}`)
+	cfg, err := EnsureForAgent("copilot")
+	if err != nil {
+		t.Fatalf("EnsureForAgent: %v", err)
+	}
+	if got := cfg.PermissionModeFor("copilot"); got != "prompt" {
+		t.Errorf("PermissionModeFor(copilot) = %q, want prompt", got)
+	}
+}
+
+func TestSetAgentPermissionMode(t *testing.T) {
+	cfg := Config{}
+	cfg, err := SetAgentPermissionMode(cfg, "copilot", "prompt")
+	if err != nil {
+		t.Fatalf("SetAgentPermissionMode: %v", err)
+	}
+	if got := cfg.PermissionModeFor("copilot"); got != "prompt" {
+		t.Errorf("PermissionModeFor(copilot) = %q, want prompt", got)
+	}
+	if _, err := SetAgentPermissionMode(cfg, "copilot", "auto"); err == nil {
+		t.Fatal("SetAgentPermissionMode invalid mode: expected error, got nil")
 	}
 }

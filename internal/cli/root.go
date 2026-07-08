@@ -28,6 +28,7 @@ type rootFlags struct {
 	name     string
 	agent    string
 	workflow string
+	reclaim  bool
 }
 
 func newRootCmd() *cobra.Command {
@@ -50,7 +51,7 @@ func newRootCmd() *cobra.Command {
 				// If the user passed any of them with no task, they meant to
 				// create one — surface that as a usage error rather than
 				// silently listing status.
-				if flags.quick || flags.noLaunch || flags.name != "" {
+				if flags.quick || flags.noLaunch || flags.name != "" || flags.reclaim {
 					return fmt.Errorf("usage: relay \"<task description>\"")
 				}
 				return runStatus(statusOpts{})
@@ -62,6 +63,7 @@ func newRootCmd() *cobra.Command {
 				noLaunch: flags.noLaunch,
 				agent:    flags.agent,
 				workflow: flags.workflow,
+				reclaim:  flags.reclaim,
 			})
 		},
 	}
@@ -72,6 +74,7 @@ func newRootCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&flags.name, "name", "n", "", "custom project slug")
 	cmd.Flags().StringVar(&flags.agent, "agent", "", "coding agent to launch (default from config)")
 	cmd.Flags().StringVar(&flags.workflow, "workflow", defaultWorkflow, "workflow skill to launch (deliver-pr or stack-ship)")
+	cmd.Flags().BoolVar(&flags.reclaim, "reclaim", false, "reclaim leftover branch/worktree from an interrupted setup without prompting")
 
 	cmd.AddCommand(
 		newCmdNew(flags),

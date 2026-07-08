@@ -8,11 +8,10 @@ import (
 	"strings"
 )
 
-// copilot is the adapter for the GitHub Copilot CLI. Copilot reads Claude
-// plugins but strips namespaces and auto-invokes skills weakly, so it launches
-// the generated relay package via --plugin-dir and a prose prompt that names
-// the skill, with project context delivered through an AGENTS.md file (Copilot
-// has no system-prompt flag).
+// copilot is the adapter for the GitHub Copilot CLI. Copilot auto-invokes
+// skills weakly, so it launches with a prose prompt that names the skill, with
+// project context delivered through an AGENTS.md file (Copilot has no
+// system-prompt flag).
 type copilot struct{}
 
 func (copilot) Name() string { return "copilot" }
@@ -103,7 +102,6 @@ func (copilot) LaunchArgs(o LaunchOptions) []string {
 	args := []string{
 		"-C", o.Worktree,
 		"-n", o.SessionName,
-		"--plugin-dir", PackageDir("copilot"),
 	}
 	// Grant the file tools access to the project metadata dir, which lives
 	// outside the worktree (Copilot's view/edit are sandboxed to -C otherwise).
@@ -112,13 +110,14 @@ func (copilot) LaunchArgs(o LaunchOptions) []string {
 	}
 	args = append(args, "--context", "long_context")
 	if resolvePermissionMode(copilot{}, o.PermissionMode) == "allow-all" {
-		args = append(args, "--allow-all-tools", "--no-ask-user")
+		args = append(args, "--allow-all")
 	}
 	// "prompt" mode: omit the allow-all flags so Copilot asks before acting.
-	args = append(args, "-p", prompt)
+	args = append(args, "-i", prompt)
 	return args
 }
 
 // PermissionModes lists Copilot's permission modes; "allow-all" (the default)
-// grants all tools without prompting, "prompt" leaves Copilot's normal asks on.
+// grants all permissions without prompting, "prompt" leaves Copilot's normal
+// asks on.
 func (copilot) PermissionModes() []string { return []string{"allow-all", "prompt"} }

@@ -123,12 +123,10 @@ func TestCopilotLaunchArgs(t *testing.T) {
 	want := []string{
 		"-C", "/tmp/wt",
 		"-n", "relay:demo",
-		"--plugin-dir", PackageDir("copilot"),
 		"--add-dir", "/tmp/proj",
 		"--context", "long_context",
-		"--allow-all-tools",
-		"--no-ask-user",
-		"-p", `Run the relay "plan" skill for slug demo.`,
+		"--allow-all",
+		"-i", `Run the relay "plan" skill for slug demo.`,
 	}
 	if got := (copilot{}).LaunchArgs(o); !reflect.DeepEqual(got, want) {
 		t.Errorf("LaunchArgs mismatch:\n got: %#v\nwant: %#v", got, want)
@@ -151,12 +149,17 @@ func TestCopilotLaunchArgs(t *testing.T) {
 		t.Errorf("empty-args prompt = %q, want skill-named prose", got[len(got)-1])
 	}
 
-	// prompt mode omits the allow-all flags so Copilot asks before acting.
+	// prompt mode omits the allow-all flag so Copilot asks before acting.
 	oPrompt := o
 	oPrompt.PermissionMode = "prompt"
 	for _, a := range (copilot{}).LaunchArgs(oPrompt) {
-		if a == "--allow-all-tools" || a == "--no-ask-user" {
+		if a == "--allow-all" {
 			t.Errorf("prompt mode emitted %q; should ask for permissions", a)
+		}
+	}
+	for _, a := range (copilot{}).LaunchArgs(o) {
+		if a == "-p" || a == "--prompt" || a == "--no-ask-user" || a == "--plugin-dir" {
+			t.Errorf("LaunchArgs emitted disallowed flag %q", a)
 		}
 	}
 }
@@ -237,6 +240,71 @@ func TestGetCopilot(t *testing.T) {
 	}
 	if a.Name() != "copilot" {
 		t.Errorf("Get(copilot).Name() = %q, want copilot", a.Name())
+	}
+}
+
+func TestVerifyCopilotSkillsInstalled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	generated := filepath.Join(PackageDir("copilot"), "skills", "deliver-pr")
+	installed := filepath.Join(home, ".copilot", "skills", "deliver-pr")
+	if err := os.MkdirAll(generated, 0755); err != nil {
+		t.Fatalf("mkdir generated: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(generated, "SKILL.md"), []byte("# Deliver PR\n"), 0644); err != nil {
+		t.Fatalf("write generated: %v", err)
+	}
+	if err := VerifySkillsInstalled(copilot{}, "deliver-pr"); err == nil {
+		t.Fatal("VerifySkillsInstalled missing copilot install: expected error, got nil")
+	}
+	// A real (non-symlink) dir shadowing relay's skill must NOT satisfy the
+	// command-skill check.
+	if err := os.MkdirAll(installed, 0755); err != nil {
+		t.Fatalf("mkdir installed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(installed, "SKILL.md"), []byte("# Deliver PR\n"), 0644); err != nil {
+		t.Fatalf("write installed: %v", err)
+	}
+	if err := VerifySkillsInstalled(copilot{}, "deliver-pr"); err == nil {
+		t.Fatal("VerifySkillsInstalled shadowing real dir: expected error, got nil")
+	}
+	// A relay-managed symlink (how `make install` installs skills) satisfies it.
+	if err := os.RemoveAll(installed); err != nil {
+		t.Fatalf("rm installed dir: %v", err)
+	}
+	if err := os.Symlink(generated, installed); err != nil {
+		t.Fatalf("symlink installed: %v", err)
+	}
+	if err := VerifySkillsInstalled(copilot{}, "deliver-pr"); err != nil {
+		t.Fatalf("VerifySkillsInstalled: %v", err)
+	}
+	if err := VerifySkillsInstalled(copilot{}, "missing"); err == nil {
+		t.Fatal("VerifySkillsInstalled missing skill: expected error, got nil")
+	}
+}
+
+func TestVerifyClaudeSkillsInstalledChecksGeneratedSkills(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	generated := filepath.Join(PackageDir("claude"), "skills", "deliver-pr")
+	installed := filepath.Join(home, ".claude", "skills", "deliver-pr")
+	if err := os.MkdirAll(generated, 0755); err != nil {
+		t.Fatalf("mkdir generated: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(generated, "SKILL.md"), []byte("# Deliver PR\n"), 0644); err != nil {
+		t.Fatalf("write generated: %v", err)
+	}
+	if err := VerifySkillsInstalled(claude{}, "deliver-pr"); err == nil {
+		t.Fatal("VerifySkillsInstalled missing claude install: expected error, got nil")
+	}
+	if err := os.MkdirAll(filepath.Dir(installed), 0755); err != nil {
+		t.Fatalf("mkdir installed parent: %v", err)
+	}
+	if err := os.Symlink(generated, installed); err != nil {
+		t.Fatalf("symlink installed: %v", err)
+	}
+	if err := VerifySkillsInstalled(claude{}, "deliver-pr"); err != nil {
+		t.Fatalf("VerifySkillsInstalled: %v", err)
 	}
 }
 

@@ -24,9 +24,12 @@ import (
 type Config struct {
 	BranchPrefix string `json:"branch_prefix"`
 	DefaultAgent string `json:"default_agent,omitempty"`
-	// PermissionMode is the agent-specific permission mode chosen at setup
-	// (e.g. "auto" for Claude, "allow-all" for Copilot). Empty resolves to the
-	// agent's default at launch.
+	// PermissionModes stores agent-specific permission modes chosen at setup or
+	// through `relay config`. Missing entries are prompted once when that agent
+	// is first launched.
+	PermissionModes map[string]string `json:"permission_modes,omitempty"`
+	// PermissionMode is the retired global field. It is still read for
+	// backwards-compatible migration but omitted on the next save.
 	PermissionMode string `json:"permission_mode,omitempty"`
 }
 
@@ -34,6 +37,21 @@ type Config struct {
 // branch prefix by replacing `/` with `_`. Example: "ronaknnathani/" -> "ronaknnathani_".
 func (c Config) WorktreePrefix() string {
 	return strings.ReplaceAll(c.BranchPrefix, "/", "_")
+}
+
+func (c Config) PermissionModeFor(agentName string) string {
+	if c.PermissionModes != nil {
+		return c.PermissionModes[agentName]
+	}
+	return ""
+}
+
+func (c *Config) SetPermissionMode(agentName, mode string) {
+	if c.PermissionModes == nil {
+		c.PermissionModes = map[string]string{}
+	}
+	c.PermissionModes[agentName] = mode
+	c.PermissionMode = ""
 }
 
 // Path returns the absolute path to the config file.
@@ -59,15 +77,21 @@ func Load() (Config, bool, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return Config{}, false, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if c.PermissionModes == nil {
+		c.PermissionModes = map[string]string{}
+	}
+	if c.PermissionMode != "" && c.PermissionModes[c.DefaultAgent] == "" {
+		c.PermissionModes[c.DefaultAgent] = c.PermissionMode
+	}
 	// Migrate the retired dangerously_skip_permissions flag: a config that had
 	// it enabled was bypassing all prompts, so preserve that as "bypass" rather
 	// than silently dropping to the new agent default.
-	if c.PermissionMode == "" {
+	if c.PermissionModes[c.DefaultAgent] == "" {
 		var legacy struct {
 			Dangerous *bool `json:"dangerously_skip_permissions"`
 		}
 		if json.Unmarshal(data, &legacy) == nil && legacy.Dangerous != nil && *legacy.Dangerous {
-			c.PermissionMode = "bypass"
+			c.PermissionModes[c.DefaultAgent] = "bypass"
 		}
 	}
 	return c, true, nil
@@ -80,6 +104,7 @@ func Save(c Config) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
+	c.PermissionMode = ""
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode config: %w", err)
@@ -150,18 +175,86 @@ func promptPermissionMode(reader *bufio.Reader, agentName string, modes []string
 	}
 }
 
+func defaultPermissionMode(agentName string) (string, error) {
+	a, err := agent.Get(agentName)
+	if err != nil {
+		return "", err
+	}
+	modes := a.PermissionModes()
+	if len(modes) == 0 {
+		return "", nil
+	}
+	return modes[0], nil
+}
+
+func supportsPermissionMode(agentName, mode string) (bool, error) {
+	a, err := agent.Get(agentName)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(a.PermissionModes(), mode), nil
+}
+
+func SetDefaultAgent(c Config, agentName string) (Config, error) {
+	agentName, err := validateAgent(agentName)
+	if err != nil {
+		return Config{}, err
+	}
+	c.DefaultAgent = agentName
+	return c, nil
+}
+
+func SetBranchPrefix(c Config, prefix string) (Config, error) {
+	normalized, err := validateBranchPrefix(prefix)
+	if err != nil {
+		return Config{}, err
+	}
+	c.BranchPrefix = normalized
+	return c, nil
+}
+
+func SetAgentPermissionMode(c Config, agentName, mode string) (Config, error) {
+	agentName, err := validateAgent(agentName)
+	if err != nil {
+		return Config{}, err
+	}
+	mode = strings.TrimSpace(mode)
+	ok, err := supportsPermissionMode(agentName, mode)
+	if err != nil {
+		return Config{}, err
+	}
+	if !ok {
+		a, err := agent.Get(agentName)
+		if err != nil {
+			return Config{}, err
+		}
+		return Config{}, fmt.Errorf("invalid permission mode %q for %s; choose one of: %s", mode, agentName, strings.Join(a.PermissionModes(), ", "))
+	}
+	c.SetPermissionMode(agentName, mode)
+	return c, nil
+}
+
 // prompt runs the interactive first-time setup. If stdin is not a TTY, it
 // writes defaults silently (so scripted use does not hang) and prints the
 // path to stderr.
-func prompt() (Config, error) {
+func prompt(defaultAgent string) (Config, error) {
 	defaultUser := os.Getenv("USER")
 	if defaultUser == "" {
 		defaultUser = "user"
 	}
 	defaultPrefix := defaultUser + "/"
+	defaultAgent, err := validateAgent(defaultAgent)
+	if err != nil {
+		return Config{}, err
+	}
+	defaultPermMode, err := defaultPermissionMode(defaultAgent)
+	if err != nil {
+		return Config{}, err
+	}
 
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		cfg := Config{BranchPrefix: defaultPrefix, DefaultAgent: agent.DefaultName}
+		cfg := Config{BranchPrefix: defaultPrefix, DefaultAgent: defaultAgent}
+		cfg.SetPermissionMode(defaultAgent, defaultPermMode)
 		if err := Save(cfg); err != nil {
 			return Config{}, err
 		}
@@ -197,10 +290,13 @@ func prompt() (Config, error) {
 
 	var agentName string
 	for {
-		fmt.Printf("Coding agent (%s) [%s]: ", strings.Join(agent.Names(), ", "), agent.DefaultName)
+		fmt.Printf("Coding agent (%s) [%s]: ", strings.Join(agent.Names(), ", "), defaultAgent)
 		raw, err := reader.ReadString('\n')
 		if err != nil {
 			return Config{}, fmt.Errorf("reading agent: %w", err)
+		}
+		if strings.TrimSpace(raw) == "" {
+			raw = defaultAgent
 		}
 		a, err := validateAgent(raw)
 		if err != nil {
@@ -220,7 +316,8 @@ func prompt() (Config, error) {
 		return Config{}, err
 	}
 
-	cfg := Config{BranchPrefix: prefix, DefaultAgent: agentName, PermissionMode: permMode}
+	cfg := Config{BranchPrefix: prefix, DefaultAgent: agentName}
+	cfg.SetPermissionMode(agentName, permMode)
 	if err := Save(cfg); err != nil {
 		return Config{}, fmt.Errorf("saving config: %w", err)
 	}
@@ -234,25 +331,100 @@ func prompt() (Config, error) {
 // does not exist. Re-validates the branch prefix in case the user
 // hand-edited the file.
 func Ensure() (Config, error) {
+	return EnsureForAgent("")
+}
+
+// EnsureBase returns the loaded config, running first-time setup if the file
+// does not exist, but does not prompt for any missing per-agent permission mode.
+func EnsureBase() (Config, error) {
+	cfg, ok, err := Load()
+	if err != nil {
+		return Config{}, fmt.Errorf("config: %w", err)
+	}
+	if !ok {
+		cfg, err = prompt(agent.DefaultName)
+		if err != nil {
+			return Config{}, fmt.Errorf("config setup: %w", err)
+		}
+		return cfg, nil
+	}
+	return validateBase(cfg)
+}
+
+func validateBase(cfg Config) (Config, error) {
+	normalized, err := validateBranchPrefix(cfg.BranchPrefix)
+	if err != nil {
+		return Config{}, fmt.Errorf("config: branch_prefix in %s is invalid: %w", Path(), err)
+	}
+	cfg.BranchPrefix = normalized
+	if cfg.DefaultAgent == "" {
+		cfg.DefaultAgent = agent.DefaultName
+	}
+	if _, err := agent.Get(cfg.DefaultAgent); err != nil {
+		return Config{}, fmt.Errorf("config: default_agent in %s is invalid: %w", Path(), err)
+	}
+	return cfg, nil
+}
+
+// EnsureForAgent returns the loaded config, using preferredAgent as the
+// first-time setup default and ensuring permission_modes contains a valid entry
+// for the agent about to launch. Existing default_agent is preserved unless this
+// is the first config write.
+func EnsureForAgent(preferredAgent string) (Config, error) {
+	if preferredAgent != "" {
+		if _, err := validateAgent(preferredAgent); err != nil {
+			return Config{}, err
+		}
+	}
 	cfg, ok, err := Load()
 	if err != nil {
 		return Config{}, fmt.Errorf("config: %w", err)
 	}
 	if ok {
-		normalized, err := validateBranchPrefix(cfg.BranchPrefix)
+		cfg, err = validateBase(cfg)
 		if err != nil {
-			return Config{}, fmt.Errorf("config: branch_prefix in %s is invalid: %w", Path(), err)
+			return Config{}, err
 		}
-		cfg.BranchPrefix = normalized
-		if cfg.DefaultAgent == "" {
-			cfg.DefaultAgent = agent.DefaultName
+		agentName := cfg.DefaultAgent
+		if preferredAgent != "" {
+			agentName = preferredAgent
 		}
-		if _, err := agent.Get(cfg.DefaultAgent); err != nil {
-			return Config{}, fmt.Errorf("config: default_agent in %s is invalid: %w", Path(), err)
+		ok, err := supportsPermissionMode(agentName, cfg.PermissionModeFor(agentName))
+		if err != nil {
+			return Config{}, err
+		}
+		if ok {
+			return cfg, nil
+		}
+		a, err := agent.Get(agentName)
+		if err != nil {
+			return Config{}, err
+		}
+		var mode string
+		if term.IsTerminal(int(os.Stdin.Fd())) {
+			reader := bufio.NewReader(os.Stdin)
+			mode, err = promptPermissionMode(reader, agentName, a.PermissionModes())
+			if err != nil {
+				return Config{}, err
+			}
+		} else {
+			mode, err = defaultPermissionMode(agentName)
+			if err != nil {
+				return Config{}, err
+			}
+			fmt.Fprintf(os.Stderr, "relay: set permission_modes.%s=%q in %s (non-interactive; default used)\n", agentName, mode, Path())
+		}
+		cfg.SetPermissionMode(agentName, mode)
+		if err := Save(cfg); err != nil {
+			return Config{}, fmt.Errorf("saving config: %w", err)
 		}
 		return cfg, nil
 	}
-	cfg, err = prompt()
+	defaultAgent := agent.DefaultName
+	if preferredAgent != "" {
+		defaultAgent = preferredAgent
+	}
+	cfg, err = prompt(defaultAgent)
 	if err != nil {
 		return Config{}, fmt.Errorf("config setup: %w", err)
 	}

@@ -39,7 +39,7 @@ func runResume(slug string) error {
 		return fmt.Errorf("project %q is complete. Run: relay archive %s", slug, slug)
 	}
 
-	cfg, err := config.Ensure()
+	cfg, err := config.EnsureForAgent(m.Agent)
 	if err != nil {
 		return err
 	}
@@ -72,6 +72,6 @@ func runResume(slug string) error {
 		SessionName:    "relay:" + slug,
 		Command:        cmd,
 		CommandArgs:    slug,
-		PermissionMode: cfg.PermissionMode,
+		PermissionMode: cfg.PermissionModeFor(a.Name()),
 	})
 }

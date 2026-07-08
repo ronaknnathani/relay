@@ -5,7 +5,9 @@ package gitx
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -126,8 +128,64 @@ func WorktreeAdd(repo, dir, branch, startPoint string) error {
 	return nil
 }
 
+// IsWorktree reports whether dir is registered as a git worktree of repo.
+// The returned bool is only meaningful when err is nil.
+func IsWorktree(repo, dir string) (bool, error) {
+	out, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return false, fmt.Errorf("git worktree list: %w", err)
+	}
+	target := canonPath(dir)
+	for _, line := range strings.Split(string(out), "\n") {
+		if p, ok := strings.CutPrefix(line, "worktree "); ok {
+			if canonPath(strings.TrimSpace(p)) == target {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// canonPath resolves symlinks so paths from git (which reports real paths, e.g.
+// /private/var on macOS) compare equal to relay's constructed paths (/var).
+// Falls back to Clean when the path does not exist on disk.
+func canonPath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return filepath.Clean(p)
+}
+
+// WorktreeClean reports whether the registered worktree at dir has no
+// uncommitted changes and no untracked files (i.e. `git status --porcelain`
+// is empty). The bool is only meaningful when err is nil.
+func WorktreeClean(dir string) (bool, error) {
+	out, err := exec.Command("git", "-C", dir, "status", "--porcelain").Output()
+	if err != nil {
+		return false, fmt.Errorf("git -C %s status: %w", dir, err)
+	}
+	return strings.TrimSpace(string(out)) == "", nil
+}
+
 // WorktreeRemove removes the worktree at dir. If force is true, includes --force.
+// When dir is not a registered worktree (e.g. setup was interrupted before the
+// worktree finished, or it was removed manually), it cleans up any leftover
+// directory and prunes stale metadata instead of failing, so callers such as
+// `relay archive` can still make progress.
 func WorktreeRemove(repo, dir string, force bool) error {
+	registered, err := IsWorktree(repo, dir)
+	if err != nil {
+		return err
+	}
+	if !registered {
+		if rmErr := os.RemoveAll(dir); rmErr != nil {
+			return fmt.Errorf("remove leftover worktree dir %s: %w", dir, rmErr)
+		}
+		if out, pruneErr := exec.Command("git", "-C", repo, "worktree", "prune").CombinedOutput(); pruneErr != nil {
+			return fmt.Errorf("git worktree prune: %w\n%s", pruneErr, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
 	args := []string{"-C", repo, "worktree", "remove"}
 	if force {
 		args = append(args, "--force")

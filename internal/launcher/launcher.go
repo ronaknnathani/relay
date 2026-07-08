@@ -18,6 +18,9 @@ func Launch(a agent.Agent, o agent.LaunchOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := agent.VerifySkillsInstalled(a, o.Command); err != nil {
+		return err
+	}
 	if err := a.Prepare(o); err != nil {
 		return fmt.Errorf("prepare %s: %w", a.Name(), err)
 	}
