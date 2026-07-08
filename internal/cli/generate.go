@@ -8,7 +8,7 @@ import (
 
 // newCmdGenerate exposes `relay generate`, which renders the agent-neutral
 // workflow source into an installable per-agent package. It is hidden because
-// it is a build-time tool (wired into `make install`), not part of the daily
+// it is a setup helper, not part of the daily
 // project workflow.
 func newCmdGenerate() *cobra.Command {
 	var (

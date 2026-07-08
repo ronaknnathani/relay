@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -234,15 +235,19 @@ func SetAgentPermissionMode(c Config, agentName, mode string) (Config, error) {
 	return c, nil
 }
 
-// prompt runs the interactive first-time setup. If stdin is not a TTY, it
-// writes defaults silently (so scripted use does not hang) and prints the
-// path to stderr.
-func prompt(defaultAgent string) (Config, error) {
+func defaultBranchPrefix() string {
 	defaultUser := os.Getenv("USER")
 	if defaultUser == "" {
 		defaultUser = "user"
 	}
-	defaultPrefix := defaultUser + "/"
+	return defaultUser + "/"
+}
+
+// prompt runs the interactive first-time setup. If stdin is not a TTY, it
+// writes defaults silently (so scripted use does not hang) and prints the
+// path to stderr.
+func prompt(defaultAgent string) (Config, error) {
+	defaultPrefix := defaultBranchPrefix()
 	defaultAgent, err := validateAgent(defaultAgent)
 	if err != nil {
 		return Config{}, err
@@ -325,6 +330,119 @@ func prompt(defaultAgent string) (Config, error) {
 	fmt.Printf("Saved config to %s. Edit this file to change settings later.\n", Path())
 	fmt.Println()
 	return cfg, nil
+}
+
+// SetupForAgent runs setup-time config initialization for one selected agent.
+func SetupForAgent(agentName string) (Config, error) {
+	a, err := agent.Get(strings.TrimSpace(agentName))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg, ok, err := Load()
+	if err != nil {
+		return Config{}, fmt.Errorf("config: %w", err)
+	}
+	if ok {
+		cfg, err = validateBase(cfg)
+		if err != nil {
+			return Config{}, err
+		}
+	} else {
+		cfg = Config{BranchPrefix: defaultBranchPrefix(), DefaultAgent: agent.DefaultName}
+	}
+
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		cfg, err = promptSetupForAgent(cfg, a)
+	} else {
+		cfg, err = ensureSetupPermissionMode(cfg, a)
+	}
+	if err != nil {
+		return Config{}, err
+	}
+	if err := Save(cfg); err != nil {
+		return Config{}, fmt.Errorf("saving config: %w", err)
+	}
+	return cfg, nil
+}
+
+func ensureSetupPermissionMode(cfg Config, a agent.Agent) (Config, error) {
+	modes := a.PermissionModes()
+	if slices.Contains(modes, cfg.PermissionModeFor(a.Name())) {
+		return cfg, nil
+	}
+	mode := ""
+	if len(modes) > 0 {
+		mode = modes[0]
+	}
+	return SetAgentPermissionMode(cfg, a.Name(), mode)
+}
+
+func promptSetupForAgent(cfg Config, a agent.Agent) (Config, error) {
+	reader := bufio.NewReader(os.Stdin)
+	prefix, err := promptBranchPrefix(reader, cfg.BranchPrefix)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg, err = SetBranchPrefix(cfg, prefix)
+	if err != nil {
+		return Config{}, err
+	}
+	mode, err := promptPermissionMode(reader, a.Name(), a.PermissionModes())
+	if err != nil {
+		return Config{}, err
+	}
+	cfg, err = SetAgentPermissionMode(cfg, a.Name(), mode)
+	if err != nil {
+		return Config{}, err
+	}
+	setDefault, err := promptSetDefaultAgent(reader, a.Name())
+	if err != nil {
+		return Config{}, err
+	}
+	if setDefault {
+		cfg, err = SetDefaultAgent(cfg, a.Name())
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	return cfg, nil
+}
+
+func promptBranchPrefix(reader *bufio.Reader, current string) (string, error) {
+	if current == "" {
+		current = defaultBranchPrefix()
+	}
+	for {
+		fmt.Printf("Branch prefix for new projects [%s]: ", current)
+		raw, err := reader.ReadString('\n')
+		if err != nil {
+			return "", fmt.Errorf("reading prefix: %w", err)
+		}
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			raw = current
+		}
+		prefix, err := validateBranchPrefix(raw)
+		if err != nil {
+			fmt.Printf("  %s\n", err)
+			continue
+		}
+		return prefix, nil
+	}
+}
+
+func promptSetDefaultAgent(reader *bufio.Reader, agentName string) (bool, error) {
+	fmt.Printf("Set %s as default agent? [y/N] ", agentName)
+	raw, err := reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return false, fmt.Errorf("reading default-agent answer: %w", err)
+	}
+	switch strings.TrimSpace(raw) {
+	case "y", "Y", "yes", "Yes":
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 // Ensure returns the loaded config, running first-time setup if the file

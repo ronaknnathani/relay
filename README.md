@@ -63,11 +63,11 @@ cd relay
 make install
 ```
 
-`make install` installs the relay binary and links generated skills into each agent's personal skills
-directory: Claude uses `~/.claude/skills`, and Copilot uses `~/.copilot/skills`. To refresh only
-Copilot's skills, run `make install-copilot`. Skills relay does not own are never clobbered: a real
-file/dir with a colliding name is skipped, and a symlink that does not point into relay's own sources
-is flagged so you can choose whether to replace it.
+`make install` installs the relay binary. Then run `relay setup <agent>` from the relay repository to
+link generated skills into that agent's personal skills directory: Claude uses `~/.claude/skills`, and
+Copilot uses `~/.copilot/skills`. To refresh only Copilot's skills, run `relay setup copilot`. Skills
+relay does not own are never clobbered: a real file/dir with a colliding name is skipped, and a symlink
+that does not point into relay's own sources is flagged so you can choose whether to replace it.
 
 First run prompts for a branch prefix, your default agent, and that agent's permission mode (saved to
 `~/.relay/config.json`). Permission modes are stored per agent and are requested only the first time

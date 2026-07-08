@@ -151,6 +151,65 @@ func TestEnsureForAgentKeepsExistingAgentPermissionMode(t *testing.T) {
 	}
 }
 
+func TestSetupForAgentNonInteractiveCreatesDefaultConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USER", "tester")
+
+	cfg, err := SetupForAgent("copilot")
+	if err != nil {
+		t.Fatalf("SetupForAgent: %v", err)
+	}
+	if cfg.BranchPrefix != "tester/" {
+		t.Errorf("BranchPrefix = %q, want tester/", cfg.BranchPrefix)
+	}
+	if cfg.DefaultAgent != agent.DefaultName {
+		t.Errorf("DefaultAgent = %q, want %q", cfg.DefaultAgent, agent.DefaultName)
+	}
+	if got := cfg.PermissionModeFor("copilot"); got != "allow-all" {
+		t.Errorf("PermissionModeFor(copilot) = %q, want allow-all", got)
+	}
+
+	reloaded, ok, err := Load()
+	if err != nil || !ok {
+		t.Fatalf("Load: ok=%v err=%v", ok, err)
+	}
+	if reloaded.DefaultAgent != agent.DefaultName {
+		t.Errorf("persisted DefaultAgent = %q, want %q", reloaded.DefaultAgent, agent.DefaultName)
+	}
+	if got := reloaded.PermissionModeFor("copilot"); got != "allow-all" {
+		t.Errorf("persisted PermissionModeFor(copilot) = %q, want allow-all", got)
+	}
+}
+
+func TestSetupForAgentPreservesExistingConfigAndRepairsSelectedPermissionMode(t *testing.T) {
+	writeConfig(t, `{"branch_prefix":"rnathani/","default_agent":"claude","permission_modes":{"claude":"bypass","copilot":"auto"}}`)
+
+	cfg, err := SetupForAgent("copilot")
+	if err != nil {
+		t.Fatalf("SetupForAgent: %v", err)
+	}
+	if cfg.BranchPrefix != "rnathani/" {
+		t.Errorf("BranchPrefix = %q, want rnathani/", cfg.BranchPrefix)
+	}
+	if cfg.DefaultAgent != "claude" {
+		t.Errorf("DefaultAgent = %q, want claude", cfg.DefaultAgent)
+	}
+	if got := cfg.PermissionModeFor("claude"); got != "bypass" {
+		t.Errorf("PermissionModeFor(claude) = %q, want existing bypass", got)
+	}
+	if got := cfg.PermissionModeFor("copilot"); got != "allow-all" {
+		t.Errorf("PermissionModeFor(copilot) = %q, want repaired allow-all", got)
+	}
+}
+
+func TestSetupForAgentRejectsUnknownAgent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if _, err := SetupForAgent("nope"); err == nil {
+		t.Fatal("SetupForAgent(nope): expected error, got nil")
+	}
+}
+
 func TestSetAgentPermissionMode(t *testing.T) {
 	cfg := Config{}
 	cfg, err := SetAgentPermissionMode(cfg, "copilot", "prompt")
