@@ -254,8 +254,12 @@ func TestVerifyCopilotSkillsInstalled(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(generated, "SKILL.md"), []byte("# Deliver PR\n"), 0644); err != nil {
 		t.Fatalf("write generated: %v", err)
 	}
-	if err := VerifySkillsInstalled(copilot{}, "deliver-pr"); err == nil {
+	err := VerifySkillsInstalled(copilot{}, "deliver-pr")
+	if err == nil {
 		t.Fatal("VerifySkillsInstalled missing copilot install: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "Run `relay setup copilot` from the relay repository") {
+		t.Fatalf("missing install error = %v, want relay setup hint", err)
 	}
 	// A real (non-symlink) dir shadowing relay's skill must NOT satisfy the
 	// command-skill check.
@@ -265,10 +269,14 @@ func TestVerifyCopilotSkillsInstalled(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(installed, "SKILL.md"), []byte("# Deliver PR\n"), 0644); err != nil {
 		t.Fatalf("write installed: %v", err)
 	}
-	if err := VerifySkillsInstalled(copilot{}, "deliver-pr"); err == nil {
+	err = VerifySkillsInstalled(copilot{}, "deliver-pr")
+	if err == nil {
 		t.Fatal("VerifySkillsInstalled shadowing real dir: expected error, got nil")
 	}
-	// A relay-managed symlink (how `make install` installs skills) satisfies it.
+	if !strings.Contains(err.Error(), "Run `relay setup copilot` from the relay repository") {
+		t.Fatalf("shadowing skill error = %v, want relay setup hint", err)
+	}
+	// A relay-managed symlink (how `relay setup` installs skills) satisfies it.
 	if err := os.RemoveAll(installed); err != nil {
 		t.Fatalf("rm installed dir: %v", err)
 	}
@@ -280,6 +288,13 @@ func TestVerifyCopilotSkillsInstalled(t *testing.T) {
 	}
 	if err := VerifySkillsInstalled(copilot{}, "missing"); err == nil {
 		t.Fatal("VerifySkillsInstalled missing skill: expected error, got nil")
+	}
+}
+
+func TestInstallErrorMentionsSetup(t *testing.T) {
+	err := installError("copilot", os.ErrPermission)
+	if !strings.Contains(err.Error(), "Run `relay setup copilot` from the relay repository") {
+		t.Fatalf("installError = %v, want relay setup hint", err)
 	}
 }
 

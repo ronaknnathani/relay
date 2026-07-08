@@ -44,6 +44,8 @@ func runSetup(t *testing.T, args ...string) (string, error) {
 func TestSetupRequiresExactlyOneSupportedAgent(t *testing.T) {
 	for _, args := range [][]string{
 		nil,
+		{""},
+		{" \t "},
 		{"copilot", "extra"},
 	} {
 		_, err := runSetup(t, args...)
@@ -55,6 +57,24 @@ func TestSetupRequiresExactlyOneSupportedAgent(t *testing.T) {
 	_, err := runSetup(t, "nope")
 	if err == nil || !strings.Contains(err.Error(), `unknown agent "nope" (supported: claude, copilot)`) {
 		t.Fatalf("runSetup(nope) error = %v, want unknown-agent supported list", err)
+	}
+}
+
+func TestSetupRejectsSourceMissingSkillsDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	source := writeSetupSource(t)
+
+	_, err := runSetup(t, "copilot", "--src", source)
+	want := "--src " + source + " is not a relay source directory (missing plugin.json or skills/)"
+	if err == nil || err.Error() != want {
+		t.Fatalf("setup copilot --src without skills error = %v, want %q", err, want)
+	}
+	if _, err := os.Lstat(filepath.Join(home, ".copilot", "skills")); !os.IsNotExist(err) {
+		t.Fatalf("copilot skills dir exists after rejected --src: %v", err)
+	}
+	if _, err := os.Lstat(agent.PackageDir("copilot")); !os.IsNotExist(err) {
+		t.Fatalf("copilot package dir exists after rejected --src: %v", err)
 	}
 }
 

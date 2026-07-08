@@ -49,6 +49,29 @@ func TestLinkSkillsCreatesSymlinks(t *testing.T) {
 	}
 }
 
+func TestLinkSkillsIgnoresHiddenSkillDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	pkgDir := t.TempDir()
+	writeSkillPackage(t, pkgDir, "plan", ".hidden")
+
+	if err := LinkSkills(copilot{}, SkillSyncOptions{
+		PackageDir:   pkgDir,
+		ManagedRoots: []string{pkgDir},
+		Stdout:       &bytes.Buffer{},
+	}); err != nil {
+		t.Fatalf("LinkSkills: %v", err)
+	}
+
+	want := filepath.Join(pkgDir, "skills", "plan")
+	if got := readSkillLink(t, home, "plan"); got != want {
+		t.Errorf("skill link = %q, want %q", got, want)
+	}
+	if _, err := os.Lstat(filepath.Join(home, ".copilot", "skills", ".hidden")); !os.IsNotExist(err) {
+		t.Fatalf("hidden skill link exists: %v", err)
+	}
+}
+
 func TestLinkSkillsSkipsNonSymlinkTargets(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

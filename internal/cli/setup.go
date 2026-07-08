@@ -40,7 +40,11 @@ func newCmdSetup() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a, err := agent.Get(args[0])
+			agentName := strings.TrimSpace(args[0])
+			if agentName == "" {
+				return fmt.Errorf("setup requires exactly one agent (supported: %s)", strings.Join(agent.Names(), ", "))
+			}
+			a, err := agent.Get(agentName)
 			if err != nil {
 				return err
 			}
@@ -111,6 +115,9 @@ func discoverSourceDir(srcOverride string) (string, error) {
 		sourceRoot, err := filepath.Abs(srcOverride)
 		if err != nil {
 			return "", fmt.Errorf("resolve source dir %s: %w", srcOverride, err)
+		}
+		if !hasSourceLayout(sourceRoot) {
+			return "", fmt.Errorf("--src %s is not a relay source directory (missing plugin.json or skills/)", sourceRoot)
 		}
 		if _, err := generate.LoadSource(sourceRoot); err != nil {
 			return "", err

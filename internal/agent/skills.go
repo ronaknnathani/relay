@@ -54,6 +54,9 @@ func syncSkills(a Agent, opts SkillSyncOptions, link bool) error {
 		return fmt.Errorf("read skills dir %s: %w", sourceDir, err)
 	}
 	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
 		skillDir := filepath.Join(sourceDir, entry.Name())
 		info, err := os.Stat(skillDir)
 		if err != nil {

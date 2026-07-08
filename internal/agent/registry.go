@@ -22,7 +22,7 @@ func init() {
 }
 
 // PackageDir is the stable install location for a generated agent package:
-// ~/.relay/agents/<name>. The generator writes here and install targets link
+// ~/.relay/agents/<name>. The generator writes here and setup links
 // each package's skills into the agent-specific personal skills directory.
 func PackageDir(name string) string {
 	return filepath.Join(project.RelayDir(), "agents", name)
