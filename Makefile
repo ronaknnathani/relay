@@ -3,6 +3,13 @@ CMD         = ./cmd/relay
 BIN_DIR     = $(HOME)/.local/bin
 REPO_DIR    = $(shell pwd)
 CLAUDE_PKG_DIR = $(REPO_DIR)/dist/claude
+TOOLS_DIR   = $(REPO_DIR)/.tools
+TOOLS_BIN   = $(TOOLS_DIR)/bin
+GOLANGCI_LINT_CACHE = $(TOOLS_DIR)/golangci-lint-cache
+GOLANGCI_LINT_VERSION ?= v2.12.2
+GORELEASER_VERSION ?= latest
+GOLANGCI_LINT = $(TOOLS_BIN)/golangci-lint
+GORELEASER = $(TOOLS_BIN)/goreleaser
 
 HOST_OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 HOST_ARCH_RAW := $(shell uname -m)
@@ -14,7 +21,7 @@ else
   HOST_ARCH := $(HOST_ARCH_RAW)
 endif
 
-.PHONY: all darwin linux host clean install install-copilot uninstall generate generate-agents
+.PHONY: all darwin linux host clean install install-copilot uninstall generate generate-agents install-tools lint release-check
 
 all: darwin linux
 
@@ -26,6 +33,23 @@ linux:
 
 host:
 	GOOS=$(HOST_OS) GOARCH=$(HOST_ARCH) go build -o bin/$(HOST_OS)/$(BINARY) $(CMD)
+
+install-tools: $(GOLANGCI_LINT) $(GORELEASER)
+
+$(GOLANGCI_LINT):
+	mkdir -p $(TOOLS_BIN)
+	GOBIN=$(TOOLS_BIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
+$(GORELEASER):
+	mkdir -p $(TOOLS_BIN)
+	GOBIN=$(TOOLS_BIN) go install github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION)
+
+lint: $(GOLANGCI_LINT)
+	mkdir -p $(GOLANGCI_LINT_CACHE)
+	GOLANGCI_LINT_CACHE=$(GOLANGCI_LINT_CACHE) $(GOLANGCI_LINT) run ./...
+
+release-check: $(GORELEASER)
+	$(GORELEASER) check
 
 # generate renders the agent-neutral root source (plugin.json + skills/) into
 # the Claude package under dist/claude for developer inspection.
