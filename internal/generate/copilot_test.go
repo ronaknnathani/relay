@@ -1,55 +1,34 @@
 package generate
 
 import (
-	"flag"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/ronaknnathani/relay/internal/agent"
 )
-
-// update regenerates the checked-in golden package when set.
-var update = flag.Bool("update", false, "update golden test fixtures")
 
 // generateCopilot renders the root source into a temp dir for copilot.
 func generateCopilot(t *testing.T) (root, out string) {
-	t.Helper()
-	root = repoRoot(t)
-	out = t.TempDir()
-	cop, err := agent.Get("copilot")
-	if err != nil {
-		t.Fatalf("get copilot: %v", err)
-	}
-	if err := Generate(cop, root, out); err != nil {
-		t.Fatalf("Generate copilot: %v", err)
-	}
-	return root, out
+	return generateAgent(t, "copilot")
 }
 
-// TestCopilotGolden regenerates the Copilot package and asserts it matches the
-// checked-in golden byte-for-byte. Regenerate with `go test -run TestCopilotGolden
-// -update` after an intentional change.
-func TestCopilotGolden(t *testing.T) {
-	_, out := generateCopilot(t)
-	golden := filepath.Join(repoRoot(t), "internal", "generate", "testdata", "copilot-golden")
+// TestCopilotPackageMatchesSource asserts Copilot output is a deterministic
+// transform of the real source tree without duplicated skill fixtures.
+func TestCopilotPackageMatchesSource(t *testing.T) {
+	root, out := generateCopilot(t)
+	src := loadSourceForTest(t, root)
 
-	if *update {
-		if err := os.RemoveAll(golden); err != nil {
-			t.Fatalf("clear golden: %v", err)
-		}
-		copyTree(t, out, golden)
-		t.Log("golden updated")
-		return
-	}
-
-	compareTree(t, golden, out)
+	expectFile(t, out, ".claude-plugin/plugin.json", copilotManifest)
+	caps := mustGet(t, "copilot").Capabilities()
+	assertRenderedSkills(t, out, src, func(body []byte) []byte {
+		return transformCopilot(body, caps)
+	})
+	assertNoUnexpectedFiles(t, out, expectedSkillFiles(src, ".claude-plugin/plugin.json"))
 }
 
-// TestCopilotPackageInvariants asserts the Copilot-specific transforms hold,
-// independent of the byte-golden, so a regression is described in plain terms.
+// TestCopilotPackageInvariants asserts the Copilot-specific transforms hold, so
+// a regression is described in plain terms.
 func TestCopilotPackageInvariants(t *testing.T) {
 	_, out := generateCopilot(t)
 
@@ -123,40 +102,4 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(data)
-}
-
-// compareTree asserts every file under want exists under got with identical
-// bytes, and that got has no extra files.
-func compareTree(t *testing.T, want, got string) {
-	t.Helper()
-	wantFiles := map[string]bool{}
-	walkFiles(t, want, func(rel string, data []byte) {
-		wantFiles[rel] = true
-		g, err := os.ReadFile(filepath.Join(got, rel))
-		if err != nil {
-			t.Errorf("golden file %s missing from output: %v", rel, err)
-			return
-		}
-		if string(g) != string(data) {
-			t.Errorf("%s differs from golden", rel)
-		}
-	})
-	walkFiles(t, got, func(rel string, _ []byte) {
-		if !wantFiles[rel] {
-			t.Errorf("output has extra file %s not in golden", rel)
-		}
-	})
-}
-
-func copyTree(t *testing.T, src, dst string) {
-	t.Helper()
-	walkFiles(t, src, func(rel string, data []byte) {
-		p := filepath.Join(dst, rel)
-		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-		if err := os.WriteFile(p, data, 0644); err != nil {
-			t.Fatalf("write golden %s: %v", rel, err)
-		}
-	})
 }

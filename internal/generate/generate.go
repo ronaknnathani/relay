@@ -19,6 +19,8 @@ func Generate(a agent.Agent, src, out string) error {
 	switch a.Name() {
 	case "claude":
 		return renderClaude(a, source, out)
+	case "codex":
+		return renderCodex(a, source, out)
 	case "copilot":
 		return renderCopilot(a, source, out)
 	default:

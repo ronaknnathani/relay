@@ -21,7 +21,7 @@ else
   HOST_ARCH := $(HOST_ARCH_RAW)
 endif
 
-.PHONY: all darwin linux host clean install install-copilot uninstall generate generate-agents install-tools lint release-check
+.PHONY: all darwin linux host clean install install-copilot install-codex uninstall generate generate-agents install-tools lint release-check
 
 all: darwin linux
 
@@ -75,8 +75,12 @@ install: host
 install-copilot: host
 	$(REPO_DIR)/bin/$(HOST_OS)/$(BINARY) setup copilot --src $(REPO_DIR)
 
+install-codex: host
+	$(REPO_DIR)/bin/$(HOST_OS)/$(BINARY) setup codex --src $(REPO_DIR)
+
 uninstall: host
 	$(REPO_DIR)/bin/$(HOST_OS)/$(BINARY) setup claude --uninstall --src $(REPO_DIR)
+	$(REPO_DIR)/bin/$(HOST_OS)/$(BINARY) setup codex --uninstall --src $(REPO_DIR)
 	$(REPO_DIR)/bin/$(HOST_OS)/$(BINARY) setup copilot --uninstall --src $(REPO_DIR)
 	rm -f $(BIN_DIR)/$(BINARY)
 	@echo "Uninstalled."
