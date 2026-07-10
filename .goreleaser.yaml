@@ -1,0 +1,55 @@
+version: 2
+
+project_name: relay
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: relay
+    main: ./cmd/relay
+    binary: relay
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/ronaknnathani/relay/internal/cli.version={{.Version}}
+      - -X github.com/ronaknnathani/relay/internal/cli.commit={{.Commit}}
+      - -X github.com/ronaknnathani/relay/internal/cli.date={{.Date}}
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_v{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: ronaknnathani
+    name: relay
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"

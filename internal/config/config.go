@@ -132,7 +132,7 @@ func validateBranchPrefix(s string) (string, error) {
 		return "", fmt.Errorf("prefix cannot be empty")
 	}
 	if !strings.HasSuffix(s, "/") {
-		s = s + "/"
+		s += "/"
 	}
 	if !branchPrefixRE.MatchString(s) {
 		return "", fmt.Errorf("invalid prefix %q: must be alphanumerics or hyphens followed by /", s)

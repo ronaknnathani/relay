@@ -9,6 +9,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 // Execute runs the root command and returns any error to main.
 func Execute() error {
 	ui.InitColor()
@@ -37,6 +43,7 @@ func newRootCmd() *cobra.Command {
 		Use:           "relay",
 		Short:         "AI-powered development workflow",
 		Long:          "AI-powered development workflow for coding agents.\n\nWith no args: list active projects.\nWith a task description: create a new project and launch the agent.",
+		Version:       versionInfo(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.ArbitraryArgs,
@@ -91,4 +98,8 @@ func newRootCmd() *cobra.Command {
 		newCmdConfig(),
 	)
 	return cmd
+}
+
+func versionInfo() string {
+	return fmt.Sprintf("%s (commit %s, built %s)", version, commit, date)
 }

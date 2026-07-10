@@ -60,7 +60,7 @@ func runArchive(slug string, force bool) error {
 		case force:
 			deleteBranchAfter, forceDeleteBranchAfter = true, true
 		default:
-			return fmt.Errorf("branch %q has unmerged work. Re-run with --force to delete it anyway, or merge it first.", m.Branch)
+			return fmt.Errorf("branch %q has unmerged work; re-run with --force to delete it anyway, or merge it first", m.Branch)
 		}
 	}
 
