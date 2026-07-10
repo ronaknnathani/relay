@@ -50,6 +50,11 @@ func TestRenderSubagentInlineFallback(t *testing.T) {
 	if strings.Contains(claudeOut, "inline") {
 		t.Errorf("capable agent was downgraded to inline: %q", claudeOut)
 	}
+
+	codexOut := string(renderBody([]byte("{{subagent:large_context}}"), mustGet(t, "codex").Capabilities()))
+	if strings.Contains(codexOut, "inline") || !strings.Contains(codexOut, "Launch a Codex subagent") {
+		t.Errorf("Codex subagent directive rendered incorrectly: %q", codexOut)
+	}
 }
 
 // TestRenderBodyNoDirectives confirms bodies without directives pass through

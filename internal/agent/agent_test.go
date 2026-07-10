@@ -233,6 +233,84 @@ func TestCopilotCapabilities(t *testing.T) {
 	}
 }
 
+func TestCodexLaunchArgs(t *testing.T) {
+	o := LaunchOptions{
+		Worktree:    "/tmp/wt",
+		ProjectDir:  "/tmp/proj",
+		SessionName: "relay:demo",
+		Command:     "plan",
+		CommandArgs: "demo",
+	}
+	want := []string{
+		"-C", "/tmp/wt",
+		"--add-dir", "/tmp/proj",
+		"--sandbox", "workspace-write",
+		"--ask-for-approval", "never",
+		`Run the relay "plan" skill for slug demo.`,
+	}
+	if got := (codex{}).LaunchArgs(o); !reflect.DeepEqual(got, want) {
+		t.Errorf("LaunchArgs mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+
+	oPrompt := o
+	oPrompt.PermissionMode = "prompt"
+	gotPrompt := (codex{}).LaunchArgs(oPrompt)
+	if !slices.Contains(gotPrompt, "on-request") {
+		t.Errorf("prompt mode args = %#v, want ask-for-approval on-request", gotPrompt)
+	}
+
+	oBypass := o
+	oBypass.PermissionMode = "bypass"
+	gotBypass := (codex{}).LaunchArgs(oBypass)
+	if !slices.Contains(gotBypass, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Errorf("bypass mode args = %#v, want bypass flag", gotBypass)
+	}
+
+	o.ProjectDir = ""
+	for _, a := range (codex{}).LaunchArgs(o) {
+		if a == "--add-dir" {
+			t.Error("LaunchArgs emitted --add-dir with no ProjectDir")
+		}
+		if a == "-n" {
+			t.Error("LaunchArgs emitted unsupported Codex session-name flag")
+		}
+	}
+}
+
+func TestCodexPrepareWritesAgentsMD(t *testing.T) {
+	dir := t.TempDir()
+	o := LaunchOptions{Worktree: dir, SystemPrompt: "Active relay project: demo. Phase: plan."}
+	if err := (codex{}).Prepare(o); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	if !strings.Contains(string(data), o.SystemPrompt) {
+		t.Errorf("AGENTS.md missing context line: %q", data)
+	}
+}
+
+func TestCodexCapabilities(t *testing.T) {
+	c := (codex{}).Capabilities()
+	if c.Subagents != SubagentToml {
+		t.Errorf("Subagents = %v, want SubagentToml", c.Subagents)
+	}
+	if !c.LargeContext {
+		t.Error("LargeContext = false, want true")
+	}
+	if c.DeterministicSlash {
+		t.Error("DeterministicSlash = true, want false (prose invocation)")
+	}
+	if c.ContextInjection != ContextFile {
+		t.Errorf("ContextInjection = %v, want ContextFile", c.ContextInjection)
+	}
+	if got := c.ToolNames.Name("AskUserQuestion"); got != "ask the user" {
+		t.Errorf("AskUserQuestion tool name = %q, want ask the user", got)
+	}
+}
+
 func TestGetCopilot(t *testing.T) {
 	a, err := Get("copilot")
 	if err != nil {
@@ -240,6 +318,16 @@ func TestGetCopilot(t *testing.T) {
 	}
 	if a.Name() != "copilot" {
 		t.Errorf("Get(copilot).Name() = %q, want copilot", a.Name())
+	}
+}
+
+func TestGetCodex(t *testing.T) {
+	a, err := Get("codex")
+	if err != nil {
+		t.Fatalf("Get(codex): %v", err)
+	}
+	if a.Name() != "codex" {
+		t.Errorf("Get(codex).Name() = %q, want codex", a.Name())
 	}
 }
 
@@ -288,6 +376,35 @@ func TestVerifyCopilotSkillsInstalled(t *testing.T) {
 	}
 	if err := VerifySkillsInstalled(copilot{}, "missing"); err == nil {
 		t.Fatal("VerifySkillsInstalled missing skill: expected error, got nil")
+	}
+}
+
+func TestVerifyCodexSkillsInstalled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	generated := filepath.Join(PackageDir("codex"), "skills", "deliver-pr")
+	installed := filepath.Join(home, ".codex", "skills", "deliver-pr")
+	if err := os.MkdirAll(generated, 0755); err != nil {
+		t.Fatalf("mkdir generated: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(generated, "SKILL.md"), []byte("# Deliver PR\n"), 0644); err != nil {
+		t.Fatalf("write generated: %v", err)
+	}
+	err := VerifySkillsInstalled(codex{}, "deliver-pr")
+	if err == nil {
+		t.Fatal("VerifySkillsInstalled missing codex install: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "Run `relay setup codex` from the relay repository") {
+		t.Fatalf("missing install error = %v, want relay setup hint", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(installed), 0755); err != nil {
+		t.Fatalf("mkdir installed parent: %v", err)
+	}
+	if err := os.Symlink(generated, installed); err != nil {
+		t.Fatalf("symlink installed: %v", err)
+	}
+	if err := VerifySkillsInstalled(codex{}, "deliver-pr"); err != nil {
+		t.Fatalf("VerifySkillsInstalled: %v", err)
 	}
 }
 
@@ -355,12 +472,18 @@ func TestGet(t *testing.T) {
 	if !strings.Contains(err.Error(), "claude") {
 		t.Errorf("error %q should list supported agents", err)
 	}
+	if !strings.Contains(err.Error(), "codex") {
+		t.Errorf("error %q should list supported agents", err)
+	}
 }
 
 func TestNames(t *testing.T) {
 	names := Names()
 	if !slices.Contains(names, "claude") {
 		t.Errorf("Names() = %v, want it to contain claude", names)
+	}
+	if !slices.Contains(names, "codex") {
+		t.Errorf("Names() = %v, want it to contain codex", names)
 	}
 }
 

@@ -49,13 +49,13 @@ func TestSetupRequiresExactlyOneSupportedAgent(t *testing.T) {
 		{"copilot", "extra"},
 	} {
 		_, err := runSetup(t, args...)
-		if err == nil || !strings.Contains(err.Error(), "setup requires exactly one agent (supported: claude, copilot)") {
+		if err == nil || !strings.Contains(err.Error(), "setup requires exactly one agent (supported: claude, codex, copilot)") {
 			t.Fatalf("runSetup(%v) error = %v, want supported-agent arity error", args, err)
 		}
 	}
 
 	_, err := runSetup(t, "nope")
-	if err == nil || !strings.Contains(err.Error(), `unknown agent "nope" (supported: claude, copilot)`) {
+	if err == nil || !strings.Contains(err.Error(), `unknown agent "nope" (supported: claude, codex, copilot)`) {
 		t.Fatalf("runSetup(nope) error = %v, want unknown-agent supported list", err)
 	}
 }
@@ -108,6 +108,39 @@ func TestSetupCopilotGeneratesLinksAndWritesConfig(t *testing.T) {
 	}
 	if got := cfg.PermissionModeFor("copilot"); got != "allow-all" {
 		t.Errorf("PermissionModeFor(copilot) = %q, want allow-all", got)
+	}
+}
+
+func TestSetupCodexGeneratesLinksAndWritesConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USER", "tester")
+	source := writeSetupSource(t, "plan")
+
+	if _, err := runSetup(t, "codex", "--src", source); err != nil {
+		t.Fatalf("setup codex: %v", err)
+	}
+
+	packageSkill := filepath.Join(agent.PackageDir("codex"), "skills", "plan")
+	if _, err := os.Stat(filepath.Join(packageSkill, "SKILL.md")); err != nil {
+		t.Fatalf("generated codex skill: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(agent.PackageDir("codex"), ".claude-plugin", "plugin.json")); !os.IsNotExist(err) {
+		t.Fatalf("codex generated Claude plugin manifest: %v", err)
+	}
+	installed := filepath.Join(home, ".codex", "skills", "plan")
+	if got, err := os.Readlink(installed); err != nil || got != packageSkill {
+		t.Fatalf("installed codex link = %q, %v; want %q", got, err, packageSkill)
+	}
+	cfg, ok, err := config.Load()
+	if err != nil || !ok {
+		t.Fatalf("Load config: ok=%v err=%v", ok, err)
+	}
+	if cfg.DefaultAgent != agent.DefaultName {
+		t.Errorf("DefaultAgent = %q, want %q", cfg.DefaultAgent, agent.DefaultName)
+	}
+	if got := cfg.PermissionModeFor("codex"); got != "auto" {
+		t.Errorf("PermissionModeFor(codex) = %q, want auto", got)
 	}
 }
 

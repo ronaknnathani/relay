@@ -37,15 +37,16 @@ valid across agents.
 
 ## The generate / test loop
 
-The package is byte-pinned by golden tests. After changing any skill:
+The package renderers are tested against source-derived expectations, so the real `skills/` tree stays
+the only copy of skill content. After changing any skill:
 
 ```bash
-go test ./internal/generate/ -run Golden -update   # regenerate the claude + copilot goldens
-go build ./... && go vet ./... && go test ./...     # everything green
+go test ./internal/generate/
+go build ./... && go vet ./... && go test ./...
 ```
 
-Inspect the golden diff before committing — it is the per-agent rendering of your change. The coupling
-test fails the build if a forbidden plugin namespace leaks into the rendered package.
+Inspect the generated package locally when changing renderer behavior. The coupling test fails the
+build if a forbidden plugin namespace leaks into the rendered package.
 
 ## Pull requests
 

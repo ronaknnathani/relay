@@ -28,6 +28,10 @@ func (copilot) Lookup() (string, error) {
 // auto-loads every session. AGENTS.md is added to the worktree's
 // .git/info/exclude so it does not dirty the user's git status.
 func (copilot) Prepare(o LaunchOptions) error {
+	return prepareAgentsMD(o)
+}
+
+func prepareAgentsMD(o LaunchOptions) error {
 	path := filepath.Join(o.Worktree, "AGENTS.md")
 	content := "# relay\n\n" + o.SystemPrompt + "\n"
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
@@ -94,11 +98,6 @@ func (copilot) Capabilities() Capabilities {
 }
 
 func (copilot) LaunchArgs(o LaunchOptions) []string {
-	prompt := fmt.Sprintf("Run the relay %q skill", o.Command)
-	if o.CommandArgs != "" {
-		prompt += " for slug " + o.CommandArgs
-	}
-	prompt += "."
 	args := []string{
 		"-C", o.Worktree,
 		"-n", o.SessionName,
@@ -113,8 +112,16 @@ func (copilot) LaunchArgs(o LaunchOptions) []string {
 		args = append(args, "--allow-all")
 	}
 	// "prompt" mode: omit the allow-all flags so Copilot asks before acting.
-	args = append(args, "-i", prompt)
+	args = append(args, "-i", relaySkillPrompt(o))
 	return args
+}
+
+func relaySkillPrompt(o LaunchOptions) string {
+	prompt := fmt.Sprintf("Run the relay %q skill", o.Command)
+	if o.CommandArgs != "" {
+		prompt += " for slug " + o.CommandArgs
+	}
+	return prompt + "."
 }
 
 // PermissionModes lists Copilot's permission modes; "allow-all" (the default)

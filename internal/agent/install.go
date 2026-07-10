@@ -11,6 +11,8 @@ import (
 // agent exists before relay hands off to the agent process.
 func VerifySkillsInstalled(a Agent, command string) error {
 	switch a.Name() {
+	case "codex":
+		return verifyInstalledSkills(a.Name(), codexSkillsDir(), command)
 	case "copilot":
 		return verifyInstalledSkills(a.Name(), copilotSkillsDir(), command)
 	case "claude":
@@ -56,6 +58,10 @@ func claudeSkillsDir() string {
 
 func copilotSkillsDir() string {
 	return filepath.Join(os.Getenv("HOME"), ".copilot", "skills")
+}
+
+func codexSkillsDir() string {
+	return filepath.Join(os.Getenv("HOME"), ".codex", "skills")
 }
 
 func requireFile(path string) error {

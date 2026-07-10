@@ -169,6 +169,8 @@ func skillsDirForAgent(a Agent) (string, error) {
 	switch a.Name() {
 	case "claude":
 		return claudeSkillsDir(), nil
+	case "codex":
+		return codexSkillsDir(), nil
 	case "copilot":
 		return copilotSkillsDir(), nil
 	default:

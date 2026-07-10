@@ -18,6 +18,7 @@ func register(a Agent) { registry[a.Name()] = a }
 
 func init() {
 	register(claude{})
+	register(codex{})
 	register(copilot{})
 }
 

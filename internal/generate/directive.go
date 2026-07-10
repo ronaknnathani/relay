@@ -31,7 +31,18 @@ func renderBody(body []byte, caps agent.Capabilities) []byte {
 // tier is "large_context" (1M-context model), "fast" (a cheap/fast model), or
 // "" (the agent's default model).
 func renderSubagent(caps agent.Capabilities, tier string) string {
-	if caps.Subagents != agent.SubagentTask {
+	switch caps.Subagents {
+	case agent.SubagentNone:
+		return "Run the following inline (no subagent available)"
+	case agent.SubagentToml:
+		return "Launch a Codex subagent"
+	case agent.SubagentChildSession:
+		return "Launch a child subagent session"
+	case agent.SubagentFleet:
+		return "Launch a subagent fleet"
+	case agent.SubagentTask:
+		// Continue below.
+	default:
 		return "Run the following inline (no subagent available)"
 	}
 	// The Agent-tool name distinguishes Claude (unmapped → "Agent", per-subagent
