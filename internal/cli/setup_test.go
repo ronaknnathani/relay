@@ -9,6 +9,7 @@ import (
 
 	"github.com/ronaknnathani/relay/internal/agent"
 	"github.com/ronaknnathani/relay/internal/config"
+	"github.com/ronaknnathani/relay/internal/generate"
 )
 
 func writeSetupSource(t *testing.T, skillNames ...string) string {
@@ -18,7 +19,7 @@ func writeSetupSource(t *testing.T, skillNames ...string) string {
 		t.Fatalf("write plugin manifest: %v", err)
 	}
 	for _, name := range skillNames {
-		skillDir := filepath.Join(source, "skills", name)
+		skillDir := filepath.Join(source, generate.TemplateSkillsDir, name)
 		if err := os.MkdirAll(skillDir, 0755); err != nil {
 			t.Fatalf("mkdir skill: %v", err)
 		}
@@ -66,7 +67,7 @@ func TestSetupRejectsSourceMissingSkillsDir(t *testing.T) {
 	source := writeSetupSource(t)
 
 	_, err := runSetup(t, "copilot", "--src", source)
-	want := "--src " + source + " is not a relay source directory (missing plugin.json or skills/)"
+	want := "--src " + source + " is not a relay source directory (missing plugin.json or skills-template/)"
 	if err == nil || err.Error() != want {
 		t.Fatalf("setup copilot --src without skills error = %v, want %q", err, want)
 	}

@@ -1,6 +1,7 @@
 ---
 name: rebase
 description: Use when you need to rebase the current branch onto main, resolve merge conflicts, and force-push
+argument-hint: "[BASE_BRANCH]"
 ---
 
 # Rebase — Rebase, Fix Conflicts, Push

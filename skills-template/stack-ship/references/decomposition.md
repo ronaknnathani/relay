@@ -76,7 +76,7 @@ out blindly on a chain it can't actually parallelize.
 
 ## Author sign-off
 If the design left genuine ambiguity (multiple reasonable decompositions, an undecided API shape),
-present the plan via `ask the user` **before** building. If it's unambiguous, proceed with the
+present the plan via `AskUserQuestion` **before** building. If it's unambiguous, proceed with the
 smallest-PRs default and record the decomposition call in `tradeoffs.md`. Do **not** block on
 confirmation for things with an obvious right answer — the goal is near-zero steering, which means
 asking only the questions that actually change the plan.

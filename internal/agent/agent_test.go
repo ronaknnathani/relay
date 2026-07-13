@@ -349,7 +349,7 @@ func TestVerifyCopilotSkillsInstalled(t *testing.T) {
 	if !strings.Contains(err.Error(), "Relay-managed workflows require `relay setup copilot`") {
 		t.Fatalf("missing install error = %v, want relay setup hint", err)
 	}
-	if !strings.Contains(err.Error(), "`npx skills add ./skills-template` installs standalone skills only") {
+	if !strings.Contains(err.Error(), "`npx skills add <repo>` installs standalone skills only") {
 		t.Fatalf("missing install error = %v, want standalone install distinction", err)
 	}
 	// A real (non-symlink) dir shadowing relay's skill must NOT satisfy the
@@ -367,7 +367,7 @@ func TestVerifyCopilotSkillsInstalled(t *testing.T) {
 	if !strings.Contains(err.Error(), "Relay-managed workflows require `relay setup copilot`") {
 		t.Fatalf("shadowing skill error = %v, want relay setup hint", err)
 	}
-	if !strings.Contains(err.Error(), "`npx skills add ./skills-template` installs standalone skills only") {
+	if !strings.Contains(err.Error(), "`npx skills add <repo>` installs standalone skills only") {
 		t.Fatalf("shadowing skill error = %v, want standalone install distinction", err)
 	}
 	// A relay-managed symlink (how `relay setup` installs skills) satisfies it.
@@ -403,7 +403,7 @@ func TestVerifyCodexSkillsInstalled(t *testing.T) {
 	if !strings.Contains(err.Error(), "Relay-managed workflows require `relay setup codex`") {
 		t.Fatalf("missing install error = %v, want relay setup hint", err)
 	}
-	if !strings.Contains(err.Error(), "`npx skills add ./skills-template` installs standalone skills only") {
+	if !strings.Contains(err.Error(), "`npx skills add <repo>` installs standalone skills only") {
 		t.Fatalf("missing install error = %v, want standalone install distinction", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(installed), 0755); err != nil {
@@ -422,7 +422,7 @@ func TestInstallErrorMentionsSetup(t *testing.T) {
 	if !strings.Contains(err.Error(), "Relay-managed workflows require `relay setup copilot`") {
 		t.Fatalf("installError = %v, want relay setup hint", err)
 	}
-	if !strings.Contains(err.Error(), "`npx skills add ./skills-template` installs standalone skills only") {
+	if !strings.Contains(err.Error(), "`npx skills add <repo>` installs standalone skills only") {
 		t.Fatalf("installError = %v, want standalone install distinction", err)
 	}
 }

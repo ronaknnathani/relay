@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-package_path="${repo_root}/skills-template"
+package_path="${repo_root}"
 
 tmp_home="$(mktemp -d)"
 tmp_config="$(mktemp -d)"
@@ -16,8 +16,8 @@ export HOME="${tmp_home}"
 export XDG_CONFIG_HOME="${tmp_config}"
 export npm_config_cache="${tmp_npm_cache}"
 
-if [[ ! -d "${package_path}" ]]; then
-  echo "FAIL: ${package_path} does not exist" >&2
+if [[ ! -d "${repo_root}/skills" ]]; then
+  echo "FAIL: ${repo_root}/skills does not exist" >&2
   exit 1
 fi
 

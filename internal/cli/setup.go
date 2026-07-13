@@ -117,7 +117,7 @@ func discoverSourceDir(srcOverride string) (string, error) {
 			return "", fmt.Errorf("resolve source dir %s: %w", srcOverride, err)
 		}
 		if !hasSourceLayout(sourceRoot) {
-			return "", fmt.Errorf("--src %s is not a relay source directory (missing plugin.json or skills/)", sourceRoot)
+			return "", fmt.Errorf("--src %s is not a relay source directory (missing plugin.json or skills-template/)", sourceRoot)
 		}
 		if _, err := generate.LoadSource(sourceRoot); err != nil {
 			return "", err
@@ -156,7 +156,7 @@ func sourceDirFromExecutable(executable string) (string, error) {
 	}
 	sourceRoot := filepath.Dir(binDir)
 	if !hasSourceLayout(sourceRoot) {
-		return "", fmt.Errorf("source root %s is missing plugin.json or skills/", sourceRoot)
+		return "", fmt.Errorf("source root %s is missing plugin.json or skills-template/", sourceRoot)
 	}
 	return sourceRoot, nil
 }
@@ -186,7 +186,7 @@ func hasSourceLayout(sourceRoot string) bool {
 	if err != nil || manifest.IsDir() {
 		return false
 	}
-	skills, err := os.Stat(filepath.Join(sourceRoot, "skills"))
+	skills, err := os.Stat(filepath.Join(sourceRoot, generate.TemplateSkillsDir))
 	return err == nil && skills.IsDir()
 }
 

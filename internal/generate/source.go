@@ -1,5 +1,5 @@
-// Package generate renders the agent-neutral source at the repo root
-// (plugin.json + skills/) into a per-agent package. It reads each adapter's
+// Package generate renders the Relay template source at the repo root
+// (plugin.json + skills-template/) into a per-agent package. It reads each adapter's
 // capability descriptor and emits the best mechanism that agent supports; the
 // Claude and Copilot adapters exist today.
 package generate
@@ -33,17 +33,24 @@ type Source struct {
 // pluginManifestFile is the source file holding the verbatim plugin manifest.
 const pluginManifestFile = "plugin.json"
 
+// TemplateSkillsDir is the Relay-specific source tree used for agent generation.
+const TemplateSkillsDir = "skills-template"
+
+// PortableSkillsDir is the bare source tree consumed by standalone skills CLI
+// installs such as `npx skills add <repo>`.
+const PortableSkillsDir = "skills"
+
 // LoadSource reads the workflow source rooted at dir. The layout is
-// self-describing: plugin.json is the plugin manifest and skills/<name>/SKILL.md
-// are the skill entries. Entries are returned sorted by name for deterministic
-// output.
+// self-describing: plugin.json is the plugin manifest and
+// skills-template/<name>/SKILL.md are the skill entries. Entries are returned
+// sorted by name for deterministic output.
 func LoadSource(dir string) (*Source, error) {
 	manifest, err := os.ReadFile(filepath.Join(dir, pluginManifestFile))
 	if err != nil {
 		return nil, fmt.Errorf("read plugin manifest: %w", err)
 	}
 
-	entries, err := loadSkills(filepath.Join(dir, "skills"))
+	entries, err := loadSkills(filepath.Join(dir, TemplateSkillsDir))
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +58,7 @@ func LoadSource(dir string) (*Source, error) {
 	return &Source{PluginManifest: manifest, Entries: entries}, nil
 }
 
-// loadSkills reads skills/<name>/SKILL.md. A missing directory yields no entries.
+// loadSkills reads <dir>/<name>/SKILL.md. A missing directory yields no entries.
 func loadSkills(dir string) ([]Entry, error) {
 	dirs, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {

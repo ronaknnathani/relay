@@ -4,12 +4,8 @@ import (
 	"path/filepath"
 )
 
-// PortableTemplateDir is the committed, standalone skills package generated
-// from the canonical Relay source.
-const PortableTemplateDir = "skills-template"
-
-// GeneratePortableTemplate renders the Relay source into a standalone
-// skills-template package: one direct skill directory per source skill.
+// GeneratePortableTemplate renders the Relay template source into a standalone
+// bare skills package: one direct skill directory per source skill.
 func GeneratePortableTemplate(src, out string) error {
 	source, err := LoadSource(src)
 	if err != nil {

@@ -96,5 +96,5 @@ func installError(agentName string, err error) error {
 }
 
 func setupHint(agentName string) string {
-	return fmt.Sprintf("Relay-managed workflows require `relay setup %s` from the relay repository. `npx skills add ./skills-template` installs standalone skills only.", agentName)
+	return fmt.Sprintf("Relay-managed workflows require `relay setup %s` from the relay repository. `npx skills add <repo>` installs standalone skills only.", agentName)
 }

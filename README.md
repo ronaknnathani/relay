@@ -1,9 +1,9 @@
 # Relay
 
 Relay is an open-source system of **composable agent skills and workflows** that automate
-software-engineering work through small, reusable building blocks. Skills are authored once in an
-agent-neutral source and compiled per coding agent, so the same library drives **Claude, Copilot, and
-Codex**.
+software-engineering work through small, reusable building blocks. The root `skills/` tree is a
+portable skills package for any supported agent, while Relay keeps richer templates in
+`skills-template/` to generate optimized **Claude, Copilot, and Codex** packages.
 
 The design principle is leverage through composition: small single-purpose skills compose into
 workflows, workflows compose into an orchestrator, and heavy work is delegated to sub-agents so the
@@ -81,13 +81,16 @@ into relay's own sources is flagged so you can choose whether to replace it.
 
 ### Standalone skills-only install
 
-Use the committed portable package when you only want the skills, without installing the `relay`
+Use the repository directly when you only want the bare skills, without installing the `relay`
 binary or creating Relay project state:
 
 ```bash
-npx skills add ./skills-template
-npx skills add ./skills-template --agent codex   # when your skills CLI advertises --agent
-npx skills add ./skills-template --all           # when your skills CLI advertises --all
+npx skills add ronaknnathani/relay
+npx skills add ronaknnathani/relay --agent codex   # when your skills CLI advertises --agent
+npx skills add ronaknnathani/relay --all           # when your skills CLI advertises --all
+
+# local development
+npx skills add .
 ```
 
 This path installs standalone skill directories only. It does not replace `relay setup <agent>` for
@@ -111,14 +114,13 @@ Project state lives under `~/.relay/projects/`; worktrees live under `<repo>/.wo
 
 ## Multi-agent
 
-Skills are authored once under `skills/` with agent-neutral conventions (a single `{{subagent}}`
-directive carries model-tier intent; tool names and frontmatter are normalized per agent). `relay
-generate` renders the strongest mechanism each agent supports — Claude's `Agent` tool and deterministic
-slash invocation, Copilot's prose invocation and `AGENTS.md` context, and Codex's native skills under
-`~/.codex/skills` — rather than a lowest-common-denominator. The committed `skills-template/` tree is
-generated from the same source for portable `npx skills add` installs. Generator tests compare each
-rendered package and the committed portable tree to source-derived expectations instead of duplicating
-the whole skill tree as fixtures.
+Root `skills/` are bare, portable skills that the skills CLI can install with `npx skills add <repo>`.
+Relay-specific templates live under `skills-template/`; they retain directives such as `{{subagent}}`
+that carry model-tier intent for Relay's generator. `relay generate` renders the strongest mechanism
+each agent supports — Claude's `Agent` tool and deterministic slash invocation, Copilot's prose
+invocation and `AGENTS.md` context, and Codex's native skills under `~/.codex/skills` — rather than a
+lowest-common-denominator. Generator tests compare the generated agent packages and root portable
+skills to the Relay templates so the two trees do not drift.
 
 ## Contributing
 

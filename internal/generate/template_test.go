@@ -8,32 +8,34 @@ import (
 	"testing"
 )
 
-func TestPortableTemplateDirectoryShape(t *testing.T) {
+func TestTemplateAndPortableDirectoryShape(t *testing.T) {
 	root := repoRoot(t)
 
 	var found []string
-	for _, name := range []string{PortableTemplateDir, "templated-skills", "template"} {
+	for _, name := range []string{TemplateSkillsDir, "templated-skills", "template"} {
 		if info, err := os.Stat(filepath.Join(root, name)); err == nil && info.IsDir() {
 			found = append(found, name)
 		} else if err != nil && !os.IsNotExist(err) {
 			t.Fatalf("stat %s: %v", name, err)
 		}
 	}
-	if !slices.Equal(found, []string{PortableTemplateDir}) {
-		t.Fatalf("template directories = %v, want only %s", found, PortableTemplateDir)
+	if !slices.Equal(found, []string{TemplateSkillsDir}) {
+		t.Fatalf("template directories = %v, want only %s", found, TemplateSkillsDir)
 	}
-	if _, err := os.Stat(filepath.Join(root, PortableTemplateDir, "skills")); !os.IsNotExist(err) {
-		t.Fatalf("%s must not contain a nested skills/ dir", PortableTemplateDir)
-	}
-	if _, err := os.Stat(filepath.Join(root, PortableTemplateDir, ".claude-plugin")); !os.IsNotExist(err) {
-		t.Fatalf("%s must not contain a Claude plugin manifest dir", PortableTemplateDir)
-	}
-	if _, err := os.Stat(filepath.Join(root, PortableTemplateDir, pluginManifestFile)); !os.IsNotExist(err) {
-		t.Fatalf("%s must not contain %s", PortableTemplateDir, pluginManifestFile)
+	for _, dir := range []string{PortableSkillsDir, TemplateSkillsDir} {
+		if _, err := os.Stat(filepath.Join(root, dir, "skills")); !os.IsNotExist(err) {
+			t.Fatalf("%s must not contain a nested skills/ dir", dir)
+		}
+		if _, err := os.Stat(filepath.Join(root, dir, ".claude-plugin")); !os.IsNotExist(err) {
+			t.Fatalf("%s must not contain a Claude plugin manifest dir", dir)
+		}
+		if _, err := os.Stat(filepath.Join(root, dir, pluginManifestFile)); !os.IsNotExist(err) {
+			t.Fatalf("%s must not contain %s", dir, pluginManifestFile)
+		}
 	}
 }
 
-func TestPortableTemplateMatchesSourceRender(t *testing.T) {
+func TestPortableSkillsMatchTemplateRender(t *testing.T) {
 	root := repoRoot(t)
 	out := t.TempDir()
 	if err := GeneratePortableTemplate(root, out); err != nil {
@@ -54,7 +56,7 @@ func TestPortableTemplateMatchesSourceRender(t *testing.T) {
 	}
 	expectFileMode(t, out, rel, sourceBundledMode(t, src, rel))
 
-	committed := filepath.Join(root, PortableTemplateDir)
+	committed := filepath.Join(root, PortableSkillsDir)
 	assertPortableSkills(t, committed, src)
 	assertPortableBundledModes(t, committed, src)
 	assertNoUnexpectedFiles(t, committed, expectedPortableSkillFiles(src))
@@ -64,9 +66,9 @@ func TestPortableTemplateMatchesSourceRender(t *testing.T) {
 	})
 }
 
-func TestPortableTemplatePortability(t *testing.T) {
+func TestRootSkillsPortability(t *testing.T) {
 	root := repoRoot(t)
-	templateRoot := filepath.Join(root, PortableTemplateDir)
+	templateRoot := filepath.Join(root, PortableSkillsDir)
 
 	for _, rel := range []string{
 		"review/agents/code-reviewer.md",
@@ -132,6 +134,25 @@ func TestPortableTemplatePortability(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestTemplateSkillsKeepRelayDirectives(t *testing.T) {
+	root := repoRoot(t)
+	templateRoot := filepath.Join(root, TemplateSkillsDir)
+	if !treeContains(t, templateRoot, "{{subagent") {
+		t.Fatalf("%s should retain Relay subagent templates", TemplateSkillsDir)
+	}
+}
+
+func treeContains(t *testing.T, root, needle string) bool {
+	t.Helper()
+	found := false
+	walkFiles(t, root, func(_ string, data []byte) {
+		if strings.Contains(string(data), needle) {
+			found = true
+		}
+	})
+	return found
 }
 
 func assertPortableSkills(t *testing.T, out string, src *Source) {

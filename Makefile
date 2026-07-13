@@ -51,7 +51,7 @@ lint: $(GOLANGCI_LINT)
 release-check: $(GORELEASER)
 	$(GORELEASER) check
 
-# generate renders the agent-neutral root source (plugin.json + skills/) into
+# generate renders the Relay template source (plugin.json + skills-template/) into
 # the Claude package under dist/claude for developer inspection.
 generate: host
 	@echo "Generating Claude package into $(CLAUDE_PKG_DIR)..."
