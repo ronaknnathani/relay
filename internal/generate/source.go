@@ -18,9 +18,10 @@ import (
 // review/agents/*.md), keyed by their path relative to the skill dir, so a
 // self-contained skill travels with its companion prompts.
 type Entry struct {
-	Name    string // skill directory name, e.g. "plan" or "rebase"
-	Body    []byte
-	Bundled map[string][]byte
+	Name         string // skill directory name, e.g. "plan" or "rebase"
+	Body         []byte
+	Bundled      map[string][]byte
+	BundledModes map[string]os.FileMode
 }
 
 // Source is the parsed root source tree: the plugin manifest plus every skill.
@@ -69,11 +70,11 @@ func loadSkills(dir string) ([]Entry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read skill %s: %w", d.Name(), err)
 		}
-		bundled, err := loadBundled(skillDir)
+		bundled, modes, err := loadBundled(skillDir)
 		if err != nil {
 			return nil, fmt.Errorf("read skill %s: %w", d.Name(), err)
 		}
-		entries = append(entries, Entry{Name: d.Name(), Body: body, Bundled: bundled})
+		entries = append(entries, Entry{Name: d.Name(), Body: body, Bundled: bundled, BundledModes: modes})
 	}
 	return entries, nil
 }
@@ -81,8 +82,9 @@ func loadSkills(dir string) ([]Entry, error) {
 // loadBundled reads every file under a skill directory except its SKILL.md,
 // keyed by path relative to the skill dir, so companion files (e.g. agent
 // prompts) ship with the skill. Returns nil when there are none.
-func loadBundled(skillDir string) (map[string][]byte, error) {
+func loadBundled(skillDir string) (map[string][]byte, map[string]os.FileMode, error) {
 	var bundled map[string][]byte
+	var modes map[string]os.FileMode
 	err := filepath.WalkDir(skillDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -94,18 +96,24 @@ func loadBundled(skillDir string) (map[string][]byte, error) {
 		if err != nil {
 			return err
 		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
 		rel, err := filepath.Rel(skillDir, path)
 		if err != nil {
 			return err
 		}
 		if bundled == nil {
 			bundled = make(map[string][]byte)
+			modes = make(map[string]os.FileMode)
 		}
 		bundled[rel] = data
+		modes[rel] = info.Mode().Perm()
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return bundled, nil
+	return bundled, modes, nil
 }

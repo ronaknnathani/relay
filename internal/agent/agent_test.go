@@ -346,8 +346,11 @@ func TestVerifyCopilotSkillsInstalled(t *testing.T) {
 	if err == nil {
 		t.Fatal("VerifySkillsInstalled missing copilot install: expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "Run `relay setup copilot` from the relay repository") {
+	if !strings.Contains(err.Error(), "Relay-managed workflows require `relay setup copilot`") {
 		t.Fatalf("missing install error = %v, want relay setup hint", err)
+	}
+	if !strings.Contains(err.Error(), "`npx skills add ./skills-template` installs standalone skills only") {
+		t.Fatalf("missing install error = %v, want standalone install distinction", err)
 	}
 	// A real (non-symlink) dir shadowing relay's skill must NOT satisfy the
 	// command-skill check.
@@ -361,8 +364,11 @@ func TestVerifyCopilotSkillsInstalled(t *testing.T) {
 	if err == nil {
 		t.Fatal("VerifySkillsInstalled shadowing real dir: expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "Run `relay setup copilot` from the relay repository") {
+	if !strings.Contains(err.Error(), "Relay-managed workflows require `relay setup copilot`") {
 		t.Fatalf("shadowing skill error = %v, want relay setup hint", err)
+	}
+	if !strings.Contains(err.Error(), "`npx skills add ./skills-template` installs standalone skills only") {
+		t.Fatalf("shadowing skill error = %v, want standalone install distinction", err)
 	}
 	// A relay-managed symlink (how `relay setup` installs skills) satisfies it.
 	if err := os.RemoveAll(installed); err != nil {
@@ -394,8 +400,11 @@ func TestVerifyCodexSkillsInstalled(t *testing.T) {
 	if err == nil {
 		t.Fatal("VerifySkillsInstalled missing codex install: expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "Run `relay setup codex` from the relay repository") {
+	if !strings.Contains(err.Error(), "Relay-managed workflows require `relay setup codex`") {
 		t.Fatalf("missing install error = %v, want relay setup hint", err)
+	}
+	if !strings.Contains(err.Error(), "`npx skills add ./skills-template` installs standalone skills only") {
+		t.Fatalf("missing install error = %v, want standalone install distinction", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(installed), 0755); err != nil {
 		t.Fatalf("mkdir installed parent: %v", err)
@@ -410,8 +419,11 @@ func TestVerifyCodexSkillsInstalled(t *testing.T) {
 
 func TestInstallErrorMentionsSetup(t *testing.T) {
 	err := installError("copilot", os.ErrPermission)
-	if !strings.Contains(err.Error(), "Run `relay setup copilot` from the relay repository") {
+	if !strings.Contains(err.Error(), "Relay-managed workflows require `relay setup copilot`") {
 		t.Fatalf("installError = %v, want relay setup hint", err)
+	}
+	if !strings.Contains(err.Error(), "`npx skills add ./skills-template` installs standalone skills only") {
+		t.Fatalf("installError = %v, want standalone install distinction", err)
 	}
 }
 

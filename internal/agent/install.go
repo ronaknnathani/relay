@@ -36,8 +36,8 @@ func verifyInstalledSkills(agentName, installed, command string) error {
 			}
 		}
 		if len(missing) > 0 {
-			return fmt.Errorf("relay: %s skills are not fully installed; missing %s in %s. Run `relay setup %s` from the relay repository",
-				agentName, strings.Join(missing, ", "), installed, agentName)
+			return fmt.Errorf("relay: %s skills are not fully installed; missing %s in %s. %s",
+				agentName, strings.Join(missing, ", "), installed, setupHint(agentName))
 		}
 	} else if !os.IsNotExist(err) {
 		return installError(agentName, err)
@@ -45,8 +45,8 @@ func verifyInstalledSkills(agentName, installed, command string) error {
 
 	if command != "" {
 		if err := requireRelaySkill(installed, command); err != nil {
-			return fmt.Errorf("relay: %s skill %q is not installed as a relay-managed skill in %s (%v). Run `relay setup %s` from the relay repository, or remove a conflicting skill of the same name",
-				agentName, command, installed, err, agentName)
+			return fmt.Errorf("relay: %s skill %q is not installed as a relay-managed skill in %s (%v). %s Remove a conflicting skill of the same name before running setup",
+				agentName, command, installed, err, setupHint(agentName))
 		}
 	}
 	return nil
@@ -91,6 +91,10 @@ func requireRelaySkill(installed, name string) error {
 }
 
 func installError(agentName string, err error) error {
-	return fmt.Errorf("relay: generated %s skills are not installed at %s: %w. Run `relay setup %s` from the relay repository",
-		agentName, PackageDir(agentName), err, agentName)
+	return fmt.Errorf("relay: generated %s skills are not installed at %s: %w. %s",
+		agentName, PackageDir(agentName), err, setupHint(agentName))
+}
+
+func setupHint(agentName string) string {
+	return fmt.Sprintf("Relay-managed workflows require `relay setup %s` from the relay repository. `npx skills add ./skills-template` installs standalone skills only.", agentName)
 }
