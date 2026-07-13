@@ -1,0 +1,738 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Relay Skill Layers</title>
+    <style>
+      :root {
+        --bg: #111217;
+        --panel: #171922;
+        --panel-2: #1d202b;
+        --panel-3: #14161d;
+        --ink: #f7f8ff;
+        --muted: #a3a9b9;
+        --subtle: #747b8f;
+        --line: rgba(255, 255, 255, 0.12);
+        --line-strong: rgba(255, 255, 255, 0.2);
+        --green: #2fc28a;
+        --amber: #f3b85b;
+        --purple: #a78bfa;
+        --blue: #7aa2ff;
+        --cyan: #6ee7f9;
+        --radius: 22px;
+        --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        background: var(--bg);
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 18% 8%, rgba(124, 92, 196, 0.2), transparent 28%),
+          radial-gradient(circle at 86% 22%, rgba(47, 194, 138, 0.16), transparent 30%),
+          linear-gradient(180deg, #14161d, #0f1015 76%);
+        color: var(--ink);
+        font-family: var(--font);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      .frame {
+        width: min(100%, 1440px);
+        margin: 0 auto;
+        padding: 44px;
+      }
+
+      .diagram {
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 32px;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.025)),
+          var(--panel-3);
+        box-shadow:
+          0 30px 90px rgba(0, 0, 0, 0.35),
+          inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      }
+
+      .header {
+        padding: 38px 42px 30px;
+        border-bottom: 1px solid var(--line);
+        text-align: center;
+      }
+
+      .eyebrow {
+        color: var(--green);
+        font-size: 12px;
+        font-weight: 760;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin-top: 8px;
+        color: #f7f8ff;
+        background: linear-gradient(
+          104deg,
+          #ff80b5 0%,
+          #f45dff 24%,
+          #8b5cf6 48%,
+          #3b82f6 72%,
+          #22d3ee 100%
+        );
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        text-shadow:
+          0 0 28px rgba(168, 85, 247, 0.22),
+          0 0 44px rgba(34, 211, 238, 0.1);
+        font-size: 68px;
+        line-height: 0.95;
+        font-weight: 760;
+        letter-spacing: 0;
+      }
+
+      .tagline {
+        margin-top: 14px;
+        color: var(--ink);
+        font-size: 24px;
+        line-height: 1.2;
+        font-weight: 680;
+      }
+
+      .subtitle {
+        display: grid;
+        gap: 5px;
+        margin: 18px auto 0;
+        max-width: 920px;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.35;
+      }
+
+      .state-card {
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.045);
+      }
+
+      .state-card strong {
+        display: block;
+        font-size: 15px;
+        line-height: 1.2;
+      }
+
+      .state-card p {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      .layers {
+        display: grid;
+        gap: 18px;
+        padding: 28px;
+      }
+
+      .layer {
+        display: grid;
+        grid-template-columns: 220px minmax(0, 1fr);
+        gap: 18px;
+        align-items: stretch;
+      }
+
+      .rail {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        min-height: 188px;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: rgba(255, 255, 255, 0.045);
+      }
+
+      .rail span {
+        color: var(--subtle);
+        font-size: 12px;
+        font-weight: 760;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .rail h2 {
+        margin-top: 8px;
+        font-size: 23px;
+        line-height: 1.08;
+        font-weight: 760;
+        letter-spacing: 0;
+      }
+
+      .rail p {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.35;
+      }
+
+      .panel {
+        min-height: 188px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025)),
+          var(--panel);
+      }
+
+      .stack-panel {
+        display: grid;
+        grid-template-columns: 265px minmax(0, 1fr) 245px;
+        gap: 22px;
+        align-items: center;
+        padding: 22px;
+      }
+
+      .root-card,
+      .monitor-card,
+      .workflow-card,
+      .foundation-group {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.045);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055);
+      }
+
+      .root-card {
+        min-height: 220px;
+        padding: 22px;
+      }
+
+      .skill {
+        display: inline-flex;
+        width: fit-content;
+        padding: 7px 10px;
+        border-radius: 999px;
+        color: #eceaff;
+        background: rgba(167, 139, 250, 0.2);
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 760;
+        line-height: 1;
+      }
+
+      .root-card h3 {
+        margin-top: 22px;
+        font-size: 32px;
+        line-height: 1.04;
+        font-weight: 760;
+        letter-spacing: 0;
+      }
+
+      .root-card p,
+      .monitor-card p,
+      .workflow-card p,
+      .foundation-group p {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.4;
+      }
+
+      .stack-tree {
+        position: relative;
+        display: grid;
+        gap: 12px;
+        padding-left: 34px;
+      }
+
+      .stack-tree::before {
+        content: "";
+        position: absolute;
+        top: 32px;
+        bottom: 32px;
+        left: 12px;
+        width: 2px;
+        background: var(--line-strong);
+      }
+
+      .pr-node {
+        position: relative;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+        min-height: 64px;
+        padding: 13px 14px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.062);
+      }
+
+      .pr-node::before {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: -22px;
+        width: 22px;
+        height: 2px;
+        background: var(--line-strong);
+      }
+
+      .pr-node strong {
+        display: block;
+        font-size: 16px;
+        line-height: 1.15;
+      }
+
+      .pr-node span {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.2;
+      }
+
+      .pill {
+        padding: 6px 9px;
+        border-radius: 999px;
+        color: #dcfff4;
+        background: rgba(47, 194, 138, 0.16);
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 760;
+        line-height: 1;
+        white-space: nowrap;
+      }
+
+      .monitor-card {
+        padding: 20px;
+      }
+
+      .monitor-card h3 {
+        margin-top: 14px;
+        font-size: 22px;
+        line-height: 1.12;
+        font-weight: 760;
+      }
+
+      .workflow-panel {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(230px, 0.36fr);
+        gap: 18px;
+        padding: 22px;
+      }
+
+      .workflow-card {
+        min-height: 164px;
+        padding: 22px;
+      }
+
+      .workflow-card h3 {
+        margin-top: 14px;
+        font-size: 27px;
+        line-height: 1.08;
+        font-weight: 760;
+      }
+
+      .steps,
+      .phase-flow,
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 16px;
+      }
+
+      .phase-flow {
+        display: inline-flex;
+        align-items: center;
+        flex-wrap: nowrap;
+        gap: 5px;
+        max-width: 100%;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .step,
+      .chip {
+        padding: 6px 8px;
+        border-radius: 999px;
+        color: #eef2ff;
+        background: rgba(122, 162, 255, 0.15);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        font-weight: 760;
+        line-height: 1;
+        white-space: nowrap;
+      }
+
+      .phase-arrow {
+        position: relative;
+        flex: 0 0 10px;
+        width: 10px;
+        height: 2px;
+        background: var(--line-strong);
+      }
+
+      .phase-arrow::after {
+        content: "";
+        position: absolute;
+        top: -3px;
+        right: 0;
+        width: 8px;
+        height: 8px;
+        border-right: 2px solid var(--line-strong);
+        border-bottom: 2px solid var(--line-strong);
+        transform: rotate(-45deg);
+      }
+
+      .phase-group {
+        min-height: 66px;
+        padding: 11px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .phase-define {
+        flex: 0 0 142px;
+      }
+
+      .phase-implement {
+        flex: 0 0 100px;
+      }
+
+      .phase-verify {
+        flex: 1 1 210px;
+      }
+
+      .phase-open {
+        flex: 0 0 88px;
+      }
+
+      .phase-define,
+      .phase-implement,
+      .phase-verify,
+      .phase-open {
+        min-width: 0;
+      }
+
+      .phase-group-title {
+        display: block;
+        margin-bottom: 9px;
+        color: var(--subtle);
+        font-size: 10px;
+        font-weight: 760;
+        letter-spacing: 0.08em;
+        line-height: 1;
+        text-transform: uppercase;
+      }
+
+      .inner-flow {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .inner-arrow {
+        position: relative;
+        flex: 0 0 13px;
+        height: 2px;
+        background: rgba(255, 255, 255, 0.18);
+      }
+
+      .inner-arrow::after {
+        content: "";
+        position: absolute;
+        top: -3px;
+        right: 0;
+        width: 7px;
+        height: 7px;
+        border-right: 2px solid rgba(255, 255, 255, 0.18);
+        border-bottom: 2px solid rgba(255, 255, 255, 0.18);
+        transform: rotate(-45deg);
+      }
+
+      .phase-single {
+        display: flex;
+        min-height: 66px;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .foundation-panel {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        padding: 22px;
+      }
+
+      .foundation-group {
+        min-height: 150px;
+        padding: 18px;
+      }
+
+      .foundation-group h3 {
+        font-size: 18px;
+        line-height: 1.12;
+        font-weight: 760;
+      }
+
+      .foundation-group:nth-child(1) .chip {
+        background: rgba(110, 231, 249, 0.14);
+        color: #d8fbff;
+      }
+
+      .foundation-group:nth-child(2) .chip {
+        background: rgba(47, 194, 138, 0.16);
+        color: #dcfff4;
+      }
+
+      .foundation-group:nth-child(3) .chip {
+        background: rgba(243, 184, 91, 0.16);
+        color: #ffefcf;
+      }
+
+      .foundation-group:nth-child(4) .chip {
+        background: rgba(167, 139, 250, 0.18);
+        color: #f0ebff;
+      }
+
+      .monitor-step {
+        color: #edf2ff;
+        background: rgba(122, 162, 255, 0.14);
+      }
+
+      .composed-skills {
+        display: grid;
+        gap: 8px;
+        margin-top: 18px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .composed-label {
+        color: var(--subtle);
+        font-size: 10px;
+        font-weight: 760;
+        letter-spacing: 0.08em;
+        line-height: 1;
+        text-transform: uppercase;
+      }
+
+      .connector {
+        width: 2px;
+        height: 18px;
+        justify-self: center;
+        background: var(--line-strong);
+      }
+
+      .connector::after {
+        content: "";
+        display: block;
+        width: 10px;
+        height: 10px;
+        margin: 8px 0 0 -4px;
+        border-right: 2px solid var(--line-strong);
+        border-bottom: 2px solid var(--line-strong);
+        transform: rotate(45deg);
+      }
+
+      @media (max-width: 1100px) {
+        .frame {
+          padding: 28px;
+        }
+
+        .layer {
+          grid-template-columns: 1fr;
+        }
+
+        .rail {
+          min-height: auto;
+        }
+
+        .stack-panel {
+          grid-template-columns: 1fr;
+        }
+
+        .workflow-panel,
+        .foundation-panel {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="frame">
+      <section class="diagram" aria-label="Relay skill layers">
+        <header class="header">
+          <h1>Relay</h1>
+          <p class="tagline">Agent orchestration for shipping production software.</p>
+          <p class="subtitle">
+            <span>Foundation skills do one job.</span>
+            <span>Workflow skills route those primitives through one PR.</span>
+            <span>Orchestration coordinates a tree of Deliver PR runs and monitors the front PR to merge.</span>
+          </p>
+        </header>
+
+        <div class="layers">
+          <section class="layer">
+            <div class="rail">
+              <span>Layer 3</span>
+              <h2>Orchestration</h2>
+              <p>A goal becomes a stack of small PRs, each delivered independently and advanced in order.</p>
+            </div>
+            <div class="panel stack-panel">
+              <article class="root-card">
+                <span class="skill">stack-ship</span>
+                <h3>Ship the stack</h3>
+                <p>Own the plan, state, author decisions, cascade rebases, and final convergence.</p>
+              </article>
+
+              <div class="stack-tree" aria-label="Stack of Deliver PR runs">
+                <article class="pr-node">
+                  <span class="pill">main</span>
+                  <div>
+                    <strong>Deliver PR</strong>
+                    <span>PR 1 opens on the default branch</span>
+                  </div>
+                  <span class="pill">front</span>
+                </article>
+                <article class="pr-node">
+                  <span class="pill">PR 1</span>
+                  <div>
+                    <strong>Deliver PR</strong>
+                    <span>PR 2 stacks on PR 1</span>
+                  </div>
+                  <span class="pill">child</span>
+                </article>
+                <article class="pr-node">
+                  <span class="pill">PR 2</span>
+                  <div>
+                    <strong>Deliver PR</strong>
+                    <span>PR 3 stacks on PR 2</span>
+                  </div>
+                  <span class="pill">child</span>
+                </article>
+              </div>
+
+              <article class="monitor-card">
+                <span class="skill">pr-monitor</span>
+                <h3>Front PR monitor</h3>
+                <p>Ticks on the front PR. When it merges, the orchestrator retargets and rebases the next node.</p>
+              </article>
+            </div>
+          </section>
+
+          <div class="connector" aria-hidden="true"></div>
+
+          <section class="layer">
+            <div class="rail">
+              <span>Layer 2</span>
+              <h2>Workflows</h2>
+              <p>Two resumable controllers: one opens a PR, one drives an open PR to merged.</p>
+            </div>
+            <div class="panel workflow-panel">
+              <article class="workflow-card">
+                <span class="skill">deliver-pr</span>
+                <h3>Deliver PR</h3>
+                <p>Routes one scoped change through the foundation skill pipeline to an open PR.</p>
+        <div class="phase-flow" aria-label="Deliver PR workflow phases">
+                  <span class="step">clarify</span>
+                  <span class="phase-arrow" aria-hidden="true"></span>
+                  <span class="step">plan</span>
+                  <span class="phase-arrow" aria-hidden="true"></span>
+                  <span class="step">implement</span>
+                  <span class="phase-arrow" aria-hidden="true"></span>
+                  <span class="step">simplify</span>
+                  <span class="phase-arrow" aria-hidden="true"></span>
+                  <span class="step">review</span>
+                  <span class="phase-arrow" aria-hidden="true"></span>
+                  <span class="step">validate</span>
+                  <span class="phase-arrow" aria-hidden="true"></span>
+                  <span class="step">open-pr</span>
+                </div>
+              </article>
+              <article class="workflow-card">
+                <span class="skill">pr-monitor</span>
+                <h3>PR Monitor</h3>
+                <p>Monitors one open PR to merged, delegating real failures, comments, and conflicts.</p>
+                <div class="composed-skills">
+                  <span class="composed-label">Delegates to</span>
+                  <span class="step monitor-step">pr-fix</span>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <div class="connector" aria-hidden="true"></div>
+
+          <section class="layer">
+            <div class="rail">
+              <span>Layer 1</span>
+              <h2>Foundation</h2>
+              <p>Primitive skills grouped by where they sit in the delivery path.</p>
+            </div>
+            <div class="panel foundation-panel">
+              <article class="foundation-group">
+                <h3>Before implementation</h3>
+                <p>Find context and turn intent into an executable plan.</p>
+                <div class="chips">
+                  <span class="chip">explore</span>
+                  <span class="chip">clarify</span>
+                  <span class="chip">plan</span>
+                </div>
+              </article>
+              <article class="foundation-group">
+                <h3>Implementation</h3>
+                <p>Build the planned change and keep the repo green.</p>
+                <div class="chips">
+                  <span class="chip">implement</span>
+                </div>
+              </article>
+              <article class="foundation-group">
+                <h3>After implementation</h3>
+                <p>Simplify, review, and validate against success criteria.</p>
+                <div class="chips">
+                  <span class="chip">simplify</span>
+                  <span class="chip">review</span>
+                  <span class="chip">validate</span>
+                </div>
+              </article>
+              <article class="foundation-group">
+                <h3>After validation</h3>
+                <p>Commit, open, rebase, and repair PRs as needed.</p>
+                <div class="chips">
+                  <span class="chip">commit</span>
+                  <span class="chip">open-pr</span>
+                  <span class="chip">rebase</span>
+                  <span class="chip">pr-fix</span>
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

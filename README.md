@@ -12,16 +12,9 @@ reviewed, validated, and monitored to merge.
 
 ## The three layers
 
-```
-Layer 3 — Orchestrator      stack-ship ........ a goal → a stack of small PRs, each delivered and
-                                                monitored to merge
-                                |
-Layer 2 — Workflows         deliver-pr ........ one change → one open PR (clarify→…→open-pr)
-                            pr-monitor ........ one open PR → merged (detect → fix → re-arm → merge)
-                                |
-Layer 1 — Foundation        explore  clarify  plan  implement  simplify  review  validate
-                            commit  rebase  open-pr  pr-fix
-```
+![Relay skill layers](docs/skill-layers.png)
+
+Editable source: [docs/skill-layers.html](docs/skill-layers.html).
 
 **Foundation skills** each do one thing. `explore` (read-only codebase understanding), `clarify`
 (requirements + acceptance criteria), `plan` (an executable blueprint), `implement` (build it,
@@ -29,13 +22,13 @@ green each step), `simplify` (cut complexity, behavior unchanged), `review` (a r
 with a confidence gate), `validate` (the repo's quality gates, goal-backward), `commit`, `rebase`,
 `open-pr` (commit → PR in your conventions), `pr-fix` (CI, comments, conflicts).
 
-**Workflow skills** compose them. `deliver-pr` is a resume-first router that drives one change through
-the foundation pipeline, one phase per sub-agent, tracking position in durable state. `pr-monitor`
-watches one open PR to merged.
+**Workflow skills** compose them. `deliver-pr` is a resume-first router that drives one scoped change
+through the foundation pipeline, one phase per sub-agent, to an open PR. `pr-monitor` watches one open
+PR to merged, delegating real failures, review comments, and conflicts to `pr-fix`.
 
-**The orchestrator**, `stack-ship`, turns a goal into an interface-first stack of small PRs, builds
-each with `deliver-pr`, drives the front PR with `pr-monitor`, and cascades stack changes — stopping
-when every PR is merged and never merging without human approval.
+**Orchestration** is the third layer. The `stack-ship` skill turns a goal into an interface-first tree
+of small PRs, builds each with `deliver-pr`, monitors the front PR with `pr-monitor`, and advances the
+stack in order — stopping when every PR is merged and never merging without human approval.
 
 ## The `relay` CLI
 
@@ -55,7 +48,7 @@ the agent-neutral skill source into per-agent packages.
 
 ## Install
 
-Requires Go 1.25+ and a coding agent (Claude Code, Copilot, or Codex) on your `PATH`.
+Requires Go 1.25+ and at least one supported coding-agent CLI on your `PATH`.
 
 ```bash
 git clone https://github.com/ronaknnathani/relay
@@ -63,12 +56,19 @@ cd relay
 make install
 ```
 
-`make install` installs the relay binary. Then run `relay setup <agent>` from the relay repository to
-link generated skills into that agent's personal skills directory: Claude uses `~/.claude/skills`, and
-Copilot uses `~/.copilot/skills`, and Codex uses `~/.codex/skills`. To refresh only one agent's skills,
-run `relay setup <agent>`, for example `relay setup codex`. Skills relay does not own are never
-clobbered: a real file/dir with a colliding name is skipped, and a symlink that does not point into
-relay's own sources is flagged so you can choose whether to replace it.
+`make install` installs the `relay` binary. Then run `relay setup <agent>` from the relay repository to
+generate that agent's package and link Relay-managed skills into its personal skills directory.
+
+| Agent | Prerequisite | Setup command | Skill install location |
+| --- | --- | --- | --- |
+| Claude Code | `claude` on your `PATH` | `relay setup claude` | `~/.claude/skills` |
+| Codex CLI | `codex` on your `PATH` | `relay setup codex` | `~/.codex/skills` |
+| GitHub Copilot CLI | `copilot` on your `PATH` | `relay setup copilot` | `~/.copilot/skills` |
+
+Rerun the same setup command whenever you want to refresh one agent's generated skills. To remove
+Relay-managed links for an agent, run `relay setup <agent> --uninstall`. Skills relay does not own are
+never clobbered: a real file/dir with a colliding name is skipped, and a symlink that does not point
+into relay's own sources is flagged so you can choose whether to replace it.
 
 First run prompts for a branch prefix, your default agent, and that agent's permission mode (saved to
 `~/.relay/config.json`). Permission modes are stored per agent and are requested only the first time
