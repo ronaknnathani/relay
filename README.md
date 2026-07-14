@@ -31,6 +31,7 @@ reviewed, validated, and monitored to merge.
 | Foundation | `relay-status` | Inspect active and archived Relay projects. |
 | Foundation | `relay-archive` | Archive a merged Relay project worktree. |
 | Foundation | `build-write-like-me` | Build a reusable writing-voice skill from a corpus. |
+| Foundation | `write-like-me` | Write or edit prose in Ronak's voice. |
 | Workflow | `deliver-pr` | Drive one scoped change from clarification to an open PR. |
 | Workflow | `pr-monitor` | Watch one PR to merge and delegate fixes as needed. |
 | Orchestration | `stack-ship` | Decompose and ship a goal as a stack of small PRs. |
