@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ronaknnathani/relay/internal/project"
 )
 
 func TestClaudeLaunchArgs(t *testing.T) {
@@ -165,32 +167,49 @@ func TestCopilotLaunchArgs(t *testing.T) {
 }
 
 func TestCopilotPrepareWritesAgentsMD(t *testing.T) {
-	dir := t.TempDir()
-	o := LaunchOptions{Worktree: dir, SystemPrompt: "Active relay project: demo. Phase: plan."}
+	dir, projectDir := newAgentProject(t)
+	original := "Existing repo guidance.\n"
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(original), 0644); err != nil {
+		t.Fatalf("seed AGENTS.md: %v", err)
+	}
+	o := LaunchOptions{Worktree: dir, ProjectDir: projectDir, SystemPrompt: "Active relay project: demo. Phase: plan."}
 	if err := (copilot{}).Prepare(o); err != nil {
 		t.Fatalf("Prepare: %v", err)
+	}
+	o.SystemPrompt = "Active relay project: demo. Phase: implement."
+	if err := (copilot{}).Prepare(o); err != nil {
+		t.Fatalf("Prepare (2): %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
 	if err != nil {
 		t.Fatalf("read AGENTS.md: %v", err)
 	}
+	if !strings.HasPrefix(string(data), original) {
+		t.Errorf("AGENTS.md missing original guidance: %q", data)
+	}
 	if !strings.Contains(string(data), o.SystemPrompt) {
 		t.Errorf("AGENTS.md missing context line: %q", data)
 	}
-	if !strings.HasPrefix(string(data), "# relay") {
+	if n := strings.Count(string(data), "<!-- relay:agents-md:start -->"); n != 1 {
+		t.Errorf("AGENTS.md start marker count = %d, want 1: %q", n, data)
+	}
+	if n := strings.Count(string(data), "<!-- relay:agents-md:end -->"); n != 1 {
+		t.Errorf("AGENTS.md end marker count = %d, want 1: %q", n, data)
+	}
+	if !strings.Contains(string(data), "# relay") {
 		t.Errorf("AGENTS.md missing relay heading: %q", data)
 	}
 }
 
 func TestCopilotPrepareExcludesAgentsMD(t *testing.T) {
-	dir := t.TempDir()
+	dir, projectDir := newAgentProject(t)
 	if err := os.MkdirAll(filepath.Join(dir, ".git", "info"), 0755); err != nil {
 		t.Fatalf("mkdir .git/info: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".git", "info", "exclude"), []byte("# existing\n"), 0644); err != nil {
 		t.Fatalf("seed exclude: %v", err)
 	}
-	o := LaunchOptions{Worktree: dir, SystemPrompt: "ctx"}
+	o := LaunchOptions{Worktree: dir, ProjectDir: projectDir, SystemPrompt: "ctx"}
 	if err := (copilot{}).Prepare(o); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -278,8 +297,8 @@ func TestCodexLaunchArgs(t *testing.T) {
 }
 
 func TestCodexPrepareWritesAgentsMD(t *testing.T) {
-	dir := t.TempDir()
-	o := LaunchOptions{Worktree: dir, SystemPrompt: "Active relay project: demo. Phase: plan."}
+	dir, projectDir := newAgentProject(t)
+	o := LaunchOptions{Worktree: dir, ProjectDir: projectDir, SystemPrompt: "Active relay project: demo. Phase: plan."}
 	if err := (codex{}).Prepare(o); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -290,6 +309,20 @@ func TestCodexPrepareWritesAgentsMD(t *testing.T) {
 	if !strings.Contains(string(data), o.SystemPrompt) {
 		t.Errorf("AGENTS.md missing context line: %q", data)
 	}
+	if !strings.Contains(string(data), "<!-- relay:agents-md:start -->") {
+		t.Errorf("AGENTS.md missing relay marker: %q", data)
+	}
+}
+
+func newAgentProject(t *testing.T) (string, string) {
+	t.Helper()
+	worktree := t.TempDir()
+	projectDir := t.TempDir()
+	m := project.Manifest{Slug: "demo", Worktree: &worktree, Status: "active"}
+	if err := project.Save(filepath.Join(projectDir, "manifest.json"), m); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	return worktree, projectDir
 }
 
 func TestCodexCapabilities(t *testing.T) {

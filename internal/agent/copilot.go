@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/ronaknnathani/relay/internal/agentsmd"
 )
 
 // copilot is the adapter for the GitHub Copilot CLI. Copilot auto-invokes
@@ -32,10 +34,8 @@ func (copilot) Prepare(o LaunchOptions) error {
 }
 
 func prepareAgentsMD(o LaunchOptions) error {
-	path := filepath.Join(o.Worktree, "AGENTS.md")
-	content := "# relay\n\n" + o.SystemPrompt + "\n"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		return fmt.Errorf("write AGENTS.md: %w", err)
+	if err := agentsmd.Apply(o.Worktree, o.ProjectDir, o.SystemPrompt); err != nil {
+		return err
 	}
 	if err := gitExclude(o.Worktree, "AGENTS.md"); err != nil {
 		return fmt.Errorf("exclude AGENTS.md: %w", err)

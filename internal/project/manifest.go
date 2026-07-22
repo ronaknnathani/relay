@@ -5,23 +5,32 @@ package project
 // match the existing schema; do not rename without migrating existing files
 // under ~/.relay.
 type Manifest struct {
-	Slug            string   `json:"slug"`
-	Title           string   `json:"title"`
-	Repo            string   `json:"repo"`
-	Branch          string   `json:"branch"`
-	Agent           string   `json:"agent,omitempty"`
-	BaseBranch      string   `json:"base_branch,omitempty"`
-	StartSHA        string   `json:"start_sha,omitempty"`
-	Worktree        *string  `json:"worktree"`
-	Status          string   `json:"status"`
-	Workflow        string   `json:"workflow,omitempty"`
-	Phase           string   `json:"phase"`
-	Created         string   `json:"created"`
-	Updated         string   `json:"updated"`
-	Archived        *string  `json:"archived"`
-	PR              PRInfo   `json:"pr"`
-	PhasesCompleted []string `json:"phases_completed"`
-	PhasesRemaining []string `json:"phases_remaining"`
+	Slug            string         `json:"slug"`
+	Title           string         `json:"title"`
+	Repo            string         `json:"repo"`
+	Branch          string         `json:"branch"`
+	Agent           string         `json:"agent,omitempty"`
+	BaseBranch      string         `json:"base_branch,omitempty"`
+	StartSHA        string         `json:"start_sha,omitempty"`
+	Worktree        *string        `json:"worktree"`
+	Status          string         `json:"status"`
+	Workflow        string         `json:"workflow,omitempty"`
+	Phase           string         `json:"phase"`
+	Created         string         `json:"created"`
+	Updated         string         `json:"updated"`
+	Archived        *string        `json:"archived"`
+	AgentsMD        *AgentsMDState `json:"agents_md,omitempty"`
+	PR              PRInfo         `json:"pr"`
+	PhasesCompleted []string       `json:"phases_completed"`
+	PhasesRemaining []string       `json:"phases_remaining"`
+}
+
+// AgentsMDState records the exact AGENTS.md content relay manages for a project.
+type AgentsMDState struct {
+	Version            int    `json:"version"`
+	Existed            bool   `json:"existed"`
+	OriginalContentB64 string `json:"original_content_b64,omitempty"`
+	RelayFragmentB64   string `json:"relay_fragment_b64"`
 }
 
 type PRInfo struct {
