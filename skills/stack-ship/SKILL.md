@@ -86,7 +86,7 @@ in the project state dir:
 - Initialize `state.json`, `progress.md`, `tradeoffs.md`, `follow-ups.md`, `questions.md`. Record
   runtime capabilities in `state.json` (`/goal`, `/loop`, scheduler, monitor mode) before building.
 Decomposition is a planning act — do it yourself or via a single Plan subagent, then **get author
-sign-off on `plan.md`** if the design left genuine ambiguity (use `AskUserQuestion`); otherwise
+sign-off on `plan.md`** if the design left genuine ambiguity (use `ask the user`); otherwise
 proceed with the smallest-PRs default and log the call in `tradeoffs.md`.
 
 ### Phase 1 — Build the stack  →  [references/pr-build-cycle.md](references/pr-build-cycle.md)

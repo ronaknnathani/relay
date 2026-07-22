@@ -1,9 +1,9 @@
 # Relay
 
 Relay is an open-source system of **composable agent skills and workflows** that automate
-software-engineering work through small, reusable building blocks. Skills are authored once in an
-agent-neutral source and compiled per coding agent, so the same library drives **Claude, Copilot, and
-Codex**.
+software-engineering work through small, reusable building blocks. The root `skills/` tree is a
+portable skills package for any supported agent, while Relay keeps richer templates in
+`skills-template/` to generate optimized **Claude, Copilot, and Codex** packages.
 
 The design principle is leverage through composition: small single-purpose skills compose into
 workflows, workflows compose into an orchestrator, and heavy work is delegated to sub-agents so the
@@ -14,21 +14,27 @@ reviewed, validated, and monitored to merge.
 
 ![Relay skill layers](docs/skill-layers.png)
 
-Editable source: [docs/skill-layers.html](docs/skill-layers.html).
-
-**Foundation skills** each do one thing. `explore` (read-only codebase understanding), `clarify`
-(requirements + acceptance criteria), `plan` (an executable blueprint), `implement` (build it,
-green each step), `simplify` (cut complexity, behavior unchanged), `review` (a reviewer-role library
-with a confidence gate), `validate` (the repo's quality gates, goal-backward), `commit`, `rebase`,
-`open-pr` (commit → PR in your conventions), `pr-fix` (CI, comments, conflicts).
-
-**Workflow skills** compose them. `deliver-pr` is a resume-first router that drives one scoped change
-through the foundation pipeline, one phase per sub-agent, to an open PR. `pr-monitor` watches one open
-PR to merged, delegating real failures, review comments, and conflicts to `pr-fix`.
-
-**Orchestration** is the third layer. The `stack-ship` skill turns a goal into an interface-first tree
-of small PRs, builds each with `deliver-pr`, monitors the front PR with `pr-monitor`, and advances the
-stack in order — stopping when every PR is merged and never merging without human approval.
+| Layer | Skill | Role |
+| --- | --- | --- |
+| Foundation | `explore` | Build read-only codebase understanding. |
+| Foundation | `clarify` | Turn fuzzy intent into requirements and acceptance criteria. |
+| Foundation | `plan` | Produce an executable implementation blueprint. |
+| Foundation | `implement` | Build the planned slice while keeping tests green. |
+| Foundation | `simplify` | Reduce complexity without changing behavior. |
+| Foundation | `review` | Run focused reviewer roles with confidence filtering. |
+| Foundation | `validate` | Check acceptance criteria and repo quality gates. |
+| Foundation | `commit` | Create one well-formed local commit. |
+| Foundation | `rebase` | Rebase, resolve conflicts, and update the branch. |
+| Foundation | `open-pr` | Commit, push, and open a pull request. |
+| Foundation | `pr-fix` | Fix CI failures, review comments, and merge conflicts. |
+| Foundation | `todo` | Capture and complete repo-scoped todos. |
+| Foundation | `relay-status` | Inspect active and archived Relay projects. |
+| Foundation | `relay-archive` | Archive a merged Relay project worktree. |
+| Foundation | `build-write-like-me` | Build a reusable writing-voice skill from a corpus. |
+| Foundation | `write-like-me` | Write or edit prose in Ronak's voice. |
+| Workflow | `deliver-pr` | Drive one scoped change from clarification to an open PR. |
+| Workflow | `pr-monitor` | Watch one PR to merge and delegate fixes as needed. |
+| Orchestration | `stack-ship` | Decompose and ship a goal as a stack of small PRs. |
 
 ## The `relay` CLI
 
@@ -50,14 +56,18 @@ the agent-neutral skill source into per-agent packages.
 
 Requires Go 1.25+ and at least one supported coding-agent CLI on your `PATH`.
 
+### Relay-managed workflows
+
 ```bash
 git clone https://github.com/ronaknnathani/relay
 cd relay
 make install
+relay setup codex      # or: relay setup claude / relay setup copilot
 ```
 
-`make install` installs the `relay` binary. Then run `relay setup <agent>` from the relay repository to
-generate that agent's package and link Relay-managed skills into its personal skills directory.
+`make install` installs the `relay` binary. `relay setup <agent>` must be run from the relay
+repository when you want the full Relay workflow system: generated per-agent skills, Relay-managed
+symlinks, project state, worktrees, resumes, and workflow launch checks.
 
 | Agent | Prerequisite | Setup command | Skill install location |
 | --- | --- | --- | --- |
@@ -70,20 +80,48 @@ Relay-managed links for an agent, run `relay setup <agent> --uninstall`. Skills 
 never clobbered: a real file/dir with a colliding name is skipped, and a symlink that does not point
 into relay's own sources is flagged so you can choose whether to replace it.
 
+### Standalone skills-only install
+
+Use the repository directly when you only want the bare skills, without installing the `relay`
+binary or creating Relay project state:
+
+```bash
+npx skills add ronaknnathani/relay
+npx skills add ronaknnathani/relay --agent codex   # when your skills CLI advertises --agent
+npx skills add ronaknnathani/relay --all           # when your skills CLI advertises --all
+
+# local development
+npx skills add .
+```
+
+This path installs standalone skill directories only. It does not replace `relay setup <agent>` for
+Relay-managed workflows, because the CLI checks for Relay-managed skill links before launching a
+workflow. Run `scripts/verify-npx-skills-add.sh` to probe the local `skills` CLI help and verify the
+supported install flags in a disposable `HOME`.
+
+### Relay CLI configuration
+
 First run prompts for a branch prefix, your default agent, and that agent's permission mode (saved to
 `~/.relay/config.json`). Permission modes are stored per agent and are requested only the first time
-that agent is used. Update them with `relay config permission-mode <agent> <mode>`; update the
-default agent with `relay config default-agent <agent>`. Project state lives under
-`~/.relay/projects/`; worktrees under `<repo>/.worktrees/`.
+that agent is used.
+
+```bash
+relay config default-agent <agent>
+relay config permission-mode <agent> <mode>
+```
+
+The branch prefix, default agent, and per-agent permission modes are stored in the same config file.
+Project state lives under `~/.relay/projects/`; worktrees live under `<repo>/.worktrees/`.
 
 ## Multi-agent
 
-Skills are authored once under `skills/` with agent-neutral conventions (a single `{{subagent}}`
-directive carries model-tier intent; tool names and frontmatter are normalized per agent). `relay
-generate` renders the strongest mechanism each agent supports — Claude's `Agent` tool and deterministic
-slash invocation, Copilot's prose invocation and `AGENTS.md` context, and Codex's native skills under
-`~/.codex/skills` — rather than a lowest-common-denominator. Generator tests compare each rendered
-package to a source-derived expectation instead of duplicating the whole skill tree as fixtures.
+Root `skills/` are bare, portable skills that the skills CLI can install with `npx skills add <repo>`.
+Relay-specific templates live under `skills-template/`; they retain directives such as `{{subagent}}`
+that carry model-tier intent for Relay's generator. `relay generate` renders the strongest mechanism
+each agent supports — Claude's `Agent` tool and deterministic slash invocation, Copilot's prose
+invocation and `AGENTS.md` context, and Codex's native skills under `~/.codex/skills` — rather than a
+lowest-common-denominator. Generator tests compare the generated agent packages and root portable
+skills to the Relay templates so the two trees do not drift.
 
 ## Contributing
 

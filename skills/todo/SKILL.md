@@ -1,8 +1,6 @@
 ---
 name: todo
 description: "Capture, list, and complete repo-scoped todos"
-argument-hint: "<description> | list | done <id>"
-disable-model-invocation: true
 ---
 
 # /todo — Repo-Scoped Todos
@@ -11,7 +9,7 @@ Capture todos from within a session for later pickup. Runs as a sub-agent to kee
 
 ## Dispatch
 
-{{subagent:fast}} with this prompt:
+Delegate this work to a fast subagent when the runtime supports it; otherwise do it inline with this prompt:
 
 > Run the following shell command and report the output exactly as printed:
 >
