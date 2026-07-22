@@ -65,8 +65,17 @@ func runArchive(slug string, force bool) error {
 	}
 
 	if m.Worktree != nil && *m.Worktree != "" {
-		if err := gitx.WorktreeRemove(m.Repo, *m.Worktree, force); err != nil {
-			if !force {
+		worktree := *m.Worktree
+		safeRelayAgentsOnly := false
+		if !force {
+			// Classifier failures fall through to normal removal to preserve the
+			// existing worktree error and --force hint.
+			if safe, err := gitx.WorktreeHasOnlyRelayGeneratedAgentsMD(worktree); err == nil {
+				safeRelayAgentsOnly = safe
+			}
+		}
+		if err := gitx.WorktreeRemove(m.Repo, worktree, force || safeRelayAgentsOnly); err != nil {
+			if !force && !safeRelayAgentsOnly {
 				return fmt.Errorf("%w\nhint: use --force to remove worktrees with untracked/modified files", err)
 			}
 			return err
