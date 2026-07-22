@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/ronaknnathani/relay/internal/agentsmd"
 	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/ronaknnathani/relay/internal/ui"
@@ -66,6 +67,10 @@ func runArchive(slug string, force bool) error {
 
 	if m.Worktree != nil && *m.Worktree != "" {
 		worktree := *m.Worktree
+		if err := agentsmd.Cleanup(worktree, srcDir); err != nil {
+			return err
+		}
+		m.AgentsMD = nil
 		safeRelayAgentsOnly := false
 		if !force {
 			// Classifier failures fall through to normal removal to preserve the
