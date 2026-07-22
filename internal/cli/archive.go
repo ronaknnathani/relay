@@ -67,7 +67,7 @@ func runArchive(slug string, force bool) error {
 
 	if m.Worktree != nil && *m.Worktree != "" {
 		worktree := *m.Worktree
-		if err := agentsmd.Cleanup(worktree, filepath.Dir(manifestPath)); err != nil {
+		if err := agentsmd.Cleanup(worktree, srcDir); err != nil {
 			return err
 		}
 		m.AgentsMD = nil
