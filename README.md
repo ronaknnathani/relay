@@ -81,9 +81,10 @@ default agent with `relay config default-agent <agent>`. Project state lives und
 Skills are authored once under `skills/` with agent-neutral conventions (a single `{{subagent}}`
 directive carries model-tier intent; tool names and frontmatter are normalized per agent). `relay
 generate` renders the strongest mechanism each agent supports — Claude's `Agent` tool and deterministic
-slash invocation, Copilot's prose invocation and `AGENTS.md` context, and Codex's native skills under
-`~/.codex/skills` — rather than a lowest-common-denominator. Generator tests compare each rendered
-package to a source-derived expectation instead of duplicating the whole skill tree as fixtures.
+slash invocation, Copilot's prose invocation with prompt context, and Codex's native skills under
+`~/.codex/skills` with prompt context — rather than a lowest-common-denominator. Generator tests
+compare each rendered package to a source-derived expectation instead of duplicating the whole skill
+tree as fixtures.
 
 ## Contributing
 

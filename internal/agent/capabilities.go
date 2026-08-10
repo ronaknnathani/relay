@@ -48,6 +48,8 @@ const (
 	ContextFlag ContextKind = iota
 	// ContextFile writes context into the worktree (AGENTS.md, etc.).
 	ContextFile
+	// ContextPrompt includes context in the launch prompt.
+	ContextPrompt
 )
 
 // ToolNameMap maps a canonical tool name to the agent's own name for it.

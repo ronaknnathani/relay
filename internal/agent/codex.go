@@ -6,8 +6,8 @@ import (
 )
 
 // codex is the adapter for the OpenAI Codex CLI. Codex loads skills from
-// ~/.codex/skills and project context from AGENTS.md, so launch uses a prose
-// prompt that names the relay skill and lets Codex trigger it.
+// ~/.codex/skills, so launch uses a prose prompt that names the relay skill,
+// carries project context, and lets Codex trigger it.
 type codex struct{}
 
 func (codex) Name() string { return "codex" }
@@ -20,14 +20,11 @@ func (codex) Lookup() (string, error) {
 	return path, nil
 }
 
-// Prepare writes the project context into <worktree>/AGENTS.md, which Codex
-// loads as repository guidance.
-func (codex) Prepare(o LaunchOptions) error {
-	return prepareAgentsMD(o)
-}
+// Prepare is a no-op: Codex receives relay context in the launch prompt.
+func (codex) Prepare(LaunchOptions) error { return nil }
 
 // Capabilities reports Codex's values: Codex-native skills, subagent-capable
-// delegation, prose skill invocation, context delivered via AGENTS.md, and
+// delegation, prose skill invocation, context delivered in the prompt, and
 // neutralized names for compound Claude-only tools that appear in prose.
 func (codex) Capabilities() Capabilities {
 	return Capabilities{
@@ -35,7 +32,7 @@ func (codex) Capabilities() Capabilities {
 		LargeContext:       true,
 		DeterministicSlash: false,
 		LifecycleHook:      HookNone,
-		ContextInjection:   ContextFile,
+		ContextInjection:   ContextPrompt,
 		ToolNames: ToolNameMap{
 			"WebFetch":        "web search",
 			"AskUserQuestion": "ask the user",
