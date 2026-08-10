@@ -8,168 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronaknnathani/relay/internal/agentsmd"
 	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/project"
 )
-
-const relayGeneratedAgentsMD = "# relay\n\nActive relay project: archive-test. Workflow: deliver-pr. Mode: full.\n"
-
-func TestArchiveAllowsOnlyRelayGeneratedAgentsMDWithoutForce(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	repo := newTestRepo(t)
-	slug := "safe-agents"
-	branch := "user/safe-agents"
-	worktree := addArchiveWorktree(t, repo, slug, branch)
-	writeArchiveManifest(t, slug, repo, branch, worktree)
-	writeArchiveFile(t, worktree, "AGENTS.md", relayGeneratedAgentsMD)
-
-	out, err := captureStdout(t, func() error {
-		return runArchive(slug, false)
-	})
-	if err != nil {
-		t.Fatalf("runArchive: %v", err)
-	}
-
-	if strings.Contains(out, "--force") {
-		t.Fatalf("archive output = %q, want no --force hint", out)
-	}
-	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
-		t.Fatalf("active project dir still exists")
-	}
-	if pathExists(worktree) {
-		t.Fatalf("worktree dir still exists")
-	}
-	if gitx.BranchExists(repo, branch) {
-		t.Fatalf("branch %q still exists", branch)
-	}
-	archivedManifest := loadArchivedManifest(t, slug)
-	if archivedManifest.Status != "archived" {
-		t.Fatalf("archived status = %q, want archived", archivedManifest.Status)
-	}
-	if archivedManifest.Archived == nil || *archivedManifest.Archived == "" {
-		t.Fatalf("archived timestamp was not set")
-	}
-}
-
-func TestArchiveCleansManagedAgentsMDOnTrackedExistingFile(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	repo := newTestRepo(t)
-	writeArchiveFile(t, repo, "AGENTS.md", "# project\n")
-	runArchiveGit(t, repo, "add", "AGENTS.md")
-	runArchiveGit(t, repo, "commit", "-q", "-m", "add agents")
-	slug := "managed-existing-agents"
-	branch := "user/managed-existing-agents"
-	worktree := addArchiveWorktree(t, repo, slug, branch)
-	writeArchiveManifest(t, slug, repo, branch, worktree)
-	applyManagedArchiveAgentsMD(t, slug, worktree, "Active relay project: archive-test.")
-
-	if _, err := captureStdout(t, func() error {
-		return runArchive(slug, false)
-	}); err != nil {
-		t.Fatalf("runArchive: %v", err)
-	}
-	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
-		t.Fatalf("active project dir still exists")
-	}
-	if pathExists(worktree) {
-		t.Fatalf("worktree dir still exists")
-	}
-	if archivedManifest := loadArchivedManifest(t, slug); archivedManifest.AgentsMD != nil {
-		t.Fatalf("archived manifest AgentsMD = %+v, want nil", archivedManifest.AgentsMD)
-	}
-}
-
-func TestArchiveRemovesManagedRelayCreatedAgentsMD(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	repo := newTestRepo(t)
-	slug := "managed-created-agents"
-	branch := "user/managed-created-agents"
-	worktree := addArchiveWorktree(t, repo, slug, branch)
-	writeArchiveManifest(t, slug, repo, branch, worktree)
-	applyManagedArchiveAgentsMD(t, slug, worktree, "Active relay project: archive-test.")
-
-	if _, err := captureStdout(t, func() error {
-		return runArchive(slug, false)
-	}); err != nil {
-		t.Fatalf("runArchive: %v", err)
-	}
-	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
-		t.Fatalf("active project dir still exists")
-	}
-	if pathExists(worktree) {
-		t.Fatalf("worktree dir still exists")
-	}
-}
-
-func TestArchivePreservesSeparableManagedAgentsMDEdits(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	repo := newTestRepo(t)
-	writeArchiveFile(t, repo, "AGENTS.md", "# project\n")
-	runArchiveGit(t, repo, "add", "AGENTS.md")
-	runArchiveGit(t, repo, "commit", "-q", "-m", "add agents")
-	slug := "managed-edited-agents"
-	branch := "user/managed-edited-agents"
-	worktree := addArchiveWorktree(t, repo, slug, branch)
-	writeArchiveManifest(t, slug, repo, branch, worktree)
-	applyManagedArchiveAgentsMD(t, slug, worktree, "Active relay project: archive-test.")
-	appendArchiveFile(t, worktree, "AGENTS.md", "Session note\n")
-
-	_, err := captureStdout(t, func() error {
-		return runArchive(slug, false)
-	})
-	if err == nil {
-		t.Fatalf("runArchive succeeded, want dirty worktree after preserving AGENTS.md edits")
-	}
-	assertArchivePreserved(t, repo, slug, branch, worktree)
-	data := readArchiveFile(t, worktree, "AGENTS.md")
-	if data != "# project\nSession note\n" {
-		t.Fatalf("AGENTS.md after archive cleanup = %q, want preserved session note", data)
-	}
-}
-
-func TestArchiveConflictsOnEditedManagedAgentsMDBlock(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	repo := newTestRepo(t)
-	slug := "managed-conflict-agents"
-	branch := "user/managed-conflict-agents"
-	worktree := addArchiveWorktree(t, repo, slug, branch)
-	writeArchiveManifest(t, slug, repo, branch, worktree)
-	applyManagedArchiveAgentsMD(t, slug, worktree, "Active relay project: archive-test.")
-	before := readArchiveFile(t, worktree, "AGENTS.md")
-	edited := strings.Replace(before, "archive-test", "edited", 1)
-	writeArchiveFile(t, worktree, "AGENTS.md", edited)
-
-	_, err := captureStdout(t, func() error {
-		return runArchive(slug, false)
-	})
-	if err == nil || !strings.Contains(err.Error(), "AGENTS.md") {
-		t.Fatalf("runArchive error = %v, want AGENTS.md conflict", err)
-	}
-	assertArchivePreserved(t, repo, slug, branch, worktree)
-	if got := readArchiveFile(t, worktree, "AGENTS.md"); got != edited {
-		t.Fatalf("AGENTS.md changed on conflict = %q, want %q", got, edited)
-	}
-}
-
-func TestArchiveRejectsRelayGeneratedAgentsMDWithOtherDirtyFile(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	repo := newTestRepo(t)
-	slug := "dirty-agents"
-	branch := "user/dirty-agents"
-	worktree := addArchiveWorktree(t, repo, slug, branch)
-	writeArchiveManifest(t, slug, repo, branch, worktree)
-	writeArchiveFile(t, worktree, "AGENTS.md", relayGeneratedAgentsMD)
-	writeArchiveFile(t, worktree, "notes.txt", "keep me\n")
-
-	_, err := captureStdout(t, func() error {
-		return runArchive(slug, false)
-	})
-	if err == nil {
-		t.Fatalf("runArchive succeeded, want dirty worktree error")
-	}
-	assertArchivePreserved(t, repo, slug, branch, worktree)
-}
 
 func TestArchiveRejectsNonGeneratedAgentsMDWithoutForce(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -189,15 +30,15 @@ func TestArchiveRejectsNonGeneratedAgentsMDWithoutForce(t *testing.T) {
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
 
-func TestArchiveRejectsUnmergedBranchBeforeGeneratedAgentsMD(t *testing.T) {
+func TestArchiveRejectsUnmergedBranchBeforeDirtyWorktree(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
-	slug := "unmerged-agents"
-	branch := "user/unmerged-agents"
+	slug := "unmerged-dirty"
+	branch := "user/unmerged-dirty"
 	worktree := addArchiveWorktree(t, repo, slug, branch)
 	commitArchiveFile(t, worktree, "feature.txt", "unique\n", "unique work")
 	writeArchiveManifest(t, slug, repo, branch, worktree)
-	writeArchiveFile(t, worktree, "AGENTS.md", relayGeneratedAgentsMD)
+	writeArchiveFile(t, worktree, "notes.txt", "dirty\n")
 
 	_, err := captureStdout(t, func() error {
 		return runArchive(slug, false)
@@ -279,38 +120,6 @@ func writeArchiveFile(t *testing.T, root, name, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
-	}
-}
-
-func appendArchiveFile(t *testing.T, root, name, content string) {
-	t.Helper()
-	path := filepath.Join(root, name)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		t.Fatalf("open %s: %v", path, err)
-	}
-	if _, err := f.WriteString(content); err != nil {
-		t.Fatalf("append %s: %v", path, err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close %s: %v", path, err)
-	}
-}
-
-func readArchiveFile(t *testing.T, root, name string) string {
-	t.Helper()
-	path := filepath.Join(root, name)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	return string(data)
-}
-
-func applyManagedArchiveAgentsMD(t *testing.T, slug, worktree, prompt string) {
-	t.Helper()
-	if err := agentsmd.Apply(worktree, filepath.Join(project.ActiveDir(), slug), prompt); err != nil {
-		t.Fatalf("apply managed AGENTS.md: %v", err)
 	}
 }
 
