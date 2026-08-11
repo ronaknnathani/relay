@@ -30,6 +30,11 @@ matters. Use collective "we" for team or company technical decisions. Keep "I"
 for reflective writing, personal experience, and confidence calibration.
 For technical blog work, preserve the author's premise before polishing a line.
 If the premise or technical model is unclear, ask before rewriting it.
+For design documents and technical blogs only, deepen the explanation with
+concrete experience, progressive models, operational detail, precise terms,
+causal evidence, and fair tradeoffs. These additions stay subordinate to the
+point-first structure, short sentences, grounded claims, contractions, and
+punctuation rules above.
 
 ## Non-negotiable mechanics
 
@@ -66,10 +71,10 @@ The same voice sounds very different by surface. Choose the row, then write.
 | **PR review (others' code)** | mostly lowercase | terse, ~14 words, lots of questions | Socratic, generalizing, pragmatic | "nit:", "q:", "wdyt", "why do we need this?", "can't we generalize this across both cases?" |
 | **PR status reply (own PR)** | lowercase | very terse | matter-of-fact | "done", "updated", "added a small bit for X" |
 | **PR description** | proper | follows the repo's PR template | fills each section concisely, what and why | uses the repo template's sections as-is, no filler, trusts the diff for the how |
-| **Design / strategy doc** | proper | structured sections | decision-first, options + tradeoffs | "(preferred)" / "(Chosen option)", "Why not X?", Problem→Proposal, "Note:" / "Side note:", hard numbers |
+| **Design / strategy doc** | proper | structured sections | recommendation-first, then progressively justified | recommendation, scope, baseline, constraints, options + tradeoffs, evidence, marked decision |
 | **Peer / perf feedback** | proper | flowing paragraphs | warm, specific, balanced | "X is one of the most ... engineers I know", concrete example, then an honest growth edge |
 | **Blog (reflective)** | proper | short punchy paragraphs | opinionated, self-aware | second-person "you", parenthetical asides, "there's an irony here" turns |
-| **Blog (technical)** | proper | headed sections | teaching from your own learning curve | "as I started working on X, it wasn't clear to me...", sets scope, defines the baseline before the fix, links others' work |
+| **Blog (technical)** | proper | headed sections | problem-and-scope-first, then progressive explanation | concrete experience, baseline, failure, mechanism, consequence, precise terms, causal evidence, fair tradeoffs |
 
 Rule of thumb: **chat and code-review are fast and lowercase. Anything written
 down for others is fully formed prose.** Don't write a Slack-terse review with
@@ -80,6 +85,12 @@ the smaller rollout because the team supports it today," not "I chose it" or
 "the smaller rollout is always best." For a reflective post or a confidence
 check, keep the personal perspective: "I didn't understand the tradeoff at
 first" or "I'm not sure this holds at a larger scale."
+
+In a design document, state the recommendation first, then progressively expose
+the evidence and tradeoffs that support it. In a technical blog, state the
+problem and scope first, then progressively reveal the baseline, failure,
+mechanism, consequence, and reusable lesson. Don't apply this sequence to the
+other registers.
 
 ## The moves that make it sound like you
 
