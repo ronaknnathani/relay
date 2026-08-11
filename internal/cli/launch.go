@@ -4,8 +4,11 @@ import (
 	"fmt"
 
 	"github.com/ronaknnathani/relay/internal/agent"
+	"github.com/ronaknnathani/relay/internal/launcher"
 	"github.com/ronaknnathani/relay/internal/project"
 )
+
+var launchAgent = launcher.Launch
 
 func workflowGoal(workflow, slug string) string {
 	switch workflow {

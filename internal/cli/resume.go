@@ -6,7 +6,6 @@ import (
 
 	"github.com/ronaknnathani/relay/internal/agent"
 	"github.com/ronaknnathani/relay/internal/config"
-	"github.com/ronaknnathani/relay/internal/launcher"
 	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/ronaknnathani/relay/internal/ui"
 	"github.com/spf13/cobra"
@@ -63,5 +62,5 @@ func runResume(slug string) error {
 
 	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s.", slug, cmd)
 	o := relayLaunchOptions(*m.Worktree, filepath.Dir(path), systemPrompt, slug, cmd, cfg.PermissionModeFor(a.Name()))
-	return launcher.Launch(a, o)
+	return launchAgent(a, o)
 }
