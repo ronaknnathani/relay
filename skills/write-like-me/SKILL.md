@@ -34,7 +34,7 @@ For design documents and technical blogs only, deepen the explanation with
 concrete experience, progressive models, operational detail, precise terms,
 causal evidence, and fair tradeoffs. These additions stay subordinate to the
 point-first structure, short sentences, grounded claims, contractions, and
-punctuation rules above.
+punctuation rules in this guide.
 
 ## Non-negotiable mechanics
 
