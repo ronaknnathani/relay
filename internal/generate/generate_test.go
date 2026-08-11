@@ -129,6 +129,21 @@ func TestStackShipFallbackIsRuntimeNeutral(t *testing.T) {
 	}
 }
 
+func TestStackShipNativeGoalGuidanceIsCopilotOnly(t *testing.T) {
+	for _, agentName := range []string{"claude", "codex"} {
+		t.Run(agentName, func(t *testing.T) {
+			_, out := generateAgent(t, agentName)
+			body := readFile(t, filepath.Join(out, "skills", "stack-ship", "SKILL.md"))
+			if strings.Contains(body, `/goal Deliver the Relay stack-ship workflow`) {
+				t.Errorf("%s stack-ship contains Copilot-only native goal guidance", agentName)
+			}
+			if !strings.Contains(body, "Use the best native harness") {
+				t.Errorf("%s stack-ship lost runtime-neutral harness guidance", agentName)
+			}
+		})
+	}
+}
+
 func TestGenerateUnsupportedAgent(t *testing.T) {
 	if err := Generate(stubAgent{}, t.TempDir(), t.TempDir()); err == nil {
 		t.Fatal("expected error for unsupported agent")

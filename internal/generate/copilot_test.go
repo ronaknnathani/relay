@@ -21,9 +21,16 @@ func TestCopilotPackageMatchesSource(t *testing.T) {
 
 	expectFile(t, out, ".claude-plugin/plugin.json", copilotManifest)
 	caps := mustGet(t, "copilot").Capabilities()
-	assertRenderedSkills(t, out, src, func(body []byte) []byte {
-		return transformCopilot(body, caps)
-	})
+	for _, e := range src.Entries {
+		body, err := transformCopilotSkill(e.Name, e.Body, caps)
+		if err != nil {
+			t.Fatalf("transform %s: %v", e.Name, err)
+		}
+		expectFile(t, out, filepath.Join("skills", e.Name, "SKILL.md"), body)
+		for rel, data := range e.Bundled {
+			expectFile(t, out, filepath.Join("skills", e.Name, rel), transformCopilot(data, caps))
+		}
+	}
 	assertNoUnexpectedFiles(t, out, expectedSkillFiles(src, ".claude-plugin/plugin.json"))
 }
 
@@ -91,6 +98,35 @@ func TestCopilotPackageInvariants(t *testing.T) {
 		if !strings.Contains(prMonitor, snippet) {
 			t.Errorf("pr-monitor is missing %q", snippet)
 		}
+	}
+}
+
+func TestCopilotStackShipUsesNativeGoal(t *testing.T) {
+	_, out := generateCopilot(t)
+	body := readFile(t, filepath.Join(out, "skills", "stack-ship", "SKILL.md"))
+
+	for _, snippet := range []string{
+		`/goal Deliver the Relay stack-ship workflow for project "<slug>"`,
+		"Use Relay project artifacts and `relay state` as the durable source of truth.",
+		"Stop only when all acceptance criteria are met and all pull requests are merged.",
+		"Never replace this native goal with the file-only fallback",
+	} {
+		if !strings.Contains(body, snippet) {
+			t.Errorf("stack-ship is missing native goal guidance %q", snippet)
+		}
+	}
+	if strings.Contains(body, "If `/goal` or `/loop` exists, use it") {
+		t.Error("stack-ship still asks Copilot to choose a goal fallback")
+	}
+}
+
+func TestTransformCopilotStackShipRequiresGoalHarness(t *testing.T) {
+	_, err := transformCopilotSkill("stack-ship", []byte("# Stack Ship\n\nSource drifted.\n"), mustGet(t, "copilot").Capabilities())
+	if err == nil {
+		t.Fatal("expected missing goal harness error")
+	}
+	if !strings.Contains(err.Error(), "stack-ship goal harness section") {
+		t.Fatalf("error = %q, want descriptive goal harness context", err)
 	}
 }
 
