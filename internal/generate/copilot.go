@@ -70,8 +70,9 @@ const neutralStackShipGoalHarness = "9. **Use the best native harness.** Detect 
 	"   automatically on resume and be honest that coverage is tick-based, not continuous."
 
 const copilotStackShipGoalHarness = "9. **Use Copilot's native goal harness.** The session's launch input must set\n" +
-	"   `/goal Deliver the Relay stack-ship workflow for project \"<slug>\". Use Relay project artifacts and `relay state` as the durable source of truth. Stop only when all acceptance criteria are met and all pull requests are merged.`\n" +
-	"   Replace `<slug>` with the active project slug. Never replace this native goal with the file-only fallback.\n" +
+	"   `/goal <the user's requested outcome>` using the original task, not instructions to run the stack-ship workflow.\n" +
+	"   Relay project artifacts and `relay state` remain the durable source of truth for executing and resuming the workflow.\n" +
+	"   Never replace this native goal with the file-only fallback.\n" +
 	"   Use `/loop` for monitoring when available; otherwise use monitor-tick mode automatically on resume and be\n" +
 	"   honest that coverage is tick-based, not continuous."
 

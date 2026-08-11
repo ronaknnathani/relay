@@ -61,6 +61,6 @@ func runResume(slug string) error {
 	fmt.Println()
 
 	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s.", slug, cmd)
-	o := relayLaunchOptions(*m.Worktree, filepath.Dir(path), systemPrompt, slug, cmd, cfg.PermissionModeFor(a.Name()))
+	o := relayLaunchOptions(*m.Worktree, filepath.Dir(path), systemPrompt, slug, cmd, m.Title, cfg.PermissionModeFor(a.Name()))
 	return launchAgent(a, o)
 }

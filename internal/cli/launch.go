@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"fmt"
+	"strings"
 
 	"github.com/ronaknnathani/relay/internal/agent"
 	"github.com/ronaknnathani/relay/internal/launcher"
@@ -10,12 +10,10 @@ import (
 
 var launchAgent = launcher.Launch
 
-func workflowGoal(workflow, slug string) string {
+func workflowGoal(workflow, task string) string {
 	switch workflow {
-	case "deliver-pr":
-		return fmt.Sprintf("Deliver the Relay deliver-pr workflow for project %q. Use Relay project artifacts and `relay state` as the durable source of truth. Stop when the pull request is open.", slug)
-	case "stack-ship":
-		return fmt.Sprintf("Deliver the Relay stack-ship workflow for project %q. Use Relay project artifacts and `relay state` as the durable source of truth. Stop only when all acceptance criteria are met and all pull requests are merged.", slug)
+	case "deliver-pr", "stack-ship":
+		return strings.TrimSpace(task)
 	default:
 		return ""
 	}
@@ -28,7 +26,7 @@ func resumeCommand(m project.Manifest) string {
 	return project.PhaseToBatch(m.Phase)
 }
 
-func relayLaunchOptions(worktree, projectDir, systemPrompt, slug, command, permissionMode string) agent.LaunchOptions {
+func relayLaunchOptions(worktree, projectDir, systemPrompt, slug, command, task, permissionMode string) agent.LaunchOptions {
 	return agent.LaunchOptions{
 		Worktree:       worktree,
 		ProjectDir:     projectDir,
@@ -36,7 +34,7 @@ func relayLaunchOptions(worktree, projectDir, systemPrompt, slug, command, permi
 		SessionName:    "relay:" + slug,
 		Command:        command,
 		CommandArgs:    slug,
-		WorkflowGoal:   workflowGoal(command, slug),
+		WorkflowGoal:   workflowGoal(command, task),
 		PermissionMode: permissionMode,
 	}
 }

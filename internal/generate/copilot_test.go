@@ -106,14 +106,17 @@ func TestCopilotStackShipUsesNativeGoal(t *testing.T) {
 	body := readFile(t, filepath.Join(out, "skills", "stack-ship", "SKILL.md"))
 
 	for _, snippet := range []string{
-		`/goal Deliver the Relay stack-ship workflow for project "<slug>"`,
-		"Use Relay project artifacts and `relay state` as the durable source of truth.",
-		"Stop only when all acceptance criteria are met and all pull requests are merged.",
+		`/goal <the user's requested outcome>`,
+		"not instructions to run the stack-ship workflow",
+		"Relay project artifacts and `relay state` remain the durable source of truth",
 		"Never replace this native goal with the file-only fallback",
 	} {
 		if !strings.Contains(body, snippet) {
 			t.Errorf("stack-ship is missing native goal guidance %q", snippet)
 		}
+	}
+	if strings.Contains(body, "Deliver the Relay stack-ship workflow") {
+		t.Error("stack-ship still uses the Relay workflow as the native goal")
 	}
 	if strings.Contains(body, "If `/goal` or `/loop` exists, use it") {
 		t.Error("stack-ship still asks Copilot to choose a goal fallback")

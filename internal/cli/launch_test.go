@@ -14,28 +14,32 @@ import (
 func TestWorkflowGoal(t *testing.T) {
 	tests := []struct {
 		workflow string
+		task     string
 		want     string
 	}{
 		{
 			workflow: "deliver-pr",
-			want:     "Deliver the Relay deliver-pr workflow for project \"demo\". Use Relay project artifacts and `relay state` as the durable source of truth. Stop when the pull request is open.",
+			task:     "Add native goals to Copilot launches",
+			want:     "Add native goals to Copilot launches",
 		},
 		{
 			workflow: "stack-ship",
-			want:     "Deliver the Relay stack-ship workflow for project \"demo\". Use Relay project artifacts and `relay state` as the durable source of truth. Stop only when all acceptance criteria are met and all pull requests are merged.",
+			task:     "  Ship the new search experience  ",
+			want:     "Ship the new search experience",
 		},
-		{workflow: "clarify"},
-		{workflow: "plan"},
-		{workflow: "review"},
-		{workflow: "validate"},
-		{workflow: "ship"},
-		{workflow: ""},
+		{workflow: "deliver-pr"},
+		{workflow: "clarify", task: "Clarify the task"},
+		{workflow: "plan", task: "Plan the task"},
+		{workflow: "review", task: "Review the task"},
+		{workflow: "validate", task: "Validate the task"},
+		{workflow: "ship", task: "Ship the task"},
+		{task: "Complete the task"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.workflow, func(t *testing.T) {
-			if got := workflowGoal(tt.workflow, "demo"); got != tt.want {
-				t.Errorf("workflowGoal(%q, %q) = %q, want %q", tt.workflow, "demo", got, tt.want)
+			if got := workflowGoal(tt.workflow, tt.task); got != tt.want {
+				t.Errorf("workflowGoal(%q, %q) = %q, want %q", tt.workflow, tt.task, got, tt.want)
 			}
 		})
 	}
@@ -48,6 +52,7 @@ func TestNewLaunchWorkflowGoal(t *testing.T) {
 		"Active relay project: demo. Workflow: deliver-pr. Mode: full.",
 		"demo",
 		"deliver-pr",
+		"Add native goals to Copilot launches",
 		"allow-all",
 	)
 	want := agent.LaunchOptions{
@@ -57,7 +62,7 @@ func TestNewLaunchWorkflowGoal(t *testing.T) {
 		SessionName:    "relay:demo",
 		Command:        "deliver-pr",
 		CommandArgs:    "demo",
-		WorkflowGoal:   workflowGoal("deliver-pr", "demo"),
+		WorkflowGoal:   "Add native goals to Copilot launches",
 		PermissionMode: "allow-all",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -108,7 +113,7 @@ func TestRunNewLaunchesWorkflowGoal(t *testing.T) {
 		SessionName:    "relay:demo",
 		Command:        "stack-ship",
 		CommandArgs:    "demo",
-		WorkflowGoal:   workflowGoal("stack-ship", "demo"),
+		WorkflowGoal:   "demo task",
 		PermissionMode: "allow-all",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -126,15 +131,15 @@ func TestResumeCommandAndWorkflowGoal(t *testing.T) {
 	}{
 		{
 			name: "persisted deliver-pr workflow",
-			m:    project.Manifest{Slug: "demo", Workflow: "deliver-pr", Phase: "validate", Worktree: &worktree},
+			m:    project.Manifest{Slug: "demo", Title: "Add native goals", Workflow: "deliver-pr", Phase: "validate", Worktree: &worktree},
 			want: "deliver-pr",
-			goal: workflowGoal("deliver-pr", "demo"),
+			goal: "Add native goals",
 		},
 		{
 			name: "persisted stack-ship workflow",
-			m:    project.Manifest{Slug: "demo", Workflow: "stack-ship", Phase: "implement", Worktree: &worktree},
+			m:    project.Manifest{Slug: "demo", Title: "Ship search", Workflow: "stack-ship", Phase: "implement", Worktree: &worktree},
 			want: "stack-ship",
-			goal: workflowGoal("stack-ship", "demo"),
+			goal: "Ship search",
 		},
 		{
 			name: "legacy phase fallback",
@@ -156,6 +161,7 @@ func TestResumeCommandAndWorkflowGoal(t *testing.T) {
 				"Active relay project: demo. Workflow: "+command+".",
 				tt.m.Slug,
 				command,
+				tt.m.Title,
 				"allow-all",
 			)
 
@@ -192,6 +198,7 @@ func TestRunResumeLaunchesWorkflowGoal(t *testing.T) {
 	}
 	if err := project.Save(filepath.Join(projectDir, "manifest.json"), project.Manifest{
 		Slug:     "demo",
+		Title:    "Add native goals",
 		Agent:    "copilot",
 		Workflow: "deliver-pr",
 		Phase:    "validate",
@@ -219,7 +226,7 @@ func TestRunResumeLaunchesWorkflowGoal(t *testing.T) {
 		SessionName:    "relay:demo",
 		Command:        "deliver-pr",
 		CommandArgs:    "demo",
-		WorkflowGoal:   workflowGoal("deliver-pr", "demo"),
+		WorkflowGoal:   "Add native goals",
 		PermissionMode: "allow-all",
 	}
 	if !reflect.DeepEqual(got, want) {

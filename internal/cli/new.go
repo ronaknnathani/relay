@@ -213,7 +213,7 @@ func runNew(opts newOpts) error {
 		mode = "quick"
 	}
 	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s. Mode: %s.", slug, wf, mode)
-	o := relayLaunchOptions(worktreeDir, projDir, systemPrompt, slug, wf, cfg.PermissionModeFor(a.Name()))
+	o := relayLaunchOptions(worktreeDir, projDir, systemPrompt, slug, wf, opts.task, cfg.PermissionModeFor(a.Name()))
 	return launchAgent(a, o)
 }
 
