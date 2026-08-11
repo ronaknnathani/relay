@@ -16,6 +16,7 @@ func TestClaudeLaunchArgs(t *testing.T) {
 		SessionName:    "relay:demo",
 		Command:        "plan",
 		CommandArgs:    "demo",
+		WorkflowGoal:   "This adapter must ignore workflow goals.",
 		PermissionMode: "default",
 	}
 
@@ -133,6 +134,15 @@ func TestCopilotLaunchArgs(t *testing.T) {
 		t.Errorf("LaunchArgs mismatch:\n got: %#v\nwant: %#v", got, want)
 	}
 
+	oGoal := o
+	oGoal.Command = "deliver-pr"
+	oGoal.WorkflowGoal = "Deliver the workflow and stop when the pull request is open."
+	wantGoal := slices.Clone(want)
+	wantGoal[len(wantGoal)-1] = "/goal Deliver the workflow and stop when the pull request is open.\n\nRun the relay \"deliver-pr\" skill for slug demo.\n\nContext:\nActive relay project: demo. Phase: plan. Mode: full."
+	if got := (copilot{}).LaunchArgs(oGoal); !reflect.DeepEqual(got, wantGoal) {
+		t.Errorf("LaunchArgs with goal mismatch:\n got: %#v\nwant: %#v", got, wantGoal)
+	}
+
 	// No ProjectDir → no --add-dir flag is emitted.
 	o3 := o
 	o3.ProjectDir = ""
@@ -244,6 +254,7 @@ func TestCodexLaunchArgs(t *testing.T) {
 		SessionName:  "relay:demo",
 		Command:      "plan",
 		CommandArgs:  "demo",
+		WorkflowGoal: "This adapter must ignore workflow goals.",
 	}
 	want := []string{
 		"-C", "/tmp/wt",
