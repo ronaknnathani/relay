@@ -1,6 +1,6 @@
 ---
 name: stack-ship
-description: Use when given a design doc or feature goal to deliver end-to-end as a stack of small PRs, or to resume an active stack. Decompose into acceptance criteria and an interface-first PR plan, delegate build and monitor work, keep durable state, use native loop/goal harnesses when available, use Copilot monitor ticks when not, surface author decisions, cascade stack changes, auto-merge only on human approval, and stop when the goal is delivered.
+description: Use when given a design doc or feature goal to deliver end-to-end as a stack of small PRs, or to resume an active stack. Decompose into acceptance criteria and an interface-first PR plan, delegate build and monitor work, keep durable state, use native loop/goal harnesses when available, use capability-based monitor ticks when not, surface author decisions, cascade stack changes, auto-merge only on human approval, and stop when the goal is delivered.
 ---
 
 # Stack Ship
@@ -29,9 +29,9 @@ work and surface questions. You stop when every acceptance criterion is met and 
 ## When to use / not use
 
 - **Use** for a multi-PR feature with a clear goal and a discoverable current→desired delta.
-- **Use again / resume** for an active stacked delivery run. If a native loop is unavailable (for
-  example in Copilot), the skill automatically reconstructs state and runs one monitor tick for the
-  current front PR — the author should not have to type a special "monitor-tick mode" prompt.
+- **Use again / resume** for an active stacked delivery run. If a native loop is unavailable, the
+  skill automatically reconstructs state and runs one monitor tick for the current front PR — the
+  author should not have to type a special "monitor-tick mode" prompt.
 - **Don't use** for a single small change (just do it), or when the goal/delta is too vague to write
   acceptance criteria — first run `brainstorming` / ask the author to sharpen the goal.
 
@@ -65,8 +65,8 @@ work and surface questions. You stop when every acceptance criterion is met and 
    already available in the environment. Never install or run unreviewed third-party
    plugins/hooks/scripts from the internet during this workflow.
 9. **Use the best native harness.** Detect runtime capabilities once and record them in `state.json`.
-   If `/goal` or `/loop` exists, use it; never downgrade Claude/Codex-style native primitives to a
-   fallback because another runtime lacks them. If no native loop exists, use monitor-tick mode
+   If `/goal` or `/loop` exists, use it; never downgrade native primitives to a fallback because
+   another runtime lacks them. If no native loop or approved scheduler exists, use monitor-tick mode
    automatically on resume and be honest that coverage is tick-based, not continuous.
 
 ## Workflow
