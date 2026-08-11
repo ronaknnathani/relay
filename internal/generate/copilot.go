@@ -29,7 +29,7 @@ func renderCopilot(a agent.Agent, src *Source, out string) error {
 			return err
 		}
 		for rel, data := range e.Bundled {
-			if err := writeFile(filepath.Join(skillDir, rel), transformCopilotBundled(e.Name, data, caps)); err != nil {
+			if err := writeFile(filepath.Join(skillDir, rel), transformCopilot(data, caps)); err != nil {
 				return err
 			}
 		}
@@ -64,16 +64,17 @@ func transformCopilot(body []byte, caps agent.Capabilities) []byte {
 	return out
 }
 
-const neutralStackShipGoalHarness = "9. **Use the best native harness.** Detect runtime capabilities once and record them in `state.json`.\n" +
-	"   If `/goal` or `/loop` exists, use it; never downgrade native primitives to a fallback because\n" +
-	"   another runtime lacks them. If no native loop or approved scheduler exists, use monitor-tick mode\n" +
+const neutralStackShipGoalHarness = "9. **Set the goal in every harness.** The session's launch input must set the user's requested outcome\n" +
+	"   as its goal, not instructions to run the stack-ship workflow. Use a native goal primitive when available;\n" +
+	"   otherwise keep the goal explicit in launch context. Detect recurring-run capabilities once and record them\n" +
+	"   in `state.json`. If `/loop` or an approved scheduler exists, use it. Otherwise use monitor-tick mode\n" +
 	"   automatically on resume and be honest that coverage is tick-based, not continuous."
 
 const copilotStackShipGoalHarness = "9. **Use Copilot's native goal harness.** The session's launch input must set\n" +
 	"   `/goal <the user's requested outcome>` using the original task, not instructions to run the stack-ship workflow.\n" +
 	"   Relay project artifacts and `relay state` remain the durable source of truth for executing and resuming the workflow.\n" +
 	"   Never replace this native goal with the file-only fallback.\n" +
-	"   Use `/loop` for monitoring when available; otherwise use monitor-tick mode automatically on resume and be\n" +
+	"   Use `/every` for monitoring when available; otherwise use monitor-tick mode automatically on resume and be\n" +
 	"   honest that coverage is tick-based, not continuous."
 
 func transformCopilotSkill(name string, body []byte, caps agent.Capabilities) ([]byte, error) {
@@ -85,21 +86,7 @@ func transformCopilotSkill(name string, body []byte, caps agent.Capabilities) ([
 		return nil, fmt.Errorf("transform Copilot stack-ship: expected stack-ship goal harness section not found")
 	}
 	s = strings.Replace(s, neutralStackShipGoalHarness, copilotStackShipGoalHarness, 1)
-	return transformCopilotStackShipAliases(transformCopilot([]byte(s), caps)), nil
-}
-
-func transformCopilotBundled(skillName string, body []byte, caps agent.Capabilities) []byte {
-	out := transformCopilot(body, caps)
-	if skillName == "stack-ship" {
-		out = transformCopilotStackShipAliases(out)
-	}
-	return out
-}
-
-func transformCopilotStackShipAliases(body []byte) []byte {
-	s := strings.ReplaceAll(string(body), "your `/goal`", "the durable definition of done")
-	s = strings.ReplaceAll(s, "This is `/goal`", "This is the durable definition of done")
-	return []byte(s)
+	return transformCopilot([]byte(s), caps), nil
 }
 
 // claudeOnlyKeys are frontmatter keys that must not survive into the Copilot

@@ -54,7 +54,7 @@ func (claude) LaunchArgs(o LaunchOptions) []string {
 		invocation += " " + o.CommandArgs
 	}
 	args = append(args,
-		"--append-system-prompt", o.SystemPrompt,
+		"--append-system-prompt", goalContext(o.WorkflowGoal, o.SystemPrompt),
 		"-n", o.SessionName,
 		invocation,
 	)

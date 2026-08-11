@@ -16,7 +16,6 @@ func TestClaudeLaunchArgs(t *testing.T) {
 		SessionName:    "relay:demo",
 		Command:        "plan",
 		CommandArgs:    "demo",
-		WorkflowGoal:   "This adapter must ignore workflow goals.",
 		PermissionMode: "default",
 	}
 
@@ -30,6 +29,19 @@ func TestClaudeLaunchArgs(t *testing.T) {
 			opts: base,
 			want: []string{
 				"--append-system-prompt", "Active relay project: demo. Phase: plan. Mode: full.",
+				"-n", "relay:demo",
+				"/plan demo",
+			},
+		},
+		{
+			name: "goal in system context",
+			opts: func() LaunchOptions {
+				o := base
+				o.WorkflowGoal = "Add native goals to every harness."
+				return o
+			}(),
+			want: []string{
+				"--append-system-prompt", "Goal:\nAdd native goals to every harness.\n\nContext:\nActive relay project: demo. Phase: plan. Mode: full.",
 				"-n", "relay:demo",
 				"/plan demo",
 			},
@@ -136,9 +148,9 @@ func TestCopilotLaunchArgs(t *testing.T) {
 
 	oGoal := o
 	oGoal.Command = "deliver-pr"
-	oGoal.WorkflowGoal = "Deliver the workflow and stop when the pull request is open."
+	oGoal.WorkflowGoal = "Add native goals to every harness."
 	wantGoal := slices.Clone(want)
-	wantGoal[len(wantGoal)-1] = "/goal Deliver the workflow and stop when the pull request is open.\n\nRun the relay \"deliver-pr\" skill for slug demo.\n\nContext:\nActive relay project: demo. Phase: plan. Mode: full."
+	wantGoal[len(wantGoal)-1] = "/goal Add native goals to every harness.\n\nRun the relay \"deliver-pr\" skill for slug demo.\n\nContext:\nActive relay project: demo. Phase: plan. Mode: full."
 	if got := (copilot{}).LaunchArgs(oGoal); !reflect.DeepEqual(got, wantGoal) {
 		t.Errorf("LaunchArgs with goal mismatch:\n got: %#v\nwant: %#v", got, wantGoal)
 	}
@@ -254,7 +266,6 @@ func TestCodexLaunchArgs(t *testing.T) {
 		SessionName:  "relay:demo",
 		Command:      "plan",
 		CommandArgs:  "demo",
-		WorkflowGoal: "This adapter must ignore workflow goals.",
 	}
 	want := []string{
 		"-C", "/tmp/wt",
@@ -265,6 +276,14 @@ func TestCodexLaunchArgs(t *testing.T) {
 	}
 	if got := (codex{}).LaunchArgs(o); !reflect.DeepEqual(got, want) {
 		t.Errorf("LaunchArgs mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+
+	oGoal := o
+	oGoal.WorkflowGoal = "Add native goals to every harness."
+	wantGoal := slices.Clone(want)
+	wantGoal[len(wantGoal)-1] = "Goal:\nAdd native goals to every harness.\n\nRun the relay \"plan\" skill for slug demo.\n\nContext:\nActive relay project: demo. Phase: plan. Mode: full."
+	if got := (codex{}).LaunchArgs(oGoal); !reflect.DeepEqual(got, wantGoal) {
+		t.Errorf("LaunchArgs with goal mismatch:\n got: %#v\nwant: %#v", got, wantGoal)
 	}
 
 	oPrompt := o

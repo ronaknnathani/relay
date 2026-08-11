@@ -10,6 +10,12 @@ with durable resumable state. You are a **router, not a worker**: you read state
 phase as a sub-agent, record the result, and move on. You do not do the phase work yourself, and you
 stay context-light — you read digests and state, never file dumps.
 
+## Session goal
+
+In every agent harness, the user's requested outcome is the session goal.
+The `deliver-pr` workflow is the execution method, not the goal. Keep `task.md`, requirements, and
+`relay state` as the durable definition and progress record across resumes.
+
 ## Resume-first — always start here
 
 `<slug>` is the argument this skill was invoked with — bind it to `$SLUG` before anything else. Every

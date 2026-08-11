@@ -28,7 +28,7 @@ func TestCopilotPackageMatchesSource(t *testing.T) {
 		}
 		expectFile(t, out, filepath.Join("skills", e.Name, "SKILL.md"), body)
 		for rel, data := range e.Bundled {
-			expectFile(t, out, filepath.Join("skills", e.Name, rel), transformCopilotBundled(e.Name, data, caps))
+			expectFile(t, out, filepath.Join("skills", e.Name, rel), transformCopilot(data, caps))
 		}
 	}
 	assertNoUnexpectedFiles(t, out, expectedSkillFiles(src, ".claude-plugin/plugin.json"))
@@ -117,6 +117,12 @@ func TestCopilotStackShipUsesNativeGoal(t *testing.T) {
 	}
 	if strings.Contains(body, "Deliver the Relay stack-ship workflow") {
 		t.Error("stack-ship still uses the Relay workflow as the native goal")
+	}
+	if !strings.Contains(copilotStackShipGoalHarness, "/every") {
+		t.Error("Copilot stack-ship harness does not use /every for monitoring")
+	}
+	if strings.Contains(copilotStackShipGoalHarness, "/loop") {
+		t.Error("Copilot stack-ship harness still references /loop")
 	}
 	if strings.Contains(body, "If `/goal` or `/loop` exists, use it") {
 		t.Error("stack-ship still asks Copilot to choose a goal fallback")

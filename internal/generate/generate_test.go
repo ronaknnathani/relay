@@ -129,16 +129,38 @@ func TestStackShipFallbackIsRuntimeNeutral(t *testing.T) {
 	}
 }
 
-func TestStackShipNativeGoalGuidanceIsCopilotOnly(t *testing.T) {
-	for _, agentName := range []string{"claude", "codex"} {
+func TestStackShipGoalGuidanceIsGeneratedForEveryHarness(t *testing.T) {
+	for _, agentName := range []string{"claude", "copilot", "codex"} {
 		t.Run(agentName, func(t *testing.T) {
 			_, out := generateAgent(t, agentName)
 			body := readFile(t, filepath.Join(out, "skills", "stack-ship", "SKILL.md"))
-			if strings.Contains(body, `/goal Deliver the Relay stack-ship workflow`) {
-				t.Errorf("%s stack-ship contains Copilot-only native goal guidance", agentName)
+			for _, want := range []string{
+				"the user's requested outcome",
+				"not instructions to run the stack-ship workflow",
+			} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s stack-ship is missing goal guidance %q", agentName, want)
+				}
 			}
-			if !strings.Contains(body, "Use the best native harness") {
-				t.Errorf("%s stack-ship lost runtime-neutral harness guidance", agentName)
+			if strings.Contains(body, "Deliver the Relay stack-ship workflow") {
+				t.Errorf("%s stack-ship uses the workflow itself as the goal", agentName)
+			}
+		})
+	}
+}
+
+func TestDeliverPRGoalGuidanceIsGeneratedForEveryHarness(t *testing.T) {
+	for _, agentName := range []string{"claude", "copilot", "codex"} {
+		t.Run(agentName, func(t *testing.T) {
+			_, out := generateAgent(t, agentName)
+			body := readFile(t, filepath.Join(out, "skills", "deliver-pr", "SKILL.md"))
+			for _, want := range []string{
+				"the user's requested outcome is the session goal",
+				"The `deliver-pr` workflow is the execution method, not the goal",
+			} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s deliver-pr is missing goal guidance %q", agentName, want)
+				}
 			}
 		})
 	}

@@ -85,12 +85,13 @@ from the internet as part of this workflow. If required tooling is missing, surf
 instead of improvising.
 
 ## 14. Preserve native harness quality; fallback honestly
-Detect and record runtime capabilities in `state.json`. If `/goal`, `/loop`, or an equivalent
-approved scheduler exists, use it; never downgrade a native harness to a fallback because another
-runtime lacks that primitive. If no native loop or approved scheduler exists, use **monitor-tick
-mode** automatically on normal resume/invocation of an active stack: run one tick, write
-`nextTickAfter`, report the outcome, and stop. Do not require the author to type a special mode prompt,
-and do not claim continuous monitoring unless a real approved loop/scheduler is running.
+Detect and record runtime capabilities in `state.json`. Set the user's requested outcome as the
+session goal in every harness. If a native recurring command or approved scheduler exists, use it;
+never downgrade a native harness to a fallback because another runtime lacks that primitive. If
+neither exists, use **monitor-tick mode** automatically on normal resume/invocation of an active
+stack: run one tick, write `nextTickAfter`, report the outcome, and stop. Do not require the author to
+type a special mode prompt, and do not claim continuous monitoring unless a real approved
+loop/scheduler is running.
 
 ## Subagent prompt hygiene (orchestrator responsibility)
 Every delegated prompt must: (a) name the exact worktree/branch and forbid touching others;

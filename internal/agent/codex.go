@@ -55,7 +55,7 @@ func (codex) LaunchArgs(o LaunchOptions) []string {
 	case "bypass":
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
-	args = append(args, relaySkillPrompt(o))
+	args = append(args, promptWithGoal(o.WorkflowGoal, relaySkillPrompt(o)))
 	return args
 }
 

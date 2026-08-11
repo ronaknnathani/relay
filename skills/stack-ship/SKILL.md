@@ -64,9 +64,10 @@ work and surface questions. You stop when every acceptance criterion is met and 
 8. **Approved tooling only.** Use only approved/verified skills, hooks, MCP integrations, and tools
    already available in the environment. Never install or run unreviewed third-party
    plugins/hooks/scripts from the internet during this workflow.
-9. **Use the best native harness.** Detect runtime capabilities once and record them in `state.json`.
-   If `/goal` or `/loop` exists, use it; never downgrade native primitives to a fallback because
-   another runtime lacks them. If no native loop or approved scheduler exists, use monitor-tick mode
+9. **Set the goal in every harness.** The session's launch input must set the user's requested outcome
+   as its goal, not instructions to run the stack-ship workflow. Use a native goal primitive when available;
+   otherwise keep the goal explicit in launch context. Detect recurring-run capabilities once and record them
+   in `state.json`. If `/loop` or an approved scheduler exists, use it. Otherwise use monitor-tick mode
    automatically on resume and be honest that coverage is tick-based, not continuous.
 
 ## Workflow
@@ -75,7 +76,7 @@ work and surface questions. You stop when every acceptance criterion is met and 
 Input is either a full design doc **or** a goal + a way to find the current→desired delta. Produce,
 in the project state dir:
 - `goal.md` — the goal in one paragraph + **acceptance criteria** (a checklist that defines "done";
-  this is your `/goal` and your final verification gate).
+  this is the durable definition of done and final verification gate).
 - `plan.md` — the stacked PR plan: ordered PRs, each with intent, scope, dependencies, and which
   layer it is. Decompose along the **interface-first** seam: `api → utils → stitch` — define the
   contract/types/surface first (plumbed but unconsumed), then the logic/helpers that operate on it,
@@ -84,7 +85,7 @@ in the project state dir:
   in full in [decomposition.md](references/decomposition.md) — it's self-contained, no repo-specific
   files required.
 - Initialize `state.json`, `progress.md`, `tradeoffs.md`, `follow-ups.md`, `questions.md`. Record
-  runtime capabilities in `state.json` (`/goal`, `/loop`, scheduler, monitor mode) before building.
+  runtime capabilities in `state.json` (goal injection, recurring command, scheduler, monitor mode) before building.
 Decomposition is a planning act — do it yourself or via a single Plan subagent, then **get author
 sign-off on `plan.md`** if the design left genuine ambiguity (use `AskUserQuestion`); otherwise
 proceed with the smallest-PRs default and log the call in `tradeoffs.md`.
