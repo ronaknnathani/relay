@@ -13,6 +13,7 @@ type LaunchOptions struct {
 	SessionName  string // e.g. "relay:<slug>"
 	Command      string // command/skill name, e.g. "plan"
 	CommandArgs  string // args appended to the command, e.g. the slug
+	WorkflowGoal string // optional native workflow objective; ignored by adapters without goal support
 	// PermissionMode selects how the agent handles permission prompts. Valid
 	// values are agent-specific (see Agent.PermissionModes); an empty or
 	// unrecognized value resolves to the agent's default mode.
