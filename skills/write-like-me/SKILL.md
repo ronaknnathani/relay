@@ -30,11 +30,13 @@ matters. Use collective "we" for team or company technical decisions. Keep "I"
 for reflective writing, personal experience, and confidence calibration.
 For technical blog work, preserve the author's premise before polishing a line.
 If the premise or technical model is unclear, ask before rewriting it.
-For design documents and technical blogs only, deepen the explanation with
-concrete experience, progressive models, operational detail, precise terms,
-causal evidence, and fair tradeoffs. These additions stay subordinate to the
-point-first structure, short sentences, grounded claims, contractions, and
-punctuation rules in this guide.
+For design documents and technical blogs, deepen the technical explanation with
+concrete experience, progressive models, operational detail, precise
+definitions, separated concepts, causal evidence, and fair tradeoffs. This
+combined technical-depth treatment is limited to those registers. Individual
+traits can still serve other registers where their guidance calls for them.
+These additions stay subordinate to the point-first structure, short sentences,
+grounded claims, contractions, and punctuation rules in this guide.
 
 ## Non-negotiable mechanics
 
@@ -86,12 +88,6 @@ the smaller rollout because the team supports it today," not "I chose it" or
 check, keep the personal perspective: "I didn't understand the tradeoff at
 first" or "I'm not sure this holds at a larger scale."
 
-In a design document, state the recommendation first, then progressively expose
-the evidence and tradeoffs that support it. In a technical blog, state the
-problem and scope first, then progressively reveal the baseline, failure,
-mechanism, consequence, and reusable lesson. Don't apply this sequence to the
-other registers.
-
 ## The moves that make it sound like you
 
 - **Point first.** First sentence says the thing. No throat-clearing, no "In
@@ -110,10 +106,16 @@ other registers.
   state the recommendation first. In a technical blog, state the problem and
   scope first. Then move through baseline, failure or constraint, mechanism, and
   consequence.
-  - Write: Define the current controller loop, show where ownership splits, then
-    introduce the readiness gate after the failure is visible.
-  - Don't write: Introduce the readiness gate as the solution before explaining
-    the current loop or failure.
+  - Write (design document): State "Add a readiness gate" first. Then define the
+    current controller loop, show where ownership splits, and explain how the
+    gate addresses the visible failure.
+  - Don't write (design document): Delay the recommendation until after a long
+    explanation of the current loop.
+  - Write (technical blog): Define the current controller loop, show where
+    ownership splits, then introduce the readiness gate after the failure is
+    visible.
+  - Don't write (technical blog): Introduce the readiness gate as the solution
+    before explaining the current loop or failure.
 - **Operational clarity (Design documents + technical blogs).** Name the actor,
   action, order, and failure behavior so the reader can follow the system step by
   step.
@@ -203,13 +205,12 @@ commit-SHA recitations.
 
 ### Design / strategy doc
 Your most structured surface, and the clearest expression of how you think.
-State the recommendation first. Then establish the scope and baseline with the
-concrete experience or evidence that made the decision necessary. Define terms
-and separate concepts that could change the choice. For each decision, show the
-options and give each one a real benefit and cost. Mark the pick. Explain the
-causal mechanism and operational sequence that support it, then state the
-consequence. Ground everything in real numbers. Flag caveats with labeled
-asides. No marketing tone.
+State the recommendation first. Ground the need in concrete experience or
+evidence, then establish the scope and baseline. Define decision-relevant terms
+and separate concepts that could change the choice. Give each option a real
+benefit and cost, then mark the pick. Explain the supporting causal mechanism,
+operational sequence, and consequence. Use real numbers. Flag caveats with
+labeled asides. No marketing tone.
 > "We don't want to take inputs from the owners because 1) they wouldn't really
 > know what number to pick, 2) if they pick, they may ask for limits we wouldn't
 > support. So, we are going to choose limits for everyone."
@@ -250,12 +251,12 @@ Set up a tension, then name the insight.
 
 ### Blog (technical explainer)
 Teach from your own confusion. Start with the concrete experience that exposed
-the problem. State the scope. Then reveal the baseline, failure, mechanism,
-consequence, and reusable lesson in that order. Define terms before they carry
-the argument. Separate concepts readers may conflate. Make every operation easy
-to follow step by step. Support causal claims with evidence and the connecting
-mechanism. Present alternatives with a real benefit and cost. Use concrete
-snippets, and credit others' work generously.
+the problem and state the scope. Then reveal the baseline, failure, mechanism,
+consequence, and reusable lesson. Define terms before they carry the argument
+and separate concepts readers may conflate. Describe each operation step by
+step, including failure behavior. Support causal claims with evidence and the
+connecting mechanism. Give each alternative a real benefit and cost. Use
+concrete snippets, and credit others' work generously.
 > "As I started working on this, it wasn't clear to me how the pieces fit
 > together. I understood each component independently, but not how they connected.
 > So I wanted to write this up."
@@ -337,12 +338,20 @@ no repeated thesis, and no unverified Kubernetes mechanics.
   controller owns a decision.
 - **Over-hedged or over-flattering feedback.** Name a specific growth edge plainly.
 
-For design documents and technical blogs, also strip:
+For technical blogs, also strip:
 
 - **Abstract technical openings.** Don't write "Distributed coordination is
   hard." Start with the event, constraint, or result that exposed the problem.
 - **Solution before model.** Don't introduce a readiness gate before the reader
   understands the current loop and failure.
+
+For design documents, also strip:
+
+- **Buried recommendation.** State the recommendation first, then progressively
+  justify it with the evidence, tradeoffs, and supporting model.
+
+For design documents and technical blogs, also strip:
+
 - **Operational hand-waving.** Don't write "the systems coordinate
   automatically." Name who acts, in what order, and what happens on failure.
 - **Overloaded terms.** Don't use "healthy" for availability, freshness, and
@@ -372,10 +381,14 @@ Before anything goes out under his name:
 6. For a decision: options laid out, tradeoffs given, pick marked?
 7. For a design document or technical blog: is the register clear, and does the
    sequence match it?
-8. Are local terms defined, and are concepts readers may conflate separated?
-9. Can the reader follow the operation step by step, including failure behavior?
-10. Does each causal claim include evidence and the connecting mechanism?
-11. Does each alternative get a fair benefit and cost before the pick is marked?
+8. For a design document or technical blog: are local terms defined, and are
+   concepts readers may conflate separated?
+9. For a design document or technical blog: can the reader follow the operation
+   step by step, including failure behavior?
+10. For a design document or technical blog: does each causal claim include
+    evidence and the connecting mechanism?
+11. For a design document or technical blog: does each alternative get a fair
+    benefit and cost before the pick is marked?
 12. For technical writing: premise preserved and mechanics verified?
 13. Any repeated thesis paragraphs or cute metaphors to cut?
 14. Any announced significance, narrated structure, fragment payoff,
