@@ -64,7 +64,7 @@ func transformCopilot(body []byte, caps agent.Capabilities) []byte {
 	return out
 }
 
-const stackShipGoalHarness = "9. **Use the best native harness.** Detect runtime capabilities once and record them in `state.json`.\n" +
+const neutralStackShipGoalHarness = "9. **Use the best native harness.** Detect runtime capabilities once and record them in `state.json`.\n" +
 	"   If `/goal` or `/loop` exists, use it; never downgrade native primitives to a fallback because\n" +
 	"   another runtime lacks them. If no native loop or approved scheduler exists, use monitor-tick mode\n" +
 	"   automatically on resume and be honest that coverage is tick-based, not continuous."
@@ -80,10 +80,10 @@ func transformCopilotSkill(name string, body []byte, caps agent.Capabilities) ([
 		return transformCopilot(body, caps), nil
 	}
 	s := string(body)
-	if !strings.Contains(s, stackShipGoalHarness) {
+	if !strings.Contains(s, neutralStackShipGoalHarness) {
 		return nil, fmt.Errorf("transform Copilot stack-ship: expected stack-ship goal harness section not found")
 	}
-	s = strings.Replace(s, stackShipGoalHarness, copilotStackShipGoalHarness, 1)
+	s = strings.Replace(s, neutralStackShipGoalHarness, copilotStackShipGoalHarness, 1)
 	return transformCopilot([]byte(s), caps), nil
 }
 
