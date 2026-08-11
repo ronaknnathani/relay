@@ -99,21 +99,56 @@ other registers.
   or a relatable premise.)
 - **Trust the reader.** State the fact, reason, or result. Don't announce that it
   is important, narrate the writing, or add a slogan after it.
-- **Reason after the claim.** Join cause to effect with "So,", "Hence,", "As a
-  result...", "This is because...", "The reason X is because...". Never assert a
-  mechanism without saying why.
+- **Concrete experience (Design documents + technical blogs).** Start the
+  explanation from an observed event, constraint, or result rather than a broad
+  claim.
+  - Write: "After the third rollout stalled at the registry check, we traced the
+    delay to a missing acknowledgement."
+  - Don't write: "Distributed coordination is hard."
+- **Progressive model revelation (Design documents + technical blogs).** Give
+  the reader only the model needed for the next step. In a design document,
+  state the recommendation first. In a technical blog, state the problem and
+  scope first. Then move through baseline, failure or constraint, mechanism, and
+  consequence.
+  - Write: Define the current controller loop, show where ownership splits, then
+    introduce the readiness gate after the failure is visible.
+  - Don't write: Introduce the readiness gate as the solution before explaining
+    the current loop or failure.
+- **Operational clarity (Design documents + technical blogs).** Name the actor,
+  action, order, and failure behavior so the reader can follow the system step by
+  step.
+  - Write: "The controller writes status, waits for the registry
+    acknowledgement, then advances the rollout. On timeout, it leaves the prior
+    version serving."
+  - Don't write: "The systems coordinate automatically."
+- **Precise definitions (Design documents + technical blogs).** Define a term
+  when its local meaning controls the argument. Use the same term consistently.
+  - Write: "Here, readiness means eligible for traffic. Completion means the
+    registry acknowledged the endpoint."
+  - Don't write: "The rollout is done when everything is ready."
+- **Separate conflated concepts (Design documents + technical blogs).** Pull
+  apart ideas that readers may treat as interchangeable. Explain what question
+  each one answers.
+  - Write: "Availability answers whether traffic can be served. Freshness
+    answers whether the registry has the latest endpoint."
+  - Don't write: Use "healthy" to mean availability, freshness, and rollout
+    completion.
+- **Evidence-based causal arguments (Design documents + technical blogs).**
+  Support cause and effect with an observation and the mechanism that connects
+  it to the result.
+  - Write: "Retries rose from two to nine after the timeout dropped from 30
+    seconds to 5 seconds. The shorter timeout increased duplicate work because
+    the first request was still running."
+  - Don't write: "The shorter timeout caused instability."
+- **Fair tradeoffs (Design documents + technical blogs).** Give each viable
+  option a real benefit and cost before marking the recommendation.
+  - Write: "Polling adds up to 30 seconds of delay but avoids another callback
+    path. Callbacks reduce delay but add delivery and retry state."
+  - Don't write: "Polling is simple and callbacks are overengineered."
 - **Preserve intent before polishing.** First hold onto the user's point, then
   make it cleaner. In the lockstep post, the point was not "external systems are
   unreliable." It was "rollout ownership and endpoint ownership are split, so the
   rollout can move without an acknowledgement from the registry."
-- **Sequence evidence before the conclusion.** Don't put the punchline before the
-  reader has the model. In a technical post, show the baseline, show the failure,
-  then name the coordination primitive. A "readiness gate guards the front /
-  finalizer guards the back" line lands after the mechanism, not in the intro.
-- **Frame the decision.** For any real choice: lay out the options (`Option 1 /
-  Option 2`, `Benefits / Limitations`), give the tradeoffs of each, and mark the
-  pick with "(preferred)" or "(Chosen option)". Often argue the *rejected* side
-  first, fairly, then rebut it. State the recommendation up front, not buried.
 - **Ask, don't decree.** Make points as questions. In review: "do we need this
   at all?", "should this be a struct?" In docs: pose the reader's question as a
   header and answer it tersely ("Why change the plan?"). Sometimes reframe: "that
@@ -132,21 +167,13 @@ other registers.
   enough, don't repeat the same point under "Why not make it reliable?" Say the
   new thing instead: the rollout now has a hard dependency on the sync controller
   and the registry.
-- **Use precise nouns over cute phrasing.** Say "the registry has stale data",
-  not "the registry never got the memo." Say "the API server shortens
-  `deletionTimestamp`", not "Kubernetes deletes it for real."
 - **Stay pragmatic.** "let's ship and iterate", "nits, fix it in the next PR",
   "not ideal and short term fallback:". Moving beats perfect.
 - **Stay collaborative and low-ego.** "we" and "let's" even in critique. Credit
   people by name. Thank reviewers.
-- **Scope technical choices to the real constraints.** Say "we chose the simpler
-  queue because this service has one producer," not "the simpler queue is the
-  right architecture." A local decision isn't a universal rule.
 - **Report outcomes without bragging.** Say "we cut processing time from ten
   minutes to two," not "we built an industry-leading system." Let the result
   carry the claim.
-- **Land tradeoffs in one blunt line.** "This is just duplicate work." "This
-  results in too many pools, and too much toil for everyone involved."
 
 ## Register playbooks (with examples)
 
