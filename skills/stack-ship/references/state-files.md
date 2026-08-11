@@ -18,7 +18,7 @@ acceptance criteria it satisfies, and review-shape. Update bases as PRs merge an
 
 ## `state.json` — machine-readable run state
 The exact state the monitor and restart paths need: runtime capabilities, monitor mode, repo, author,
-front PR, loop id if any, next Copilot tick time if any, PR numbers, branch/base refs,
+front PR, loop id if any, next tick time if any, PR numbers, branch/base refs,
 parent/descendant links, current tips, last seen review/comment activity, pending decision ids, and
 status for each PR (`planned | building | open | paused | merged | stopped`). Markdown is for humans;
 `state.json` is for idempotent orchestration.
@@ -31,7 +31,7 @@ Example shape:
   "repo": "owner/repo",
   "author": "@author",
   "runtime": {
-    "name": "copilot",
+    "name": "example-runtime",
     "goalMode": "file",
     "monitorMode": "monitor-tick",
     "hasNativeGoal": false,
@@ -124,8 +124,8 @@ Rules:
   subagents return digests and never edit these files directly.
 - Update `state.json` and the human-readable Markdown together so they never disagree.
 - Never lose harness capability information. If the runtime has native `/goal` or `/loop`, record that
-  and use it. If the runtime is Copilot without native loop support, record `monitorMode:
-  "monitor-tick"` and make a normal resume/invocation run one tick automatically.
+  and use it. If no native loop or approved scheduler exists, record `monitorMode: "monitor-tick"`
+  and make a normal resume/invocation run one tick automatically.
 - One concept per file; never put state in the orchestrator's prose.
 - These files + the live PRs/branches fully reconstruct the run. If they don't, you're keeping state
   in your head — fix that.

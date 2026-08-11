@@ -49,11 +49,13 @@ var compoundToolName = regexp.MustCompile(`[A-Z][a-z]+[A-Z]\w*`)
 
 // transformCopilot rewrites a Claude skill body into Copilot's dialect: render
 // the subagent directive to Copilot's task mechanism, drop Claude-only
-// frontmatter, and lowercase compound tool names via the map.
+// frontmatter, lowercase compound tool names via the map, and translate the
+// native recurrence command.
 func transformCopilot(body []byte, caps agent.Capabilities) []byte {
 	out := renderBody(body, caps)
 	out = dropClaudeFrontmatter(out)
 	out = lowercaseCompoundTools(out, caps.ToolNames)
+	out = []byte(strings.ReplaceAll(string(out), "/loop", "/every"))
 	return out
 }
 
