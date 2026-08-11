@@ -22,11 +22,7 @@ func TestCopilotPackageMatchesSource(t *testing.T) {
 	expectFile(t, out, ".claude-plugin/plugin.json", copilotManifest)
 	caps := mustGet(t, "copilot").Capabilities()
 	for _, e := range src.Entries {
-		body, err := transformCopilotSkill(e.Name, e.Body, caps)
-		if err != nil {
-			t.Fatalf("transform %s: %v", e.Name, err)
-		}
-		expectFile(t, out, filepath.Join("skills", e.Name, "SKILL.md"), body)
+		expectFile(t, out, filepath.Join("skills", e.Name, "SKILL.md"), transformCopilot(e.Body, caps))
 		for rel, data := range e.Bundled {
 			expectFile(t, out, filepath.Join("skills", e.Name, rel), transformCopilot(data, caps))
 		}
@@ -107,9 +103,10 @@ func TestCopilotStackShipUsesNativeGoal(t *testing.T) {
 
 	for _, snippet := range []string{
 		`/goal <the user's requested outcome>`,
-		"not instructions to run the stack-ship workflow",
+		"not instructions to run the",
+		"stack-ship workflow",
 		"Relay project artifacts and `relay state` remain the durable source of truth",
-		"Never replace this native goal with the file-only fallback",
+		"Never replace this native goal",
 	} {
 		if !strings.Contains(body, snippet) {
 			t.Errorf("stack-ship is missing native goal guidance %q", snippet)
@@ -118,41 +115,19 @@ func TestCopilotStackShipUsesNativeGoal(t *testing.T) {
 	if strings.Contains(body, "Deliver the Relay stack-ship workflow") {
 		t.Error("stack-ship still uses the Relay workflow as the native goal")
 	}
-	if !strings.Contains(copilotStackShipGoalHarness, "/every") {
-		t.Error("Copilot stack-ship harness does not use /every for monitoring")
-	}
-	if strings.Contains(copilotStackShipGoalHarness, "/loop") {
-		t.Error("Copilot stack-ship harness still references /loop")
-	}
 	if strings.Contains(body, "If `/goal` or `/loop` exists, use it") {
 		t.Error("stack-ship still asks Copilot to choose a goal fallback")
 	}
 
-	for _, rel := range []string{
-		"SKILL.md",
-		"references/decomposition.md",
-		"references/state-files.md",
+	for rel, want := range map[string]string{
+		"SKILL.md":                    "this is your `/goal`",
+		"references/decomposition.md": "This list is your `/goal`",
+		"references/state-files.md":   "This is `/goal`",
 	} {
 		content := readFile(t, filepath.Join(out, "skills", "stack-ship", rel))
-		for _, conflicting := range []string{
-			"this is your `/goal`",
-			"This list is your `/goal`",
-			"This is `/goal`",
-		} {
-			if strings.Contains(content, conflicting) {
-				t.Errorf("%s still treats a file or checklist as the session `/goal`: %q", rel, conflicting)
-			}
+		if !strings.Contains(content, want) {
+			t.Errorf("%s is missing durable /goal guidance %q", rel, want)
 		}
-	}
-}
-
-func TestTransformCopilotStackShipRequiresGoalHarness(t *testing.T) {
-	_, err := transformCopilotSkill("stack-ship", []byte("# Stack Ship\n\nSource drifted.\n"), mustGet(t, "copilot").Capabilities())
-	if err == nil {
-		t.Fatal("expected missing goal harness error")
-	}
-	if !strings.Contains(err.Error(), "stack-ship goal harness section") {
-		t.Fatalf("error = %q, want descriptive goal harness context", err)
 	}
 }
 

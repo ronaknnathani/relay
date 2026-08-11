@@ -12,9 +12,9 @@ stay context-light — you read digests and state, never file dumps.
 
 ## Session goal
 
-In every agent harness, the user's requested outcome is the session goal.
-The `deliver-pr` workflow is the execution method, not the goal. Keep `task.md`, requirements, and
-`relay state` as the durable definition and progress record across resumes.
+In every agent harness, set `/goal` to the user's requested outcome. The `deliver-pr` workflow is the
+execution method, not the goal. Keep `task.md`, requirements, and `relay state` as the durable
+definition and progress record across resumes.
 
 ## Resume-first — always start here
 

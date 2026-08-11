@@ -34,16 +34,16 @@ func TestClaudeLaunchArgs(t *testing.T) {
 			},
 		},
 		{
-			name: "goal in system context",
+			name: "native goal before skill invocation",
 			opts: func() LaunchOptions {
 				o := base
 				o.WorkflowGoal = "Add native goals to every harness."
 				return o
 			}(),
 			want: []string{
-				"--append-system-prompt", "Goal:\nAdd native goals to every harness.\n\nContext:\nActive relay project: demo. Phase: plan. Mode: full.",
+				"--append-system-prompt", "Active relay project: demo. Phase: plan. Mode: full.",
 				"-n", "relay:demo",
-				"/plan demo",
+				"/goal Add native goals to every harness.\n\n/plan demo",
 			},
 		},
 		{
@@ -281,7 +281,7 @@ func TestCodexLaunchArgs(t *testing.T) {
 	oGoal := o
 	oGoal.WorkflowGoal = "Add native goals to every harness."
 	wantGoal := slices.Clone(want)
-	wantGoal[len(wantGoal)-1] = "Goal:\nAdd native goals to every harness.\n\nRun the relay \"plan\" skill for slug demo.\n\nContext:\nActive relay project: demo. Phase: plan. Mode: full."
+	wantGoal[len(wantGoal)-1] = "/goal Add native goals to every harness.\n\nRun the relay \"plan\" skill for slug demo.\n\nContext:\nActive relay project: demo. Phase: plan. Mode: full."
 	if got := (codex{}).LaunchArgs(oGoal); !reflect.DeepEqual(got, wantGoal) {
 		t.Errorf("LaunchArgs with goal mismatch:\n got: %#v\nwant: %#v", got, wantGoal)
 	}

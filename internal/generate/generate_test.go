@@ -135,8 +135,9 @@ func TestStackShipGoalGuidanceIsGeneratedForEveryHarness(t *testing.T) {
 			_, out := generateAgent(t, agentName)
 			body := readFile(t, filepath.Join(out, "skills", "stack-ship", "SKILL.md"))
 			for _, want := range []string{
-				"the user's requested outcome",
-				"not instructions to run the stack-ship workflow",
+				"`/goal <the user's requested outcome>`",
+				"not instructions to run the",
+				"stack-ship workflow",
 			} {
 				if !strings.Contains(body, want) {
 					t.Errorf("%s stack-ship is missing goal guidance %q", agentName, want)
@@ -155,8 +156,8 @@ func TestDeliverPRGoalGuidanceIsGeneratedForEveryHarness(t *testing.T) {
 			_, out := generateAgent(t, agentName)
 			body := readFile(t, filepath.Join(out, "skills", "deliver-pr", "SKILL.md"))
 			for _, want := range []string{
-				"the user's requested outcome is the session goal",
-				"The `deliver-pr` workflow is the execution method, not the goal",
+				"`/goal` to the user's requested outcome",
+				"execution method, not the goal",
 			} {
 				if !strings.Contains(body, want) {
 					t.Errorf("%s deliver-pr is missing goal guidance %q", agentName, want)

@@ -8,9 +8,9 @@ directly**. If a delegated loop controller owns a tick, it assumes the same sing
 role for that tick.
 
 ## `goal.md` — definition of done
-The goal in one paragraph + the **acceptance-criteria checklist**. This is the durable definition of
-done and the Phase-3 verification gate. Criteria must be machine-checkable by a subagent at the end.
-Tick boxes only when a verification subagent confirms them — never on optimism.
+The goal in one paragraph + the **acceptance-criteria checklist**. This is `/goal` and the Phase-3
+verification gate. Criteria must be machine-checkable by a subagent at the end. Tick boxes only when
+a verification subagent confirms them — never on optimism.
 
 ## `plan.md` — the stack
 Ordered PRs (`api → utils → stitch`), each with intent, scope, `depends-on`, branch/base, the
@@ -123,10 +123,9 @@ Rules:
 - The orchestrator (or singleton loop controller for a tick) is the only shared-state writer; worker
   subagents return digests and never edit these files directly.
 - Update `state.json` and the human-readable Markdown together so they never disagree.
-- Never lose harness capability information. Record goal injection and recurring-run capabilities.
-  If the runtime has native `/loop`, record and use it. If no native recurring command or approved
-  scheduler exists, record `monitorMode: "monitor-tick"` and make a normal resume/invocation run one
-  tick automatically.
+- Never lose harness capability information. Record and use native `/goal` and `/loop`. If no native
+  recurring command or approved scheduler exists, record `monitorMode: "monitor-tick"` and make a
+  normal resume/invocation run one tick automatically.
 - One concept per file; never put state in the orchestrator's prose.
 - These files + the live PRs/branches fully reconstruct the run. If they don't, you're keeping state
   in your head — fix that.

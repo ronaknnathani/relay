@@ -1,7 +1,6 @@
 package generate
 
 import (
-	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -21,11 +20,7 @@ func renderCopilot(a agent.Agent, src *Source, out string) error {
 	}
 	for _, e := range src.Entries {
 		skillDir := filepath.Join(out, "skills", e.Name)
-		body, err := transformCopilotSkill(e.Name, e.Body, caps)
-		if err != nil {
-			return err
-		}
-		if err := writeFile(filepath.Join(skillDir, "SKILL.md"), body); err != nil {
+		if err := writeFile(filepath.Join(skillDir, "SKILL.md"), transformCopilot(e.Body, caps)); err != nil {
 			return err
 		}
 		for rel, data := range e.Bundled {
@@ -62,31 +57,6 @@ func transformCopilot(body []byte, caps agent.Capabilities) []byte {
 	out = lowercaseCompoundTools(out, caps.ToolNames)
 	out = []byte(strings.ReplaceAll(string(out), "/loop", "/every"))
 	return out
-}
-
-const neutralStackShipGoalHarness = "9. **Set the goal in every harness.** The session's launch input must set the user's requested outcome\n" +
-	"   as its goal, not instructions to run the stack-ship workflow. Use a native goal primitive when available;\n" +
-	"   otherwise keep the goal explicit in launch context. Detect recurring-run capabilities once and record them\n" +
-	"   in `state.json`. If `/loop` or an approved scheduler exists, use it. Otherwise use monitor-tick mode\n" +
-	"   automatically on resume and be honest that coverage is tick-based, not continuous."
-
-const copilotStackShipGoalHarness = "9. **Use Copilot's native goal harness.** The session's launch input must set\n" +
-	"   `/goal <the user's requested outcome>` using the original task, not instructions to run the stack-ship workflow.\n" +
-	"   Relay project artifacts and `relay state` remain the durable source of truth for executing and resuming the workflow.\n" +
-	"   Never replace this native goal with the file-only fallback.\n" +
-	"   Use `/every` for monitoring when available; otherwise use monitor-tick mode automatically on resume and be\n" +
-	"   honest that coverage is tick-based, not continuous."
-
-func transformCopilotSkill(name string, body []byte, caps agent.Capabilities) ([]byte, error) {
-	if name != "stack-ship" {
-		return transformCopilot(body, caps), nil
-	}
-	s := string(body)
-	if !strings.Contains(s, neutralStackShipGoalHarness) {
-		return nil, fmt.Errorf("transform Copilot stack-ship: expected stack-ship goal harness section not found")
-	}
-	s = strings.Replace(s, neutralStackShipGoalHarness, copilotStackShipGoalHarness, 1)
-	return transformCopilot([]byte(s), caps), nil
 }
 
 // claudeOnlyKeys are frontmatter keys that must not survive into the Copilot

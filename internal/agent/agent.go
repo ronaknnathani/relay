@@ -15,23 +15,11 @@ type LaunchOptions struct {
 	SessionName  string // e.g. "relay:<slug>"
 	Command      string // command/skill name, e.g. "plan"
 	CommandArgs  string // args appended to the command, e.g. the slug
-	WorkflowGoal string // optional user objective; each adapter injects it using its supported launch mechanism
+	WorkflowGoal string // optional user objective; each adapter sets it with /goal
 	// PermissionMode selects how the agent handles permission prompts. Valid
 	// values are agent-specific (see Agent.PermissionModes); an empty or
 	// unrecognized value resolves to the agent's default mode.
 	PermissionMode string
-}
-
-func goalContext(goal, context string) string {
-	goal = strings.TrimSpace(goal)
-	context = strings.TrimSpace(context)
-	if goal == "" {
-		return context
-	}
-	if context == "" {
-		return "Goal:\n" + goal
-	}
-	return "Goal:\n" + goal + "\n\nContext:\n" + context
 }
 
 func promptWithGoal(goal, prompt string) string {
@@ -39,7 +27,7 @@ func promptWithGoal(goal, prompt string) string {
 	if goal == "" {
 		return prompt
 	}
-	return "Goal:\n" + goal + "\n\n" + prompt
+	return "/goal " + goal + "\n\n" + prompt
 }
 
 // Agent abstracts one coding-agent CLI.
