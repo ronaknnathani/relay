@@ -129,6 +129,44 @@ func TestStackShipFallbackIsRuntimeNeutral(t *testing.T) {
 	}
 }
 
+func TestStackShipGoalGuidanceIsGeneratedForEveryHarness(t *testing.T) {
+	for _, agentName := range []string{"claude", "copilot", "codex"} {
+		t.Run(agentName, func(t *testing.T) {
+			_, out := generateAgent(t, agentName)
+			body := readFile(t, filepath.Join(out, "skills", "stack-ship", "SKILL.md"))
+			for _, want := range []string{
+				"`/goal <the user's requested outcome>`",
+				"not instructions to run the",
+				"stack-ship workflow",
+			} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s stack-ship is missing goal guidance %q", agentName, want)
+				}
+			}
+			if strings.Contains(body, "Deliver the Relay stack-ship workflow") {
+				t.Errorf("%s stack-ship uses the workflow itself as the goal", agentName)
+			}
+		})
+	}
+}
+
+func TestDeliverPRGoalGuidanceIsGeneratedForEveryHarness(t *testing.T) {
+	for _, agentName := range []string{"claude", "copilot", "codex"} {
+		t.Run(agentName, func(t *testing.T) {
+			_, out := generateAgent(t, agentName)
+			body := readFile(t, filepath.Join(out, "skills", "deliver-pr", "SKILL.md"))
+			for _, want := range []string{
+				"`/goal` to the user's requested outcome",
+				"execution method, not the goal",
+			} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s deliver-pr is missing goal guidance %q", agentName, want)
+				}
+			}
+		})
+	}
+}
+
 func TestGenerateUnsupportedAgent(t *testing.T) {
 	if err := Generate(stubAgent{}, t.TempDir(), t.TempDir()); err == nil {
 		t.Fatal("expected error for unsupported agent")

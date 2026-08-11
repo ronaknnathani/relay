@@ -65,7 +65,8 @@ func (copilot) LaunchArgs(o LaunchOptions) []string {
 		args = append(args, "--allow-all")
 	}
 	// "prompt" mode: omit the allow-all flags so Copilot asks before acting.
-	args = append(args, "-i", relaySkillPrompt(o))
+	prompt := promptWithGoal(o.WorkflowGoal, relaySkillPrompt(o))
+	args = append(args, "-i", prompt)
 	return args
 }
 

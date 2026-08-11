@@ -21,9 +21,12 @@ func TestCopilotPackageMatchesSource(t *testing.T) {
 
 	expectFile(t, out, ".claude-plugin/plugin.json", copilotManifest)
 	caps := mustGet(t, "copilot").Capabilities()
-	assertRenderedSkills(t, out, src, func(body []byte) []byte {
-		return transformCopilot(body, caps)
-	})
+	for _, e := range src.Entries {
+		expectFile(t, out, filepath.Join("skills", e.Name, "SKILL.md"), transformCopilot(e.Body, caps))
+		for rel, data := range e.Bundled {
+			expectFile(t, out, filepath.Join("skills", e.Name, rel), transformCopilot(data, caps))
+		}
+	}
 	assertNoUnexpectedFiles(t, out, expectedSkillFiles(src, ".claude-plugin/plugin.json"))
 }
 
@@ -90,6 +93,40 @@ func TestCopilotPackageInvariants(t *testing.T) {
 	} {
 		if !strings.Contains(prMonitor, snippet) {
 			t.Errorf("pr-monitor is missing %q", snippet)
+		}
+	}
+}
+
+func TestCopilotStackShipUsesNativeGoal(t *testing.T) {
+	_, out := generateCopilot(t)
+	body := readFile(t, filepath.Join(out, "skills", "stack-ship", "SKILL.md"))
+
+	for _, snippet := range []string{
+		`/goal <the user's requested outcome>`,
+		"not instructions to run the",
+		"stack-ship workflow",
+		"Relay project artifacts and `relay state` remain the durable source of truth",
+		"Never replace this native goal",
+	} {
+		if !strings.Contains(body, snippet) {
+			t.Errorf("stack-ship is missing native goal guidance %q", snippet)
+		}
+	}
+	if strings.Contains(body, "Deliver the Relay stack-ship workflow") {
+		t.Error("stack-ship still uses the Relay workflow as the native goal")
+	}
+	if strings.Contains(body, "If `/goal` or `/loop` exists, use it") {
+		t.Error("stack-ship still asks Copilot to choose a goal fallback")
+	}
+
+	for rel, want := range map[string]string{
+		"SKILL.md":                    "this is your `/goal`",
+		"references/decomposition.md": "This list is your `/goal`",
+		"references/state-files.md":   "This is `/goal`",
+	} {
+		content := readFile(t, filepath.Join(out, "skills", "stack-ship", rel))
+		if !strings.Contains(content, want) {
+			t.Errorf("%s is missing durable /goal guidance %q", rel, want)
 		}
 	}
 }

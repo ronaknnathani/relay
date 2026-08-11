@@ -14,7 +14,7 @@ Either way, **never start building until `goal.md` and `plan.md` exist.**
 ## `goal.md` — the definition of done
 Write the goal in one paragraph, then a **checkable acceptance-criteria list**. Criteria must be
 verifiable by a subagent at the end (a test exists, a field is plumbed end-to-end, a behavior holds).
-This list is your `/goal` and your Phase-3 verification gate. Example shape:
+This list is your `/goal` and the Phase-3 verification gate. Example shape:
 
 ```
 # Goal

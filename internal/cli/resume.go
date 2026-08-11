@@ -6,7 +6,6 @@ import (
 
 	"github.com/ronaknnathani/relay/internal/agent"
 	"github.com/ronaknnathani/relay/internal/config"
-	"github.com/ronaknnathani/relay/internal/launcher"
 	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/ronaknnathani/relay/internal/ui"
 	"github.com/spf13/cobra"
@@ -52,10 +51,7 @@ func runResume(slug string) error {
 	// Relaunch the project's workflow skill; it is resume-first and reconstructs
 	// its position from `relay state`. Fall back to the legacy phase→batch
 	// mapping for older manifests written before the workflow field existed.
-	cmd := m.Workflow
-	if cmd == "" {
-		cmd = project.PhaseToBatch(m.Phase)
-	}
+	cmd := resumeCommand(m)
 	fmt.Println()
 	fmt.Printf("  %s\n", ui.Color(ui.Bold+ui.White, "Resuming project"))
 	ui.PrintField("Slug", slug)
@@ -65,13 +61,6 @@ func runResume(slug string) error {
 	fmt.Println()
 
 	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s.", slug, cmd)
-	return launcher.Launch(a, agent.LaunchOptions{
-		Worktree:       *m.Worktree,
-		ProjectDir:     filepath.Dir(path),
-		SystemPrompt:   systemPrompt,
-		SessionName:    "relay:" + slug,
-		Command:        cmd,
-		CommandArgs:    slug,
-		PermissionMode: cfg.PermissionModeFor(a.Name()),
-	})
+	o := relayLaunchOptions(*m.Worktree, filepath.Dir(path), systemPrompt, slug, cmd, m.Title, cfg.PermissionModeFor(a.Name()))
+	return launchAgent(a, o)
 }

@@ -123,9 +123,9 @@ Rules:
 - The orchestrator (or singleton loop controller for a tick) is the only shared-state writer; worker
   subagents return digests and never edit these files directly.
 - Update `state.json` and the human-readable Markdown together so they never disagree.
-- Never lose harness capability information. If the runtime has native `/goal` or `/loop`, record that
-  and use it. If no native loop or approved scheduler exists, record `monitorMode: "monitor-tick"`
-  and make a normal resume/invocation run one tick automatically.
+- Never lose harness capability information. Record and use native `/goal` and `/loop`. If no native
+  recurring command or approved scheduler exists, record `monitorMode: "monitor-tick"` and make a
+  normal resume/invocation run one tick automatically.
 - One concept per file; never put state in the orchestrator's prose.
 - These files + the live PRs/branches fully reconstruct the run. If they don't, you're keeping state
   in your head — fix that.

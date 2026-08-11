@@ -34,6 +34,19 @@ func TestClaudeLaunchArgs(t *testing.T) {
 			},
 		},
 		{
+			name: "native goal before skill invocation",
+			opts: func() LaunchOptions {
+				o := base
+				o.WorkflowGoal = "Add native goals to every harness."
+				return o
+			}(),
+			want: []string{
+				"--append-system-prompt", "Active relay project: demo. Phase: plan. Mode: full.",
+				"-n", "relay:demo",
+				"/goal Add native goals to every harness.\n\n/plan demo",
+			},
+		},
+		{
 			name: "auto mode → acceptEdits",
 			opts: func() LaunchOptions { o := base; o.PermissionMode = "auto"; return o }(),
 			want: []string{
@@ -131,6 +144,15 @@ func TestCopilotLaunchArgs(t *testing.T) {
 	}
 	if got := (copilot{}).LaunchArgs(o); !reflect.DeepEqual(got, want) {
 		t.Errorf("LaunchArgs mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+
+	oGoal := o
+	oGoal.Command = "deliver-pr"
+	oGoal.WorkflowGoal = "Add native goals to every harness."
+	wantGoal := slices.Clone(want)
+	wantGoal[len(wantGoal)-1] = "/goal Add native goals to every harness.\n\nRun the relay \"deliver-pr\" skill for slug demo.\n\nContext:\nActive relay project: demo. Phase: plan. Mode: full."
+	if got := (copilot{}).LaunchArgs(oGoal); !reflect.DeepEqual(got, wantGoal) {
+		t.Errorf("LaunchArgs with goal mismatch:\n got: %#v\nwant: %#v", got, wantGoal)
 	}
 
 	// No ProjectDir → no --add-dir flag is emitted.
@@ -254,6 +276,14 @@ func TestCodexLaunchArgs(t *testing.T) {
 	}
 	if got := (codex{}).LaunchArgs(o); !reflect.DeepEqual(got, want) {
 		t.Errorf("LaunchArgs mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+
+	oGoal := o
+	oGoal.WorkflowGoal = "Add native goals to every harness."
+	wantGoal := slices.Clone(want)
+	wantGoal[len(wantGoal)-1] = "/goal Add native goals to every harness.\n\nRun the relay \"plan\" skill for slug demo.\n\nContext:\nActive relay project: demo. Phase: plan. Mode: full."
+	if got := (codex{}).LaunchArgs(oGoal); !reflect.DeepEqual(got, wantGoal) {
+		t.Errorf("LaunchArgs with goal mismatch:\n got: %#v\nwant: %#v", got, wantGoal)
 	}
 
 	oPrompt := o

@@ -64,10 +64,13 @@ work and surface questions. You stop when every acceptance criterion is met and 
 8. **Approved tooling only.** Use only approved/verified skills, hooks, MCP integrations, and tools
    already available in the environment. Never install or run unreviewed third-party
    plugins/hooks/scripts from the internet during this workflow.
-9. **Use the best native harness.** Detect runtime capabilities once and record them in `state.json`.
-   If `/goal` or `/loop` exists, use it; never downgrade native primitives to a fallback because
-   another runtime lacks them. If no native loop or approved scheduler exists, use monitor-tick mode
-   automatically on resume and be honest that coverage is tick-based, not continuous.
+9. **Set the goal in every harness.** The session's launch input must set
+   `/goal <the user's requested outcome>` using the original task, not instructions to run the
+   stack-ship workflow. Relay project artifacts and `relay state` remain the durable source of truth
+   for executing and resuming the workflow. Never replace this native goal with the file-only
+   fallback. Detect recurring-run capabilities once and record them in `state.json`. If `/loop` or an
+   approved scheduler exists, use it. Otherwise use monitor-tick mode automatically on resume and be
+   honest that coverage is tick-based, not continuous.
 
 ## Workflow
 
@@ -75,7 +78,7 @@ work and surface questions. You stop when every acceptance criterion is met and 
 Input is either a full design doc **or** a goal + a way to find the current→desired delta. Produce,
 in the project state dir:
 - `goal.md` — the goal in one paragraph + **acceptance criteria** (a checklist that defines "done";
-  this is your `/goal` and your final verification gate).
+  this is your `/goal` and final verification gate).
 - `plan.md` — the stacked PR plan: ordered PRs, each with intent, scope, dependencies, and which
   layer it is. Decompose along the **interface-first** seam: `api → utils → stitch` — define the
   contract/types/surface first (plumbed but unconsumed), then the logic/helpers that operate on it,

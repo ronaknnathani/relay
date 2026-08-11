@@ -11,7 +11,6 @@ import (
 	"github.com/ronaknnathani/relay/internal/agent"
 	"github.com/ronaknnathani/relay/internal/config"
 	"github.com/ronaknnathani/relay/internal/gitx"
-	"github.com/ronaknnathani/relay/internal/launcher"
 	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/ronaknnathani/relay/internal/ui"
 	"github.com/spf13/cobra"
@@ -214,16 +213,8 @@ func runNew(opts newOpts) error {
 		mode = "quick"
 	}
 	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s. Mode: %s.", slug, wf, mode)
-	o := agent.LaunchOptions{
-		Worktree:       worktreeDir,
-		ProjectDir:     projDir,
-		SystemPrompt:   systemPrompt,
-		SessionName:    "relay:" + slug,
-		Command:        wf,
-		CommandArgs:    slug,
-		PermissionMode: cfg.PermissionModeFor(a.Name()),
-	}
-	return launcher.Launch(a, o)
+	o := relayLaunchOptions(worktreeDir, projDir, systemPrompt, slug, wf, opts.task, cfg.PermissionModeFor(a.Name()))
+	return launchAgent(a, o)
 }
 
 // pathExists reports whether a filesystem path exists (file, dir, or symlink).
