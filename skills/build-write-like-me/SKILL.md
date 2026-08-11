@@ -184,6 +184,26 @@ vs. email). The same person writes very differently by surface, and the generate
 skill must capture that. Also look for **evolution** over time if the data spans
 years; if the voice shifted, target the *current* voice.
 
+Evaluate these dimensions separately for each register:
+
+- **Authorial perspective:** when the person uses personal "I", collective "we",
+  direct "you", or an impersonal construction. Don't turn collective "we" into a
+  default without evidence from that register.
+- **Editorial framing:** whether they use or avoid announcing significance,
+  narrating the writing or structure, fragment-style payoffs, manufactured
+  intensity, and copywriter cadence.
+- **Self-promotion and bragging:** whether they let facts and outcomes carry the
+  claim or use self-promotional superlatives and status language.
+- **Claim scope:** whether technical recommendations are contextual to stated
+  constraints or presented as universal rules.
+
+Every supported finding needs register-specific evidence: at least two
+quotations, or a quotation and a counterexample that shows the boundary. Absence
+isn't evidence that the person prohibits a pattern. If the corpus is mixed, mark
+the conclusion uncertain. If evidence is insufficient, omit the conclusion.
+Never assign collective "we", anti-hype guidance, or company-specific assumptions
+universally.
+
 ---
 
 ## Step 5: Synthesize the SKILL.md
@@ -204,6 +224,21 @@ Write the personalized voice profile following the structure and guidance in
 Write it as an actionable guide to an agent that will *write as the person*, not
 as an academic description. Genericize away the person's company/system/internal
 names unless the invoker wants them kept (a voice profile should travel).
+
+Route each supported finding to the section where an agent can act on it:
+
+- Put perspective differences in the register map and the matching register
+  playbooks.
+- Put positive editorial habits in voice rules or characteristic moves, backed
+  by a concrete example.
+- Put prohibited tendencies in anti-pattern guidance with a real counterexample
+  and a direct alternative.
+- Put rules that apply at send time in the pre-send checklist.
+
+Don't add a section or rule just because it appears in this builder. Omit
+unsupported traits. Preserve material uncertainty when the evidence is mixed,
+and don't turn one company's context or one register's habits into universal
+guidance.
 
 ---
 

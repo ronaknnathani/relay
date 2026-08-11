@@ -38,15 +38,17 @@ field is the main thing that decides whether an agent loads the skill.
    claim." Back each with the data ("essentially zero em-dashes across N docs").
 
 4. **Pick the register.** A table mapping each surface they write on to: caps
-   (lower/proper), typical length, stance, and signature tells. Then a one-line
+   (lower/proper), typical length, stance, authorial perspective, and signature
+   tells. Record whether evidence supports personal "I", collective "we", direct
+   "you", or an impersonal construction for that surface. Then add a one-line
    rule of thumb (e.g. "chat and review are fast and lowercase; anything written
    down is full prose"). This is often the most useful section — the same person
    sounds very different by surface.
 
 5. **The moves that make it sound like them.** The recurring rhetorical habits:
    how they open, how they reason, how they frame decisions, how they hedge, how
-   they handle caveats, how they critique. Write these as directives with a short
-   "why."
+   they handle caveats, how they critique, and how they present significance or
+   results. Write these as directives with a short "why" and a concrete example.
 
 6. **Register playbooks.** One short subsection per surface, each with 2-4
    **verbatim examples**. Verbatim quotes are the most valuable content in the
@@ -59,29 +61,43 @@ field is the main thing that decides whether an agent loads the skill.
 8. **What is NOT their voice (anti-slop tells).** The things that make a draft
    read as generated or ghost-written, especially the mechanical tells you found
    (em-dashes, templated walls, filler words, exhaustive auto-replies). This
-   section is what keeps an agent from producing slop in their name.
+   section is what keeps an agent from producing slop in their name. For each
+   evidence-supported anti-pattern, include a real counterexample and the direct
+   alternative the agent should write instead. Include bragging, editorial
+   framing, or universal claims only when the corpus supports that rule.
 
 9. **Editing mode.** How they edit (cut, tighten, preserve voice) vs. draft.
 
 10. **Pre-send checklist.** A short numbered list an agent can run before output
-    goes out: the mechanics, register fit, and "does it read like a person typed
-    it."
+    goes out: the mechanics, register fit, applicable voice and anti-pattern
+    rules, and "does it read like a person typed it." If supported by evidence,
+    check that claims are contextual to the author's constraints and outcomes
+    aren't inflated into bragging.
 
 ## Synthesis principles
 
 - **Ground every claim in data.** No invented traits. If you can't point to real
-  writing for a trait, leave it out. Cite frequencies where you have them.
+  writing for a trait, leave it out. Cite frequencies where you have them. For
+  qualitative traits, keep the supporting quotations or counterexamples in the
+  analysis notes.
 - **Quote verbatim, generously.** Lightly clean (fix a typo, trim length) but
   keep the phrasing. Prefer their own sentences over your paraphrase.
 - **Capture register variation explicitly.** Don't average a casual chatter and a
   formal doc-writer into a mushy middle. Show both and say when each applies.
+  Map perspective to the register where it appears. Never assign collective
+  "we" universally because it appears on one surface.
+- **Preserve uncertainty.** Omit unsupported findings. If mixed evidence matters
+  to an actionable rule, label the boundary or uncertainty instead of forcing a
+  conclusion.
 - **Respect their mechanics exactly.** Em-dash/semicolon habits, capitalization,
   contraction rate, sentence length — these are the fingerprint. Get them right.
 - **Target the current voice.** If the data spans years and the voice evolved,
   build the profile around how they write *now*, and note the shift.
 - **Genericize.** Strip company/system/internal names from examples (replace with
   generic placeholders) so the profile travels, unless the invoker wants them
-  kept. The voice lives in the phrasing, not the proper nouns.
+  kept. Keep technical claims contextual to the constraints shown in the
+  evidence rather than turning a local choice into a universal recommendation.
+  The voice lives in the phrasing, not the proper nouns.
 - **Make it actionable, not academic.** Write to an agent that will *produce*
   text as this person. Imperative guidance ("Lead with the point") beats
   description ("They tend to lead with the point").
