@@ -72,6 +72,63 @@ func TestClaudePackageMatchesSource(t *testing.T) {
 	assertNoUnexpectedFiles(t, out, expectedSkillFiles(src, ".claude-plugin/plugin.json"))
 }
 
+func TestGeneratedRecurringCommands(t *testing.T) {
+	tests := []struct {
+		name      string
+		generate  func(*testing.T) (string, string)
+		want      string
+		forbidden string
+	}{
+		{name: "copilot", generate: generateCopilot, want: "/every", forbidden: "/loop"},
+		{name: "claude", generate: generateClaude, want: "/loop", forbidden: "/every"},
+		{name: "codex", generate: generateCodex, want: "/loop", forbidden: "/every"},
+	}
+	files := []string{
+		filepath.Join("skills", "pr-monitor", "SKILL.md"),
+		filepath.Join("skills", "stack-ship", "references", "state-files.md"),
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, out := tt.generate(t)
+			for _, rel := range files {
+				body := readFile(t, filepath.Join(out, rel))
+				if !strings.Contains(body, tt.want) {
+					t.Errorf("%s does not contain %q", rel, tt.want)
+				}
+				if strings.Contains(body, tt.forbidden) {
+					t.Errorf("%s contains forbidden command %q", rel, tt.forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestStackShipFallbackIsRuntimeNeutral(t *testing.T) {
+	root := repoRoot(t)
+	files := []string{
+		filepath.Join("skills", "stack-ship", "SKILL.md"),
+		filepath.Join("skills", "stack-ship", "references", "state-files.md"),
+		filepath.Join("skills", "stack-ship", "references", "guardrails.md"),
+	}
+	forbidden := []string{
+		"use Copilot monitor",
+		"example in Copilot",
+		"next Copilot tick",
+		"runtime is Copilot without native loop support",
+		"use Copilot\n**monitor-tick mode**",
+	}
+
+	for _, rel := range files {
+		body := readFile(t, filepath.Join(root, rel))
+		for _, phrase := range forbidden {
+			if strings.Contains(body, phrase) {
+				t.Errorf("%s contains stale runtime-specific fallback %q", rel, phrase)
+			}
+		}
+	}
+}
+
 func TestGenerateUnsupportedAgent(t *testing.T) {
 	if err := Generate(stubAgent{}, t.TempDir(), t.TempDir()); err == nil {
 		t.Fatal("expected error for unsupported agent")
