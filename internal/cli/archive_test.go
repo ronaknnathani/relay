@@ -12,63 +12,6 @@ import (
 	"github.com/ronaknnathani/relay/internal/project"
 )
 
-const relayGeneratedAgentsMD = "# relay\n\nActive relay project: archive-test. Workflow: deliver-pr. Mode: full.\n"
-
-func TestArchiveAllowsOnlyRelayGeneratedAgentsMDWithoutForce(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	repo := newTestRepo(t)
-	slug := "safe-agents"
-	branch := "user/safe-agents"
-	worktree := addArchiveWorktree(t, repo, slug, branch)
-	writeArchiveManifest(t, slug, repo, branch, worktree)
-	writeArchiveFile(t, worktree, "AGENTS.md", relayGeneratedAgentsMD)
-
-	out, err := captureStdout(t, func() error {
-		return runArchive(slug, false)
-	})
-	if err != nil {
-		t.Fatalf("runArchive: %v", err)
-	}
-	if strings.Contains(out, "--force") {
-		t.Fatalf("archive output = %q, want no --force hint", out)
-	}
-	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
-		t.Fatalf("active project dir still exists")
-	}
-	if pathExists(worktree) {
-		t.Fatalf("worktree dir still exists")
-	}
-	if gitx.BranchExists(repo, branch) {
-		t.Fatalf("branch %q still exists", branch)
-	}
-	archivedManifest := loadArchivedManifest(t, slug)
-	if archivedManifest.Status != "archived" {
-		t.Fatalf("archived status = %q, want archived", archivedManifest.Status)
-	}
-	if archivedManifest.Archived == nil || *archivedManifest.Archived == "" {
-		t.Fatalf("archived timestamp was not set")
-	}
-}
-
-func TestArchiveRejectsRelayGeneratedAgentsMDWithOtherDirtyFile(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	repo := newTestRepo(t)
-	slug := "dirty-agents"
-	branch := "user/dirty-agents"
-	worktree := addArchiveWorktree(t, repo, slug, branch)
-	writeArchiveManifest(t, slug, repo, branch, worktree)
-	writeArchiveFile(t, worktree, "AGENTS.md", relayGeneratedAgentsMD)
-	writeArchiveFile(t, worktree, "notes.txt", "keep me\n")
-
-	_, err := captureStdout(t, func() error {
-		return runArchive(slug, false)
-	})
-	if err == nil {
-		t.Fatalf("runArchive succeeded, want dirty worktree error")
-	}
-	assertArchivePreserved(t, repo, slug, branch, worktree)
-}
-
 func TestArchiveRejectsNonGeneratedAgentsMDWithoutForce(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
@@ -87,15 +30,15 @@ func TestArchiveRejectsNonGeneratedAgentsMDWithoutForce(t *testing.T) {
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
 
-func TestArchiveRejectsUnmergedBranchBeforeGeneratedAgentsMD(t *testing.T) {
+func TestArchiveRejectsUnmergedBranchBeforeDirtyWorktree(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
-	slug := "unmerged-agents"
-	branch := "user/unmerged-agents"
+	slug := "unmerged-dirty"
+	branch := "user/unmerged-dirty"
 	worktree := addArchiveWorktree(t, repo, slug, branch)
 	commitArchiveFile(t, worktree, "feature.txt", "unique\n", "unique work")
 	writeArchiveManifest(t, slug, repo, branch, worktree)
-	writeArchiveFile(t, worktree, "AGENTS.md", relayGeneratedAgentsMD)
+	writeArchiveFile(t, worktree, "notes.txt", "dirty\n")
 
 	_, err := captureStdout(t, func() error {
 		return runArchive(slug, false)

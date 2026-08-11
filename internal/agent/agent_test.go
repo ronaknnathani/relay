@@ -114,11 +114,12 @@ func TestClaudeCapabilities(t *testing.T) {
 
 func TestCopilotLaunchArgs(t *testing.T) {
 	o := LaunchOptions{
-		Worktree:    "/tmp/wt",
-		ProjectDir:  "/tmp/proj",
-		SessionName: "relay:demo",
-		Command:     "plan",
-		CommandArgs: "demo",
+		Worktree:     "/tmp/wt",
+		ProjectDir:   "/tmp/proj",
+		SystemPrompt: "Active relay project: demo. Phase: plan. Mode: full.",
+		SessionName:  "relay:demo",
+		Command:      "plan",
+		CommandArgs:  "demo",
 	}
 	want := []string{
 		"-C", "/tmp/wt",
@@ -126,7 +127,7 @@ func TestCopilotLaunchArgs(t *testing.T) {
 		"--add-dir", "/tmp/proj",
 		"--context", "long_context",
 		"--allow-all",
-		"-i", `Run the relay "plan" skill for slug demo.`,
+		"-i", "Run the relay \"plan\" skill for slug demo.\n\nContext:\nActive relay project: demo. Phase: plan. Mode: full.",
 	}
 	if got := (copilot{}).LaunchArgs(o); !reflect.DeepEqual(got, want) {
 		t.Errorf("LaunchArgs mismatch:\n got: %#v\nwant: %#v", got, want)
@@ -145,8 +146,14 @@ func TestCopilotLaunchArgs(t *testing.T) {
 	o2 := o
 	o2.CommandArgs = ""
 	got := (copilot{}).LaunchArgs(o2)
-	if got[len(got)-1] != `Run the relay "plan" skill.` {
+	if got[len(got)-1] != "Run the relay \"plan\" skill.\n\nContext:\nActive relay project: demo. Phase: plan. Mode: full." {
 		t.Errorf("empty-args prompt = %q, want skill-named prose", got[len(got)-1])
+	}
+	oNoContext := o
+	oNoContext.SystemPrompt = ""
+	got = (copilot{}).LaunchArgs(oNoContext)
+	if got[len(got)-1] != `Run the relay "plan" skill for slug demo.` {
+		t.Errorf("no-context prompt = %q, want skill prose only", got[len(got)-1])
 	}
 
 	// prompt mode omits the allow-all flag so Copilot asks before acting.
@@ -164,43 +171,39 @@ func TestCopilotLaunchArgs(t *testing.T) {
 	}
 }
 
-func TestCopilotPrepareWritesAgentsMD(t *testing.T) {
+func TestCopilotPrepareDoesNotTouchWorktreeContextFiles(t *testing.T) {
 	dir := t.TempDir()
-	o := LaunchOptions{Worktree: dir, SystemPrompt: "Active relay project: demo. Phase: plan."}
-	if err := (copilot{}).Prepare(o); err != nil {
-		t.Fatalf("Prepare: %v", err)
+	original := "Existing repo guidance.\n"
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(original), 0644); err != nil {
+		t.Fatalf("seed AGENTS.md: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
-	if err != nil {
-		t.Fatalf("read AGENTS.md: %v", err)
-	}
-	if !strings.Contains(string(data), o.SystemPrompt) {
-		t.Errorf("AGENTS.md missing context line: %q", data)
-	}
-	if !strings.HasPrefix(string(data), "# relay") {
-		t.Errorf("AGENTS.md missing relay heading: %q", data)
-	}
-}
-
-func TestCopilotPrepareExcludesAgentsMD(t *testing.T) {
-	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".git", "info"), 0755); err != nil {
 		t.Fatalf("mkdir .git/info: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".git", "info", "exclude"), []byte("# existing\n"), 0644); err != nil {
 		t.Fatalf("seed exclude: %v", err)
 	}
-	o := LaunchOptions{Worktree: dir, SystemPrompt: "ctx"}
+	o := LaunchOptions{Worktree: dir, ProjectDir: t.TempDir(), SystemPrompt: "ctx"}
 	if err := (copilot{}).Prepare(o); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	// Idempotent: a second Prepare must not duplicate the entry.
+	o.SystemPrompt = "new ctx"
 	if err := (copilot{}).Prepare(o); err != nil {
 		t.Fatalf("Prepare (2): %v", err)
 	}
-	data, _ := os.ReadFile(filepath.Join(dir, ".git", "info", "exclude"))
-	if n := strings.Count(string(data), "AGENTS.md"); n != 1 {
-		t.Errorf("exclude has AGENTS.md %d times, want 1: %q", n, data)
+	data, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	if string(data) != original {
+		t.Errorf("AGENTS.md changed:\n got: %q\nwant: %q", data, original)
+	}
+	exclude, err := os.ReadFile(filepath.Join(dir, ".git", "info", "exclude"))
+	if err != nil {
+		t.Fatalf("read exclude: %v", err)
+	}
+	if string(exclude) != "# existing\n" {
+		t.Errorf("exclude changed:\n got: %q\nwant: %q", exclude, "# existing\n")
 	}
 }
 
@@ -218,8 +221,8 @@ func TestCopilotCapabilities(t *testing.T) {
 	if c.LifecycleHook != HookNone {
 		t.Errorf("LifecycleHook = %v, want HookNone", c.LifecycleHook)
 	}
-	if c.ContextInjection != ContextFile {
-		t.Errorf("ContextInjection = %v, want ContextFile", c.ContextInjection)
+	if c.ContextInjection != ContextPrompt {
+		t.Errorf("ContextInjection = %v, want ContextPrompt", c.ContextInjection)
 	}
 	wantTools := map[string]string{
 		"Bash": "bash", "Read": "view", "Write": "create", "Edit": "edit",
@@ -235,18 +238,19 @@ func TestCopilotCapabilities(t *testing.T) {
 
 func TestCodexLaunchArgs(t *testing.T) {
 	o := LaunchOptions{
-		Worktree:    "/tmp/wt",
-		ProjectDir:  "/tmp/proj",
-		SessionName: "relay:demo",
-		Command:     "plan",
-		CommandArgs: "demo",
+		Worktree:     "/tmp/wt",
+		ProjectDir:   "/tmp/proj",
+		SystemPrompt: "Active relay project: demo. Phase: plan. Mode: full.",
+		SessionName:  "relay:demo",
+		Command:      "plan",
+		CommandArgs:  "demo",
 	}
 	want := []string{
 		"-C", "/tmp/wt",
 		"--add-dir", "/tmp/proj",
 		"--sandbox", "workspace-write",
 		"--ask-for-approval", "never",
-		`Run the relay "plan" skill for slug demo.`,
+		"Run the relay \"plan\" skill for slug demo.\n\nContext:\nActive relay project: demo. Phase: plan. Mode: full.",
 	}
 	if got := (codex{}).LaunchArgs(o); !reflect.DeepEqual(got, want) {
 		t.Errorf("LaunchArgs mismatch:\n got: %#v\nwant: %#v", got, want)
@@ -277,18 +281,14 @@ func TestCodexLaunchArgs(t *testing.T) {
 	}
 }
 
-func TestCodexPrepareWritesAgentsMD(t *testing.T) {
+func TestCodexPrepareDoesNotWriteAgentsMD(t *testing.T) {
 	dir := t.TempDir()
-	o := LaunchOptions{Worktree: dir, SystemPrompt: "Active relay project: demo. Phase: plan."}
+	o := LaunchOptions{Worktree: dir, ProjectDir: t.TempDir(), SystemPrompt: "Active relay project: demo. Phase: plan."}
 	if err := (codex{}).Prepare(o); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
-	if err != nil {
-		t.Fatalf("read AGENTS.md: %v", err)
-	}
-	if !strings.Contains(string(data), o.SystemPrompt) {
-		t.Errorf("AGENTS.md missing context line: %q", data)
+	if _, err := os.Stat(filepath.Join(dir, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("Prepare wrote AGENTS.md, err=%v", err)
 	}
 }
 
@@ -303,8 +303,8 @@ func TestCodexCapabilities(t *testing.T) {
 	if c.DeterministicSlash {
 		t.Error("DeterministicSlash = true, want false (prose invocation)")
 	}
-	if c.ContextInjection != ContextFile {
-		t.Errorf("ContextInjection = %v, want ContextFile", c.ContextInjection)
+	if c.ContextInjection != ContextPrompt {
+		t.Errorf("ContextInjection = %v, want ContextPrompt", c.ContextInjection)
 	}
 	if got := c.ToolNames.Name("AskUserQuestion"); got != "ask the user" {
 		t.Errorf("AskUserQuestion tool name = %q, want ask the user", got)
