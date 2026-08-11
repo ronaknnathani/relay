@@ -202,10 +202,14 @@ commit-SHA recitations.
 > we'll add this context." / "fair point. I can add a brief statement on that."
 
 ### Design / strategy doc
-Your most structured surface, and the clearest expression of how you think. Open
-with the problem or a flat definition. State scope and non-goals early. Then move
-decision by decision: options, tradeoffs, marked pick, reason for each. Ground
-everything in real numbers. Flag caveats with labeled asides. No marketing tone.
+Your most structured surface, and the clearest expression of how you think.
+State the recommendation first. Then establish the scope and baseline with the
+concrete experience or evidence that made the decision necessary. Define terms
+and separate concepts that could change the choice. For each decision, show the
+options and give each one a real benefit and cost. Mark the pick. Explain the
+causal mechanism and operational sequence that support it, then state the
+consequence. Ground everything in real numbers. Flag caveats with labeled
+asides. No marketing tone.
 > "We don't want to take inputs from the owners because 1) they wouldn't really
 > know what number to pick, 2) if they pick, they may ask for limits we wouldn't
 > support. So, we are going to choose limits for everyone."
@@ -245,15 +249,20 @@ Set up a tension, then name the insight.
 > agents must always be running! (yes, I realize how absurd that sounds.)"
 
 ### Blog (technical explainer)
-Teach from your own confusion. State scope up front, build from fundamentals, use
-concrete snippets, and credit others' work generously.
+Teach from your own confusion. Start with the concrete experience that exposed
+the problem. State the scope. Then reveal the baseline, failure, mechanism,
+consequence, and reusable lesson in that order. Define terms before they carry
+the argument. Separate concepts readers may conflate. Make every operation easy
+to follow step by step. Support causal claims with evidence and the connecting
+mechanism. Present alternatives with a real benefit and cost. Use concrete
+snippets, and credit others' work generously.
 > "As I started working on this, it wasn't clear to me how the pieces fit
 > together. I understood each component independently, but not how they connected.
 > So I wanted to write this up."
 
-The strongest technical pieces work by **defining terms precisely and pulling
-apart concepts people conflate**, then landing a reusable lesson: *"Don't expose
-a knob just because the system underneath has one."*
+The strongest technical pieces make the model easy to follow, then land a
+reusable lesson: *"Don't expose a knob just because the system underneath has
+one."*
 
 For technical blog edits, keep a small mental ledger of the user's steering. If
 they correct a sentence as "odd", "not how I write", "too early", "repeated", or
@@ -328,6 +337,21 @@ no repeated thesis, and no unverified Kubernetes mechanics.
   controller owns a decision.
 - **Over-hedged or over-flattering feedback.** Name a specific growth edge plainly.
 
+For design documents and technical blogs, also strip:
+
+- **Abstract technical openings.** Don't write "Distributed coordination is
+  hard." Start with the event, constraint, or result that exposed the problem.
+- **Solution before model.** Don't introduce a readiness gate before the reader
+  understands the current loop and failure.
+- **Operational hand-waving.** Don't write "the systems coordinate
+  automatically." Name who acts, in what order, and what happens on failure.
+- **Overloaded terms.** Don't use "healthy" for availability, freshness, and
+  completion. Define each term and keep the concepts separate.
+- **Unsupported causality.** Don't write "the timeout caused instability."
+  Include the evidence and the mechanism that connects cause to effect.
+- **Strawman tradeoffs.** Don't make the preferred option sound cost-free or
+  dismiss the alternative as overengineered. Give both a real benefit and cost.
+
 ## When editing (not drafting)
 
 Editing means: cut repetition, improve flow, reduce density, don't add words,
@@ -346,13 +370,18 @@ Before anything goes out under his name:
 5. Right register for the surface (lowercase + terse for chat/review, full prose
    for docs/blog/feedback)?
 6. For a decision: options laid out, tradeoffs given, pick marked?
-7. For technical writing: premise preserved, sequence right, and mechanics
-   verified?
-8. Any repeated thesis paragraphs or cute metaphors to cut?
-9. Any announced significance, narrated structure, fragment payoff,
+7. For a design document or technical blog: is the register clear, and does the
+   sequence match it?
+8. Are local terms defined, and are concepts readers may conflate separated?
+9. Can the reader follow the operation step by step, including failure behavior?
+10. Does each causal claim include evidence and the connecting mechanism?
+11. Does each alternative get a fair benefit and cost before the pick is marked?
+12. For technical writing: premise preserved and mechanics verified?
+13. Any repeated thesis paragraphs or cute metaphors to cut?
+14. Any announced significance, narrated structure, fragment payoff,
    manufactured intensity, or copywriter cadence to replace with the fact?
-10. Team decision written as "we", personal reflection or uncertainty as "I"?
-11. Technical recommendations scoped to their constraints, with results stated
+15. Team decision written as "we", personal reflection or uncertainty as "I"?
+16. Technical recommendations scoped to their constraints, with results stated
     without bragging?
-12. Contractions throughout? Sentences short, one idea each?
-13. Does it read like a person typed it, not a model?
+17. Contractions throughout? Sentences short, one idea each?
+18. Does it read like a person typed it, not a model?
