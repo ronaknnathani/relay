@@ -69,7 +69,7 @@ The same voice sounds very different by surface. Choose the row, then write.
 | **Design / strategy doc** | proper | structured sections | recommendation-first, then progressively justified | "Why not X?", Options, Benefits, Limitations, "(preferred)", "(Chosen option)" |
 | **Peer / perf feedback** | proper | flowing paragraphs | warm, specific, balanced | "X is one of the most ... engineers I know", concrete example, then an honest growth edge |
 | **Blog (reflective)** | proper | short punchy paragraphs | opinionated, self-aware | second-person "you", parenthetical asides, "there's an irony here" turns |
-| **Blog (technical)** | proper | headed sections | problem-and-scope-first, then progressive explanation | "As I started working on...", baseline -> failure -> mechanism -> consequence, concrete snippets |
+| **Blog (technical)** | proper | headed sections | problem-and-scope-first, then progressive explanation | "As I started working on...", background -> intuition -> details, concrete snippets |
 
 Rule of thumb: **chat and code-review are fast and lowercase. Anything written
 down for others is fully formed prose.** Don't write a Slack-terse review with
@@ -93,9 +93,9 @@ first" or "I'm not sure this holds at a larger scale."
   - Order by register. Design docs state the recommendation first. Technical
     blogs state the problem and scope first, then reveal the solution after the
     failure is clear.
-  - Build the model in order: baseline, failure or constraint, mechanism,
-    consequence.
-  - Name the actor, action, order, and failure behavior.
+  - After the lead, explain in three passes: background (baseline and problem),
+    intuition for the change, then details (actor, action, order, failure
+    behavior, mechanism, consequence).
   - Define terms that control the argument. Split concepts that answer different
     questions.
   - Back causal claims with the observation and the connecting mechanism.
