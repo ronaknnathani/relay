@@ -28,7 +28,7 @@ func TestCopilotPackageMatchesSource(t *testing.T) {
 		}
 		expectFile(t, out, filepath.Join("skills", e.Name, "SKILL.md"), body)
 		for rel, data := range e.Bundled {
-			expectFile(t, out, filepath.Join("skills", e.Name, rel), transformCopilot(data, caps))
+			expectFile(t, out, filepath.Join("skills", e.Name, rel), transformCopilotBundled(e.Name, data, caps))
 		}
 	}
 	assertNoUnexpectedFiles(t, out, expectedSkillFiles(src, ".claude-plugin/plugin.json"))
@@ -117,6 +117,23 @@ func TestCopilotStackShipUsesNativeGoal(t *testing.T) {
 	}
 	if strings.Contains(body, "If `/goal` or `/loop` exists, use it") {
 		t.Error("stack-ship still asks Copilot to choose a goal fallback")
+	}
+
+	for _, rel := range []string{
+		"SKILL.md",
+		"references/decomposition.md",
+		"references/state-files.md",
+	} {
+		content := readFile(t, filepath.Join(out, "skills", "stack-ship", rel))
+		for _, conflicting := range []string{
+			"this is your `/goal`",
+			"This list is your `/goal`",
+			"This is `/goal`",
+		} {
+			if strings.Contains(content, conflicting) {
+				t.Errorf("%s still treats a file or checklist as the session `/goal`: %q", rel, conflicting)
+			}
+		}
 	}
 }
 

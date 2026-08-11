@@ -29,7 +29,7 @@ func renderCopilot(a agent.Agent, src *Source, out string) error {
 			return err
 		}
 		for rel, data := range e.Bundled {
-			if err := writeFile(filepath.Join(skillDir, rel), transformCopilot(data, caps)); err != nil {
+			if err := writeFile(filepath.Join(skillDir, rel), transformCopilotBundled(e.Name, data, caps)); err != nil {
 				return err
 			}
 		}
@@ -84,7 +84,21 @@ func transformCopilotSkill(name string, body []byte, caps agent.Capabilities) ([
 		return nil, fmt.Errorf("transform Copilot stack-ship: expected stack-ship goal harness section not found")
 	}
 	s = strings.Replace(s, neutralStackShipGoalHarness, copilotStackShipGoalHarness, 1)
-	return transformCopilot([]byte(s), caps), nil
+	return transformCopilotStackShipAliases(transformCopilot([]byte(s), caps)), nil
+}
+
+func transformCopilotBundled(skillName string, body []byte, caps agent.Capabilities) []byte {
+	out := transformCopilot(body, caps)
+	if skillName == "stack-ship" {
+		out = transformCopilotStackShipAliases(out)
+	}
+	return out
+}
+
+func transformCopilotStackShipAliases(body []byte) []byte {
+	s := strings.ReplaceAll(string(body), "your `/goal`", "the durable definition of done")
+	s = strings.ReplaceAll(s, "This is `/goal`", "This is the durable definition of done")
+	return []byte(s)
 }
 
 // claudeOnlyKeys are frontmatter keys that must not survive into the Copilot
