@@ -111,6 +111,12 @@ func runDetail(slug string, jsonOutput bool) error {
 	ui.PrintField("Branch", m.Branch)
 	ui.PrintField("Repo", orDash(m.Repo))
 	ui.PrintField("Worktree", ptrOrDash(m.Worktree))
+	if m.Program != "" {
+		ui.PrintField("Program", m.Program)
+	}
+	if m.ProgramItem != "" {
+		ui.PrintField("Program item", m.ProgramItem)
+	}
 	ui.PrintField("Created", m.Created)
 	ui.PrintField("Updated", m.Updated)
 	if m.PR.Number != nil {

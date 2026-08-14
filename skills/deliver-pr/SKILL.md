@@ -16,6 +16,14 @@ In every agent harness, set `/goal` to the user's requested outcome. The `delive
 execution method, not the goal. Keep `task.md`, requirements, and `relay state` as the durable
 definition and progress record across resumes.
 
+## Managed assignment — before state routing
+
+Bind the invocation argument to `$SLUG`, then check
+`$HOME/.relay/projects/active/$SLUG/assignment.md`. If it exists, read it completely before asking
+`relay state` for the next phase. This is a managed program worker: the assignment's contracts and
+escalation commands are binding, while the worker still owns independent `clarify` and `plan` work.
+If the file does not exist, follow the standalone path below exactly as before.
+
 ## Resume-first — always start here
 
 `<slug>` is the argument this skill was invoked with — bind it to `$SLUG` before anything else. Every
@@ -52,16 +60,24 @@ Each phase is a foundation skill. Run the one `relay state next` reports, in thi
 
 For the phase `relay state next` reported:
 
-1. `relay state set "$SLUG" "$PHASE" in-progress`
-2. **Dispatch a sub-agent** (when available; otherwise run inline) to run the `$PHASE` skill on this
+1. If `PHASE` is `open-pr` and this is a managed assignment, run the exact
+   `relay program can-open-pr <program> <item>` command recorded in `assignment.md` before changing
+   phase state or dispatching the skill. If it reports full capacity, ensure `open-pr` remains
+   pending (`relay state set "$SLUG" open-pr pending` if needed) and stop. Resume normally after
+   capacity becomes available.
+2. `relay state set "$SLUG" "$PHASE" in-progress`
+3. **Dispatch a sub-agent** (when available; otherwise run inline) to run the `$PHASE` skill on this
    project. Hand it the task and the **upstream artifact only** — not your own conclusions. It does the
    work and returns a **structured digest**: what it produced, the artifact path, test/gate results,
    and any blocking question — never a file dump.
-3. **On a blocking author-decision** (the sub-agent surfaces a real design/scope choice it shouldn't
+4. **On a blocking author-decision** (the sub-agent surfaces a real design/scope choice it shouldn't
    guess): surface it to the author (use an interactive prompt when available; otherwise write it to
    `questions.md` in the project dir, alongside `task.md`/`notes.md`, and stop). Do not advance. Resume
-   when the author answers.
-4. **On success:** `relay state log "$SLUG" "$PHASE done: <one-line digest>"`, then
+   when the author answers. For a managed assignment, never prompt the worker or write
+   `questions.md`: open every issue or deviation with the exact typed
+   `relay program decision open` command from `assignment.md`, then stop. Contract, scope,
+   dependency, and risk conflicts stop the affected work; CTO-worker conflicts escalate to the CEO.
+5. **On success:** `relay state log "$SLUG" "$PHASE done: <one-line digest>"`, then
    `PHASE=$(relay state advance "$SLUG")` — this marks the current phase done and prints the next one.
    If `PHASE` is empty, go to **Done**; otherwise loop back to step 1 with the new `PHASE`.
 

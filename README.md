@@ -30,6 +30,11 @@ PR to merged, delegating real failures, review comments, and conflicts to `pr-fi
 of small PRs, builds each with `deliver-pr`, monitors the front PR with `pr-monitor`, and advances the
 stack in order — stopping when every PR is merged and never merging without human approval.
 
+**Programs** add a governance layer above projects. A re-enterable CTO session turns a CEO-approved
+goal and architecture into dependency-aware senior-engineer assignments, while ordinary Relay
+projects continue to execute each change through `deliver-pr`. Program state is durable, contracts
+are immutable and versioned, and the CEO remains in every escalation and final PR approval loop.
+
 ## The `relay` CLI
 
 A thin Go binary that makes starting and resuming work ergonomic:
@@ -40,11 +45,17 @@ relay -n my-slug "..."                          # custom slug
 relay --workflow stack-ship "<design goal>"     # launch the multi-PR orchestrator instead
 relay                                           # list active projects
 relay resume <slug>                             # reopen where you left off
+relay program new "<large goal>"                # create a CTO-managed program
+relay program resume <slug>                     # re-enter the CTO program
+relay program queue <slug>                      # inspect ready and blocked work
 ```
 
 It also owns the **`relay state`** machine — the deterministic, resumable state that workflow skills
 read and update (so they never hand-edit JSON) — and the **`relay generate`** compiler that renders
 the agent-neutral skill source into per-agent packages.
+
+See [Relay Programs](docs/programs.md) for the V1 architecture, deferred roadmap, and complete usage
+guide.
 
 ## Install
 

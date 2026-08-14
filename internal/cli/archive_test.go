@@ -80,6 +80,47 @@ func TestArchiveForceKeepsDirtyUnmergedBehavior(t *testing.T) {
 	if archivedManifest.Archived == nil || *archivedManifest.Archived == "" {
 		t.Fatalf("archived timestamp was not set")
 	}
+	if archivedManifest.Merged {
+		t.Fatal("force-archived unmerged work was recorded as merged")
+	}
+}
+
+func TestArchiveRecordsVerifiedMergedBranch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "merged-work"
+	branch := "user/merged-work"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "merged\n", "merged work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, repo, "merge", "-q", "--ff-only", branch)
+
+	if _, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	}); err != nil {
+		t.Fatalf("runArchive merged: %v", err)
+	}
+	if archived := loadArchivedManifest(t, slug); !archived.Merged {
+		t.Fatalf("archived manifest merged = false, want true")
+	}
+}
+
+func TestArchiveDoesNotMarkEmptyReachableBranchMerged(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "empty-work"
+	branch := "user/empty-work"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+
+	if _, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	}); err != nil {
+		t.Fatalf("runArchive empty branch: %v", err)
+	}
+	if archived := loadArchivedManifest(t, slug); archived.Merged {
+		t.Fatal("empty branch was recorded as merged work")
+	}
 }
 
 func addArchiveWorktree(t *testing.T, repo, slug, branch string) string {
@@ -102,6 +143,7 @@ func writeArchiveManifest(t *testing.T, slug, repo, branch, worktree string) {
 		Repo:       repo,
 		Branch:     branch,
 		BaseBranch: "main",
+		StartSHA:   gitOutput(t, repo, "rev-parse", "main"),
 		Worktree:   &worktree,
 		Status:     "active",
 		Created:    now,

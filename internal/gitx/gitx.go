@@ -121,7 +121,7 @@ func Fetch(repo, branch string) (string, error) {
 
 // WorktreeAdd creates a new worktree at dir on a new branch, started from startPoint.
 func WorktreeAdd(repo, dir, branch, startPoint string) error {
-	out, err := exec.Command("git", "worktree", "add", dir, "-b", branch, startPoint).CombinedOutput()
+	out, err := exec.Command("git", "-C", repo, "worktree", "add", dir, "-b", branch, startPoint).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git worktree add %s: %w\n%s", dir, err, strings.TrimSpace(string(out)))
 	}

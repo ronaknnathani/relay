@@ -39,23 +39,28 @@ func runArchive(slug string, force bool) error {
 	var (
 		deleteBranchAfter      bool
 		forceDeleteBranchAfter bool
+		workMerged             bool
 	)
 	if m.Branch != "" && gitx.BranchExists(m.Repo, m.Branch) {
 		base := m.BaseBranch
 		if base == "" {
 			base = gitx.DetectDefaultBranch(m.Repo)
 		}
-		merged := false
+		reachable := false
 		if base != "" {
 			if gitx.HasOrigin(m.Repo) && gitx.RevParse(m.Repo, "origin/"+base) != "" {
-				merged = gitx.IsBranchReachable(m.Repo, m.Branch, "origin/"+base)
+				reachable = gitx.IsBranchReachable(m.Repo, m.Branch, "origin/"+base)
+				workMerged = gitx.IsWorkMerged(m.Repo, m.Branch, "origin/"+base, m.StartSHA)
 			}
-			if !merged {
-				merged = gitx.IsBranchReachable(m.Repo, m.Branch, base)
+			if !reachable {
+				reachable = gitx.IsBranchReachable(m.Repo, m.Branch, base)
+			}
+			if !workMerged {
+				workMerged = gitx.IsWorkMerged(m.Repo, m.Branch, base, m.StartSHA)
 			}
 		}
 		switch {
-		case merged:
+		case reachable:
 			deleteBranchAfter = true
 		case force:
 			deleteBranchAfter, forceDeleteBranchAfter = true, true
@@ -89,6 +94,7 @@ func runArchive(slug string, force bool) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	m.Status = "archived"
 	m.Archived = &now
+	m.Merged = workMerged
 
 	dstDir := filepath.Join(project.ArchivedDir(), slug)
 	if err := os.MkdirAll(project.ArchivedDir(), 0755); err != nil {

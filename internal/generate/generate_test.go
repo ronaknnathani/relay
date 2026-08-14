@@ -167,6 +167,27 @@ func TestDeliverPRGoalGuidanceIsGeneratedForEveryHarness(t *testing.T) {
 	}
 }
 
+func TestCTOProgramGuidanceIsGeneratedForEveryHarness(t *testing.T) {
+	for _, agentName := range []string{"claude", "copilot", "codex"} {
+		t.Run(agentName, func(t *testing.T) {
+			_, out := generateAgent(t, agentName)
+			body := readFile(t, filepath.Join(out, "skills", "cto", "SKILL.md"))
+			for _, want := range []string{
+				"relay program status",
+				"relay program tick",
+				"engineering contracts",
+				"Every issue",
+				"Writing production code yourself",
+				"genuine human GitHub approval",
+			} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s cto skill is missing program guidance %q", agentName, want)
+				}
+			}
+		})
+	}
+}
+
 func TestGenerateUnsupportedAgent(t *testing.T) {
 	if err := Generate(stubAgent{}, t.TempDir(), t.TempDir()); err == nil {
 		t.Fatal("expected error for unsupported agent")

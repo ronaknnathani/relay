@@ -4,9 +4,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 
+	"github.com/ronaknnathani/relay/internal/config"
 	"github.com/ronaknnathani/relay/internal/gitx"
+	"github.com/ronaknnathani/relay/internal/project"
 )
 
 // newTestRepo creates a throwaway git repo with one commit on main and returns
@@ -32,6 +35,51 @@ func newTestRepo(t *testing.T) string {
 	run("add", "README")
 	run("commit", "-q", "-m", "init")
 	return repo
+}
+
+func TestRunNewCreatesExpectedProjectFilesWithoutLaunch(t *testing.T) {
+	repo := newTestRepo(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Chdir(repo)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/",
+		DefaultAgent: "copilot",
+		PermissionModes: map[string]string{
+			"copilot": "allow-all",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runNew(newOpts{task: "demo task", name: "demo", noLaunch: true}); err != nil {
+		t.Fatalf("runNew: %v", err)
+	}
+	projectDir := filepath.Join(project.ActiveDir(), "demo")
+	for name, want := range map[string]string{
+		"task.md":  "# Task\n\ndemo task\n",
+		"notes.md": "# demo — Notes\n\nScratchpad for ideas, context, and observations.\n",
+		"todos.md": "# demo — TODOs\n\n- [ ] ...\n",
+	} {
+		got, err := os.ReadFile(filepath.Join(projectDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if string(got) != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	manifest, err := project.Load(filepath.Join(projectDir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(manifest.PhasesCompleted, []string{"init"}) ||
+		!reflect.DeepEqual(manifest.PhasesRemaining, project.AllPhases) ||
+		manifest.Slug != "demo" || manifest.Title != "demo task" ||
+		manifest.Agent != "copilot" || manifest.Workflow != defaultWorkflow ||
+		manifest.Status != "initialized" || manifest.Phase != "plan" {
+		t.Fatalf("manifest = %+v", manifest)
+	}
 }
 
 func TestReclaimLeftoversRemovesBranchWorktreeAndDir(t *testing.T) {

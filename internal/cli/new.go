@@ -27,6 +27,25 @@ type newOpts struct {
 	reclaim  bool
 }
 
+type projectCreateOpts struct {
+	task        string
+	name        string
+	agent       string
+	workflow    string
+	reclaim     bool
+	repo        string
+	program     string
+	programItem string
+}
+
+type projectCreateResult struct {
+	manifest    project.Manifest
+	projectDir  string
+	worktreeDir string
+	agent       agent.Agent
+	config      config.Config
+}
+
 // defaultWorkflow is the workflow skill launched when none is specified.
 const defaultWorkflow = "deliver-pr"
 
@@ -69,46 +88,95 @@ func newCmdNew(_ *rootFlags) *cobra.Command {
 }
 
 func runNew(opts newOpts) error {
+	created, err := createProject(projectCreateOpts{
+		task:     opts.task,
+		name:     opts.name,
+		agent:    opts.agent,
+		workflow: opts.workflow,
+		reclaim:  opts.reclaim,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Println()
+	fmt.Printf("  %s\n", ui.Color(ui.Bold+ui.White, "Project created"))
+	ui.PrintField("Slug", created.manifest.Slug)
+	ui.PrintField("Branch", created.manifest.Branch)
+	ui.PrintField("Worktree", created.worktreeDir)
+	ui.PrintField("Project", created.projectDir)
+	fmt.Println()
+
+	if opts.noLaunch {
+		return nil
+	}
+
+	fmt.Printf("  %s\n", ui.Color(ui.Dim, fmt.Sprintf("Launching %s…", created.agent.Name())))
+	fmt.Println()
+
+	mode := "full"
+	if opts.quick {
+		mode = "quick"
+	}
+	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s. Mode: %s.",
+		created.manifest.Slug, created.manifest.Workflow, mode)
+	o := relayLaunchOptions(
+		created.worktreeDir,
+		created.projectDir,
+		systemPrompt,
+		created.manifest.Slug,
+		created.manifest.Workflow,
+		created.manifest.Title,
+		created.config.PermissionModeFor(created.agent.Name()),
+	)
+	return launchAgent(created.agent, o)
+}
+
+func createProject(opts projectCreateOpts) (projectCreateResult, error) {
 	slug := opts.name
 	if slug == "" {
 		slug = project.DeriveSlug(opts.task)
 	}
 	if slug == "" {
-		return fmt.Errorf("could not derive slug from task description")
+		return projectCreateResult{}, fmt.Errorf("could not derive slug from task description")
 	}
 	// Guard against a custom --name that could escape the project/worktree
 	// trees (e.g. "../foo"); reclaim below removes paths derived from the slug.
 	if err := project.ValidateSlug(slug); err != nil {
-		return err
+		return projectCreateResult{}, err
 	}
 
 	projDir := filepath.Join(project.ActiveDir(), slug)
 	manifestPath := project.ManifestPath(project.ActiveDir(), slug)
 	if _, err := os.Stat(manifestPath); err == nil {
-		return fmt.Errorf("project %q already exists. Use: relay resume %s", slug, slug)
+		return projectCreateResult{}, fmt.Errorf("project %q already exists. Use: relay resume %s", slug, slug)
 	}
 
-	repoRoot, err := gitx.RepoRoot()
-	if err != nil {
-		return fmt.Errorf("locate repo root: %w", err)
+	repoRoot := opts.repo
+	if repoRoot == "" {
+		var err error
+		repoRoot, err = gitx.RepoRoot()
+		if err != nil {
+			return projectCreateResult{}, fmt.Errorf("locate repo root: %w", err)
+		}
 	}
 	if repoRoot == "" {
-		return fmt.Errorf("not in a git repository")
+		return projectCreateResult{}, fmt.Errorf("not in a git repository")
 	}
 
 	baseBranch := gitx.DetectDefaultBranch(repoRoot)
 	if baseBranch == "" {
-		return fmt.Errorf("could not determine default branch (no origin/HEAD, main, or master)")
+		return projectCreateResult{}, fmt.Errorf("could not determine default branch (no origin/HEAD, main, or master)")
 	}
 
 	cfg, err := config.EnsureForAgent(opts.agent)
 	if err != nil {
-		return err
+		return projectCreateResult{}, err
 	}
 
 	a, err := agent.Get(agent.ResolveName(opts.agent, "", cfg.DefaultAgent))
 	if err != nil {
-		return err
+		return projectCreateResult{}, err
 	}
 
 	branch := cfg.BranchPrefix + slug
@@ -127,13 +195,13 @@ func runNew(opts newOpts) error {
 			worktreeReclaimSafe(repoRoot, worktreeDir)
 		proceed, err := decideReclaim(opts.reclaim, slug, branch, worktreeDir, projDir, branchExists, safe)
 		if err != nil {
-			return err
+			return projectCreateResult{}, err
 		}
 		if !proceed {
-			return fmt.Errorf("aborted: leftover state for %q is still present. Reclaim it, choose a different name with -n, or remove it manually", slug)
+			return projectCreateResult{}, fmt.Errorf("aborted: leftover state for %q is still present. Reclaim it, choose a different name with -n, or remove it manually", slug)
 		}
 		if err := reclaimLeftovers(repoRoot, branch, worktreeDir, projDir); err != nil {
-			return err
+			return projectCreateResult{}, err
 		}
 	}
 
@@ -149,11 +217,11 @@ func runNew(opts newOpts) error {
 	startSHA := gitx.RevParse(repoRoot, startPoint)
 
 	if err := gitx.WorktreeAdd(repoRoot, worktreeDir, branch, startPoint); err != nil {
-		return err
+		return projectCreateResult{}, err
 	}
 
 	if err := os.MkdirAll(projDir, 0755); err != nil {
-		return fmt.Errorf("create project dir: %w", err)
+		return projectCreateResult{}, fmt.Errorf("create project dir: %w", err)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -172,6 +240,8 @@ func runNew(opts newOpts) error {
 		Worktree:        &worktreeDir,
 		Status:          "initialized",
 		Workflow:        wf,
+		Program:         opts.program,
+		ProgramItem:     opts.programItem,
 		Phase:           "plan",
 		Created:         now,
 		PR:              project.PRInfo{},
@@ -179,7 +249,7 @@ func runNew(opts newOpts) error {
 		PhasesRemaining: project.AllPhases,
 	}
 	if err := project.Save(project.ManifestPath(project.ActiveDir(), slug), m); err != nil {
-		return err
+		return projectCreateResult{}, err
 	}
 
 	files := map[string]string{
@@ -189,32 +259,17 @@ func runNew(opts newOpts) error {
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(projDir, name), []byte(content), 0644); err != nil {
-			return fmt.Errorf("write %s: %w", name, err)
+			return projectCreateResult{}, fmt.Errorf("write %s: %w", name, err)
 		}
 	}
 
-	fmt.Println()
-	fmt.Printf("  %s\n", ui.Color(ui.Bold+ui.White, "Project created"))
-	ui.PrintField("Slug", slug)
-	ui.PrintField("Branch", branch)
-	ui.PrintField("Worktree", worktreeDir)
-	ui.PrintField("Project", projDir)
-	fmt.Println()
-
-	if opts.noLaunch {
-		return nil
-	}
-
-	fmt.Printf("  %s\n", ui.Color(ui.Dim, fmt.Sprintf("Launching %s…", a.Name())))
-	fmt.Println()
-
-	mode := "full"
-	if opts.quick {
-		mode = "quick"
-	}
-	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s. Mode: %s.", slug, wf, mode)
-	o := relayLaunchOptions(worktreeDir, projDir, systemPrompt, slug, wf, opts.task, cfg.PermissionModeFor(a.Name()))
-	return launchAgent(a, o)
+	return projectCreateResult{
+		manifest:    m,
+		projectDir:  projDir,
+		worktreeDir: worktreeDir,
+		agent:       a,
+		config:      cfg,
+	}, nil
 }
 
 // pathExists reports whether a filesystem path exists (file, dir, or symlink).
