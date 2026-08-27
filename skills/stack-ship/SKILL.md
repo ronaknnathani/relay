@@ -1,6 +1,7 @@
 ---
 name: stack-ship
-description: Use when given a design doc or feature goal to deliver end-to-end as a stack of small PRs, or to resume an active stack. Decompose into acceptance criteria and an interface-first PR plan, delegate build and monitor work, keep durable state, use native loop/goal harnesses when available, use capability-based monitor ticks when not, surface author decisions, cascade stack changes, auto-merge only on human approval, and stop when the goal is delivered.
+description: "Use only for a standalone stack explicitly launched with `relay --workflow stack-ship`; never invoke inside a CTO-managed Relay program. Decompose one goal into small PRs, delegate build and monitor work, surface author decisions, and auto-merge only after human approval."
+disable-model-invocation: true
 ---
 
 # Stack Ship

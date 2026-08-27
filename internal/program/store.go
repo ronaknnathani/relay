@@ -8,8 +8,13 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/ronaknnathani/relay/internal/patrollock"
 	"github.com/ronaknnathani/relay/internal/project"
 )
+
+// saveLockTimeout bounds how long one Save waits for another writer's kernel
+// lock before failing closed.
+var saveLockTimeout = 5 * time.Second
 
 // RelayDir returns ~/.relay.
 func RelayDir() string {
@@ -150,7 +155,9 @@ func Create(program Program) error {
 	return nil
 }
 
-// Save atomically replaces path when program's revision still matches disk.
+// Save atomically replaces path when program's revision still matches disk. The
+// kernel-held save lock serializes the revision read, temporary write, and
+// rename; it is released automatically when a holding process exits or crashes.
 func Save(path string, program Program) (retErr error) {
 	next := program
 	next.UpdatedAt = timestamp()
@@ -159,22 +166,18 @@ func Save(path string, program Program) (retErr error) {
 	}
 	dir := filepath.Dir(path)
 	lockPath := path + ".lock"
-	lock, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	lock, err := patrollock.AcquireWait(lockPath, saveLockTimeout)
 	if err != nil {
-		if os.IsExist(err) {
+		if errors.Is(err, patrollock.ErrLocked) {
 			return fmt.Errorf(
-				"save program %q: save lock %s already exists; another Relay command may be writing; retry after it finishes, or remove the stale lock only after verifying no writer is active",
-				next.Slug, lockPath,
+				"save program %q: another Relay command held the save lock %s for longer than %s; retry after it finishes",
+				next.Slug, lockPath, saveLockTimeout,
 			)
 		}
-		return fmt.Errorf("save program %q: create save lock %s: %w", next.Slug, lockPath, err)
-	}
-	if err := lock.Close(); err != nil {
-		return fmt.Errorf("save program %q: close save lock %s: %w",
-			next.Slug, lockPath, errors.Join(err, os.Remove(lockPath)))
+		return fmt.Errorf("save program %q: acquire save lock %s: %w", next.Slug, lockPath, err)
 	}
 	defer func() {
-		if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		if err := lock.Release(); err != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("release program save lock %s: %w", lockPath, err))
 		}
 	}()

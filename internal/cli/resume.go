@@ -6,6 +6,7 @@ import (
 
 	"github.com/ronaknnathani/relay/internal/agent"
 	"github.com/ronaknnathani/relay/internal/config"
+	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/ronaknnathani/relay/internal/ui"
 	"github.com/spf13/cobra"
@@ -37,6 +38,9 @@ func runResume(slug string) error {
 	if m.Phase == "done" {
 		return fmt.Errorf("project %q is complete. Run: relay archive %s", slug, slug)
 	}
+	if err := guardManagedHerdrResume(m); err != nil {
+		return err
+	}
 
 	cfg, err := config.EnsureForAgent(m.Agent)
 	if err != nil {
@@ -63,4 +67,26 @@ func runResume(slug string) error {
 	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s.", slug, cmd)
 	o := relayLaunchOptions(*m.Worktree, filepath.Dir(path), systemPrompt, slug, cmd, m.Title, cfg.PermissionModeFor(a.Name()))
 	return launchAgent(a, o)
+}
+
+// guardManagedHerdrResume enforces the managed-session contract: every managed
+// child runs under Herdr with exactly one live owner. Standalone Relay projects
+// are unaffected.
+func guardManagedHerdrResume(manifest project.Manifest) error {
+	if manifest.Program == "" || manifest.ProgramItem == "" {
+		return nil
+	}
+	subject := fmt.Sprintf("managed child project %q", manifest.Slug)
+	readiness, err := requireManagedHerdr("relay resume "+manifest.Slug, manifest.Agent, subject, false)
+	if err != nil {
+		return err
+	}
+	owner, ok := herdr.FindLiveWorker(readiness.Agents, manifest.Slug, manifest.Repo, *manifest.Worktree)
+	if !ok {
+		return nil
+	}
+	return fmt.Errorf(
+		"project %q already has another live Herdr owner in pane %s; focus it with: herdr agent focus %s",
+		manifest.Slug, owner.PaneID, owner.PaneID,
+	)
 }

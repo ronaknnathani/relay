@@ -95,11 +95,47 @@ func TestCopilotPackageInvariants(t *testing.T) {
 			t.Errorf("pr-monitor is missing %q", snippet)
 		}
 	}
+	cto := readFile(t, filepath.Join(out, "skills", "cto", "SKILL.md"))
+	for _, snippet := range []string{
+		`relay program patrol status "$PROGRAM" --json`,
+		`relay program patrol start "$PROGRAM"`,
+		"fresh, bounded CTO-role session",
+		"never types into, focuses, or prompts this pane",
+		"never invokes\n`program tick`",
+		"Reload durable state at the top of every CEO turn",
+		"RELAY_AUTOMATED_TURN=1",
+		"Managed programs run only under Herdr",
+		"There is no plain-terminal fallback",
+		"stop_reason",
+	} {
+		if !strings.Contains(cto, snippet) {
+			t.Errorf("cto is missing adaptive patrol guidance %q", snippet)
+		}
+	}
+	for _, forbidden := range []string{
+		"/loop", "/every", "program worker prompt", "Check Relay program mail",
+	} {
+		if strings.Contains(cto, forbidden) {
+			t.Errorf("cto still contains retired patrol transport text %q", forbidden)
+		}
+	}
+	for _, forbidden := range []string{
+		"Outside Herdr",
+		`if [ "${HERDR_ENV:-}" = "1" ]`,
+		"manual foreground command",
+	} {
+		if strings.Contains(cto, forbidden) {
+			t.Errorf("cto still offers a non-Herdr managed fallback %q", forbidden)
+		}
+	}
 }
 
 func TestCopilotStackShipUsesNativeGoal(t *testing.T) {
 	_, out := generateCopilot(t)
 	body := readFile(t, filepath.Join(out, "skills", "stack-ship", "SKILL.md"))
+	if !strings.Contains(body, "never invoke inside a CTO-managed Relay program") {
+		t.Error("stack-ship is missing the CTO-program exclusion")
+	}
 
 	for _, snippet := range []string{
 		`/goal <the user's requested outcome>`,

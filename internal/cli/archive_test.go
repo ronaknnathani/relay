@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ronaknnathani/relay/internal/gitx"
+	"github.com/ronaknnathani/relay/internal/programview"
 	"github.com/ronaknnathani/relay/internal/project"
 )
 
@@ -207,4 +208,106 @@ func runArchiveGit(t *testing.T, dir string, args ...string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git -C %s %v: %v\n%s", dir, args, err, out)
 	}
+}
+
+func TestArchiveRecordsSquashMergedPullRequestFromGitHub(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "squashed-work"
+	branch := "user/squashed-work"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "squashed\n", "squashed work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	recordArchiveManifestPR(t, slug, 404)
+	installArchivePRIndex(t, map[string]programview.PRState{"#404": programview.PRStateMerged})
+
+	if _, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	}); err != nil {
+		t.Fatalf("runArchive squash-merged pull request: %v", err)
+	}
+	archived := loadArchivedManifest(t, slug)
+	if !archived.Merged {
+		t.Fatal("squash-merged pull request was not recorded as merged")
+	}
+	if gitx.BranchExists(repo, branch) {
+		t.Fatal("squash-merged branch was left behind")
+	}
+}
+
+func TestArchiveStillProtectsUnmergedPullRequest(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "closed-work"
+	branch := "user/closed-work"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "closed\n", "closed work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	recordArchiveManifestPR(t, slug, 405)
+	installArchivePRIndex(t, map[string]programview.PRState{"#405": programview.PRStateClosed})
+
+	_, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	})
+	if err == nil || !strings.Contains(err.Error(), "unmerged work") {
+		t.Fatalf("runArchive error = %v, want unmerged branch protection", err)
+	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
+}
+
+// A local branch that is already deleted is not evidence of abandoned work: the
+// branch is usually gone precisely because its pull request merged.
+func TestArchiveRecordsMergedPullRequestWhenTheLocalBranchIsGone(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "deleted-branch-work"
+	branch := "user/deleted-branch-work"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "merged\n", "merged work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	recordArchiveManifestPR(t, slug, 406)
+	installArchivePRIndex(t, map[string]programview.PRState{"#406": programview.PRStateMerged})
+	runArchiveGit(t, repo, "worktree", "remove", "--force", worktree)
+	runArchiveGit(t, repo, "branch", "-D", branch)
+
+	if _, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	}); err != nil {
+		t.Fatalf("runArchive with a deleted local branch: %v", err)
+	}
+	archived := loadArchivedManifest(t, slug)
+	if !archived.Merged {
+		t.Fatal("merged pull request with a deleted local branch was not recorded as merged")
+	}
+	if archived.Status != "archived" {
+		t.Fatalf("archived status = %q, want archived", archived.Status)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("an orphan active project directory was left behind")
+	}
+}
+
+func recordArchiveManifestPR(t *testing.T, slug string, number int) {
+	t.Helper()
+	path := project.ManifestPath(project.ActiveDir(), slug)
+	manifest, err := project.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.PR = project.PRInfo{Number: &number}
+	if err := project.Save(path, manifest); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func installArchivePRIndex(t *testing.T, states map[string]programview.PRState) {
+	t.Helper()
+	previous := loadArchivePRIndex
+	loadArchivePRIndex = func(string, []string) programview.PRIndex {
+		return prIndexStub(func(ref string) (programview.PRState, bool) {
+			state, found := states[ref]
+			return state, found
+		})
+	}
+	t.Cleanup(func() { loadArchivePRIndex = previous })
 }

@@ -15,6 +15,7 @@ type programCanOpenPROutput struct {
 	Item     string           `json:"item"`
 	Allowed  bool             `json:"allowed"`
 	Capacity program.Capacity `json:"capacity"`
+	Warnings []string         `json:"warnings,omitempty"`
 }
 
 func newCmdProgramCanOpenPR() *cobra.Command {
@@ -22,9 +23,8 @@ func newCmdProgramCanOpenPR() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "can-open-pr <program> <item>",
 		Short: "Check whether a managed worker may open a pull request",
-		Long: "Check the current read-only PR capacity gate for a managed work item. " +
-			"V1 is advisory and does not reserve capacity atomically across processes; a future controller will own atomic reservation.",
-		Args: cobra.ExactArgs(2),
+		Long:  "Check the read-only durable PR grant for a managed work item.",
+		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runProgramCanOpenPR(cmd.OutOrStdout(), args[0], args[1], jsonOutput)
 		},
@@ -33,8 +33,7 @@ func newCmdProgramCanOpenPR() *cobra.Command {
 	return cmd
 }
 
-// runProgramCanOpenPR is intentionally read-only. V1 makes no cross-process
-// reservation; a future controller will own the atomic capacity decision.
+// runProgramCanOpenPR is intentionally read-only.
 func runProgramCanOpenPR(out io.Writer, programSlug, itemID string, jsonOutput bool) error {
 	path, p, err := loadActiveProgram(programSlug)
 	if err != nil {
@@ -66,38 +65,46 @@ func runProgramCanOpenPR(out io.Writer, programSlug, itemID string, jsonOutput b
 	if err := p.VerifyHashes(filepath.Dir(path)); err != nil {
 		return err
 	}
-	views, err := buildProgramProjectViews(p)
+	views, warnings, err := programProjectViews(p)
 	if err != nil {
 		return err
 	}
 	capacity := p.Plan(views).Capacity
-	for _, view := range views {
-		if item.Status == program.ItemInReview &&
-			view.Slug == item.ProjectSlug && view.HasPR && !view.Merged && !view.Archived {
-			return printCanOpenPR(out, p.Slug, item.ID, capacity, jsonOutput)
-		}
+	if item.Status == program.ItemInReview {
+		return printCanOpenPR(out, p.Slug, item.ID, capacity, warnings, jsonOutput)
 	}
-	if capacity.Available == 0 {
+	if item.PRGrantedAt == "" || item.PRGrantedBy == "" {
 		return fmt.Errorf(
-			"open PR capacity is full for program %q: %d/%d open; stop before open-pr and resume when capacity is available",
-			p.Slug, capacity.Open, capacity.Limit,
+			"can-open-pr for item %q: no outstanding open-PR grant; request one with "+
+				"`relay program message send %s %s --kind pr-open --body %q` and stop before open-pr",
+			item.ID, p.Slug, item.ID, "Ready to open the managed pull request; please grant capacity.",
 		)
 	}
-	return printCanOpenPR(out, p.Slug, item.ID, capacity, jsonOutput)
+	return printCanOpenPR(out, p.Slug, item.ID, capacity, warnings, jsonOutput)
 }
 
-func printCanOpenPR(out io.Writer, programSlug, itemID string, capacity program.Capacity, jsonOutput bool) error {
+func printCanOpenPR(
+	out io.Writer,
+	programSlug, itemID string,
+	capacity program.Capacity,
+	warnings []string,
+	jsonOutput bool,
+) error {
 	result := programCanOpenPROutput{
 		Program:  programSlug,
 		Item:     itemID,
 		Allowed:  true,
 		Capacity: capacity,
+		Warnings: warnings,
 	}
 	if jsonOutput {
 		return writeProgramJSON(out, result)
 	}
-	fmt.Fprintf(out, "can open PR: %d/%d open, %d available\n",
-		capacity.Open, capacity.Limit, capacity.Available)
+	fmt.Fprintf(out, "can open PR: %d/%d open, %d reserved, %d available\n",
+		capacity.Open, capacity.Limit, capacity.Reserved, capacity.Available)
+	for _, warning := range warnings {
+		fmt.Fprintf(out, "Warning: %s\n", warning)
+	}
 	return nil
 }
 

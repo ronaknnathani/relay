@@ -87,7 +87,7 @@ func (p *Program) PublishContract(programDir, name, sourcePath string) (Contract
 	next := *p
 	next.Contracts = append(append([]Contract(nil), p.Contracts...), contract)
 	next.UpdatedAt = now
-	if _, err := next.OpenDecision(Decision{
+	if _, created, err := next.OpenDecision(Decision{
 		Kind:        DecisionContract,
 		RaisedBy:    RaisedByCTO,
 		ContractRef: ref,
@@ -96,6 +96,9 @@ func (p *Program) PublishContract(programDir, name, sourcePath string) (Contract
 	}); err != nil {
 		cleanupErr := removeWithCause(targetPath, err)
 		return Contract{}, fmt.Errorf("publish contract %q: open approval decision: %w", ref, cleanupErr)
+	} else if !created {
+		cleanupErr := removeWithCause(targetPath, fmt.Errorf("an open approval decision already exists"))
+		return Contract{}, fmt.Errorf("publish contract %q: %w", ref, cleanupErr)
 	}
 	if err := next.Validate(); err != nil {
 		cleanupErr := removeWithCause(targetPath, err)

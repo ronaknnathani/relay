@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -84,6 +85,19 @@ const (
 	RaisedByWorker RaisedBy = "worker"
 )
 
+// RaisedByAutomatedCTOPrefix prefixes the raiser a bounded automated CTO turn
+// records, as in "cto-automated:3f2504e0". A decision the CEO reads therefore
+// always shows whether a human CTO or an unattended turn raised it.
+const RaisedByAutomatedCTOPrefix = "cto-automated:"
+
+var automatedRaiser = regexp.MustCompile(`^cto-automated:[a-z0-9]{1,32}$`)
+
+// ValidRaisedBy reports whether value names a supported decision raiser.
+func ValidRaisedBy(value RaisedBy) bool {
+	return value == RaisedByCTO || value == RaisedByWorker ||
+		automatedRaiser.MatchString(string(value))
+}
+
 // Program is the durable governance record for a coordinated body of work.
 type Program struct {
 	Revision            int        `json:"revision"`
@@ -118,6 +132,8 @@ type WorkItem struct {
 	Repo          string     `json:"repo"`
 	ProjectSlug   string     `json:"project_slug,omitempty"`
 	PRRef         string     `json:"pr_ref,omitempty"`
+	PRGrantedAt   string     `json:"pr_granted_at,omitempty"`
+	PRGrantedBy   string     `json:"pr_granted_by,omitempty"`
 	Notes         []string   `json:"notes"`
 	BlockedReason string     `json:"blocked_reason,omitempty"`
 	CreatedAt     string     `json:"created_at"`
@@ -285,6 +301,23 @@ func (p Program) Validate() error {
 		if item.PRRef != "" && item.ProjectSlug == "" {
 			errs = append(errs, fmt.Errorf("item %q has pr_ref without project_slug", item.ID))
 		}
+		grantFields := 0
+		if item.PRGrantedAt != "" {
+			grantFields++
+		}
+		if strings.TrimSpace(item.PRGrantedBy) != "" {
+			grantFields++
+		}
+		if grantFields != 0 && grantFields != 2 {
+			errs = append(errs, fmt.Errorf("item %q open-PR grant requires pr_granted_at and pr_granted_by", item.ID))
+		}
+		if grantFields == 2 &&
+			(item.Status != ItemDispatched || item.ProjectSlug == "" || item.PRRef != "") {
+			errs = append(errs, fmt.Errorf(
+				"item %q open-PR grant requires dispatched status, project_slug, and no pr_ref",
+				item.ID,
+			))
+		}
 		if (item.Status == ItemDispatched || item.Status == ItemInReview || item.Status == ItemMerged) && item.ProjectSlug == "" {
 			errs = append(errs, fmt.Errorf("item %q status %q requires project_slug", item.ID, item.Status))
 		}
@@ -303,6 +336,7 @@ func (p Program) Validate() error {
 		validateTimestamp(&errs, fmt.Sprintf("item %q in_review_at", item.ID), item.InReviewAt, false)
 		validateTimestamp(&errs, fmt.Sprintf("item %q merged_at", item.ID), item.MergedAt, false)
 		validateTimestamp(&errs, fmt.Sprintf("item %q %s_at", item.ID, ItemCancelled), item.CancelledAt, false)
+		validateTimestamp(&errs, fmt.Sprintf("item %q pr_granted_at", item.ID), item.PRGrantedAt, false)
 		if (item.Status == ItemDispatched || item.Status == ItemInReview || item.Status == ItemMerged) && item.DispatchedAt == "" {
 			errs = append(errs, fmt.Errorf("item %q status %q requires dispatched_at", item.ID, item.Status))
 		}
@@ -408,7 +442,7 @@ func (p Program) Validate() error {
 		if !validDecisionKind(decision.Kind) {
 			errs = append(errs, fmt.Errorf("decision %q kind %q is unsupported", decision.ID, decision.Kind))
 		}
-		if decision.RaisedBy != RaisedByCTO && decision.RaisedBy != RaisedByWorker {
+		if !ValidRaisedBy(decision.RaisedBy) {
 			errs = append(errs, fmt.Errorf("decision %q raised_by %q is unsupported", decision.ID, decision.RaisedBy))
 		}
 		if strings.TrimSpace(decision.Question) == "" {
@@ -503,6 +537,27 @@ func (p *Program) Transition(next State, by string) error {
 	return nil
 }
 
+// SetMaxOpenPRs updates the program-scoped open pull request limit.
+func (p *Program) SetMaxOpenPRs(limit int) error {
+	if limit <= 0 {
+		return fmt.Errorf("set max open PRs for program %q: limit must be positive, got %d", p.Slug, limit)
+	}
+	if err := p.Validate(); err != nil {
+		return fmt.Errorf("set max open PRs for program %q: current program is invalid: %w", p.Slug, err)
+	}
+	if err := p.ensureMutable("set max open PRs"); err != nil {
+		return err
+	}
+	next := *p
+	next.MaxOpenPRs = limit
+	next.UpdatedAt = timestamp()
+	if err := next.Validate(); err != nil {
+		return fmt.Errorf("set max open PRs for program %q: %w", p.Slug, err)
+	}
+	*p = next
+	return nil
+}
+
 // AddItem appends a pending work item and assigns the next max+1 work item ID.
 func (p *Program) AddItem(item WorkItem) (WorkItem, error) {
 	if err := p.Validate(); err != nil {
@@ -531,6 +586,8 @@ func (p *Program) AddItem(item WorkItem) (WorkItem, error) {
 	item.InReviewAt = ""
 	item.MergedAt = ""
 	item.CancelledAt = ""
+	item.PRGrantedAt = ""
+	item.PRGrantedBy = ""
 	item.BlockedReason = ""
 
 	next := *p
@@ -702,6 +759,8 @@ func (p *Program) BlockItem(id, reason string) error {
 			return fmt.Errorf("status %q cannot be blocked", item.Status)
 		}
 		item.BlockedReason = reason
+		item.PRGrantedAt = ""
+		item.PRGrantedBy = ""
 		return nil
 	})
 }
@@ -736,12 +795,143 @@ func (p *Program) CancelItem(id, note string) error {
 			return fmt.Errorf("status %q is terminal", item.Status)
 		}
 		item.BlockedReason = ""
+		item.PRGrantedAt = ""
+		item.PRGrantedBy = ""
 		item.CancelledAt = now
 		if strings.TrimSpace(note) != "" {
 			item.Notes = append(item.Notes, note)
 		}
 		return nil
 	})
+}
+
+// GrantOpenPR reserves one open-PR capacity slot for a dispatched item.
+func (p *Program) GrantOpenPR(itemID, by string, projects []ProjectView) error {
+	if strings.TrimSpace(by) == "" {
+		return fmt.Errorf("grant open PR for item %q: by is required", itemID)
+	}
+	if err := p.Validate(); err != nil {
+		return fmt.Errorf("grant open PR for item %q: current program is invalid: %w", itemID, err)
+	}
+	if p.State != StateActive {
+		return fmt.Errorf("grant open PR for item %q: program %q is %s, want active", itemID, p.Slug, p.State)
+	}
+	index, err := p.itemIndex(itemID)
+	if err != nil {
+		return fmt.Errorf("grant open PR: %w", err)
+	}
+	item := p.Items[index]
+	if item.Status != ItemDispatched {
+		return fmt.Errorf("grant open PR for item %q: status is %q, want dispatched", itemID, item.Status)
+	}
+	if item.ProjectSlug == "" {
+		return fmt.Errorf("grant open PR for item %q: linked project is required", itemID)
+	}
+	closedRecordedPR := recordedPRIsClosed(projects, item)
+	if item.PRRef != "" && !closedRecordedPR {
+		return fmt.Errorf("grant open PR for item %q: PR %q is already recorded", itemID, item.PRRef)
+	}
+	if item.PRGrantedAt != "" || item.PRGrantedBy != "" {
+		return fmt.Errorf("grant open PR for item %q: an outstanding grant already exists", itemID)
+	}
+	if decisions := p.OpenProgramDecisions(); len(decisions) > 0 {
+		return fmt.Errorf("grant open PR for item %q: unresolved program decision(s)", itemID)
+	}
+	if decisions := p.OpenItemDecisions(itemID); len(decisions) > 0 {
+		return fmt.Errorf("grant open PR for item %q: unresolved item decision(s)", itemID)
+	}
+	contracts := make(map[string]ContractStatus, len(p.Contracts))
+	for _, contract := range p.Contracts {
+		contracts[contract.Ref] = contract.Status
+	}
+	for _, ref := range item.ContractRefs {
+		if contracts[ref] != ContractApproved {
+			return fmt.Errorf("grant open PR for item %q: contract %q is %s, want approved", itemID, ref, contracts[ref])
+		}
+	}
+	capacity := p.prCapacity(projects)
+	if capacity.Available == 0 {
+		return fmt.Errorf(
+			"grant open PR for item %q: capacity is full: %d open + %d reserved of %d",
+			itemID, capacity.Open, capacity.Reserved, capacity.Limit,
+		)
+	}
+
+	next := p.copyWithItems()
+	now := timestamp()
+	if closedRecordedPR {
+		next.Items[index].Notes = append(next.Items[index].Notes, fmt.Sprintf(
+			"Pull request %s was closed without merging; cleared the recorded reference so a replacement can be opened",
+			item.PRRef,
+		))
+		next.Items[index].PRRef = ""
+	}
+	next.Items[index].PRGrantedAt = now
+	next.Items[index].PRGrantedBy = by
+	next.Items[index].UpdatedAt = now
+	next.UpdatedAt = now
+	if err := next.Validate(); err != nil {
+		return fmt.Errorf("grant open PR for item %q: %w", itemID, err)
+	}
+	*p = next
+	return nil
+}
+
+// recordedPRIsClosed reports whether the item's recorded pull request is
+// authoritatively closed without merging in the supplied project views.
+func recordedPRIsClosed(projects []ProjectView, item WorkItem) bool {
+	if item.PRRef == "" {
+		return false
+	}
+	for _, project := range projects {
+		if project.Slug != item.ProjectSlug || !project.PRClosed {
+			continue
+		}
+		if project.PRRef == "" || project.PRRef == item.PRRef {
+			return true
+		}
+	}
+	return false
+}
+
+// RevokeOpenPR clears an outstanding open-PR grant from a dispatched item.
+func (p *Program) RevokeOpenPR(itemID, by, reason string) error {
+	if err := p.Validate(); err != nil {
+		return fmt.Errorf("revoke open PR for item %q: current program is invalid: %w", itemID, err)
+	}
+	if err := p.ensureMutable("revoke open PR for item " + itemID); err != nil {
+		return err
+	}
+	index, err := p.itemIndex(itemID)
+	if err != nil {
+		return fmt.Errorf("revoke open PR: %w", err)
+	}
+	item := p.Items[index]
+	if item.Status != ItemDispatched {
+		return fmt.Errorf("revoke open PR for item %q: status is %q, want dispatched", itemID, item.Status)
+	}
+	if item.PRGrantedAt == "" || item.PRGrantedBy == "" {
+		return fmt.Errorf("revoke open PR for item %q: no outstanding grant", itemID)
+	}
+	next := p.copyWithItems()
+	now := timestamp()
+	next.Items[index].PRGrantedAt = ""
+	next.Items[index].PRGrantedBy = ""
+	next.Items[index].UpdatedAt = now
+	next.UpdatedAt = now
+	if strings.TrimSpace(reason) != "" {
+		revocation := "Open-PR grant revoked"
+		if strings.TrimSpace(by) != "" {
+			revocation += " by " + strings.TrimSpace(by)
+		}
+		next.Items[index].Notes = append(append([]string(nil), next.Items[index].Notes...),
+			revocation+": "+strings.TrimSpace(reason))
+	}
+	if err := next.Validate(); err != nil {
+		return fmt.Errorf("revoke open PR for item %q: %w", itemID, err)
+	}
+	*p = next
+	return nil
 }
 
 func (p *Program) mutateItemStatus(id string, status ItemStatus, mutate func(*WorkItem, string) error) error {

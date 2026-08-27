@@ -16,6 +16,7 @@ import (
 
 func createDispatchProgram(t *testing.T, slug string, maxOpenPRs int) (program.Program, program.WorkItem, program.Contract) {
 	t.Helper()
+	installManagedHerdrFakes(t, nil)
 	repo := newTestRepo(t)
 	repoRoot, err := filepath.EvalSymlinks(repo)
 	if err != nil {
@@ -75,6 +76,7 @@ func createDispatchProgram(t *testing.T, slug string, maxOpenPRs int) (program.P
 func TestProgramDispatchCreatesManagedChildWithoutLaunch(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("HERDR_ENV", "")
 	saveProgramTestConfig(t)
 	p, item, contract := createDispatchProgram(t, "governance", 3)
 
@@ -94,8 +96,11 @@ func TestProgramDispatchCreatesManagedChildWithoutLaunch(t *testing.T) {
 		t.Fatal("default dispatch launched an agent")
 	}
 	childSlug := "governance-" + item.ID
-	if !strings.Contains(out, "relay resume "+childSlug) {
+	if !strings.Contains(out, "relay program worker start "+p.Slug+" "+item.ID) {
 		t.Fatalf("dispatch output = %q", out)
+	}
+	if strings.Contains(out, "relay resume "+childSlug) {
+		t.Fatalf("dispatch output still offers a non-Herdr fallback: %q", out)
 	}
 
 	childDir := filepath.Join(project.ActiveDir(), childSlug)
@@ -134,11 +139,34 @@ func TestProgramDispatchCreatesManagedChildWithoutLaunch(t *testing.T) {
 	for _, want := range []string{
 		p.Title, item.Title, string(item.Priority), "w1", contract.Ref, contract.SHA256,
 		filepath.ToSlash(contract.Path), "relay program can-open-pr governance " + item.ID,
-		"relay program decision open governance",
+		"relay program message outbox governance " + item.ID + " --json",
+		"relay program message send governance " + item.ID + ` --kind question --body "<describe the issue and requested decision>"`,
+		"relay program message send governance " + item.ID + ` --kind conflict --body "<describe the conflict, impact, and requested decision>"`,
+		"relay program message send governance " + item.ID + ` --kind plan --body "<describe the plan and requested review>"`,
+		"relay program message send governance " + item.ID + ` --kind pr-open --body "<request an open-PR capacity grant>"`,
+		"Do not send another pr-open request while one is unread",
+		"acknowledge the grant inbox message only after open-pr succeeds",
 		"clarify", "plan", "CTO", "CEO",
 	} {
 		if !strings.Contains(string(assignment), want) {
 			t.Errorf("assignment missing %q:\n%s", want, assignment)
+		}
+	}
+	if strings.Contains(string(assignment), "program decision open") {
+		t.Fatalf("assignment allows worker program state writes:\n%s", assignment)
+	}
+	for _, relative := range []string{
+		"mail/inbox",
+		"mail/outbox",
+		"mail/processed/inbox",
+		"mail/processed/outbox",
+	} {
+		info, err := os.Stat(filepath.Join(childDir, filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatalf("mailbox directory %s: %v", relative, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("mailbox path %s is not a directory", relative)
 		}
 	}
 
@@ -159,9 +187,29 @@ func TestProgramDispatchCreatesManagedChildWithoutLaunch(t *testing.T) {
 	}
 }
 
+func TestProgramDispatchInsideHerdrPrintsExplicitWorkerStart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HERDR_ENV", "1")
+	saveProgramTestConfig(t)
+	p, item, _ := createDispatchProgram(t, "governance", 3)
+
+	out, err := runProgramCommand(t, "dispatch", p.Slug, item.ID)
+	if err != nil {
+		t.Fatalf("program dispatch: %v", err)
+	}
+	want := "relay program worker start " + p.Slug + " " + item.ID
+	if !strings.Contains(out, want) {
+		t.Fatalf("dispatch output %q missing %q", out, want)
+	}
+	if strings.Contains(out, "relay resume ") {
+		t.Fatalf("dispatch output includes direct resume: %q", out)
+	}
+}
+
 func TestProgramDispatchLaunchesDeliverPRWithOverrideAfterPersistence(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("HERDR_ENV", "1")
 	saveProgramTestConfig(t)
 	p, item, _ := createDispatchProgram(t, "governance", 3)
 	path := program.ManifestPath(program.ActiveDir(), p.Slug)
@@ -262,6 +310,16 @@ func TestProgramDispatchReusesPreLinkedExistingChild(t *testing.T) {
 	}
 	if bytes.Equal(assignment, []byte("stale assignment\n")) || !bytes.Contains(assignment, []byte(item.Title)) {
 		t.Fatalf("assignment was not rewritten: %q", assignment)
+	}
+	for _, relative := range []string{
+		"mail/inbox",
+		"mail/outbox",
+		"mail/processed/inbox",
+		"mail/processed/outbox",
+	} {
+		if info, err := os.Stat(filepath.Join(projectDir, filepath.FromSlash(relative))); err != nil || !info.IsDir() {
+			t.Fatalf("reused child mailbox directory %s: %v", relative, err)
+		}
 	}
 	copied, err := os.ReadFile(snapshotPath)
 	if err != nil {
@@ -396,6 +454,7 @@ func TestProgramDispatchRefusesInvalidGovernanceState(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
+			installManagedHerdrFakes(t, nil)
 			saveProgramTestConfig(t)
 			p, item := tt.setup(t)
 			_, err := runProgramCommand(t, "dispatch", p.Slug, item.ID)
@@ -416,12 +475,24 @@ func TestProgramDispatchIgnoresOpenPRCapacity(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		number := i
 		suffix := strconv.Itoa(i)
+		openItem, err := p.AddItem(program.WorkItem{
+			Title: "Open PR " + suffix, Priority: program.PriorityP1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := p.DispatchItem(openItem.ID, "open-pr-"+suffix); err != nil {
+			t.Fatal(err)
+		}
 		saveProgramTestProject(t, project.ActiveDir(), project.Manifest{
 			Slug:   "open-pr-" + suffix,
 			Repo:   p.Repo,
 			Branch: "open-pr-" + suffix,
 			PR:     project.PRInfo{Number: &number},
 		})
+	}
+	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
+		t.Fatal(err)
 	}
 
 	if _, err := runProgramCommand(t, "dispatch", p.Slug, item.ID); err != nil {
@@ -434,14 +505,16 @@ func TestProgramDispatchRepairFlowReusesRetainedChild(t *testing.T) {
 	saveProgramTestConfig(t)
 	p, item, _ := createDispatchProgram(t, "governance", 3)
 	programPath := program.ManifestPath(program.ActiveDir(), p.Slug)
+	// An unusable save lock path makes the durable save fail after the child
+	// project already exists, which is the state the repair flow must recover.
 	lockPath := programPath + ".lock"
-	if err := os.WriteFile(lockPath, []byte("busy\n"), 0o644); err != nil {
+	if err := os.Mkdir(lockPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	_, err := runProgramCommand(t, "dispatch", p.Slug, item.ID)
 	if err == nil {
-		t.Fatal("dispatch succeeded despite program save lock")
+		t.Fatal("dispatch succeeded despite an unusable program save lock")
 	}
 	childSlug := p.Slug + "-" + item.ID
 	for _, want := range []string{

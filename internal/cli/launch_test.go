@@ -1,13 +1,16 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ronaknnathani/relay/internal/agent"
 	"github.com/ronaknnathani/relay/internal/config"
+	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/project"
 )
 
@@ -231,5 +234,191 @@ func TestRunResumeLaunchesWorkflowGoal(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("launched options mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestRunResumeRefusesDuplicateManagedHerdrOwner(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HERDR_ENV", "")
+	saveProgramTestConfig(t)
+	repo := t.TempDir()
+	worktree := filepath.Join(repo, ".worktrees", "child")
+	pluginDir := filepath.Join(worktree, "plugin")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectDir := filepath.Join(project.ActiveDir(), "child")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(filepath.Join(projectDir, "manifest.json"), project.Manifest{
+		Slug: "child", Title: "Managed child", Agent: "copilot", Workflow: "deliver-pr",
+		Phase: "implement", Repo: repo, Worktree: &worktree, Program: "governance", ProgramItem: "w1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{agentResponses: [][]herdr.Agent{{{
+		Status: herdr.StatusWorking, PaneID: "w7:p4",
+		TerminalTitle: "relay:child - GitHub Copilot", CWD: repo, ForegroundCWD: pluginDir,
+	}}}}
+	previousClient := newHerdrClient
+	previousAvailable := herdrAvailable
+	newHerdrClient = func() herdrRuntimeClient { return client }
+	herdrAvailable = func() bool { return true }
+	t.Cleanup(func() {
+		newHerdrClient = previousClient
+		herdrAvailable = previousAvailable
+	})
+
+	launched := false
+	previousLaunch := launchAgent
+	launchAgent = func(agent.Agent, agent.LaunchOptions) error {
+		launched = true
+		return nil
+	}
+	t.Cleanup(func() { launchAgent = previousLaunch })
+
+	err := runResume("child")
+	if err == nil || !strings.Contains(err.Error(), "another live Herdr owner") ||
+		!strings.Contains(err.Error(), "herdr agent focus w7:p4") {
+		t.Fatalf("runResume error = %v", err)
+	}
+	if launched {
+		t.Fatal("duplicate managed resume launched an agent")
+	}
+}
+
+func TestRunResumeFailsClosedWhenHerdrDiscoveryFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	repo := t.TempDir()
+	worktree := filepath.Join(repo, ".worktrees", "child")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectDir := filepath.Join(project.ActiveDir(), "child")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(filepath.Join(projectDir, "manifest.json"), project.Manifest{
+		Slug: "child", Title: "Managed child", Agent: "copilot", Workflow: "deliver-pr",
+		Phase: "implement", Repo: repo, Worktree: &worktree, Program: "governance", ProgramItem: "w1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{agentErr: errors.New("Herdr service unavailable")}
+	previousClient := newHerdrClient
+	previousAvailable := herdrAvailable
+	newHerdrClient = func() herdrRuntimeClient { return client }
+	herdrAvailable = func() bool { return true }
+	t.Cleanup(func() {
+		newHerdrClient = previousClient
+		herdrAvailable = previousAvailable
+	})
+
+	launched := false
+	previousLaunch := launchAgent
+	launchAgent = func(agent.Agent, agent.LaunchOptions) error {
+		launched = true
+		return nil
+	}
+	t.Cleanup(func() { launchAgent = previousLaunch })
+
+	err := runResume("child")
+	if err == nil || !strings.Contains(err.Error(), "running Herdr server") ||
+		!strings.Contains(err.Error(), "herdr agent list") ||
+		!strings.Contains(err.Error(), "relay resume child") {
+		t.Fatalf("runResume error = %v", err)
+	}
+	if launched {
+		t.Fatal("managed resume launched after failed Herdr discovery")
+	}
+}
+
+func TestRunResumeRequiresHerdrOnlyForManagedChildren(t *testing.T) {
+	tests := []struct {
+		name        string
+		program     string
+		programItem string
+		available   bool
+		agents      []herdr.Agent
+		wantCalls   int
+		wantErr     string
+	}{
+		{
+			name:      "standalone project ignores Herdr entirely",
+			available: false,
+			agents: []herdr.Agent{{
+				Status: herdr.StatusWorking, PaneID: "w7:p4",
+				TerminalTitle: "relay:child",
+			}},
+		},
+		{
+			name:    "managed child without Herdr installed fails closed",
+			program: "governance", programItem: "w1", available: false,
+			wantErr: "herdr binary is not on PATH",
+		},
+		{
+			name:    "managed child with healthy Herdr and no owner",
+			program: "governance", programItem: "w1", available: true, wantCalls: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("HERDR_ENV", "")
+			saveProgramTestConfig(t)
+			worktree := t.TempDir()
+			projectDir := filepath.Join(project.ActiveDir(), "child")
+			if err := os.MkdirAll(projectDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := project.Save(filepath.Join(projectDir, "manifest.json"), project.Manifest{
+				Slug: "child", Title: "Child", Agent: "copilot", Workflow: "deliver-pr",
+				Phase: "implement", Worktree: &worktree, Program: tt.program, ProgramItem: tt.programItem,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for index := range tt.agents {
+				tt.agents[index].ForegroundCWD = worktree
+			}
+			client := &fakeHerdrClient{agentResponses: [][]herdr.Agent{tt.agents}}
+			previousClient := newHerdrClient
+			previousAvailable := herdrAvailable
+			newHerdrClient = func() herdrRuntimeClient { return client }
+			herdrAvailable = func() bool { return tt.available }
+			t.Cleanup(func() {
+				newHerdrClient = previousClient
+				herdrAvailable = previousAvailable
+			})
+
+			launched := false
+			previousLaunch := launchAgent
+			launchAgent = func(agent.Agent, agent.LaunchOptions) error {
+				launched = true
+				return nil
+			}
+			t.Cleanup(func() { launchAgent = previousLaunch })
+
+			err := runResume("child")
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("runResume error = %v, want %q", err, tt.wantErr)
+				}
+				if launched {
+					t.Fatal("managed resume launched without Herdr")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("runResume: %v", err)
+			}
+			if !launched {
+				t.Fatal("compatible resume did not launch")
+			}
+			if client.agentCalls != tt.wantCalls {
+				t.Fatalf("Herdr agent list called %d times, want %d", client.agentCalls, tt.wantCalls)
+			}
+		})
 	}
 }

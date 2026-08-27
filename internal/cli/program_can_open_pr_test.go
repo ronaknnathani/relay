@@ -63,19 +63,34 @@ func snapshotFiles(t *testing.T, root string) map[string][]byte {
 	return result
 }
 
-func TestProgramCanOpenPRPassesBelowCapacityAndIsReadOnly(t *testing.T) {
+func TestProgramCanOpenPRUsesItsReservationAtZeroAvailableAndIsReadOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	p, item := createCanOpenPRProgram(t, 3)
+	if err := p.GrantOpenPR(item.ID, "cto", nil); err != nil {
+		t.Fatal(err)
+	}
 	for i := 1; i <= 2; i++ {
 		number := i
 		suffix := strconv.Itoa(i)
+		openItem, err := p.AddItem(program.WorkItem{
+			Title: "Open PR " + suffix, Priority: program.PriorityP1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := p.DispatchItem(openItem.ID, "open-pr-"+suffix); err != nil {
+			t.Fatal(err)
+		}
 		saveProgramTestProject(t, project.ActiveDir(), project.Manifest{
 			Slug:   "open-pr-" + suffix,
 			Repo:   p.Repo,
 			Branch: "missing-open-branch-" + suffix,
 			PR:     project.PRInfo{Number: &number},
 		})
+	}
+	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
+		t.Fatal(err)
 	}
 	saveProgramTestProject(t, project.ActiveDir(), project.Manifest{
 		Slug:   "branch-without-pr",
@@ -134,7 +149,8 @@ func TestProgramCanOpenPRPassesBelowCapacityAndIsReadOnly(t *testing.T) {
 		Capacity: program.Capacity{
 			Limit:     3,
 			Open:      2,
-			Available: 1,
+			Reserved:  1,
+			Available: 0,
 		},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -151,29 +167,23 @@ func TestProgramCanOpenPRPassesBelowCapacityAndIsReadOnly(t *testing.T) {
 	}
 }
 
-func TestProgramCanOpenPRFailsAtCapacityAndIsReadOnly(t *testing.T) {
+func TestProgramCanOpenPRRequiresGrantAndIsReadOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	p, item := createCanOpenPRProgram(t, 3)
-	for i := 1; i <= 3; i++ {
-		number := i
-		suffix := strconv.Itoa(i)
-		saveProgramTestProject(t, project.ActiveDir(), project.Manifest{
-			Slug:   "open-pr-" + suffix,
-			Repo:   p.Repo,
-			Branch: "missing-open-branch-" + suffix,
-			PR:     project.PRInfo{Number: &number},
-		})
-	}
 	before := snapshotFiles(t, filepath.Join(home, ".relay"))
 
 	_, err := runProgramCommand(t, "can-open-pr", p.Slug, item.ID)
 	if err == nil {
-		t.Fatal("can-open-pr passed at capacity")
+		t.Fatal("can-open-pr passed without a grant")
 	}
-	for _, want := range []string{"3/3 open", "stop before open-pr"} {
+	for _, want := range []string{
+		"outstanding open-PR grant",
+		"relay program message send " + p.Slug + " " + item.ID + " --kind pr-open",
+		"stop",
+	} {
 		if !bytes.Contains([]byte(err.Error()), []byte(want)) {
-			t.Errorf("capacity error %q missing %q", err, want)
+			t.Errorf("grant error %q missing %q", err, want)
 		}
 	}
 	after := snapshotFiles(t, filepath.Join(home, ".relay"))
@@ -188,6 +198,15 @@ func TestProgramCanOpenPRAllowsExistingManagedPRAtCapacity(t *testing.T) {
 	for i := 1; i <= 2; i++ {
 		number := i
 		suffix := strconv.Itoa(i)
+		openItem, err := p.AddItem(program.WorkItem{
+			Title: "Open PR " + suffix, Priority: program.PriorityP1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := p.DispatchItem(openItem.ID, "open-pr-"+suffix); err != nil {
+			t.Fatal(err)
+		}
 		saveProgramTestProject(t, project.ActiveDir(), project.Manifest{
 			Slug:   "open-pr-" + suffix,
 			Repo:   p.Repo,
@@ -245,7 +264,7 @@ func TestProgramCanOpenPRRefusesDecisionsAndContractTamper(t *testing.T) {
 		{
 			name: "program decision",
 			mutate: func(t *testing.T, p *program.Program, _ program.WorkItem) {
-				if _, err := p.OpenDecision(program.Decision{
+				if _, _, err := p.OpenDecision(program.Decision{
 					Kind: program.DecisionQuestion, RaisedBy: program.RaisedByCTO, Question: "Proceed?",
 				}); err != nil {
 					t.Fatal(err)
@@ -256,7 +275,7 @@ func TestProgramCanOpenPRRefusesDecisionsAndContractTamper(t *testing.T) {
 		{
 			name: "item decision",
 			mutate: func(t *testing.T, p *program.Program, item program.WorkItem) {
-				if _, err := p.OpenDecision(program.Decision{
+				if _, _, err := p.OpenDecision(program.Decision{
 					Kind: program.DecisionConflict, RaisedBy: program.RaisedByWorker,
 					ItemID: item.ID, Question: "Scope conflict?",
 				}); err != nil {

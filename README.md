@@ -31,9 +31,20 @@ of small PRs, builds each with `deliver-pr`, monitors the front PR with `pr-moni
 stack in order — stopping when every PR is merged and never merging without human approval.
 
 **Programs** add a governance layer above projects. A re-enterable CTO session turns a CEO-approved
-goal and architecture into dependency-aware senior-engineer assignments, while ordinary Relay
-projects continue to execute each change through `deliver-pr`. Program state is durable, contracts
-are immutable and versioned, and the CEO remains in every escalation and final PR approval loop.
+goal and architecture into dependency-aware senior-engineer assignments. Each assignment runs as a
+visible interactive Herdr worker tab that the CEO can inspect, while `deliver-pr` keeps its internal
+phase sub-agents. Program state and worker mail are durable, contracts are immutable and versioned,
+and the CEO remains in every escalation and final PR approval loop. A read-only adaptive patrol
+observes program health at a 15- or 30-minute cadence and, when attention changes, starts a fresh
+bounded CTO-role session that reconstructs durable state and exits. It never types into the
+CEO-facing CTO pane, and CEO-only decisions stay blocked inside automated turns.
+
+Programs require [Herdr](docs/programs.md#herdr-is-required-for-managed-sessions): every managed
+program command and managed child session first verifies the `herdr` binary, its owning pane, a
+reachable Herdr server, and an approved Copilot or Claude integration, then fails closed with setup
+instructions. Codex programs are rejected rather than silently reporting monitored notifications,
+and patrol requires an agent with a verified headless turn (Copilot today).
+Standalone single-project Relay workflows never require Herdr.
 
 ## The `relay` CLI
 
@@ -48,6 +59,9 @@ relay resume <slug>                             # reopen where you left off
 relay program new "<large goal>"                # create a CTO-managed program
 relay program resume <slug>                     # re-enter the CTO program
 relay program queue <slug>                      # inspect ready and blocked work
+relay program ui <slug>                         # open the live local program UI
+relay program patrol status <slug>              # inspect the adaptive read-only patrol
+relay program patrol start <slug>               # host patrol in a plain Herdr tab (Herdr required)
 ```
 
 It also owns the **`relay state`** machine — the deterministic, resumable state that workflow skills

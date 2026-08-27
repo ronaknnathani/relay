@@ -7,12 +7,19 @@ import (
 )
 
 // OpenDecision appends an unresolved decision and assigns the next max+1 ID.
-func (p *Program) OpenDecision(decision Decision) (Decision, error) {
+// It is idempotent: when a currently-open decision already has the same kind,
+// item, contract reference, and normalized question, that decision is returned
+// unchanged and created is false. Repeated automated turns therefore cannot
+// stack duplicate governance questions on the CEO.
+func (p *Program) OpenDecision(decision Decision) (result Decision, created bool, err error) {
 	if err := p.Validate(); err != nil {
-		return Decision{}, fmt.Errorf("open decision: current program is invalid: %w", err)
+		return Decision{}, false, fmt.Errorf("open decision: current program is invalid: %w", err)
 	}
 	if err := p.ensureMutable("open decision"); err != nil {
-		return Decision{}, err
+		return Decision{}, false, err
+	}
+	if existing, found := p.findOpenDuplicate(decision); found {
+		return existing, false, nil
 	}
 	now := timestamp()
 	decision.ID = nextNumberedID(p.Decisions, func(decision Decision) string { return decision.ID }, "d")
@@ -25,10 +32,37 @@ func (p *Program) OpenDecision(decision Decision) (Decision, error) {
 	next.Decisions = append(append([]Decision(nil), p.Decisions...), decision)
 	next.UpdatedAt = now
 	if err := next.Validate(); err != nil {
-		return Decision{}, fmt.Errorf("open decision %q: %w", decision.Question, err)
+		return Decision{}, false, fmt.Errorf("open decision %q: %w", decision.Question, err)
 	}
 	*p = next
-	return decision, nil
+	return decision, true, nil
+}
+
+// findOpenDuplicate returns the currently-open decision that already asks the
+// same governance question. Raiser and options are intentionally not part of
+// the identity: the same question raised by the worker and by the CTO, or with
+// a shortened option list, is still one decision for the CEO.
+func (p Program) findOpenDuplicate(decision Decision) (Decision, bool) {
+	question := normalizedQuestion(decision.Question)
+	if question == "" {
+		return Decision{}, false
+	}
+	for _, existing := range p.Decisions {
+		if existing.ResolvedAt != "" {
+			continue
+		}
+		if existing.Kind == decision.Kind &&
+			existing.ItemID == decision.ItemID &&
+			existing.ContractRef == decision.ContractRef &&
+			normalizedQuestion(existing.Question) == question {
+			return existing, true
+		}
+	}
+	return Decision{}, false
+}
+
+func normalizedQuestion(question string) string {
+	return strings.ToLower(strings.Join(strings.Fields(question), " "))
 }
 
 // ResolveDecision resolves an open decision exactly once.

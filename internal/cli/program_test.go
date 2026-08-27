@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/ronaknnathani/relay/internal/agent"
 	"github.com/ronaknnathani/relay/internal/config"
+	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/program"
 )
 
@@ -41,6 +43,7 @@ func saveProgramTestConfig(t *testing.T) {
 func TestProgramNewCreatesFilesWithoutLaunch(t *testing.T) {
 	repo := newTestRepo(t)
 	t.Setenv("HOME", t.TempDir())
+	installManagedHerdrFakes(t, nil)
 	saveProgramTestConfig(t)
 
 	launched := false
@@ -95,6 +98,7 @@ func TestProgramNewLaunchesCTO(t *testing.T) {
 	repo := newTestRepo(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	installManagedHerdrFakes(t, nil)
 	saveProgramTestConfig(t)
 
 	var got agent.LaunchOptions
@@ -113,9 +117,11 @@ func TestProgramNewLaunchesCTO(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := agent.LaunchOptions{
-		Worktree:       repoRoot,
-		ProjectDir:     filepath.Join(home, ".relay", "programs", "active", "governance"),
-		SystemPrompt:   "Active relay program: governance. Role: CTO. Reconstruct governance state from the program directory before acting.",
+		Worktree:   repoRoot,
+		ProjectDir: filepath.Join(home, ".relay", "programs", "active", "governance"),
+		SystemPrompt: "Active relay program: governance. Role: CTO. Run the cto skill only. Never invoke stack-ship; " +
+			"decompose into program work items and dispatch each item through deliver-pr. " +
+			"Reconstruct governance state from the program directory before acting.",
 		SessionName:    "relay:program:governance",
 		Command:        "cto",
 		CommandArgs:    "governance",
@@ -131,6 +137,7 @@ func TestProgramResumeLaunchesFreshCTOReentry(t *testing.T) {
 	repo := newTestRepo(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	installManagedHerdrFakes(t, nil)
 	saveProgramTestConfig(t)
 	repoRoot, err := filepath.EvalSymlinks(repo)
 	if err != nil {
@@ -140,7 +147,7 @@ func TestProgramResumeLaunchesFreshCTOReentry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.OpenDecision(program.Decision{
+	if _, _, err := p.OpenDecision(program.Decision{
 		Kind:     program.DecisionQuestion,
 		RaisedBy: program.RaisedByCTO,
 		Question: "Which rollout?",
@@ -169,9 +176,11 @@ func TestProgramResumeLaunchesFreshCTOReentry(t *testing.T) {
 		}
 	}
 	want := agent.LaunchOptions{
-		Worktree:       repoRoot,
-		ProjectDir:     filepath.Join(home, ".relay", "programs", "active", "governance"),
-		SystemPrompt:   "Active relay program: governance. Role: CTO. Reconstruct governance state from the program directory before acting.",
+		Worktree:   repoRoot,
+		ProjectDir: filepath.Join(home, ".relay", "programs", "active", "governance"),
+		SystemPrompt: "Active relay program: governance. Role: CTO. Run the cto skill only. Never invoke stack-ship; " +
+			"decompose into program work items and dispatch each item through deliver-pr. " +
+			"Reconstruct governance state from the program directory before acting.",
 		SessionName:    "relay:program:governance",
 		Command:        "cto",
 		CommandArgs:    "governance",
@@ -190,9 +199,76 @@ func TestProgramResumeLaunchesFreshCTOReentry(t *testing.T) {
 	}
 }
 
+// One program has exactly one CEO-facing CTO. A second resume must send the CEO
+// to the live pane instead of launching a rival CTO beside it.
+func TestProgramResumeRefusesToLaunchASecondCTO(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		agents []herdr.Agent
+		want   []string
+	}{
+		{
+			name: "one live owner",
+			agents: []herdr.Agent{
+				{PaneID: "near", TerminalTitle: "relay:program:governance-other"},
+				{PaneID: "cto-1", TerminalTitle: "relay:program:governance - GitHub Copilot"},
+			},
+			want: []string{`program "governance" already has a live CTO session in pane cto-1`,
+				"herdr agent focus cto-1"},
+		},
+		{
+			name: "ambiguous owners",
+			agents: []herdr.Agent{
+				{PaneID: "cto-1", TerminalTitle: "relay:program:governance"},
+				{PaneID: "cto-2", TerminalTitle: "relay:program:governance - GitHub Copilot"},
+			},
+			want: []string{"2 live CTO sessions (panes cto-1, cto-2)", "herdr agent focus <pane>"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := newTestRepo(t)
+			t.Setenv("HOME", t.TempDir())
+			installManagedHerdrFakes(t, &fakeHerdrClient{agentResponses: [][]herdr.Agent{test.agents}})
+			saveProgramTestConfig(t)
+			repoRoot, err := filepath.EvalSymlinks(repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p, err := program.New("governance", "Ship Relay governance", repoRoot, "copilot", 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := program.Create(p); err != nil {
+				t.Fatal(err)
+			}
+			previousLaunch := launchAgent
+			launched := 0
+			launchAgent = func(agent.Agent, agent.LaunchOptions) error {
+				launched++
+				return nil
+			}
+			t.Cleanup(func() { launchAgent = previousLaunch })
+
+			_, err = runProgramCommand(t, "resume", "governance")
+			if err == nil {
+				t.Fatal("program resume launched a second CTO")
+			}
+			for _, want := range test.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("resume error %q is missing %q", err, want)
+				}
+			}
+			if launched != 0 {
+				t.Fatalf("agent launches = %d, want 0", launched)
+			}
+		})
+	}
+}
+
 func TestProgramResumeUsesProgramAgentConfiguration(t *testing.T) {
 	repo := newTestRepo(t)
 	t.Setenv("HOME", t.TempDir())
+	installManagedHerdrFakes(t, nil)
 	if err := config.Save(config.Config{
 		BranchPrefix: "test/",
 		DefaultAgent: "copilot",
@@ -444,6 +520,25 @@ func TestProgramApproveRequiresCompletedGoalAndWork(t *testing.T) {
 	}
 }
 
+func TestProgramSetMaxOpenPRs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p := createCLIProgram(t, "governance")
+	out, err := runProgramCommand(t, "set-max-open-prs", p.Slug, "5", "--by", "ceo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "from 3 to 5 by ceo") {
+		t.Fatalf("output = %q", out)
+	}
+	loaded, err := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.MaxOpenPRs != 5 {
+		t.Fatalf("MaxOpenPRs = %d, want 5", loaded.MaxOpenPRs)
+	}
+}
+
 func TestProgramContractAndDecisionCommands(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := createCLIProgram(t, "governance")
@@ -575,5 +670,87 @@ func TestRootRegistersProgramCommand(t *testing.T) {
 	}
 	if command == nil || command.Name() != "program" {
 		t.Fatalf("program command = %#v", command)
+	}
+}
+
+func TestManagedProgramCommandsRequireHerdr(t *testing.T) {
+	tests := []struct {
+		name      string
+		available bool
+		herdrEnv  string
+		agentErr  error
+		want      string
+	}{
+		{name: "missing binary", want: "herdr binary is not on PATH"},
+		{name: "outside a Herdr pane", available: true, want: "HERDR_ENV=1"},
+		{
+			name: "unreachable server", available: true, herdrEnv: "1",
+			agentErr: errors.New("connection refused"), want: "running Herdr server",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newTestRepo(t)
+			t.Setenv("HOME", t.TempDir())
+			client := installManagedHerdrFakes(t, &fakeHerdrClient{agentErr: tt.agentErr})
+			t.Setenv("HERDR_ENV", tt.herdrEnv)
+			herdrAvailable = func() bool { return tt.available }
+			saveProgramTestConfig(t)
+			launched := false
+			previousLaunch := launchAgent
+			launchAgent = func(agent.Agent, agent.LaunchOptions) error {
+				launched = true
+				return nil
+			}
+			t.Cleanup(func() { launchAgent = previousLaunch })
+
+			_, err := runProgramCommand(t, "new", "Ship Relay governance",
+				"--name", "governance", "--repo", repo, "--no-launch")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("program new error = %v, want %q", err, tt.want)
+			}
+			if _, statErr := os.Stat(program.ManifestPath(program.ActiveDir(), "governance")); !os.IsNotExist(statErr) {
+				t.Fatalf("program new created a program without Herdr: %v", statErr)
+			}
+
+			p, newErr := program.New("governance", "Ship Relay governance", repo, "copilot", 3)
+			if newErr != nil {
+				t.Fatal(newErr)
+			}
+			if createErr := program.Create(p); createErr != nil {
+				t.Fatal(createErr)
+			}
+			if _, err := runProgramCommand(t, "resume", "governance"); err == nil ||
+				!strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("program resume error = %v, want %q", err, tt.want)
+			}
+			if launched {
+				t.Fatal("managed program launched a CTO without Herdr")
+			}
+			if len(client.created) != 0 {
+				t.Fatalf("managed program created Herdr tabs: %#v", client.created)
+			}
+		})
+	}
+}
+
+func TestManagedProgramCommandsRejectAgentsWithoutHerdrIntegration(t *testing.T) {
+	repo := newTestRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	installManagedHerdrFakes(t, nil)
+	if err := config.Save(config.Config{
+		BranchPrefix:    "test/",
+		DefaultAgent:    "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all", "codex": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := runProgramCommand(t, "new", "Ship Relay governance",
+		"--name", "governance", "--repo", repo, "--agent", "codex", "--no-launch")
+	if err == nil || !strings.Contains(err.Error(), "codex") ||
+		!strings.Contains(err.Error(), "named sessions") ||
+		!strings.Contains(err.Error(), "copilot") || !strings.Contains(err.Error(), "claude") {
+		t.Fatalf("program new with codex error = %v", err)
 	}
 }

@@ -35,6 +35,9 @@ func newCmdProgramItemAdd() *cobra.Command {
 		Short: "Add a work item",
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requirePlanShapingTurn("relay program item add"); err != nil {
+				return err
+			}
 			dependencies, err := parseProgramCSV(dependenciesText, "dependency")
 			if err != nil {
 				return err
@@ -125,6 +128,9 @@ func newCmdProgramItemUpdate() *cobra.Command {
 		Short: "Update work item metadata",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requirePlanShapingTurn("relay program item update"); err != nil {
+				return err
+			}
 			update := program.ItemUpdate{}
 			if cmd.Flags().Changed("title") {
 				update.Title = &title
@@ -214,6 +220,9 @@ func newCmdProgramItemCancel() *cobra.Command {
 		Short: "Cancel a work item",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requirePlanShapingTurn("relay program item cancel"); err != nil {
+				return err
+			}
 			message := "Canceled item " + args[1]
 			if strings.TrimSpace(reason) != "" {
 				message += ": " + reason
@@ -264,7 +273,7 @@ func saveProgramMutation(path string, p program.Program, progressMessage string)
 	if err := program.Save(path, p); err != nil {
 		return err
 	}
-	if err := program.AppendProgress(program.ProgressPath(filepath.Dir(path)), progressMessage); err != nil {
+	if err := appendProgramProgress(filepath.Dir(path), progressMessage); err != nil {
 		return err
 	}
 	return nil

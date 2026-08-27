@@ -8,13 +8,20 @@ import (
 // ProjectView is the caller-supplied state of a Relay-managed child project.
 // Reconciliation never reads git, GitHub, or disk directly.
 type ProjectView struct {
-	Slug     string
-	Repo     string
-	HasPR    bool
-	PRRef    string
+	Slug  string
+	Repo  string
+	HasPR bool
+	PRRef string
+	// PRClosed reports that PRRef was authoritatively closed without merging,
+	// so the item may open a replacement pull request.
+	PRClosed bool
 	Merged   bool
 	Archived bool
 	Orphaned bool
+	// Unavailable reports that the child project's observed state could not be
+	// read. Unavailable projects are never merged, orphaned, or rewritten, and
+	// their recorded pull request conservatively still consumes capacity.
+	Unavailable bool
 }
 
 // ReconcileResult reports whether reconciliation changed the program and
@@ -24,10 +31,11 @@ type ReconcileResult struct {
 	OrphanIDs []string
 }
 
-// Capacity reports the configured and currently available PR capacity.
+// Capacity reports open, reserved, and available PR capacity.
 type Capacity struct {
 	Limit     int
 	Open      int
+	Reserved  int
 	Available int
 }
 
@@ -72,6 +80,9 @@ func (p *Program) Reconcile(projects []ProjectView) (ReconcileResult, error) {
 			continue
 		}
 		view, exists := views[item.ProjectSlug]
+		if exists && view.Unavailable {
+			continue
+		}
 		if !exists || view.Orphaned || (view.Archived && !view.Merged) {
 			if item.Status != ItemBlocked {
 				result.OrphanIDs = append(result.OrphanIDs, item.ID)
@@ -82,11 +93,25 @@ func (p *Program) Reconcile(projects []ProjectView) (ReconcileResult, error) {
 			return ReconcileResult{}, fmt.Errorf("reconcile item %q: project %q repo %q does not match program repo %q", item.ID, view.Slug, view.Repo, p.Repo)
 		}
 		changed := false
-		if view.HasPR && item.PRRef != view.PRRef {
+		closedRecordedPR := view.PRClosed && item.PRRef != "" &&
+			(view.PRRef == "" || item.PRRef == view.PRRef)
+		switch {
+		case closedRecordedPR:
+			item.Notes = append(item.Notes, fmt.Sprintf(
+				"Pull request %s was closed without merging; cleared the recorded reference so a replacement can be opened",
+				item.PRRef,
+			))
+			item.PRRef = ""
+			if item.Status == ItemInReview {
+				item.Status = ItemDispatched
+				item.InReviewAt = ""
+			}
+			changed = true
+		case !view.PRClosed && view.PRRef != "" && item.PRRef != view.PRRef:
 			item.PRRef = view.PRRef
 			changed = true
 		}
-		if item.Status == ItemDispatched || item.Status == ItemInReview {
+		if !closedRecordedPR && (item.Status == ItemDispatched || item.Status == ItemInReview) {
 			switch {
 			case view.Merged && item.Status != ItemMerged:
 				item.Status = ItemMerged
@@ -97,6 +122,11 @@ func (p *Program) Reconcile(projects []ProjectView) (ReconcileResult, error) {
 				item.InReviewAt = now
 				changed = true
 			}
+		}
+		if item.PRRef != "" && (item.PRGrantedAt != "" || item.PRGrantedBy != "") {
+			item.PRGrantedAt = ""
+			item.PRGrantedBy = ""
+			changed = true
 		}
 		if changed {
 			item.UpdatedAt = now
@@ -117,8 +147,8 @@ func (p *Program) Reconcile(projects []ProjectView) (ReconcileResult, error) {
 	return result, nil
 }
 
-// Plan returns the pure derived governance view for the supplied active Relay
-// projects. Only recorded, unmerged PRs in the program repo consume capacity.
+// Plan returns the pure derived governance view for the supplied Relay
+// projects. Only linked active child PRs and outstanding grants consume capacity.
 func (p Program) Plan(projects []ProjectView) View {
 	ready, blocked := p.Readiness()
 	var inFlight []WorkItem
@@ -138,29 +168,12 @@ func (p Program) Plan(projects []ProjectView) View {
 		return itemNumber(blocked[i].Item.ID) < itemNumber(blocked[j].Item.ID)
 	})
 
-	seen := make(map[string]bool, len(projects))
-	open := 0
-	for _, project := range projects {
-		if seen[project.Slug] || project.Repo != p.Repo || !project.HasPR || project.Merged || project.Archived {
-			continue
-		}
-		seen[project.Slug] = true
-		open++
-	}
-	available := p.MaxOpenPRs - open
-	if available < 0 {
-		available = 0
-	}
 	view := View{
 		Ready:         ready,
 		Blocked:       blocked,
 		InFlight:      inFlight,
 		OpenDecisions: p.OpenDecisions(),
-		Capacity: Capacity{
-			Limit:     p.MaxOpenPRs,
-			Open:      open,
-			Available: available,
-		},
+		Capacity:      p.prCapacity(projects),
 	}
 	switch {
 	case len(view.OpenDecisions) > 0:
@@ -181,6 +194,46 @@ func (p Program) Plan(projects []ProjectView) View {
 		view.NextAction = "no action"
 	}
 	return view
+}
+
+func (p Program) prCapacity(projects []ProjectView) Capacity {
+	linkedProjects := make(map[string]bool, len(p.Items))
+	for _, item := range p.Items {
+		if item.ProjectSlug != "" {
+			linkedProjects[item.ProjectSlug] = true
+		}
+	}
+	openProjects := make(map[string]bool, len(projects))
+	recordedProjects := make(map[string]bool, len(projects))
+	for _, project := range projects {
+		if !linkedProjects[project.Slug] || project.Repo != p.Repo {
+			continue
+		}
+		if project.PRRef != "" && !project.PRClosed {
+			recordedProjects[project.Slug] = true
+		}
+		if openProjects[project.Slug] || !project.HasPR || project.Merged || project.Archived {
+			continue
+		}
+		openProjects[project.Slug] = true
+	}
+	reserved := 0
+	for _, item := range p.Items {
+		if item.Status == ItemDispatched && item.PRGrantedAt != "" &&
+			item.PRRef == "" && !recordedProjects[item.ProjectSlug] {
+			reserved++
+		}
+	}
+	available := p.MaxOpenPRs - len(openProjects) - reserved
+	if available < 0 {
+		available = 0
+	}
+	return Capacity{
+		Limit:     p.MaxOpenPRs,
+		Open:      len(openProjects),
+		Reserved:  reserved,
+		Available: available,
+	}
 }
 
 func allItemsTerminal(items []WorkItem) bool {

@@ -1,11 +1,15 @@
 package program
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/ronaknnathani/relay/internal/patrollock"
 )
 
 func setTestHome(t *testing.T) string {
@@ -90,6 +94,7 @@ func TestSaveRejectsStaleRevision(t *testing.T) {
 	if p.Revision != 1 {
 		t.Fatalf("new program revision = %d, want 1", p.Revision)
 	}
+
 	if err := Create(p); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +124,54 @@ func TestSaveRejectsStaleRevision(t *testing.T) {
 	}
 }
 
-func TestSaveRejectsExistingLock(t *testing.T) {
+func TestSaveSerializesConcurrentOpenPRGrants(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p := newTestProgram(t)
+	p.MaxOpenPRs = 3
+	activateTestProgram(t, &p)
+	first := dispatchedTestItem(t, &p, "first", "first-child")
+	second := dispatchedTestItem(t, &p, "second", "second-child")
+	if err := Create(p); err != nil {
+		t.Fatal(err)
+	}
+	path := ManifestPath(ActiveDir(), p.Slug)
+	left, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projects := []ProjectView{
+		{Slug: "open-one", Repo: p.Repo, HasPR: true, PRRef: "#1"},
+		{Slug: "open-two", Repo: p.Repo, HasPR: true, PRRef: "#2"},
+	}
+	if err := left.GrantOpenPR(first.ID, "cto", projects); err != nil {
+		t.Fatal(err)
+	}
+	if err := right.GrantOpenPR(second.ID, "cto", projects); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Save(path, left); err != nil {
+		t.Fatalf("save first grant: %v", err)
+	}
+	if err := Save(path, right); err == nil || !strings.Contains(err.Error(), "stale program revision") {
+		t.Fatalf("save concurrent grant error = %v", err)
+	}
+	saved, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstItem, _ := saved.Item(first.ID)
+	secondItem, _ := saved.Item(second.ID)
+	if firstItem.PRGrantedAt == "" || secondItem.PRGrantedAt != "" {
+		t.Fatalf("serialized grants: first=%+v second=%+v", firstItem, secondItem)
+	}
+}
+
+func TestSaveRecoversFromLockFileLeftByDeadWriter(t *testing.T) {
 	setTestHome(t)
 	p := newTestProgram(t)
 	if err := Create(p); err != nil {
@@ -127,20 +179,150 @@ func TestSaveRejectsExistingLock(t *testing.T) {
 	}
 	path := ManifestPath(ActiveDir(), p.Slug)
 	lockPath := path + ".lock"
-	if err := os.WriteFile(lockPath, []byte("busy\n"), 0o644); err != nil {
+	if err := os.WriteFile(lockPath, []byte("dead writer\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	p.Title = "must not save"
-	err := Save(path, p)
-	if err == nil || !strings.Contains(err.Error(), "save lock") || !strings.Contains(err.Error(), "retry") {
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.Title = "saved after crash"
+
+	if err := Save(path, loaded); err != nil {
+		t.Fatalf("Save after dead writer left a lock file: %v", err)
+	}
+	saved, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Title != "saved after crash" {
+		t.Fatalf("saved title = %q", saved.Title)
+	}
+}
+
+func TestSaveWaitsForAnotherWriterHoldingTheKernelLock(t *testing.T) {
+	setTestHome(t)
+	p := newTestProgram(t)
+	if err := Create(p); err != nil {
+		t.Fatal(err)
+	}
+	path := ManifestPath(ActiveDir(), p.Slug)
+	lock, err := patrollock.Acquire(path + ".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		if err := lock.Release(); err != nil {
+			t.Error(err)
+		}
+		close(released)
+	}()
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.Title = "serialized"
+
+	if err := Save(path, loaded); err != nil {
+		t.Fatalf("Save while another writer held the lock: %v", err)
+	}
+	<-released
+	saved, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Title != "serialized" || saved.Revision != loaded.Revision+1 {
+		t.Fatalf("saved = %+v", saved)
+	}
+}
+
+func TestSaveFailsClosedWhenAnotherWriterNeverReleases(t *testing.T) {
+	setTestHome(t)
+	previousTimeout := saveLockTimeout
+	saveLockTimeout = 30 * time.Millisecond
+	t.Cleanup(func() { saveLockTimeout = previousTimeout })
+	p := newTestProgram(t)
+	if err := Create(p); err != nil {
+		t.Fatal(err)
+	}
+	path := ManifestPath(ActiveDir(), p.Slug)
+	lock, err := patrollock.Acquire(path + ".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.Title = "must not save"
+
+	err = Save(path, loaded)
+	if err == nil || !strings.Contains(err.Error(), "another Relay command") ||
+		!strings.Contains(err.Error(), "retry") {
 		t.Fatalf("Save lock error = %v", err)
 	}
-	loaded, loadErr := Load(path)
-	if loadErr != nil {
-		t.Fatal(loadErr)
+	if strings.Contains(err.Error(), "remove the stale lock") {
+		t.Fatalf("Save error still instructs manual lock removal: %v", err)
 	}
-	if loaded.Title == p.Title {
-		t.Fatal("Save overwrote program while lock existed")
+	saved, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Title == loaded.Title {
+		t.Fatal("Save overwrote program while another writer held the lock")
+	}
+}
+
+func TestConcurrentSavesSerializeAndRejectStaleRevisions(t *testing.T) {
+	setTestHome(t)
+	p := newTestProgram(t)
+	if err := Create(p); err != nil {
+		t.Fatal(err)
+	}
+	path := ManifestPath(ActiveDir(), p.Slug)
+	const writers = 4
+	copies := make([]Program, writers)
+	for i := range copies {
+		loaded, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded.Title = fmt.Sprintf("writer-%d", i)
+		copies[i] = loaded
+	}
+
+	errs := make(chan error, writers)
+	start := make(chan struct{})
+	for i := range copies {
+		go func(candidate Program) {
+			<-start
+			errs <- Save(path, candidate)
+		}(copies[i])
+	}
+	close(start)
+	succeeded := 0
+	for range copies {
+		err := <-errs
+		if err == nil {
+			succeeded++
+			continue
+		}
+		if !strings.Contains(err.Error(), "stale program revision") {
+			t.Errorf("concurrent save error = %v", err)
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("successful concurrent saves = %d, want 1", succeeded)
+	}
+	saved, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Revision != p.Revision+1 {
+		t.Fatalf("saved revision = %d, want %d", saved.Revision, p.Revision+1)
 	}
 }
 

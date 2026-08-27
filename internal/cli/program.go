@@ -14,8 +14,9 @@ import (
 
 	"github.com/ronaknnathani/relay/internal/agent"
 	"github.com/ronaknnathani/relay/internal/config"
-	"github.com/ronaknnathani/relay/internal/gitx"
+	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/program"
+	"github.com/ronaknnathani/relay/internal/programview"
 	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/spf13/cobra"
 )
@@ -41,6 +42,7 @@ func newCmdProgram() *cobra.Command {
 		newCmdProgramQueue(),
 		newCmdProgramSubmit(),
 		newCmdProgramApprove(),
+		newCmdProgramSetMaxOpenPRs(),
 		newCmdProgramHold(),
 		newCmdProgramRelease(),
 		newCmdProgramFinish(),
@@ -49,9 +51,53 @@ func newCmdProgram() *cobra.Command {
 		newCmdProgramContract(),
 		newCmdProgramDecision(),
 		newCmdProgramDispatch(),
+		newCmdProgramMessage(),
+		newCmdProgramWorker(),
+		newCmdProgramGrantOpenPR(),
+		newCmdProgramRevokeOpenPR(),
 		newCmdProgramCanOpenPR(),
 		newCmdProgramTick(),
+		newCmdProgramPatrol(),
+		newCmdProgramCTO(),
+		newCmdProgramUI(),
 	)
+	return cmd
+}
+
+func newCmdProgramSetMaxOpenPRs() *cobra.Command {
+	var by string
+	cmd := &cobra.Command{
+		Use:   "set-max-open-prs <slug> <count>",
+		Short: "Set the program-scoped open pull request limit",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireCEOTurn("relay program set-max-open-prs"); err != nil {
+				return err
+			}
+			count, err := strconv.Atoi(args[1])
+			if err != nil {
+				return fmt.Errorf("set max open PRs for program %q: invalid count %q: %w", args[0], args[1], err)
+			}
+			path, p, err := loadActiveProgram(args[0])
+			if err != nil {
+				return err
+			}
+			previous := p.MaxOpenPRs
+			if err := p.SetMaxOpenPRs(count); err != nil {
+				return err
+			}
+			if err := program.Save(path, p); err != nil {
+				return err
+			}
+			message := fmt.Sprintf("Changed program open-PR limit from %d to %d by %s", previous, count, by)
+			if err := appendProgramProgress(filepath.Dir(path), message); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), message)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&by, "by", "ceo", "actor approving the limit")
 	return cmd
 }
 
@@ -69,7 +115,7 @@ func newCmdProgramNew() *cobra.Command {
 	cmd.Flags().StringVarP(&opts.name, "name", "n", "", "custom program slug")
 	cmd.Flags().StringVar(&opts.repo, "repo", "", "repository path (default current repository)")
 	cmd.Flags().StringVar(&opts.agent, "agent", "", "coding agent to launch (default from config)")
-	cmd.Flags().IntVar(&opts.maxOpenPRs, "max-open-prs", 3, "maximum concurrent recorded pull requests")
+	cmd.Flags().IntVar(&opts.maxOpenPRs, "max-open-prs", 3, "maximum concurrent linked child-project pull requests")
 	cmd.Flags().BoolVar(&opts.noLaunch, "no-launch", false, "create the program without launching the CTO")
 	return cmd
 }
@@ -99,6 +145,11 @@ func runProgramNew(out io.Writer, opts programNewOpts) error {
 	}
 	a, err := agent.Get(agent.ResolveName(opts.agent, "", cfg.DefaultAgent))
 	if err != nil {
+		return err
+	}
+	if _, err := requireManagedHerdr(
+		"relay program new", a.Name(), fmt.Sprintf("program %q", slug), true,
+	); err != nil {
 		return err
 	}
 	p, err := program.New(slug, opts.goal, repoRoot, a.Name(), opts.maxOpenPRs)
@@ -155,11 +206,37 @@ func runProgramResume(out io.Writer, slug, agentName string) error {
 	if err != nil {
 		return err
 	}
+	readiness, err := requireManagedHerdr(
+		"relay program resume", a.Name(), fmt.Sprintf("program %q", p.Slug), true,
+	)
+	if err != nil {
+		return err
+	}
+	if err := guardLiveProgramCTO(p.Slug, readiness.Agents); err != nil {
+		return err
+	}
 	fmt.Fprintf(out, "Program: %s\n", p.Slug)
 	fmt.Fprintf(out, "State: %s\n", p.State)
 	fmt.Fprintf(out, "Open decisions: %d\n", len(p.OpenDecisions()))
 	fmt.Fprintf(out, "Launching %s as CTO...\n", a.Name())
 	return launchAgent(a, programLaunchOptions(p, filepath.Dir(path), cfg.PermissionModeFor(a.Name())))
+}
+
+// guardLiveProgramCTO enforces the managed-program contract that one program
+// has exactly one CEO-facing CTO. A second resume focuses the live pane instead
+// of creating a rival CTO, mirroring the managed child-project owner guard.
+func guardLiveProgramCTO(slug string, agents []herdr.Agent) error {
+	owner, err := herdr.FindLiveCTO(agents, slug)
+	if err != nil {
+		if errors.Is(err, herdr.ErrNoLiveCTO) {
+			return nil
+		}
+		return fmt.Errorf("resume program %q: %w", slug, err)
+	}
+	return fmt.Errorf(
+		"program %q already has a live CTO session in pane %s; focus it with: herdr agent focus %s",
+		slug, owner.PaneID, owner.PaneID,
+	)
 }
 
 func loadActiveProgram(slug string) (string, program.Program, error) {
@@ -193,8 +270,9 @@ type programStatusOpts struct {
 }
 
 type programDetailOutput struct {
-	Program program.Program `json:"program"`
-	Plan    program.View    `json:"plan"`
+	Program  program.Program `json:"program"`
+	Plan     program.View    `json:"plan"`
+	Warnings []string        `json:"warnings,omitempty"`
 }
 
 type programQueueOutput struct {
@@ -202,7 +280,14 @@ type programQueueOutput struct {
 	State       program.State `json:"state"`
 	View        program.View  `json:"view"`
 	OrphanIDs   []string      `json:"orphan_ids,omitempty"`
+	Warnings    []string      `json:"warnings,omitempty"`
 	NextCommand string        `json:"next_command"`
+}
+
+type programItemWarning struct {
+	Item    string `json:"item"`
+	Project string `json:"project"`
+	Error   string `json:"error"`
 }
 
 func newCmdProgramStatus() *cobra.Command {
@@ -234,11 +319,11 @@ func runProgramStatus(out io.Writer, opts programStatusOpts) error {
 		if err != nil {
 			return err
 		}
-		views, err := buildProgramProjectViews(p)
+		views, warnings, err := programProjectViews(p)
 		if err != nil {
 			return err
 		}
-		detail := programDetailOutput{Program: p, Plan: p.Plan(views)}
+		detail := programDetailOutput{Program: p, Plan: p.Plan(views), Warnings: warnings}
 		if opts.jsonOutput {
 			return writeProgramJSON(out, detail)
 		}
@@ -300,11 +385,11 @@ func runProgramQueue(out io.Writer, slug string, jsonOutput bool) error {
 	if err != nil {
 		return err
 	}
-	views, err := buildProgramProjectViews(p)
+	views, warnings, err := programProjectViews(p)
 	if err != nil {
 		return err
 	}
-	return printProgramQueue(out, p, p.Plan(views), jsonOutput)
+	return printProgramQueueResult(out, p, p.Plan(views), nil, warnings, jsonOutput)
 }
 
 func newCmdProgramTick() *cobra.Command {
@@ -330,7 +415,7 @@ func runProgramTick(out io.Writer, slug string, jsonOutput bool) error {
 	if err := p.VerifyHashes(programDir); err != nil {
 		return err
 	}
-	views, err := buildProgramProjectViews(p)
+	views, warnings, err := programProjectViews(p)
 	if err != nil {
 		return err
 	}
@@ -349,7 +434,7 @@ func runProgramTick(out io.Writer, slug string, jsonOutput bool) error {
 		for _, item := range p.Items {
 			if previous := before[item.ID]; previous != item.Status {
 				message := fmt.Sprintf("Item %s changed from %s to %s", item.ID, previous, item.Status)
-				if err := program.AppendProgress(program.ProgressPath(programDir), message); err != nil {
+				if err := appendProgramProgress(programDir, message); err != nil {
 					return err
 				}
 			}
@@ -359,7 +444,7 @@ func runProgramTick(out io.Writer, slug string, jsonOutput bool) error {
 			return err
 		}
 	}
-	return printProgramQueueResult(out, p, p.Plan(views), result.OrphanIDs, jsonOutput)
+	return printProgramQueueResult(out, p, p.Plan(views), result.OrphanIDs, warnings, jsonOutput)
 }
 
 func newCmdProgramSubmit() *cobra.Command {
@@ -368,6 +453,9 @@ func newCmdProgramSubmit() *cobra.Command {
 		Short: "Submit a draft program for approval",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireCEOTurn("relay program submit"); err != nil {
+				return err
+			}
 			return runProgramTransition(cmd.OutOrStdout(), args[0], program.StatePendingApproval, "", "Submitted for approval", false)
 		},
 	}
@@ -380,6 +468,9 @@ func newCmdProgramApprove() *cobra.Command {
 		Short: "Approve and activate a submitted program",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireCEOTurn("relay program approve"); err != nil {
+				return err
+			}
 			if err := validateProgramApproval(args[0]); err != nil {
 				return err
 			}
@@ -419,6 +510,9 @@ func newCmdProgramHold() *cobra.Command {
 		Short: "Place an active program on hold",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireCEOTurn("relay program hold"); err != nil {
+				return err
+			}
 			if strings.TrimSpace(reason) == "" {
 				return fmt.Errorf("hold program %q: --reason is required", args[0])
 			}
@@ -435,6 +529,9 @@ func newCmdProgramRelease() *cobra.Command {
 		Short: "Release a held program",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireCEOTurn("relay program release"); err != nil {
+				return err
+			}
 			return runProgramTransition(cmd.OutOrStdout(), args[0], program.StateActive, "cto", "Released from hold", false)
 		},
 	}
@@ -446,6 +543,9 @@ func newCmdProgramFinish() *cobra.Command {
 		Short: "Complete and archive a program",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireCEOTurn("relay program finish"); err != nil {
+				return err
+			}
 			return runProgramTransition(cmd.OutOrStdout(), args[0], program.StateCompleted, "cto", "Program completed", true)
 		},
 	}
@@ -458,6 +558,9 @@ func newCmdProgramAbandon() *cobra.Command {
 		Short: "Abandon and archive a program",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireCEOTurn("relay program abandon"); err != nil {
+				return err
+			}
 			if strings.TrimSpace(reason) == "" {
 				return fmt.Errorf("abandon program %q: --reason is required", args[0])
 			}
@@ -479,7 +582,7 @@ func runProgramTransition(out io.Writer, slug string, next program.State, by, pr
 	if err := program.Save(path, p); err != nil {
 		return err
 	}
-	if err := program.AppendProgress(program.ProgressPath(filepath.Dir(path)), progressMessage); err != nil {
+	if err := appendProgramProgress(filepath.Dir(path), progressMessage); err != nil {
 		return err
 	}
 	if archive {
@@ -512,6 +615,12 @@ func newCmdProgramContractPublish() *cobra.Command {
 		Short: "Publish a new immutable contract version",
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Publishing an immutable version reshapes the plan and opens a CEO
+			// approval decision, so it stays an interactive CTO/CEO act. The
+			// guard runs before the source file is read or anything is written.
+			if err := requirePlanShapingTurn("relay program contract publish"); err != nil {
+				return err
+			}
 			if strings.TrimSpace(sourcePath) == "" {
 				return fmt.Errorf("publish contract: --file is required")
 			}
@@ -545,7 +654,7 @@ func runProgramContractPublish(out io.Writer, slug, name, sourcePath string) err
 	if decisionID != "" {
 		message += "; opened decision " + decisionID
 	}
-	if err := program.AppendDecisionLog(program.DecisionLogPath(filepath.Dir(path)), message); err != nil {
+	if err := appendProgramDecisionLog(filepath.Dir(path), message); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "%s %s\n", contract.Ref, contract.SHA256)
@@ -559,6 +668,9 @@ func newCmdProgramContractApprove() *cobra.Command {
 		Short: "Approve a published contract",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireCEOTurn("relay program contract approve"); err != nil {
+				return err
+			}
 			path, p, err := loadActiveProgram(args[0])
 			if err != nil {
 				return err
@@ -569,7 +681,7 @@ func newCmdProgramContractApprove() *cobra.Command {
 			if err := program.Save(path, p); err != nil {
 				return err
 			}
-			if err := program.AppendDecisionLog(program.DecisionLogPath(filepath.Dir(path)),
+			if err := appendProgramDecisionLog(filepath.Dir(path),
 				fmt.Sprintf("Contract %s approved by %s", args[1], by)); err != nil {
 				return err
 			}
@@ -588,6 +700,9 @@ func newCmdProgramContractReject() *cobra.Command {
 		Short: "Reject a published contract",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireCEOTurn("relay program contract reject"); err != nil {
+				return err
+			}
 			if strings.TrimSpace(reason) == "" {
 				return fmt.Errorf("reject contract %q: --reason is required", args[1])
 			}
@@ -602,7 +717,7 @@ func newCmdProgramContractReject() *cobra.Command {
 				return err
 			}
 			message := fmt.Sprintf("Contract %s rejected by %s: %s", args[1], by, reason)
-			if err := program.AppendDecisionLog(program.DecisionLogPath(filepath.Dir(path)), message); err != nil {
+			if err := appendProgramDecisionLog(filepath.Dir(path), message); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), args[1])
@@ -668,15 +783,24 @@ func newCmdProgramDecisionOpen() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			decision, err := p.OpenDecision(program.Decision{
-				Kind:     program.DecisionKind(kind),
-				RaisedBy: program.RaisedBy(raisedBy),
+			decision, created, err := p.OpenDecision(program.Decision{
+				Kind: program.DecisionKind(kind),
+				// A bounded automated turn always signs as itself: it may raise a
+				// question for the CEO, never as the CEO, the CTO, or a worker.
+				RaisedBy: program.RaisedBy(programActor(raisedBy)),
 				ItemID:   itemID,
 				Question: question,
 				Options:  parseProgramOptions(optionsText),
 			})
 			if err != nil {
 				return err
+			}
+			// A reused decision is already durable and already logged; saving or
+			// logging again would append a duplicate governance entry every time
+			// a bounded automated turn re-raises the same question.
+			if !created {
+				fmt.Fprintln(cmd.OutOrStdout(), decision.ID)
+				return nil
 			}
 			if err := program.Save(path, p); err != nil {
 				return err
@@ -685,7 +809,7 @@ func newCmdProgramDecisionOpen() *cobra.Command {
 			if decision.ItemID != "" {
 				message += " (item " + decision.ItemID + ")"
 			}
-			if err := program.AppendDecisionLog(program.DecisionLogPath(filepath.Dir(path)), message); err != nil {
+			if err := appendProgramDecisionLog(filepath.Dir(path), message); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), decision.ID)
@@ -707,6 +831,9 @@ func newCmdProgramDecisionResolve() *cobra.Command {
 		Short: "Resolve an open governance decision",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireCEOTurn("relay program decision resolve"); err != nil {
+				return err
+			}
 			if strings.TrimSpace(answer) == "" {
 				return fmt.Errorf("resolve decision %q: --answer is required", args[1])
 			}
@@ -720,7 +847,7 @@ func newCmdProgramDecisionResolve() *cobra.Command {
 			if err := program.Save(path, p); err != nil {
 				return err
 			}
-			if err := program.AppendDecisionLog(program.DecisionLogPath(filepath.Dir(path)),
+			if err := appendProgramDecisionLog(filepath.Dir(path),
 				fmt.Sprintf("Resolved decision %s by %s: %s", args[1], by, answer)); err != nil {
 				return err
 			}
@@ -747,15 +874,12 @@ func parseProgramOptions(value string) []string {
 	return options
 }
 
-func printProgramQueue(out io.Writer, p program.Program, view program.View, jsonOutput bool) error {
-	return printProgramQueueResult(out, p, view, nil, jsonOutput)
-}
-
 func printProgramQueueResult(
 	out io.Writer,
 	p program.Program,
 	view program.View,
 	orphanIDs []string,
+	warnings []string,
 	jsonOutput bool,
 ) error {
 	queue := programQueueOutput{
@@ -763,6 +887,7 @@ func printProgramQueueResult(
 		State:       p.State,
 		View:        view,
 		OrphanIDs:   orphanIDs,
+		Warnings:    warnings,
 		NextCommand: nextProgramCommand(p, view),
 	}
 	if len(orphanIDs) > 0 {
@@ -778,139 +903,32 @@ func printProgramQueueResult(
 	return nil
 }
 
-func buildProgramProjectViews(p program.Program) ([]program.ProjectView, error) {
-	manifests, err := project.LoadAll(project.ActiveDir())
-	if err != nil {
-		return nil, err
-	}
-	views := make([]program.ProjectView, 0, len(manifests))
-	active := make(map[string]bool, len(manifests))
-	for _, manifest := range manifests {
-		if manifest.Repo != p.Repo {
-			continue
-		}
-		view, err := activeProjectView(manifest)
-		if err != nil {
-			return nil, err
-		}
-		views = append(views, view)
-		active[manifest.Slug] = true
-	}
+var buildProgramProjectViews = programview.ProjectViews
 
-	linked := make(map[string]bool)
-	for _, item := range p.Items {
-		if item.ProjectSlug == "" || active[item.ProjectSlug] || linked[item.ProjectSlug] {
-			continue
-		}
-		linked[item.ProjectSlug] = true
-		path := project.ManifestPath(project.ArchivedDir(), item.ProjectSlug)
-		manifest, err := project.Load(path)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				views = append(views, program.ProjectView{
-					Slug:     item.ProjectSlug,
-					Repo:     p.Repo,
-					Orphaned: true,
-				})
-				continue
-			}
-			return nil, err
-		}
-		hasPR, prRef, err := projectPR(manifest, "")
-		if err != nil {
-			return nil, err
-		}
-		views = append(views, program.ProjectView{
-			Slug:     manifest.Slug,
-			Repo:     manifest.Repo,
-			HasPR:    hasPR,
-			PRRef:    prRef,
-			Merged:   manifest.Merged,
-			Archived: true,
-			Orphaned: !manifest.Merged,
-		})
+// programProjectViews returns child project state with structured warnings so
+// commands keep working when one linked child is unreadable.
+func programProjectViews(p program.Program) ([]program.ProjectView, []string, error) {
+	views, warnings, err := buildProgramProjectViews(p)
+	if err != nil {
+		return nil, nil, err
 	}
-	sort.Slice(views, func(i, j int) bool { return views[i].Slug < views[j].Slug })
-	return views, nil
+	messages := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		messages = append(messages, warning.Message)
+	}
+	return views, messages, nil
 }
 
 func activeProjectView(manifest project.Manifest) (program.ProjectView, error) {
-	hasPR, prRef, err := projectPR(manifest, project.StatePath(manifest.Slug))
-	if err != nil {
-		return program.ProjectView{}, err
-	}
-	base := manifest.BaseBranch
-	if base == "" {
-		base = gitx.DetectDefaultBranch(manifest.Repo)
-	}
-	baseRef := base
-	if base != "" && gitx.HasOrigin(manifest.Repo) && gitx.RevParse(manifest.Repo, "origin/"+base) != "" {
-		baseRef = "origin/" + base
-	}
-	merged := baseRef != "" && gitx.IsWorkMerged(manifest.Repo, manifest.Branch, baseRef, manifest.StartSHA)
-	return program.ProjectView{
-		Slug:   manifest.Slug,
-		Repo:   manifest.Repo,
-		HasPR:  hasPR,
-		PRRef:  prRef,
-		Merged: merged,
-	}, nil
+	return programview.ActiveProjectView(manifest)
 }
 
 func projectPR(manifest project.Manifest, statePath string) (bool, string, error) {
-	if statePath != "" {
-		if _, err := os.Stat(statePath); err == nil {
-			state, err := project.LoadState(statePath)
-			if err != nil {
-				return false, "", err
-			}
-			if state.PR.URL != "" {
-				return true, state.PR.URL, nil
-			}
-			if state.PR.Number > 0 {
-				return true, "#" + strconv.Itoa(state.PR.Number), nil
-			}
-		} else if !os.IsNotExist(err) {
-			return false, "", fmt.Errorf("stat project state %s: %w", statePath, err)
-		}
-	}
-	if manifest.PR.URL != nil && *manifest.PR.URL != "" {
-		return true, *manifest.PR.URL, nil
-	}
-	if manifest.PR.Number != nil && *manifest.PR.Number > 0 {
-		return true, "#" + strconv.Itoa(*manifest.PR.Number), nil
-	}
-	return false, "", nil
+	return programview.RecordedPR(manifest, statePath)
 }
 
 func nextProgramCommand(p program.Program, view program.View) string {
-	switch {
-	case strings.HasPrefix(view.NextAction, "resolve "):
-		id := strings.TrimPrefix(view.NextAction, "resolve ")
-		for _, decision := range p.Decisions {
-			if decision.ID == id && decision.Kind == program.DecisionContract {
-				return fmt.Sprintf("relay program contract approve %s %s --by ceo", p.Slug, decision.ContractRef)
-			}
-		}
-		return fmt.Sprintf("relay program decision resolve %s %s --answer <answer>", p.Slug, id)
-	case view.NextAction == "request approval":
-		return "relay program submit " + p.Slug
-	case view.NextAction == "approve program":
-		return "relay program approve " + p.Slug
-	case view.NextAction == "resume program":
-		return "relay program release " + p.Slug
-	case strings.HasPrefix(view.NextAction, "dispatch "):
-		return fmt.Sprintf("relay program dispatch %s %s", p.Slug, strings.TrimPrefix(view.NextAction, "dispatch "))
-	case view.NextAction == "reconcile in-flight work":
-		return "relay program tick " + p.Slug
-	case view.NextAction == "complete program":
-		return "relay program finish " + p.Slug
-	case len(view.Blocked) > 0:
-		blocked := view.Blocked[0]
-		return fmt.Sprintf("blocked: %s (%s)", blocked.Item.ID, strings.Join(blocked.Reasons, "; "))
-	default:
-		return "no action"
-	}
+	return programview.NextCommand(p, view)
 }
 
 func writeProgramJSON(out io.Writer, value any) error {
@@ -938,6 +956,7 @@ func renderProgramDetail(out io.Writer, detail programDetailOutput) {
 		Program:     detail.Program.Slug,
 		State:       detail.Program.State,
 		View:        detail.Plan,
+		Warnings:    detail.Warnings,
 		NextCommand: nextProgramCommand(detail.Program, detail.Plan),
 	})
 	fmt.Fprintf(out, "Title: %s\n", detail.Program.Title)
@@ -947,8 +966,9 @@ func renderProgramDetail(out io.Writer, detail programDetailOutput) {
 func renderProgramView(out io.Writer, queue programQueueOutput) {
 	fmt.Fprintf(out, "Program: %s\n", queue.Program)
 	fmt.Fprintf(out, "State: %s\n", queue.State)
-	fmt.Fprintf(out, "Capacity: %d/%d open, %d available\n",
-		queue.View.Capacity.Open, queue.View.Capacity.Limit, queue.View.Capacity.Available)
+	fmt.Fprintf(out, "Capacity: %d/%d open, %d reserved, %d available\n",
+		queue.View.Capacity.Open, queue.View.Capacity.Limit,
+		queue.View.Capacity.Reserved, queue.View.Capacity.Available)
 	fmt.Fprintf(out, "Ready: %s\n", workItemSummary(queue.View.Ready))
 	fmt.Fprintf(out, "In flight: %s\n", workItemSummary(queue.View.InFlight))
 	fmt.Fprintf(out, "Blocked: %d\n", len(queue.View.Blocked))
@@ -956,6 +976,9 @@ func renderProgramView(out io.Writer, queue programQueueOutput) {
 		fmt.Fprintf(out, "Orphaned: %s\n", strings.Join(queue.OrphanIDs, ", "))
 	}
 	fmt.Fprintf(out, "Open decisions: %d\n", len(queue.View.OpenDecisions))
+	for _, warning := range queue.Warnings {
+		fmt.Fprintf(out, "Warning: %s\n", warning)
+	}
 	fmt.Fprintf(out, "Next: %s\n", queue.NextCommand)
 }
 
@@ -1039,9 +1062,14 @@ func createProgramFiles(dir, title string) error {
 
 func programLaunchOptions(p program.Program, programDir, permissionMode string) agent.LaunchOptions {
 	return agent.LaunchOptions{
-		Worktree:       p.Repo,
-		ProjectDir:     programDir,
-		SystemPrompt:   fmt.Sprintf("Active relay program: %s. Role: CTO. Reconstruct governance state from the program directory before acting.", p.Slug),
+		Worktree:   p.Repo,
+		ProjectDir: programDir,
+		SystemPrompt: fmt.Sprintf(
+			"Active relay program: %s. Role: CTO. Run the cto skill only. Never invoke stack-ship; "+
+				"decompose into program work items and dispatch each item through deliver-pr. "+
+				"Reconstruct governance state from the program directory before acting.",
+			p.Slug,
+		),
 		SessionName:    "relay:program:" + p.Slug,
 		Command:        "cto",
 		CommandArgs:    p.Slug,

@@ -12,6 +12,7 @@ import (
 
 	"github.com/ronaknnathani/relay/internal/agent"
 	"github.com/ronaknnathani/relay/internal/config"
+	"github.com/ronaknnathani/relay/internal/mailbox"
 	"github.com/ronaknnathani/relay/internal/program"
 	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/spf13/cobra"
@@ -51,6 +52,15 @@ func runProgramDispatch(out io.Writer, programSlug, itemID string, opts programD
 	if !ok {
 		return fmt.Errorf("dispatch item %q: item not found", itemID)
 	}
+	dispatchAgent := opts.agent
+	if dispatchAgent == "" {
+		dispatchAgent = p.Agent
+	}
+	if _, err := requireManagedHerdr(
+		"relay program dispatch", dispatchAgent, fmt.Sprintf("program %q", p.Slug), true,
+	); err != nil {
+		return err
+	}
 	childSlug := item.ProjectSlug
 	if childSlug != "" && opts.name != "" && opts.name != childSlug {
 		return fmt.Errorf("dispatch item %q: already linked to project %q; --name %q conflicts", itemID, childSlug, opts.name)
@@ -74,13 +84,12 @@ func runProgramDispatch(out io.Writer, programSlug, itemID string, opts programD
 		return err
 	}
 
-	agentName := opts.agent
-	if agentName == "" {
-		agentName = p.Agent
-	}
-	created, reused, err := prepareDispatchChild(p, item, childSlug, agentName, item.ProjectSlug != "")
+	created, reused, err := prepareDispatchChild(p, item, childSlug, dispatchAgent, item.ProjectSlug != "")
 	if err != nil {
 		return fmt.Errorf("dispatch item %q: prepare child project: %w", itemID, err)
+	}
+	if err := mailbox.Ensure(created.projectDir); err != nil {
+		return fmt.Errorf("dispatch item %q: ensure child mailbox: %w", itemID, err)
 	}
 	contracts, err := copyDispatchContracts(programDir, created.projectDir, p.Contracts, item.ContractRefs)
 	if err != nil {
@@ -101,13 +110,13 @@ func runProgramDispatch(out io.Writer, programSlug, itemID string, opts programD
 		)
 	}
 	progress := fmt.Sprintf("Dispatched item %s to project %s", item.ID, childSlug)
-	if err := program.AppendProgress(program.ProgressPath(programDir), progress); err != nil {
+	if err := appendProgramProgress(programDir, progress); err != nil {
 		return err
 	}
 
 	fmt.Fprintf(out, "Dispatched %s to %s\n", item.ID, childSlug)
 	if !opts.launch {
-		fmt.Fprintf(out, "relay resume %s\n", childSlug)
+		fmt.Fprintf(out, "relay program worker start %s %s\n", p.Slug, item.ID)
 		return nil
 	}
 	fmt.Fprintf(out, "Launching %s...\n", created.agent.Name())
@@ -313,18 +322,35 @@ You own clarify and plan and must perform both independently within the binding 
 
 ## Escalation
 
-Surface every discovered issue or deviation through program governance instead of prompting the worker interactively.
+Managed workers never write program state directly. Do not open program decisions or edit program files.
+For every issue, deviation, review request, or pre-PR request, send durable mail with the exact command below and stop.
 
 - PR capacity gate before open-pr:
   `+"`relay program can-open-pr %s %s`"+`
 - Question for the CTO:
-  `+"`relay program decision open %s --item %s --kind question --raised-by worker --question \"<describe the issue and requested decision>\"`"+`
-- Contract, scope, dependency, or risk conflict (stop the affected work after opening):
-  `+"`relay program decision open %s --item %s --kind conflict --raised-by worker --question \"<describe the conflict, impact, and requested decision>\"`"+`
+  `+"`relay program message send %s %s --kind question --body \"<describe the issue and requested decision>\"`"+`
+- Contract, scope, dependency, or risk conflict:
+  `+"`relay program message send %s %s --kind conflict --body \"<describe the conflict, impact, and requested decision>\"`"+`
+- Plan needing CTO or CEO review:
+  `+"`relay program message send %s %s --kind plan --body \"<describe the plan and requested review>\"`"+`
+- Before requesting an open-PR grant, inspect your unread outbox:
+  `+"`relay program message outbox %s %s --json`"+`
+  Do not send another pr-open request while one is unread.
+- If no unread pr-open request exists, send exactly one and stop:
+  `+"`relay program message send %s %s --kind pr-open --body \"<request an open-PR capacity grant>\"`"+`
+- On resume, proceed only after the inbox contains the CTO's grant-approved instruction. Keep that
+  instruction unread, run the recorded can-open-pr command, then run open-pr. If open-pr fails, leave
+  the instruction unread; acknowledge the grant inbox message only after open-pr succeeds and the PR
+  is recorded.
 - A CTO-worker conflict is escalated to the CEO for resolution. Do not continue the affected work while it is unresolved.
 `,
 		p.Slug, p.Title, item.ID, item.Title, item.Priority, dependencies, contractLines.String(),
-		p.Slug, item.ID, p.Slug, item.ID, p.Slug, item.ID,
+		p.Slug, item.ID,
+		p.Slug, item.ID,
+		p.Slug, item.ID,
+		p.Slug, item.ID,
+		p.Slug, item.ID,
+		p.Slug, item.ID,
 	)
 	path := filepath.Join(projectDir, "assignment.md")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

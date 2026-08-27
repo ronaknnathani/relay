@@ -23,7 +23,7 @@ func TestReadinessOrderAndReasons(t *testing.T) {
 	})
 	p.Items[3].ContractRefs = []string{"api@v1"}
 	activateTestProgram(t, &p)
-	decision, err := p.OpenDecision(Decision{
+	decision, _, err := p.OpenDecision(Decision{
 		Kind:     DecisionQuestion,
 		RaisedBy: RaisedByCTO,
 		ItemID:   w3.ID,
@@ -80,7 +80,7 @@ func TestProgramDecisionBlocksAllReadiness(t *testing.T) {
 	p := newTestProgram(t)
 	item := addTestItem(t, &p, "change", PriorityP0)
 	activateTestProgram(t, &p)
-	decision, err := p.OpenDecision(Decision{
+	decision, _, err := p.OpenDecision(Decision{
 		Kind:     DecisionConflict,
 		RaisedBy: RaisedByWorker,
 		Question: "which direction?",

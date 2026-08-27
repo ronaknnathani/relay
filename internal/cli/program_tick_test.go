@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ronaknnathani/relay/internal/program"
+	"github.com/ronaknnathani/relay/internal/programview"
 	"github.com/ronaknnathani/relay/internal/project"
 )
 
@@ -181,7 +182,7 @@ func TestProgramTickIdempotencyAndCapacityMatrix(t *testing.T) {
 	if err := json.Unmarshal([]byte(first), &output); err != nil {
 		t.Fatalf("decode tick: %v\n%s", err, first)
 	}
-	if output.View.Capacity.Open != 2 || output.View.Capacity.Available != 1 {
+	if output.View.Capacity.Open != 1 || output.View.Capacity.Available != 2 {
 		t.Fatalf("capacity = %+v", output.View.Capacity)
 	}
 	loaded, err := program.Load(manifestPath)
@@ -195,6 +196,90 @@ func TestProgramTickIdempotencyAndCapacityMatrix(t *testing.T) {
 	}
 	if gotArchived.Status != program.ItemMerged {
 		t.Fatalf("archived item = %+v", gotArchived)
+	}
+}
+
+func TestProgramTickUsesInjectedGitHubLifecycleForReconciliationAndCapacity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo, err := filepath.EvalSymlinks(newTestRepo(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := program.New("github-lifecycle", "GitHub lifecycle", repo, "copilot", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StatePendingApproval, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StateActive, "ceo"); err != nil {
+		t.Fatal(err)
+	}
+	merged, err := p.AddItem(program.WorkItem{Title: "Squash merged", Priority: program.PriorityP0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := p.AddItem(program.WorkItem{Title: "Closed", Priority: program.PriorityP1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(merged.ID, "merged-child"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(closed.ID, "closed-child"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.GrantOpenPR(closed.ID, "cto", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := program.Create(p); err != nil {
+		t.Fatal(err)
+	}
+
+	original := buildProgramProjectViews
+	buildProgramProjectViews = func(program.Program) ([]program.ProjectView, []programview.ProjectWarning, error) {
+		return []program.ProjectView{
+			{Slug: "merged-child", Repo: repo, PRRef: "#201", Merged: true},
+			{Slug: "closed-child", Repo: repo, PRRef: "#202", PRClosed: true},
+			{Slug: "open-unrelated", Repo: repo, HasPR: true, PRRef: "#203"},
+		}, nil, nil
+	}
+	t.Cleanup(func() { buildProgramProjectViews = original })
+
+	queueJSON, err := runProgramCommand(t, "queue", p.Slug, "--json")
+	if err != nil {
+		t.Fatalf("queue: %v\n%s", err, queueJSON)
+	}
+	var queue programQueueOutput
+	if err := json.Unmarshal([]byte(queueJSON), &queue); err != nil {
+		t.Fatalf("decode queue: %v\n%s", err, queueJSON)
+	}
+	if queue.View.Capacity != (program.Capacity{Limit: 3, Reserved: 1, Available: 2}) {
+		t.Fatalf("queue capacity = %+v", queue.View.Capacity)
+	}
+
+	out, err := runProgramCommand(t, "tick", p.Slug, "--json")
+	if err != nil {
+		t.Fatalf("tick: %v\n%s", err, out)
+	}
+	var output programQueueOutput
+	if err := json.Unmarshal([]byte(out), &output); err != nil {
+		t.Fatalf("decode tick: %v\n%s", err, out)
+	}
+	if output.View.Capacity != (program.Capacity{Limit: 3, Reserved: 1, Available: 2}) {
+		t.Fatalf("capacity = %+v", output.View.Capacity)
+	}
+	loaded, err := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotMerged, _ := loaded.Item(merged.ID)
+	gotClosed, _ := loaded.Item(closed.ID)
+	if gotMerged.Status != program.ItemMerged || gotMerged.PRRef != "#201" {
+		t.Fatalf("merged item = %+v", gotMerged)
+	}
+	if gotClosed.Status != program.ItemDispatched || gotClosed.PRRef != "" {
+		t.Fatalf("closed item = %+v, want no recorded closed pull request", gotClosed)
 	}
 }
 
@@ -256,7 +341,7 @@ func TestArchivedProjectViewsDistinguishMergedFromDiscarded(t *testing.T) {
 		Slug: "discarded-child", Repo: p.Repo,
 	})
 
-	views, err := buildProgramProjectViews(p)
+	views, _, err := buildProgramProjectViews(p)
 	if err != nil {
 		t.Fatal(err)
 	}
