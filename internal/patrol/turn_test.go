@@ -23,7 +23,7 @@ type recordingTurnRunner struct {
 
 func (r *recordingTurnRunner) RunTurn(_ context.Context, request TurnRequest) (TurnResult, error) {
 	r.requests = append(r.requests, request)
-	result := TurnResult{Status: TurnSucceeded, SessionID: "session", LogPath: "/log"}
+	result := TurnResult{Status: TurnSucceeded}
 	var err error
 	if r.index < len(r.results) {
 		result = r.results[r.index]
@@ -63,13 +63,14 @@ func TestTurnArmsFingerprintOnlyAfterASuccessfulTurn(t *testing.T) {
 	}
 	if len(runner.requests) != 1 ||
 		runner.requests[0].ProgramSlug != "alpha" ||
+		runner.requests[0].PaneID != "cto-alpha" ||
 		runner.requests[0].Fingerprint != "fp-1" {
 		t.Fatalf("turn requests = %+v", runner.requests)
 	}
 	if state.AttentionFingerprint != "fp-1" ||
 		state.LastNotifiedAt != now.Format(time.RFC3339) ||
 		state.LastTurnStatus != string(TurnSucceeded) ||
-		state.LastTurnSessionID != "session" || state.LastTurnLogPath != "/log" ||
+		state.LastTurnSessionID != "" || state.LastTurnLogPath != "" ||
 		state.TurnFailures != 0 || !state.CTOPresent {
 		t.Fatalf("state after success = %+v", state)
 	}
@@ -85,7 +86,7 @@ func TestTurnArmsFingerprintOnlyAfterASuccessfulTurn(t *testing.T) {
 		t.Fatalf("unchanged attention re-ran a turn: %d requests", len(runner.requests))
 	}
 
-	// The two-hour rearm runs a fresh bounded turn for unchanged attention.
+	// The two-hour rearm rings the same live CTO for unchanged attention.
 	if warning := requestCTOTurn(
 		context.Background(), &state, attention("alpha", "fp-1"), idleCTO("alpha"), runner, nil,
 		now.Add(2*time.Hour),
@@ -183,7 +184,7 @@ func TestTurnSuppressesAfterThreeConsecutiveFailuresUntilAttentionChanges(t *tes
 		}
 	}
 
-	// Changed attention resets the failure budget and resumes bounded turns.
+	// Changed attention resets the failure budget and resumes live doorbells.
 	recovering := &recordingTurnRunner{}
 	if warning := requestCTOTurn(
 		context.Background(), &state, attention("alpha", "fp-2"), idleCTO("alpha"), recovering, nil,
@@ -224,7 +225,7 @@ func TestTurnGatesOnExactIdleOrDoneCTO(t *testing.T) {
 			t.Fatalf("%s CTO warned: %q", status, warning)
 		}
 		if len(runner.requests) != 0 {
-			t.Fatalf("%s CTO ran a bounded turn", status)
+			t.Fatalf("%s CTO received a live doorbell", status)
 		}
 		if !state.CTOPresent || state.AttentionFingerprint != "" {
 			t.Fatalf("%s CTO state = %+v", status, state)
@@ -264,10 +265,10 @@ func TestTurnClearsAttentionOnDrainAndResetsFailures(t *testing.T) {
 		t.Fatalf("drained state = %+v", state)
 	}
 	if len(runner.requests) != 0 {
-		t.Fatal("drained attention ran a bounded turn")
+		t.Fatal("drained attention rang the CTO")
 	}
 
-	// Recurring attention runs a fresh bounded turn immediately.
+	// Recurring attention rings the live CTO immediately.
 	if warning := requestCTOTurn(
 		context.Background(), &state, attention("alpha", "fp-1"), idleCTO("alpha"), runner, nil,
 		now.Add(2*time.Minute),
@@ -320,9 +321,9 @@ func TestTurnNotificationIsBestEffort(t *testing.T) {
 	}
 }
 
-// The patrol is a read-only observer. It must never stage or submit text into
-// the CEO-facing CTO pane, so the package may not reference Herdr prompting.
-func TestPatrolNeverPromptsHerdrAgents(t *testing.T) {
+// The patrol package delegates delivery through TurnRunner instead of owning a
+// Herdr client, so it cannot focus panes or start terminal commands directly.
+func TestPatrolDoesNotOwnHerdrInput(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -339,14 +340,14 @@ func TestPatrolNeverPromptsHerdrAgents(t *testing.T) {
 		}
 		for _, forbiddenName := range forbidden {
 			if strings.Contains(string(data), forbiddenName) {
-				t.Errorf("%s references Herdr input %q; patrol must stay read-only", name, forbiddenName)
+				t.Errorf("%s owns Herdr input %q; delivery belongs to the CLI adapter", name, forbiddenName)
 			}
 		}
 	}
 }
 
-// The transport is a fresh same-role session, never a resume of the live CEO
-// session and never a Herdr keystroke.
+// The patrol never resumes the live CTO through an agent CLI. It only rings
+// the already-running pane through its TurnRunner.
 func TestPatrolNeverResumesTheLiveCTOSession(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -393,16 +394,47 @@ func TestTurnSkipsAndWarnsWhenTwoLiveCTOsClaimTheProgram(t *testing.T) {
 		t.Fatalf("a turn ran with duplicate CTOs: %+v", runner.requests)
 	}
 	for _, want := range []string{
-		`skipped the bounded CTO turn for program "alpha"`, "2 live CTO sessions", "p1", "p2",
+		`skipped the live CTO doorbell for program "alpha"`, "2 live CTO sessions", "p1", "p2",
 	} {
 		if !strings.Contains(warning, want) {
 			t.Errorf("warning %q is missing %q", warning, want)
 		}
 	}
+
 	if state.CTOPresent {
 		t.Error("CTOPresent = true, want false while ownership is ambiguous")
 	}
 	if state.AttentionFingerprint != "" {
 		t.Errorf("attention fingerprint = %q, want unarmed", state.AttentionFingerprint)
+	}
+}
+
+func TestUncertainDoorbellSuppressesAllAutomaticRetriesUntilRestart(t *testing.T) {
+	now := time.Date(2026, 8, 31, 13, 0, 0, 0, time.UTC)
+	state := State{ProgramSlug: "alpha", Reasons: []Reason{}}
+	uncertain := &recordingTurnRunner{results: []TurnResult{{
+		Status: TurnUncertain,
+		Error:  "terminal-targeted Enter was sent, but no new turn was observed",
+	}}}
+	warning := requestCTOTurn(
+		context.Background(), &state, attention("alpha", "fp-1"), idleCTO("alpha"), uncertain, nil, now,
+	)
+	if warning == "" || !state.DoorbellSuppressed ||
+		state.LastTurnStatus != string(TurnUncertain) {
+		t.Fatalf("uncertain doorbell state = %+v warning = %q", state, warning)
+	}
+
+	retry := &recordingTurnRunner{}
+	warning = requestCTOTurn(
+		context.Background(), &state, attention("alpha", "fp-2"), idleCTO("alpha"), retry, nil,
+		now.Add(3*time.Hour),
+	)
+	if len(retry.requests) != 0 {
+		t.Fatalf("uncertain delivery retried with changed attention: %+v", retry.requests)
+	}
+	for _, want := range []string{"suppressed", "inspect and clear", "restart"} {
+		if !strings.Contains(warning, want) {
+			t.Errorf("suppression warning %q is missing %q", warning, want)
+		}
 	}
 }

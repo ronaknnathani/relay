@@ -99,11 +99,15 @@ func TestCopilotPackageInvariants(t *testing.T) {
 	for _, snippet := range []string{
 		`relay program patrol status "$PROGRAM" --json`,
 		`relay program patrol start "$PROGRAM"`,
-		"fresh, bounded CTO-role session",
-		"never types into, focuses, or prompts this pane",
+		"payload-free doorbell to this exact live pane",
+		"terminal-session control stream",
+		"still idle after the grace period",
+		"never focuses the pane",
+		"another CTO session",
 		"never invokes\n`program tick`",
-		"Reload durable state at the top of every CEO turn",
-		"RELAY_AUTOMATED_TURN=1",
+		"reload durable state\nbefore acting",
+		"suppresses all further doorbells",
+		"Check Relay program mail and patrol state.",
 		"Managed programs run only under Herdr",
 		"There is no plain-terminal fallback",
 		"stop_reason",
@@ -113,7 +117,8 @@ func TestCopilotPackageInvariants(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
-		"/loop", "/every", "program worker prompt", "Check Relay program mail",
+		"/loop", "/every", "program worker prompt", "fresh, bounded CTO-role session",
+		"RELAY_AUTOMATED_TURN=1",
 	} {
 		if strings.Contains(cto, forbidden) {
 			t.Errorf("cto still contains retired patrol transport text %q", forbidden)

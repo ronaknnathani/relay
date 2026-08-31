@@ -33,20 +33,15 @@ relay program patrol start "$PROGRAM"
 ```
 
 `patrol status --json` also reports `error` and `stop_reason` for a patrol that failed or stopped
-while nothing holds the lock. It also reports the last bounded turn (`last_turn_status`,
-`last_turn_session_id`, `last_turn_log_path`, `last_turn_error`, `turn_failures`). Report that detail
+while nothing holds the lock. It also reports the last CTO wake (`last_turn_status`,
+`last_turn_error`, `turn_failures`, `doorbell_suppressed`). Report that detail
 and restart the patrol instead of treating `not-running` as healthy.
 
 Then remain idle and available to the CEO. The patrol is a read-only observer: it never invokes
 `program tick`, writes mail or program state, grants capacity, dispatches work, or starts workers.
-It also never types into, focuses, or prompts this pane. When durable state needs attention, the
-patrol starts a **separate, fresh, bounded CTO-role session** with a new agent session id and a
-noninteractive prompt; that session reconstructs durable state from disk, performs one bounded turn,
-and exits. Your interactive pane stays untouched and available to the CEO.
-
-**Reload durable state at the top of every CEO turn.** A bounded automated turn may have replied to
-worker mail, opened a decision, granted PR capacity, dispatched an item, or started a worker since
-you last looked. Never trust conversation memory:
+When durable state needs attention, patrol submits a payload-free doorbell to this exact live pane
+without changing the user's focused pane. Treat that prompt as a new CTO turn: reload durable state
+before acting rather than relying on conversation memory.
 
 ```bash
 relay program message list "$PROGRAM" --json
@@ -86,33 +81,17 @@ Relay owns one process-lifetime patrol lock per program and stores runtime state
 `~/.relay/run/<slug>/`. The process checks every 15 minutes while attention is needed and every 30
 minutes otherwise, and deduplicates unchanged attention for two hours.
 
-The patrol's only wake transport is a bounded CTO turn: it starts a fresh same-role session with a
-new agent session id, a noninteractive prompt, and a ten-minute hard bound, then that session exits.
-It never resumes this session and never sends keystrokes to this pane. The patrol uses Herdr only to
-confirm that exactly one CTO carrying this program's Relay session identity exists and is `idle` or
-`done`; a `working`, `blocked`, absent, or duplicated CTO is skipped, not interrupted. A program-scoped `writer.lock` admits one
-bounded turn at a time, so a slow turn makes the next one skip rather than queue. The attention
-fingerprint is armed only after a turn exits zero, and three consecutive failures suppress automatic
-turns until attention changes or the patrol is restarted.
+The patrol uses Herdr to confirm that exactly one CTO carrying this program's Relay session identity
+is `idle` or `done`; a `working`, `blocked`, absent, or duplicated CTO is skipped, not interrupted.
+It stages `Check Relay program mail and patrol state.` through `herdr agent prompt` and first lets
+Herdr's delayed submit run. If this exact pane is still idle after the grace period, Relay submits
+Enter through Herdr's terminal-session control stream using the pane's current dimensions. It then
+confirms that this session started a new turn. It never focuses the pane and never starts or resumes
+another CTO session.
 
-A bounded automated turn runs with `RELAY_AUTOMATED_TURN=1`. In that environment the Relay CLI
-refuses every CEO-only command: `program submit`, `program approve`, `program hold`,
-`program release`, `program finish`, `program abandon`, `program set-max-open-prs`,
-`contract approve`, `contract reject`, and `decision resolve`. It also refuses plan shaping:
-`item add`, `item update`, `item cancel`, and `contract publish`. The automated turn may only do
-routine work—read mail, reply through inboxes, open decisions, grant or revoke PR capacity,
-dispatch ready items, start or notify workers, and run tick/status/queue. It never merges,
-approves, waits, loops, or invokes `stack-ship`. `decision open` is idempotent: re-raising the same
-open question on the same item reuses the existing decision instead of stacking duplicates.
-
-A bounded turn also carries `RELAY_AUTOMATED_TURN_SESSION_ID=<session id>`, and Relay forces every
-durable record it writes to be signed `cto-automated:<session-prefix>` — `pr_granted_by`,
-`decision raised_by`, and mailbox `automated_by` — with
-`[automated CTO turn <session-prefix>, on behalf of CEO]` appended to `progress.md`, `decisions.md`,
-and message bodies. Passing `--by`, `--raised-by`, or any other actor flag cannot change this, so
-never try to sign automated work as `cto`, `worker`, or `ceo`.
-
-You remain the CEO's interactive CTO. Bounded turns are the same role, not a second one.
+If submission is uncertain, patrol suppresses all further doorbells until the CTO composer is
+inspected and patrol is restarted. Never manually retry an uncertain doorbell: repeated prompt text
+may already be staged.
 
 For every unread `question`, `conflict`, or `plan` message, the CTO is the sole program writer: open
 or use the corresponding program decision and surface it to the CEO. Once the CEO answers or
@@ -126,9 +105,8 @@ relay program message reply "$PROGRAM" <item> <outbox-id> \
 Immediately after each new durable inbox write, run
 `relay program worker notify "$PROGRAM" <item>` exactly once. That notification is a
 payload-free doorbell only; the durable answer is in the inbox.
-Never run `worker notify` merely because an inbox message remains unread. A later bounded CTO turn
-may retry only mail that remains unnotified after a busy, missing, or failed doorbell attempt; the
-CLI checks durable markers and current Herdr status.
+Never run `worker notify` merely because an inbox message remains unread. The CLI checks durable
+markers and current Herdr status before delivering a terminal-targeted doorbell.
 Never doorbell a `working` or `blocked` agent. Never use
 `herdr agent prompt --wait`, never embed a decision payload in a prompt, and never relay messages
 directly between workers.
@@ -305,16 +283,15 @@ a program decision or follow-up. Do not silently turn it into recurring automati
 - Continuing without checking or starting the Relay patrol on CTO entry.
 - Improvising a non-Herdr fallback after a Herdr readiness error instead of reporting its instructions.
 - Reading `patrol: not-running` as healthy while the state reports a failure or stop reason.
-- Treating patrol as an actor instead of a read-only observer that starts bounded CTO turns.
-- Assuming this pane holds the whole program state after a bounded automated turn acted.
-- Trying to answer a CEO-only decision inside a bounded automated turn instead of recording it.
+- Treating patrol as an actor instead of a read-only observer that rings this live CTO session.
+- Retrying an uncertain doorbell without inspecting and clearing the CTO composer.
 
 ## Verification checklist
 
 - [ ] Checked unread worker mail at the top of the CEO turn and processed it through program decisions.
-- [ ] Verified Herdr readiness, checked adaptive patrol status (including the last bounded turn),
+- [ ] Verified Herdr readiness, checked adaptive patrol status (including the last CTO wake),
       and started patrol in Herdr.
-- [ ] Reloaded durable state at the top of the turn because a bounded automated turn may have acted.
+- [ ] Reloaded durable state after a patrol doorbell before acting.
 - [ ] Inspected the Herdr worker list and started/adopted visible owners for dispatched work.
 - [ ] Sent complete replies through worker inboxes and rang each new durable doorbell exactly once,
       with later retries delegated to the CLI's unnotified/status checks.

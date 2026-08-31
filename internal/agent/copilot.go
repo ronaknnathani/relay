@@ -25,16 +25,15 @@ func (copilot) Lookup() (string, error) {
 func (copilot) Prepare(LaunchOptions) error { return nil }
 
 // Capabilities reports Copilot's real values: task-based subagents, a
-// long-context tier, bounded noninteractive turns, prose (not
-// deterministic-slash) invocation, no lifecycle hook, context delivered in the
-// initial prompt, and the Claude→Copilot lowercase tool-name map. (Permission
-// handling is mode-driven; see PermissionModes.)
+// long-context tier, prose (not deterministic-slash) invocation, no lifecycle
+// hook, context delivered in the initial prompt, and the Claude→Copilot
+// lowercase tool-name map. (Permission handling is mode-driven; see
+// PermissionModes.)
 func (copilot) Capabilities() Capabilities {
 	return Capabilities{
 		Subagents:          SubagentTask,
 		LargeContext:       true,
 		NamedSessions:      true,
-		HeadlessTurn:       true,
 		DeterministicSlash: false,
 		LifecycleHook:      HookNone,
 		ContextInjection:   ContextPrompt,
@@ -88,22 +87,3 @@ func relaySkillPrompt(o LaunchOptions) string {
 // grants all permissions without prompting, "prompt" leaves Copilot's normal
 // asks on.
 func (copilot) PermissionModes() []string { return []string{"allow-all", "prompt"} }
-
-// HeadlessTurnArgs builds one bounded noninteractive Copilot turn in a fresh
-// session. The configured permission mode is deliberately not consulted: a
-// headless turn cannot answer a permission ask, so it always runs --allow-all
-// in the managed program directories Relay already trusts.
-func (copilot) HeadlessTurnArgs(o HeadlessTurnOptions) []string {
-	args := []string{"-C", o.Repo}
-	if o.ProgramDir != "" {
-		args = append(args, "--add-dir", o.ProgramDir)
-	}
-	args = append(args,
-		"--context", "long_context",
-		"--allow-all",
-		"--session-id", o.SessionID,
-		"-p", o.Prompt,
-		"--silent",
-	)
-	return args
-}

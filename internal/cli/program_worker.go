@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -37,7 +38,9 @@ type herdrRuntimeClient interface {
 }
 
 var (
-	newHerdrClient = func() herdrRuntimeClient { return herdr.NewClient() }
+	newHerdrClient = func() herdrRuntimeClient {
+		return herdr.NewClientWithCommandTimeout(context.Background(), herdrCommandTimeout)
+	}
 	herdrAvailable = herdr.Available
 	workerNow      = time.Now
 	workerSleep    = time.Sleep

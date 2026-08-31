@@ -1,5 +1,5 @@
-// Package patrol observes Relay programs and requests bounded automated CTO
-// turns without mutating program, project, git, or mailbox state.
+// Package patrol observes Relay programs and rings their live CTO sessions
+// without mutating program, project, git, or mailbox state.
 package patrol
 
 import (
@@ -57,6 +57,7 @@ type State struct {
 	LastTurnFingerprint  string   `json:"last_turn_fingerprint"`
 	LastTurnError        string   `json:"last_turn_error"`
 	TurnFailures         int      `json:"turn_failures"`
+	DoorbellSuppressed   bool     `json:"doorbell_suppressed"`
 	ConsecutiveErrors    int      `json:"consecutive_errors"`
 	Error                string   `json:"error"`
 	Warning              string   `json:"warning"`

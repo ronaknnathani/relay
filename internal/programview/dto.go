@@ -24,20 +24,21 @@ type Snapshot struct {
 
 // PatrolDTO contains the read-only adaptive patrol runtime summary.
 type PatrolDTO struct {
-	Status       string            `json:"status"`
-	Running      bool              `json:"running"`
-	DelaySeconds int64             `json:"delay_seconds"`
-	LastTickAt   string            `json:"last_tick_at"`
-	NextTickAt   string            `json:"next_tick_at"`
-	Reasons      []PatrolReasonDTO `json:"reasons"`
-	CTOPresent   bool              `json:"cto_present"`
-	Turn         PatrolTurnDTO     `json:"turn"`
-	Error        string            `json:"error"`
-	Warning      string            `json:"warning"`
+	Status             string            `json:"status"`
+	Running            bool              `json:"running"`
+	DelaySeconds       int64             `json:"delay_seconds"`
+	LastTickAt         string            `json:"last_tick_at"`
+	NextTickAt         string            `json:"next_tick_at"`
+	Reasons            []PatrolReasonDTO `json:"reasons"`
+	CTOPresent         bool              `json:"cto_present"`
+	DoorbellSuppressed bool              `json:"doorbell_suppressed"`
+	Turn               PatrolTurnDTO     `json:"turn"`
+	Error              string            `json:"error"`
+	Warning            string            `json:"warning"`
 }
 
-// PatrolTurnDTO summarizes the last bounded automated CTO turn. It carries log
-// metadata only; the transcript itself is never inlined into the UI.
+// PatrolTurnDTO summarizes the last live CTO doorbell attempt. Session and log
+// fields remain for backward-compatible decoding of older patrol state.
 type PatrolTurnDTO struct {
 	Status    string `json:"status"`
 	SessionID string `json:"session_id"`

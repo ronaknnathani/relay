@@ -51,8 +51,8 @@ A program is durable governance over unchanged Relay projects, not a second exec
 - Program state never depends on preserving an agent conversation.
 - The Relay binary is the only writer of `program.json`.
 - Adaptive patrol is read-only with respect to program, project, git, mailbox, and notification
-  marker state. When attention changes it starts a separate bounded CTO-role session; it never
-  types into, focuses, or resumes the CEO-facing CTO pane.
+  marker state. When attention changes it submits a payload-free doorbell to the existing CTO pane
+  without changing the user's focused workspace or pane.
 - Program writes use an optimistic revision and a short exclusive save lock so concurrent commands
   fail instead of silently overwriting each other.
 - Readiness, open PRs, and available capacity are derived; outstanding PR grants are explicit durable
@@ -118,9 +118,6 @@ child's `relay resume`. It verifies:
 3. The Herdr server answers `herdr agent list`.
 4. The program or child agent has an approved Herdr integration that carries Relay's session name.
    Copilot and Claude qualify; Codex does not.
-
-`relay program cto turn` runs the same readiness check without the pane requirement, because it
-starts a headless agent process rather than a Herdr tab.
 
 Every failure is actionable and fails closed with install, start, or attach instructions. There is no
 plain-terminal fallback for managed work, and an existing managed session whose Herdr server becomes
@@ -266,83 +263,41 @@ important child warnings need attention; otherwise they check every 30 minutes. 
 running, use 15 minutes for mail, decisions, blocked work, or missing workers, and ignore ready work.
 Completed, abandoned, archived, or missing programs stop.
 
-#### Bounded CTO turns
+#### Live CTO doorbells
 
-When attention changes, the patrol does not type anything into the CEO-facing CTO pane. It runs the
-hidden internal command `relay program cto turn <slug>`, which starts a **fresh, bounded, same-role
-CTO session** that reconstructs durable state from disk, performs one governance turn, and exits:
+When attention changes, the patrol finds the single live Herdr pane whose title carries the exact
+`relay:program:<program>` identity. The CTO must be `idle` or `done`; `working`, `blocked`, absent,
+or duplicated CTOs are skipped. `relay program resume` also refuses to launch a second CTO for the
+same program and points at the live pane instead.
+
+Relay stages the payload-free prompt `Check Relay program mail and patrol state.` with `agent
+prompt`. Herdr normally submits it after its own paste-settling delay. Relay waits for that state
+transition first. Only when the exact pane is still idle after the grace period does Relay write a
+carriage return through Herdr's terminal-session control protocol:
 
 ```text
-copilot -C <repo> --add-dir <program-dir> --context long_context --allow-all \
-  --session-id <new UUID> -p <bounded prompt> --silent
+herdr agent prompt <cto-pane> "Check Relay program mail and patrol state."
+herdr terminal session control <cto-pane> --takeover
+  {"type":"terminal.input","bytes":"DQ=="}
 ```
 
-The session id is a fresh crypto-random UUID, never a resume of the live CEO session. The process
-runs in its own process group with a ten-minute hard bound; a turn that exceeds it has its whole
-group killed. Combined output is captured to
-`~/.relay/run/<program>/turns/<timestamp>-<session-id>.log`, and turn metadata (session id,
-fingerprint, start/end, exit status, timeout, log path, result) is appended newest-first to
-`~/.relay/run/<program>/turns.json`, bounded to the last 50 turns.
+The fallback sends the base64-encoded carriage-return byte directly to the pane's terminal stream.
+Relay reads the pane's current dimensions and passes them to the control command, so direct attach
+does not resize the live TUI. Only a small output tail is retained so in-band `terminal.closed`
+failures are surfaced without persisting terminal frames.
+The user's currently focused workspace and pane do not change. Relay confirms a new `working`,
+`blocked`, or completed state transition after either submission path.
 
-Gating, in order:
+The patrol arms the attention fingerprint only after confirmed delivery. Definite pre-submission
+failures retry up to three times. If text may have been staged but no turn transition can be
+confirmed, Relay records an `uncertain` wake, suppresses every further automatic doorbell for that
+patrol process, and instructs the operator to inspect and clear the CTO composer before restarting
+patrol. This prevents repeated prompt text from accumulating. Unchanged successfully delivered
+attention is re-armed after two hours.
 
-1. A nonblocking `flock` on `~/.relay/run/<program>/writer.lock` admits exactly one bounded writer.
-   A held lock reports `skipped` and exits 0; turns never queue. The kernel releases the lock if the
-   holder dies.
-2. The program must be `draft`, `pending_approval`, `active`, or `held`.
-3. The program's agent must support headless turns. Copilot does today; Relay refuses to guess flags
-   for Claude or Codex and fails closed with instructions.
-4. Herdr must be installed and answering, and exactly one CTO carrying the program's Relay session
-   identity must be `idle` or `done`. `working`, `blocked`, and absent CTOs are `skipped`. Two panes
-   carrying the same program identity are ambiguous ownership: the turn is `skipped` and the skip
-   reason names both panes so the CEO can close one. `relay program resume` refuses to launch a
-   second CTO for the same program and points at the live pane instead.
-
-The patrol arms the attention fingerprint **only after a turn exits zero**. A failed, timed-out, or
-skipped turn leaves the fingerprint unchanged so the next tick retries. Three consecutive failures
-against the same attention set a warning and suppress further automatic turns until attention
-changes or the patrol is restarted. Unchanged attention is re-armed after two hours. Missing or
-failing Herdr discovery degrades CTO presence without stopping the patrol. A desktop notification is
-raised best-effort after a turn; correctness never depends on it. The patrol never prompts workers,
-and the CEO-facing pane stays available throughout.
-
-The attention fingerprint includes the sorted unread worker-outbox message ids, not just their
-count, so a second question on the same item wakes a fresh turn immediately.
-
-#### What a bounded turn may do
-
-Bounded turns run with `RELAY_AUTOMATED_TURN=1`. The Relay CLI refuses every CEO-only command in
-that environment: `program submit`, `program approve`, `program hold`, `program release`,
-`program finish`, `program abandon`, `program set-max-open-prs`, `contract approve`,
-`contract reject`, and `decision resolve`. It also refuses plan shaping — `item add`, `item update`,
-`item cancel`, and `contract publish` — while leaving the status repairs `program tick` recommends
-(`item link`, `item block`, `item unblock`) available. The turn may read mail, reply through worker
-inboxes, open decisions, grant or revoke PR capacity, dispatch ready items, start or notify workers,
-and run `tick`, `status`, `queue`, and `can-open-pr`. It never merges, approves, waits, loops, or
-invokes `stack-ship`. `program tick` and `program queue` still print the human next command for a
-blocked action, such as `contract approve`; that is a recommendation for the CEO, not permission.
-
-`relay program decision open` is idempotent: a currently-open decision with the same kind, item,
-contract reference, and normalized question is reused without mutating `program.json` and without
-appending a second `decisions.md` entry, so repeated automated turns cannot stack duplicates on the
-CEO.
-
-#### Automated attribution
-
-A bounded turn also runs with `RELAY_AUTOMATED_TURN_SESSION_ID=<fresh session UUID>`, the same id
-that names its transcript. Every durable record the turn can write is signed with the forced actor
-`cto-automated:<session-prefix>` — an 8-character prefix, never the full session id — regardless of
-what `--by` or `--raised-by` the agent passes:
-
-- `program.json`: `pr_granted_by` for `grant-open-pr`, and `raised_by` for `decision open`.
-- `progress.md` and `decisions.md`: entries end with
-  `[automated CTO turn <session-prefix>, on behalf of CEO]`.
-- Mailbox messages: `automated_by` records the turn, the body carries the same human-readable
-  attribution, and `from`/`to` stay the routing endpoints workers rely on.
-
-The identity comes only from the process environment, so no flag, prompt, or agent instruction can
-make an automated turn sign as `cto`, `worker`, or `ceo`; CEO-only commands stay blocked outright.
-Relay posts no automated GitHub comments today, and any future path must carry the same attribution.
+The attention fingerprint includes sorted unread worker-outbox message ids, not just their count, so
+a second question on the same item wakes the live CTO immediately. The CTO then reconstructs durable
+state and performs the needed governance work in the existing CEO-facing conversation.
 
 Manage it with:
 
@@ -356,18 +311,17 @@ relay program patrol stop auth-platform
 `start` adopts an existing lock holder or creates an unfocused plain Herdr tab labeled
 `relay-patrol:<program>` in the program repository; it does not launch a coding agent. Both `start`
 and `run` require Herdr and fail closed with setup instructions when it is missing. The interactive
-CTO checks patrol status on entry and then stays available to the CEO; it reloads durable state at
-the top of every CEO turn because a bounded automated turn may have acted since the last one.
+CTO checks patrol status on entry and then stays available to the CEO. A patrol doorbell tells that
+same session to reload durable state and process current mail and program observations.
 
 `patrol status` reports the runtime lock as the authority for `running`, and still surfaces `error`,
 `stop_reason`, and `warning` from the last recorded state when the patrol failed or stopped, so a
 dead patrol explains itself instead of reading as a plain `not-running`.
 
 Patrol CTO discovery requires the agent launch adapter to carry the
-`relay:program:<program>` session name, and the bounded wake transport requires a verified headless
-turn. Claude and Copilot support named sessions; only Copilot supports headless turns today. Relay
-rejects `patrol start` and `patrol run` for agents that lack either capability instead of claiming
-the CTO is monitored.
+`relay:program:<program>` session name. Claude and Copilot support named sessions; Relay rejects
+`patrol start` and `patrol run` for agents without that capability instead of claiming the CTO is
+monitored.
 
 ### Dependency queue
 
@@ -538,8 +492,6 @@ Archived programs are viewable with the same command.
 | Worker handoffs | Child `mail/` directories | CTO and worker message commands |
 | Worker process, tab, pane, and focus | Herdr runtime | Herdr; non-authoritative and re-derived |
 | Patrol process, cadence, reasons, and attention fingerprint | `~/.relay/run/<slug>/patrol.json` | `relay program patrol run`; read-only toward program/project state |
-| Bounded CTO turn history and transcripts | `~/.relay/run/<slug>/turns.json`, `~/.relay/run/<slug>/turns/` | `relay program cto turn`; runtime only |
-| Bounded CTO turn single-writer exclusion | `~/.relay/run/<slug>/writer.lock` | `relay program cto turn`; kernel-released advisory lock |
 | Managed worker start exclusion | `~/.relay/run/workers/<child-slug>/start.lock` | `relay program worker start`; kernel-released advisory lock |
 | Pull request lifecycle | GitHub | GitHub; observed read-only through `gh` |
 | Code and merge facts | git and GitHub | Existing git/GitHub workflow |

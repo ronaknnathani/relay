@@ -18,6 +18,7 @@ func TestProgramUIShowsPatrolCadenceAndDiagnostics(t *testing.T) {
 		`const patrol = snapshotOf().patrol || {}`,
 		`formatPatrolCadence(count(patrol.delay_seconds))`,
 		`patrol.cto_present ? "CTO present" : "CTO unavailable"`,
+		`patrol.doorbell_suppressed ? "CTO wakes suppressed" : ""`,
 		`text(patrol.warning)`,
 		`["Patrol", patrolReasons()]`,
 		`function patrolReasons()`,
@@ -28,22 +29,22 @@ func TestProgramUIShowsPatrolCadenceAndDiagnostics(t *testing.T) {
 	})
 }
 
-// The bounded CTO turn transcript may contain repository content, so the UI
-// surfaces only its status and log location, never the log body.
-func TestProgramUIShowsBoundedTurnMetadataWithoutTheTranscript(t *testing.T) {
+// The UI reports the live CTO wake result while remaining compatible with
+// older patrol state that still contains a bounded-turn log path.
+func TestProgramUIShowsLiveCTOWakeMetadata(t *testing.T) {
 	index := readAsset(t, "assets/index.html")
 	requireContains(t, "index.html", index, []string{`id="patrol-turn"`})
 	script := readAsset(t, "assets/app.js")
 	requireContains(t, "app.js", script, []string{
 		`dom.patrolTurn = byID("patrol-turn")`,
 		`function patrolTurnNote(turn)`,
-		"`last turn ${humanize(status)}`",
+		"`last CTO wake ${humanize(status)}`",
 		"`log ${turn.log_path}`",
 		"`last turn error: ${turn.error}`",
 	})
 	for _, forbidden := range []string{"turn.log_text", "turn.transcript", "turn.output"} {
 		if strings.Contains(script, forbidden) {
-			t.Errorf("app.js inlines the bounded turn transcript via %q", forbidden)
+			t.Errorf("app.js inlines a retired bounded-turn transcript via %q", forbidden)
 		}
 	}
 }

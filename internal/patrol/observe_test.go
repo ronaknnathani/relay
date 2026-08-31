@@ -199,7 +199,7 @@ func TestContractHashDriftIsAttentionNotFatal(t *testing.T) {
 
 // A second unread outbox message on the same item keeps the reason code stable
 // but must change the attention fingerprint, so the next patrol tick runs a
-// fresh bounded CTO turn instead of deduplicating genuinely new mail away.
+// live CTO wake instead of deduplicating genuinely new mail away.
 func TestUnreadOutboxAttentionKeyTracksMessageIdentifiers(t *testing.T) {
 	snapshot := func(ids ...string) programview.Snapshot {
 		return programview.Snapshot{

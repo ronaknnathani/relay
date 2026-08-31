@@ -168,7 +168,7 @@ func installPatrolFakes(t *testing.T, client *fakeHerdrClient) {
 	})
 }
 
-func TestProgramPatrolRunUsesPatrolHerdrClientAndBoundedTurns(t *testing.T) {
+func TestProgramPatrolRunUsesPatrolHerdrClientAndLiveDoorbell(t *testing.T) {
 	p := createPatrolProgram(t, "with-herdr", program.StateActive)
 	client := &fakeHerdrClient{}
 	installPatrolFakes(t, client)
@@ -176,8 +176,9 @@ func TestProgramPatrolRunUsesPatrolHerdrClientAndBoundedTurns(t *testing.T) {
 		if slug != p.Slug || options.Agents != client || options.Notifier != client {
 			t.Fatalf("available Herdr options = %+v", options)
 		}
-		if _, ok := options.Turns.(boundedCTOTurnRunner); !ok {
-			t.Fatalf("patrol turn runner = %#v, want the bounded CTO turn runner", options.Turns)
+		runner, ok := options.Turns.(liveCTOTurnRunner)
+		if !ok || runner.client != client {
+			t.Fatalf("patrol turn runner = %#v, want live CTO runner using the Herdr client", options.Turns)
 		}
 		return nil
 	}
@@ -493,10 +494,7 @@ func TestProgramPatrolStatusStaysNotRunningWithoutFailureDetail(t *testing.T) {
 	}
 }
 
-// Relay refuses to guess headless flags. A program launched with an agent whose
-// noninteractive turn is unverified must fail closed with instructions instead
-// of silently losing its wake transport.
-func TestProgramPatrolStartAndRunRejectAgentsWithoutHeadlessTurns(t *testing.T) {
+func TestProgramPatrolSupportsNamedClaudeSessionsWithoutHeadlessTurns(t *testing.T) {
 	p := createPatrolProgram(t, "claude-patrol", program.StateActive)
 	p.Agent = "claude"
 	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
@@ -506,10 +504,17 @@ func TestProgramPatrolStartAndRunRejectAgentsWithoutHeadlessTurns(t *testing.T) 
 	t.Setenv("HERDR_WORKSPACE_ID", "workspace-1")
 	client := &fakeHerdrClient{}
 	installPatrolFakes(t, client)
-	patrolIsRunning = func(string) (bool, error) { return false, nil }
-	runCalled := false
-	patrolRunLoop = func(context.Context, string, patrol.Options) error {
-		runCalled = true
+	patrolIsRunning = func(string) (bool, error) { return true, nil }
+	patrolReadState = func(slug string) (patrol.State, error) {
+		return patrol.State{
+			Schema: patrol.SchemaVersion, Version: 1, ProgramSlug: slug,
+			Status: patrol.StatusRunning, PID: 77, Reasons: []patrol.Reason{},
+		}, nil
+	}
+	patrolRunLoop = func(_ context.Context, _ string, options patrol.Options) error {
+		if _, ok := options.Turns.(liveCTOTurnRunner); !ok {
+			t.Fatalf("Claude patrol runner = %#v, want live CTO doorbell", options.Turns)
+		}
 		return nil
 	}
 
@@ -517,24 +522,13 @@ func TestProgramPatrolStartAndRunRejectAgentsWithoutHeadlessTurns(t *testing.T) 
 		{"patrol", "start", p.Slug},
 		{"patrol", "run", p.Slug},
 	} {
-		_, err := runProgramCommand(t, args...)
-		if err == nil {
-			t.Fatalf("%v started a patrol for an agent without headless turns", args)
+		if _, err := runProgramCommand(t, args...); err != nil {
+			t.Fatalf("%v rejected named Claude session: %v", args, err)
 		}
-		for _, want := range []string{"claude", "bounded", "copilot"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("%v error %q is missing %q", args, err, want)
-			}
-		}
-	}
-	if runCalled || len(client.created) != 0 {
-		t.Fatalf("unsupported patrol agent reached the run loop or created tabs: %t %+v", runCalled, client.created)
 	}
 }
 
-// The CEO sees that a bounded turn happened and where its log is, but the
-// transcript is never printed inline.
-func TestProgramPatrolStatusReportsBoundedTurnMetadataOnly(t *testing.T) {
+func TestProgramPatrolStatusReportsLiveDoorbellMetadata(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	client := &fakeHerdrClient{}
 	installPatrolFakes(t, client)
@@ -555,10 +549,10 @@ func TestProgramPatrolStatusReportsBoundedTurnMetadataOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"Last turn: failed at 2026-08-27T10:17:00Z (session session-1)",
-		"Turn log: /home/u/.relay/run/adaptive/turns/20260827T101530Z-session-1.log",
-		"Turn error: exit status 2",
-		"Consecutive turn failures: 2",
+		"Last CTO wake: failed at 2026-08-27T10:17:00Z (session session-1)",
+		"Legacy turn log: /home/u/.relay/run/adaptive/turns/20260827T101530Z-session-1.log",
+		"CTO wake error: exit status 2",
+		"Consecutive CTO wake failures: 2",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("patrol status output is missing %q:\n%s", want, out)

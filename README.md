@@ -35,15 +35,16 @@ goal and architecture into dependency-aware senior-engineer assignments. Each as
 visible interactive Herdr worker tab that the CEO can inspect, while `deliver-pr` keeps its internal
 phase sub-agents. Program state and worker mail are durable, contracts are immutable and versioned,
 and the CEO remains in every escalation and final PR approval loop. A read-only adaptive patrol
-observes program health at a 15- or 30-minute cadence and, when attention changes, starts a fresh
-bounded CTO-role session that reconstructs durable state and exits. It never types into the
-CEO-facing CTO pane, and CEO-only decisions stay blocked inside automated turns.
+observes program health at a 15- or 30-minute cadence and, when attention changes, submits a
+payload-free doorbell to the existing idle CTO pane. Delivery targets the pane directly without
+changing the user's focus. Relay lets Herdr submit normally, then uses Herdr's terminal-control
+stream only as a confirmed-idle fallback. The CTO processes durable state in its existing
+conversation.
 
 Programs require [Herdr](docs/programs.md#herdr-is-required-for-managed-sessions): every managed
 program command and managed child session first verifies the `herdr` binary, its owning pane, a
 reachable Herdr server, and an approved Copilot or Claude integration, then fails closed with setup
-instructions. Codex programs are rejected rather than silently reporting monitored notifications,
-and patrol requires an agent with a verified headless turn (Copilot today).
+instructions. Codex programs are rejected rather than silently reporting monitored notifications.
 Standalone single-project Relay workflows never require Herdr.
 
 ## The `relay` CLI

@@ -58,7 +58,6 @@ func newCmdProgram() *cobra.Command {
 		newCmdProgramCanOpenPR(),
 		newCmdProgramTick(),
 		newCmdProgramPatrol(),
-		newCmdProgramCTO(),
 		newCmdProgramUI(),
 	)
 	return cmd

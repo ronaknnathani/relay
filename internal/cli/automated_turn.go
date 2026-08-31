@@ -10,15 +10,14 @@ import (
 	"github.com/ronaknnathani/relay/internal/program"
 )
 
-// automatedTurn reports whether the current process is a bounded automated
-// Relay turn. relay program cto turn sets the marker for the agent it runs.
+// automatedTurn reports whether the current process was explicitly marked as
+// unattended. The live CTO patrol never sets this marker.
 var automatedTurn = func() bool {
 	return os.Getenv(agent.AutomatedTurnEnvVar) == "1"
 }
 
-// automatedTurnSession returns the fresh agent session id of the current
-// bounded automated turn, which relay program cto turn exports alongside the
-// marker so every durable action can name the turn that made it.
+// automatedTurnSession returns the identity supplied by an explicitly marked
+// unattended Relay process.
 var automatedTurnSession = func() string {
 	return os.Getenv(agent.AutomatedTurnSessionEnvVar)
 }

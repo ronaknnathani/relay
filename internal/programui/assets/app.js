@@ -630,18 +630,19 @@ function renderOverview() {
     formatPatrolCadence(count(patrol.delay_seconds)),
     patrol.next_tick_at ? `next ${formatTimestamp(patrol.next_tick_at)}` : "",
     patrol.running ? (patrol.cto_present ? "CTO present" : "CTO unavailable") : "",
+    patrol.doorbell_suppressed ? "CTO wakes suppressed" : "",
   ].filter(Boolean).join(" · ") || "Start with relay program patrol";
   dom.patrolTurn.textContent = patrolTurnNote(patrol.turn || {});
 }
 
-/* The bounded CTO turn transcript can contain repository content, so the UI
-   shows only its status and where the log lives. */
+/* Older patrol state may retain bounded-turn log metadata. New patrols report
+   only whether the live CTO doorbell was confirmed. */
 function patrolTurnNote(turn) {
   const status = text(turn.status);
   if (!status) {
     return "";
   }
-  const parts = [`last turn ${humanize(status)}`];
+  const parts = [`last CTO wake ${humanize(status)}`];
   if (turn.ended_at) {
     parts.push(formatTimestamp(turn.ended_at));
   }

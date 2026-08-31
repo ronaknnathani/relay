@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	patrolPollInterval        = 100 * time.Millisecond
-	patrolHerdrCommandTimeout = 5 * time.Second
+	patrolPollInterval  = 100 * time.Millisecond
+	herdrCommandTimeout = 5 * time.Second
 )
 
 var (
@@ -28,7 +28,7 @@ var (
 	patrolRunLoop        = patrol.Run
 	patrolTickOnce       = patrol.Tick
 	newPatrolHerdrClient = func(ctx context.Context) herdrRuntimeClient {
-		return herdr.NewClientWithCommandTimeout(ctx, patrolHerdrCommandTimeout)
+		return herdr.NewClientWithCommandTimeout(ctx, herdrCommandTimeout)
 	}
 	patrolNow    = time.Now
 	patrolSleep  = time.Sleep
@@ -61,7 +61,7 @@ type programPatrolStatusOutput struct {
 func newCmdProgramPatrol() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "patrol",
-		Short: "Observe programs and wake the CTO with bounded turns when attention is needed",
+		Short: "Observe programs and wake the live CTO when attention is needed",
 	}
 	command.AddCommand(
 		newCmdProgramPatrolStart(),
@@ -206,7 +206,7 @@ func newCmdProgramPatrolRun() *cobra.Command {
 			options := patrol.Options{
 				RelayVersion: version,
 				Agents:       client,
-				Turns:        boundedCTOTurnRunner{},
+				Turns:        liveCTOTurnRunner{client: client},
 				Notifier:     client,
 			}
 			if err := patrolRunLoop(ctx, args[0], options); err != nil {
@@ -235,54 +235,41 @@ func validateProgramPatrolAgent(p program.Program) error {
 			p.Slug, a.Name(),
 		)
 	}
-	if !a.Capabilities().HeadlessTurn {
-		return fmt.Errorf(
-			"program %q uses %s, which Relay cannot run as a bounded noninteractive turn; "+
-				"the patrol wakes the CTO by starting a fresh bounded %s session, and Relay will not "+
-				"guess headless flags—use a program launched with copilot, or run this program's CTO "+
-				"turns manually from the interactive session",
-			p.Slug, a.Name(), a.Name(),
-		)
-	}
 	return nil
 }
 
-// boundedCTOTurnRunner is the patrol's only wake transport. It starts a fresh
-// same-role CTO session from durable state; it never resumes the live CEO
-// session and never types into the CEO-facing CTO pane.
-type boundedCTOTurnRunner struct{}
+const liveCTODoorbell = "Check Relay program mail and patrol state."
 
-func (boundedCTOTurnRunner) RunTurn(
-	ctx context.Context,
+// liveCTOTurnRunner submits a payload-free doorbell to the exact existing CTO
+// pane. PromptAgent writes Enter through terminal control, so focus is stable.
+type liveCTOTurnRunner struct {
+	client herdrRuntimeClient
+}
+
+func (r liveCTOTurnRunner) RunTurn(
+	_ context.Context,
 	request patrol.TurnRequest,
 ) (patrol.TurnResult, error) {
-	result, err := runProgramCTOTurn(ctx, request.ProgramSlug, programCTOTurnOptions{
-		fingerprint: request.Fingerprint,
-		reasons:     request.Reasons,
-	})
-	turn := patrol.TurnResult{
-		Status:    patrol.TurnStatus(result.Status),
-		SessionID: result.SessionID,
-		LogPath:   result.LogPath,
-		StartedAt: result.StartedAt,
-		EndedAt:   result.EndedAt,
-		Reason:    result.Reason,
-		Error:     result.Error,
+	if r.client == nil {
+		return patrol.TurnResult{
+			Status: patrol.TurnFailed,
+			Error:  "live CTO doorbell has no Herdr client",
+		}, nil
 	}
-	if err != nil {
-		if turn.Status == "" || turn.Status == patrol.TurnSkipped {
-			turn.Status = patrol.TurnFailed
+	if request.PaneID == "" {
+		return patrol.TurnResult{
+			Status: patrol.TurnFailed,
+			Error:  "live CTO doorbell has no target pane",
+		}, nil
+	}
+	if err := r.client.PromptAgent(request.PaneID, liveCTODoorbell); err != nil {
+		status := patrol.TurnFailed
+		if errors.Is(err, herdr.ErrPromptDeliveryUncertain) {
+			status = patrol.TurnUncertain
 		}
-		if turn.Error == "" {
-			turn.Error = err.Error()
-		}
-		return turn, nil
+		return patrol.TurnResult{Status: status, Error: err.Error()}, nil
 	}
-	if turn.Status == "" {
-		turn.Status = patrol.TurnFailed
-		turn.Error = "the bounded turn reported no status"
-	}
-	return turn, nil
+	return patrol.TurnResult{Status: patrol.TurnSucceeded}, nil
 }
 
 func newCmdProgramPatrolStatus() *cobra.Command {
@@ -358,14 +345,13 @@ func runProgramPatrolStatus(out io.Writer, slug string, jsonOutput bool) error {
 	return nil
 }
 
-// renderProgramPatrolTurn reports the last bounded turn as metadata only. The
-// transcript stays on disk: it can contain repository content the CEO did not
-// ask to see inline.
+// renderProgramPatrolTurn reports the last live CTO wake. Legacy session and
+// log fields remain visible when reading state written by an older build.
 func renderProgramPatrolTurn(out io.Writer, state patrol.State) {
 	if state.LastTurnStatus == "" {
 		return
 	}
-	fmt.Fprintf(out, "Last turn: %s", state.LastTurnStatus)
+	fmt.Fprintf(out, "Last CTO wake: %s", state.LastTurnStatus)
 	if state.LastTurnEndedAt != "" {
 		fmt.Fprintf(out, " at %s", state.LastTurnEndedAt)
 	}
@@ -374,13 +360,16 @@ func renderProgramPatrolTurn(out io.Writer, state patrol.State) {
 	}
 	fmt.Fprintln(out)
 	if state.LastTurnLogPath != "" {
-		fmt.Fprintf(out, "Turn log: %s\n", state.LastTurnLogPath)
+		fmt.Fprintf(out, "Legacy turn log: %s\n", state.LastTurnLogPath)
 	}
 	if state.LastTurnError != "" {
-		fmt.Fprintf(out, "Turn error: %s\n", state.LastTurnError)
+		fmt.Fprintf(out, "CTO wake error: %s\n", state.LastTurnError)
 	}
 	if state.TurnFailures > 0 {
-		fmt.Fprintf(out, "Consecutive turn failures: %d\n", state.TurnFailures)
+		fmt.Fprintf(out, "Consecutive CTO wake failures: %d\n", state.TurnFailures)
+	}
+	if state.DoorbellSuppressed {
+		fmt.Fprintln(out, "Automatic CTO wakes suppressed until the CTO composer is inspected and patrol is restarted")
 	}
 }
 

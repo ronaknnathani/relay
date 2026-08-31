@@ -215,22 +215,23 @@ func patrolDTO(slug, agentName string, snapshot *Snapshot) PatrolDTO {
 		return result
 	}
 	var state struct {
-		ProgramSlug       string            `json:"program_slug"`
-		Status            string            `json:"status"`
-		DelaySeconds      int64             `json:"delay_seconds"`
-		LastTickAt        string            `json:"last_tick_at"`
-		NextTickAt        string            `json:"next_tick_at"`
-		Reasons           []PatrolReasonDTO `json:"reasons"`
-		CTOPresent        bool              `json:"cto_present"`
-		LastTurnStatus    string            `json:"last_turn_status"`
-		LastTurnSessionID string            `json:"last_turn_session_id"`
-		LastTurnLogPath   string            `json:"last_turn_log_path"`
-		LastTurnStartedAt string            `json:"last_turn_started_at"`
-		LastTurnEndedAt   string            `json:"last_turn_ended_at"`
-		LastTurnError     string            `json:"last_turn_error"`
-		TurnFailures      int               `json:"turn_failures"`
-		Error             string            `json:"error"`
-		Warning           string            `json:"warning"`
+		ProgramSlug        string            `json:"program_slug"`
+		Status             string            `json:"status"`
+		DelaySeconds       int64             `json:"delay_seconds"`
+		LastTickAt         string            `json:"last_tick_at"`
+		NextTickAt         string            `json:"next_tick_at"`
+		Reasons            []PatrolReasonDTO `json:"reasons"`
+		CTOPresent         bool              `json:"cto_present"`
+		DoorbellSuppressed bool              `json:"doorbell_suppressed"`
+		LastTurnStatus     string            `json:"last_turn_status"`
+		LastTurnSessionID  string            `json:"last_turn_session_id"`
+		LastTurnLogPath    string            `json:"last_turn_log_path"`
+		LastTurnStartedAt  string            `json:"last_turn_started_at"`
+		LastTurnEndedAt    string            `json:"last_turn_ended_at"`
+		LastTurnError      string            `json:"last_turn_error"`
+		TurnFailures       int               `json:"turn_failures"`
+		Error              string            `json:"error"`
+		Warning            string            `json:"warning"`
 	}
 	if err := json.Unmarshal(data, &state); err != nil {
 		addSourceWarning(snapshot, &snapshot.SourceHealth.Patrol, fmt.Sprintf("parse patrol state %s: %v", path, err))
@@ -259,7 +260,8 @@ func patrolDTO(slug, agentName string, snapshot *Snapshot) PatrolDTO {
 		Status: status, Running: running,
 		DelaySeconds: state.DelaySeconds, LastTickAt: state.LastTickAt,
 		NextTickAt: state.NextTickAt, Reasons: reasons,
-		CTOPresent: running && state.CTOPresent && capabilityWarning == "", Error: state.Error,
+		CTOPresent:         running && state.CTOPresent && capabilityWarning == "",
+		DoorbellSuppressed: state.DoorbellSuppressed, Error: state.Error,
 		Turn: PatrolTurnDTO{
 			Status:    state.LastTurnStatus,
 			SessionID: state.LastTurnSessionID,
@@ -282,12 +284,6 @@ func patrolAgentWarning(name string) string {
 	if !capabilities.NamedSessions {
 		return fmt.Sprintf(
 			"patrol cannot notify the CTO for agent %s because its launch adapter cannot carry named sessions",
-			a.Name(),
-		)
-	}
-	if !capabilities.HeadlessTurn {
-		return fmt.Sprintf(
-			"patrol cannot wake the CTO for agent %s because Relay cannot run it as a bounded noninteractive turn",
 			a.Name(),
 		)
 	}

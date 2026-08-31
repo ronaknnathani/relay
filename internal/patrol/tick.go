@@ -28,8 +28,7 @@ type Options struct {
 	Ticker        TickerFactory
 	BuildSnapshot SnapshotBuilder
 	Agents        programview.AgentLister
-	// Turns starts one bounded, fresh, same-role CTO session when attention
-	// changes. The patrol never types into the CEO-facing CTO pane.
+	// Turns rings the existing live CTO session when attention changes.
 	Turns TurnRunner
 	// Notifier optionally raises a best-effort desktop notification.
 	Notifier     Notifier
@@ -38,7 +37,7 @@ type Options struct {
 }
 
 // Tick returns one read-only diagnostic observation. It does not acquire the
-// patrol lock, write runtime state, or start a bounded CTO turn.
+// patrol lock, write runtime state, or ring the live CTO.
 func Tick(slug string, options Options) (Observation, error) {
 	if err := project.ValidateSlug(slug); err != nil {
 		return Observation{}, fmt.Errorf("patrol program slug: %w", err)
