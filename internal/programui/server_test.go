@@ -5,10 +5,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ronaknnathani/relay/internal/program"
 	"github.com/ronaknnathani/relay/internal/programview"
 )
 
@@ -114,6 +117,76 @@ func TestServeWarnsAndContinuesWhenBrowserOpenFails(t *testing.T) {
 			t.Fatalf("Serve: %v", err)
 		}
 	case <-time.After(3 * time.Second):
+		t.Fatal("server did not stop after cancellation")
+	}
+}
+
+func TestServeDefaultHerdrListerTimesOutInsteadOfHanging(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p, err := program.New("bounded-herdr", "Bounded Herdr", repo, "copilot", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := program.Create(p); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	herdrPath := filepath.Join(binDir, "herdr")
+	if err := os.WriteFile(herdrPath, []byte("#!/bin/sh\nexec /bin/sleep 10\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	previousTimeout := programUIHerdrCommandTimeout
+	programUIHerdrCommandTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { programUIHerdrCommandTimeout = previousTimeout })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	output := newLineWriter()
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, Options{
+			Slug: p.Slug, Port: 0, Open: false, Out: output,
+		})
+	}()
+
+	var url string
+	select {
+	case line := <-output.lines:
+		url = strings.TrimSpace(line)
+	case err := <-done:
+		t.Fatalf("server stopped before listening: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("server hung while listing Herdr agents")
+	}
+	response, err := http.Get(url + "/api/program")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("API status = %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "context deadline exceeded") {
+		t.Fatalf("API response did not report the bounded Herdr failure: %s", body)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(time.Second):
 		t.Fatal("server did not stop after cancellation")
 	}
 }

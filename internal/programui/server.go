@@ -19,6 +19,8 @@ const (
 	githubTTL   = 12 * time.Second
 )
 
+var programUIHerdrCommandTimeout = 5 * time.Second
+
 // Options configures the foreground local Program UI server.
 type Options struct {
 	Slug        string
@@ -50,7 +52,9 @@ func Serve(ctx context.Context, options Options) error {
 		cachedGitHub := newGitHubCache(github, githubTTL, now)
 		agents := options.Agents
 		if agents == nil {
-			agents = programview.NewHerdrAgentLister()
+			agents = programview.NewHerdrAgentListerWithCommandTimeout(
+				ctx, programUIHerdrCommandTimeout,
+			)
 		}
 		builder = func(slug, detailItem string) (programview.Snapshot, error) {
 			return programview.Build(slug, programview.Options{
