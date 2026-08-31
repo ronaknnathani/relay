@@ -289,6 +289,32 @@ func TestPromptAgentReportsUncertainDeliveryWithoutFocusingOrRetrying(t *testing
 	}
 }
 
+func TestPromptAgentTreatsPromptTimeoutAndCancellationAsUncertain(t *testing.T) {
+	for _, promptErr := range []error{context.DeadlineExceeded, context.Canceled} {
+		t.Run(promptErr.Error(), func(t *testing.T) {
+			calls := 0
+			client := NewClientWithRunner(func(args ...string) ([]byte, error) {
+				calls++
+				if calls == 1 {
+					return []byte(
+						`{"result":{"agents":[{"agent_status":"idle","state_change_seq":30,"pane_id":"w1:p2"}]}}`,
+					), nil
+				}
+				return nil, promptErr
+			})
+
+			err := client.PromptAgent("w1:p2", "Check Relay program mail and patrol state.")
+			if !errors.Is(err, ErrPromptDeliveryUncertain) ||
+				!errors.Is(err, promptErr) {
+				t.Fatalf("prompt error = %v, want ErrPromptDeliveryUncertain wrapping %v", err, promptErr)
+			}
+			if calls != 2 {
+				t.Fatalf("Herdr calls = %d, want preflight plus one prompt attempt", calls)
+			}
+		})
+	}
+}
+
 func TestPromptAgentToleratesTransientStateReadFailures(t *testing.T) {
 	type response struct {
 		output string

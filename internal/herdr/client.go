@@ -250,6 +250,12 @@ func (c *Client) PromptAgent(target, text string) error {
 	}
 
 	err = c.runJSON(&struct{}{}, "agent", "prompt", target, text)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return fmt.Errorf(
+			"%w for agent %q: prompt command ended before delivery could be confirmed: %w",
+			ErrPromptDeliveryUncertain, target, err,
+		)
+	}
 	if err != nil && !strings.Contains(err.Error(), "agent_prompt_stalled") {
 		return fmt.Errorf("prompt Herdr agent %q: %w", target, err)
 	}
