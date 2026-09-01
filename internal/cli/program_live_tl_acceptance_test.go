@@ -41,11 +41,11 @@ func (c *liveAcceptanceClock) Set(now time.Time) {
 
 func TestPatrolWakesTheExistingTLPaneWithoutStartingASession(t *testing.T) {
 	p, childDir := createLiveTLFixture(t)
-	cto := herdr.Agent{
+	tl := herdr.Agent{
 		PaneID: "tl-pane", TerminalTitle: "relay:program:" + p.Slug + " - GitHub Copilot",
 		Status: herdr.StatusIdle, NativeSessionID: "existing-session",
 	}
-	client := &fakeHerdrClient{agentResponses: [][]herdr.Agent{{cto}}}
+	client := &fakeHerdrClient{agentResponses: [][]herdr.Agent{{tl}}}
 	sendLiveTLMail(t, p.Slug, childDir, "m-1")
 
 	start := time.Date(2026, 8, 31, 13, 0, 0, 0, time.UTC)
@@ -100,12 +100,12 @@ func TestPatrolWakesTheExistingTLPaneWithoutStartingASession(t *testing.T) {
 
 func TestPatrolSuppressesRetriesAfterUnconfirmedLiveDoorbell(t *testing.T) {
 	p, childDir := createLiveTLFixture(t)
-	cto := herdr.Agent{
+	tl := herdr.Agent{
 		PaneID: "tl-pane", TerminalTitle: "relay:program:" + p.Slug,
 		Status: herdr.StatusDone, NativeSessionID: "existing-session",
 	}
 	client := &fakeHerdrClient{
-		agentResponses: [][]herdr.Agent{{cto}},
+		agentResponses: [][]herdr.Agent{{tl}},
 		promptErr:      herdr.ErrPromptDeliveryUncertain,
 	}
 	sendLiveTLMail(t, p.Slug, childDir, "m-1")

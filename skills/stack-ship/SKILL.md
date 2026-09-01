@@ -1,6 +1,6 @@
 ---
 name: stack-ship
-description: "Use only for a standalone stack explicitly launched with `relay --workflow stack-ship`; never invoke inside a CTO-managed Relay program. Decompose one goal into small PRs, delegate build and monitor work, surface author decisions, and auto-merge only after human approval."
+description: "Use only for a standalone stack explicitly launched with `relay --workflow stack-ship`; never invoke inside a tech-lead-managed Relay program. Decompose one goal into small PRs, delegate build and monitor work, surface author decisions, and auto-merge only after human approval."
 disable-model-invocation: true
 ---
 

@@ -48,7 +48,7 @@ func TestProgramDecisionOpenIsIdempotentAndDoesNotDuplicateTheDecisionLog(t *tes
 }
 
 // Every CEO-only mutation must fail closed inside a bounded automated turn. The
-// automated CTO may raise decisions; it may never answer them on the CEO's
+// automated tech lead may raise decisions; it may never answer them on the CEO's
 // behalf or move the program through an approval gate.
 func TestCEOOnlyCommandsAreBlockedDuringAnAutomatedTurn(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -136,7 +136,7 @@ func startAutomatedTurn(t *testing.T, sessionID string) {
 
 // Everything a bounded automated turn writes durably must read as automated.
 // A CEO scanning decisions.md, progress.md, or a worker inbox has to be able to
-// tell an unattended turn from the human CTO without opening a transcript.
+// tell an unattended turn from the human tech lead without opening a transcript.
 func TestAutomatedTurnStampsEveryDurableEntryItCanWrite(t *testing.T) {
 	p, item, manifest, _ := createMessageFixture(t)
 	t.Setenv("HERDR_ENV", "")
@@ -192,7 +192,7 @@ func TestAutomatedTurnStampsEveryDurableEntryItCanWrite(t *testing.T) {
 		t.Errorf("inbox body %q does not end with %q", inbox[0].Body, testAutomatedNote)
 	}
 	if inbox[0].From != mailbox.ActorTL || inbox[0].To != mailbox.ActorWorker {
-		t.Errorf("inbox routing = %q -> %q, want cto -> worker", inbox[0].From, inbox[0].To)
+		t.Errorf("inbox routing = %q -> %q, want tl -> worker", inbox[0].From, inbox[0].To)
 	}
 
 	// Replies, unsolicited notifications, revocations, and dispatch-side
@@ -255,7 +255,7 @@ func TestAutomatedTurnStampsWorkerOutboxMessages(t *testing.T) {
 	}
 }
 
-// Human CTO and CEO commands are untouched: attribution appears only when the
+// Human tech lead and CEO commands are untouched: attribution appears only when the
 // process really is a bounded automated turn.
 func TestHumanTurnsRecordNoAutomatedAttribution(t *testing.T) {
 	p, item, manifest, _ := createMessageFixture(t)
@@ -458,7 +458,7 @@ func TestProgramContractPublishRunsNormallyOutsideAnAutomatedTurn(t *testing.T) 
 
 // Attribution is metadata, not content. An empty or whitespace-only body must
 // stay invalid inside a bounded automated turn: appending the automated note
-// would fabricate a message the CTO never wrote and slip it past validation.
+// would fabricate a message the tech lead never wrote and slip it past validation.
 func TestAutomatedAttributionNeverTurnsAnEmptyBodyIntoAMessage(t *testing.T) {
 	p, item, manifest, before := createMessageFixture(t)
 	projectDir := messageProjectDir(manifest)

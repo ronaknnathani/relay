@@ -34,19 +34,19 @@ func TestProgramDocsDescribeLiveTLDoorbells(t *testing.T) {
 		{
 			path: filepath.Join("docs", "programs.md"),
 			required: []string{
-				"Live CTO doorbells",
-				"herdr agent prompt <cto-pane>",
-				"herdr terminal session control <cto-pane> --takeover",
+				"Live tech lead doorbells",
+				"herdr agent prompt <tl-pane>",
+				"herdr terminal session control <tl-pane> --takeover",
 				`{"type":"terminal.input","bytes":"DQ=="}`,
 				"still idle after the grace period",
 				"current dimensions",
 				"currently focused",
 				"records an `uncertain` wake",
-				"duplicated CTOs",
+				"duplicated tech leads",
 				"sorted unread worker-outbox message ids",
 			},
 			forbidden: []string{
-				"relay program cto turn <slug>",
+				"relay program tl turn <slug>",
 				"fresh, bounded, same-role",
 				"RELAY_AUTOMATED_TURN_SESSION_ID",
 			},
@@ -54,10 +54,10 @@ func TestProgramDocsDescribeLiveTLDoorbells(t *testing.T) {
 		{
 			path: "README.md",
 			required: []string{
-				"existing idle CTO pane",
+				"existing idle tech lead pane",
 				"changing the user's focus",
 			},
-			forbidden: []string{"bounded CTO-role session", "verified headless turn"},
+			forbidden: []string{"bounded tech lead-role session", "verified headless turn"},
 		},
 	} {
 		t.Run(test.path, func(t *testing.T) {

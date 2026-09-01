@@ -342,7 +342,7 @@ func TestProjectViewsWithPRIndexReconcilesMergedAndClosedLinkedItems(t *testing.
 	if err := p.DispatchItem(closedItem.ID, "closed-child"); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.GrantOpenPR(closedItem.ID, "cto", nil); err != nil {
+	if err := p.GrantOpenPR(closedItem.ID, "tl", nil); err != nil {
 		t.Fatal(err)
 	}
 	for slug, number := range map[string]int{"merged-child": 201, "closed-child": 202} {

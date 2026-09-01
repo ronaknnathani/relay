@@ -30,15 +30,15 @@ PR to merged, delegating real failures, review comments, and conflicts to `pr-fi
 of small PRs, builds each with `deliver-pr`, monitors the front PR with `pr-monitor`, and advances the
 stack in order — stopping when every PR is merged and never merging without human approval.
 
-**Programs** add a governance layer above projects. A re-enterable CTO session turns a CEO-approved
+**Programs** add a governance layer above projects. A re-enterable tech lead session turns a CEO-approved
 goal and architecture into dependency-aware senior-engineer assignments. Each assignment runs as a
 visible interactive Herdr worker tab that the CEO can inspect, while `deliver-pr` keeps its internal
 phase sub-agents. Program state and worker mail are durable, contracts are immutable and versioned,
 and the CEO remains in every escalation and final PR approval loop. A read-only adaptive patrol
 observes program health at a 15- or 30-minute cadence and, when attention changes, submits a
-payload-free doorbell to the existing idle CTO pane. Delivery targets the pane directly without
+payload-free doorbell to the existing idle tech lead pane. Delivery targets the pane directly without
 changing the user's focus. Relay lets Herdr submit normally, then uses Herdr's terminal-control
-stream only as a confirmed-idle fallback. The CTO processes durable state in its existing
+stream only as a confirmed-idle fallback. The tech lead processes durable state in its existing
 conversation.
 
 Programs require [Herdr](docs/programs.md#herdr-is-required-for-managed-sessions): every managed
@@ -57,8 +57,8 @@ relay -n my-slug "..."                          # custom slug
 relay --workflow stack-ship "<design goal>"     # launch the multi-PR orchestrator instead
 relay                                           # list active projects
 relay resume <slug>                             # reopen where you left off
-relay program new "<large goal>"                # create a CTO-managed program
-relay program resume <slug>                     # re-enter the CTO program
+relay program new "<large goal>"                # create a tech-lead-managed program
+relay program resume <slug>                     # re-enter the tech lead program
 relay program queue <slug>                      # inspect ready and blocked work
 relay program ui <slug>                         # open the live local program UI
 relay program patrol status <slug>              # inspect the adaptive read-only patrol

@@ -138,8 +138,8 @@ func TestCopilotPackageInvariants(t *testing.T) {
 func TestCopilotStackShipUsesNativeGoal(t *testing.T) {
 	_, out := generateCopilot(t)
 	body := readFile(t, filepath.Join(out, "skills", "stack-ship", "SKILL.md"))
-	if !strings.Contains(body, "never invoke inside a CTO-managed Relay program") {
-		t.Error("stack-ship is missing the CTO-program exclusion")
+	if !strings.Contains(body, "never invoke inside a tech-lead-managed Relay program") {
+		t.Error("stack-ship is missing the tech-lead-program exclusion")
 	}
 
 	for _, snippet := range []string{

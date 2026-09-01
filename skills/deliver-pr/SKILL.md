@@ -91,7 +91,8 @@ For the phase `relay state next` reported:
      exists and no grant-approved inbox instruction exists, stop without sending another request.
    - If neither a request nor grant-approved instruction exists, send exactly one `pr-open` message
      using the assignment's command and stop.
-   - Only after reading the CTO's grant-approved inbox instruction, leave that message unread and run
+   - Only after reading the tech lead's grant-approved inbox instruction, leave that message unread and
+     run
      the exact `relay program can-open-pr <program> <item>` command from `assignment.md`. If it fails,
      keep `open-pr` pending and stop. If it passes, continue to the `open-pr` phase.
    - If a previously recorded pull request was closed without merging, Relay clears the stale reference
@@ -108,7 +109,7 @@ For the phase `relay state next` reported:
    when the author answers. For a managed assignment, never prompt the worker or write
    `questions.md`: run the exact `relay program message send <program> <item> --kind
    question|conflict --body ...` command from `assignment.md`, then stop. Contract, scope,
-   dependency, and risk conflicts stop the affected work; CTO-worker conflicts escalate to the CEO.
+   dependency, and risk conflicts stop the affected work; tech lead-worker conflicts escalate to the CEO.
    Never run `relay program decision open` or otherwise write program state.
 6. **On success:** for a managed `open-pr`, first verify the PR is open and recorded, then acknowledge
    the grant-approved inbox message. Never acknowledge it after a failed `open-pr`. Next run

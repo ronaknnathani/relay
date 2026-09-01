@@ -55,7 +55,7 @@ func newCmdProgramMessageSend() *cobra.Command {
 	var kind, body, options string
 	cmd := &cobra.Command{
 		Use:   "send <program> <item>",
-		Short: "Send a worker message to the CTO",
+		Short: "Send a worker message to the tech lead",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runProgramMessageSend(cmd.OutOrStdout(), args[0], args[1], kind, body, options)
@@ -85,7 +85,7 @@ func newCmdProgramMessageInbox() *cobra.Command {
 	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:   "inbox <program> <item>",
-		Short: "List unread CTO messages for a worker",
+		Short: "List unread tech lead messages for a worker",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runProgramMessageInbox(cmd.OutOrStdout(), args[0], args[1], jsonOutput)
@@ -99,7 +99,7 @@ func newCmdProgramMessageOutbox() *cobra.Command {
 	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:   "outbox <program> <item>",
-		Short: "List unread worker messages sent to the CTO",
+		Short: "List unread worker messages sent to the tech lead",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runProgramMessageOutbox(cmd.OutOrStdout(), args[0], args[1], jsonOutput)
@@ -129,7 +129,7 @@ func newCmdProgramMessageNotify() *cobra.Command {
 	var kind, body, decisionID string
 	cmd := &cobra.Command{
 		Use:   "notify <program> <item>",
-		Short: "Send an unsolicited CTO message to a worker",
+		Short: "Send an unsolicited tech lead message to a worker",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runProgramMessageNotify(cmd.OutOrStdout(), args[0], args[1], kind, body, decisionID)

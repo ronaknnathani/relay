@@ -67,7 +67,7 @@ func TestProgramCanOpenPRUsesItsReservationAtZeroAvailableAndIsReadOnly(t *testi
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	p, item := createCanOpenPRProgram(t, 3)
-	if err := p.GrantOpenPR(item.ID, "cto", nil); err != nil {
+	if err := p.GrantOpenPR(item.ID, "tl", nil); err != nil {
 		t.Fatal(err)
 	}
 	for i := 1; i <= 2; i++ {

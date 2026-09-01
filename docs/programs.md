@@ -1,9 +1,10 @@
-# Relay Programs: CTO-managed engineering
+# Relay Programs: tech-lead-managed engineering
 
 ## Goal
 
 Relay Programs add a governance layer above ordinary Relay projects. A user acts as CEO and talks to
-one CTO agent about a large product goal, priorities, architecture, and decisions. The CTO decomposes
+one tech lead agent about a large product goal, priorities, architecture, and decisions. The tech
+lead decomposes
 the approved goal into dependency-aware engineering assignments and delegates them to senior worker
 agents. Workers retain ownership of repository-level clarification, planning, implementation, review,
 validation, and pull-request creation.
@@ -14,7 +15,7 @@ The intended end state is a trustworthy local engineering organization:
 CEO
   |
   v
-CTO program session
+TL program session
   |  goals, priorities, contracts, decisions
   v
 Relay controller and scheduler
@@ -33,7 +34,7 @@ The CEO remains responsible for:
 
 1. Approving goals and priorities.
 2. Approving material system-level architecture.
-3. Resolving every issue surfaced by the CTO or workers, including CTO-worker conflicts.
+3. Resolving every issue surfaced by the tech lead or workers, including tech lead-worker conflicts.
 4. Performing the final genuine human GitHub review and approval.
 
 Agents never self-approve or directly merge. They may enable auto-merge only after genuine human
@@ -51,7 +52,7 @@ A program is durable governance over unchanged Relay projects, not a second exec
 - Program state never depends on preserving an agent conversation.
 - The Relay binary is the only writer of `program.json`.
 - Adaptive patrol is read-only with respect to program, project, git, mailbox, and notification
-  marker state. When attention changes it submits a payload-free doorbell to the existing CTO pane
+  marker state. When attention changes it submits a payload-free doorbell to the existing TL pane
   without changing the user's focused workspace or pane.
 - Program writes use an optimistic revision and a short exclusive save lock so concurrent commands
   fail instead of silently overwriting each other.
@@ -68,7 +69,8 @@ relay resume <project>
 
 ## What V1.1 implements
 
-V1.1 is a foreground, file-backed foundation that validates the CTO operating model without adding a
+V1.1 is a foreground, file-backed foundation that validates the tech lead operating model without
+adding a
 daemon, Dolt server, GitHub polling service, or new runtime dependency.
 
 ### Program lifecycle
@@ -91,7 +93,7 @@ Programs store:
 
 ### Senior-engineer delegation
 
-The CTO publishes an engineering contract, not an implementation recipe. It captures binding
+The tech lead publishes an engineering contract, not an implementation recipe. It captures binding
 architecture, interfaces, constraints, scope, exclusions, acceptance criteria, and guardrails.
 
 The worker still runs:
@@ -102,7 +104,8 @@ clarify -> plan -> implement -> simplify -> review -> validate -> open-pr
 
 The worker escalates contract conflicts, scope changes, missing dependencies, risks, plans requiring
 review, and pre-PR requests through its durable outbox. Routine implementation choices remain
-worker-owned. The CTO remains the sole writer of program decisions and sends complete answers through
+worker-owned. The tech lead remains the sole writer of program decisions and sends complete answers
+through
 the worker inbox.
 
 ### Herdr is required for managed sessions
@@ -127,7 +130,7 @@ require Herdr.
 
 ### Visible Herdr worker owners
 
-Each dispatched work item gets one interactive owner tab in the CTO's current workspace:
+Each dispatched work item gets one interactive owner tab in the tech lead's current workspace:
 
 ```bash
 relay program worker start auth-platform w1
@@ -170,11 +173,11 @@ lock is released by the kernel. Relay never installs or changes Herdr integratio
 Every managed child project has filesystem mail that survives worker and Herdr restarts:
 
 ```text
-mail/inbox/              CTO -> worker unread
-mail/outbox/             worker -> CTO unread
+mail/inbox/              TL -> worker unread
+mail/outbox/             worker -> TL unread
 mail/notified/           durable per-message Herdr doorbell markers
 mail/processed/inbox/    worker-acknowledged messages
-mail/processed/outbox/   CTO-acknowledged messages
+mail/processed/outbox/   TL-acknowledged messages
 ```
 
 Workers send `question`, `conflict`, `plan`, and `pr-open` messages without writing `program.json`:
@@ -192,7 +195,7 @@ requests:
 relay program message outbox auth-platform w1 --json
 ```
 
-The CTO checks all unread worker mail at the start of every turn:
+The tech lead checks all unread worker mail at the start of every turn:
 
 ```bash
 relay program message list auth-platform --json
@@ -203,7 +206,8 @@ warning has `{item, project, error}`. For a valid active child, Relay automatica
 missing legacy mailbox directories before list, send, inbox, reply, notify, or acknowledge
 operations; a missing child project remains an item-specific error.
 
-After the CEO resolves a question, conflict, or plan review, the CTO writes the complete answer to
+After the CEO resolves a question, conflict, or plan review, the tech lead writes the complete answer
+to
 the child inbox. A successful reply also acknowledges the original outbox message:
 
 ```bash
@@ -219,8 +223,8 @@ already present in `mail/notified/`, and prompts only a live `idle` or `done` He
 later retry. After a successful prompt, Relay marks every currently unread, unnotified message.
 Repeated calls for already marked mail return successfully without prompting.
 
-Never ring the doorbell merely because an inbox message remains unread on a later CTO turn. The CTO
-may retry `worker notify` only for mail whose earlier attempt stayed unnotified because the worker
+Never ring the doorbell merely because an inbox message remains unread on a later TL turn. The tech
+lead may retry `worker notify` only for mail whose earlier attempt stayed unnotified because the worker
 was busy, missing, or the attempt failed; the CLI enforces both marker and status checks. Workers
 always check their inbox before state routing and at the top of every phase loop, act on unread
 messages, and acknowledge each only after the action is durable:
@@ -230,10 +234,10 @@ relay program message inbox auth-platform w1 --json
 relay program message ack auth-platform w1 <inbox-id>
 ```
 
-The CTO can also send unsolicited `decision`, `feedback`, or `instruction` messages with
+The tech lead can also send unsolicited `decision`, `feedback`, or `instruction` messages with
 `relay program message notify`. There is no worker-to-worker messaging.
 
-### Adaptive CTO patrol
+### Adaptive tech lead patrol
 
 Relay runs a foreground read-only observer with runtime files outside active and archived program
 directories:
@@ -245,7 +249,7 @@ directories:
 
 The process holds a nonblocking kernel file lock for its lifetime, so crashes, forced termination,
 reboots, and PID reuse release ownership safely. `patrol.json` records process/version metadata,
-last and next checks, cadence, stable reasons, CTO presence, notification fingerprint, errors,
+last and next checks, cadence, stable reasons, TL presence, notification fingerprint, errors,
 warnings, and stop status. The lock is authoritative for liveness; missing, stale, or corrupt state
 is reported as degraded instead of claiming the patrol is running. Writes use an atomic temporary
 file plus rename. Archiving a program stops its patrol cleanly while leaving runtime history under
@@ -254,7 +258,7 @@ file plus rename. Archiving a program stops its patrol cleanly while leaving run
 Every tick builds the same read-only program view used by the UI and directly reads linked project,
 mailbox, contract, git, and Herdr observations. It never calls program reconciliation commands,
 writes worker mail, acknowledges messages, creates notification markers, grants PR capacity,
-dispatches work, starts workers, or launches a CTO.
+dispatches work, starts workers, or launches a tech lead.
 
 Draft and pending-approval programs check every 30 minutes and attend only to open decisions,
 approval, or unread linked worker outboxes. Active programs check every 15 minutes while mail,
@@ -263,11 +267,12 @@ important child warnings need attention; otherwise they check every 30 minutes. 
 running, use 15 minutes for mail, decisions, blocked work, or missing workers, and ignore ready work.
 Completed, abandoned, archived, or missing programs stop.
 
-#### Live CTO doorbells
+#### Live tech lead doorbells
 
 When attention changes, the patrol finds the single live Herdr pane whose title carries the exact
-`relay:program:<program>` identity. The CTO must be `idle` or `done`; `working`, `blocked`, absent,
-or duplicated CTOs are skipped. `relay program resume` also refuses to launch a second CTO for the
+`relay:program:<program>` identity. The tech lead must be `idle` or `done`; `working`, `blocked`,
+absent, or duplicated tech leads are skipped. `relay program resume` also refuses to launch a second
+tech lead for the
 same program and points at the live pane instead.
 
 Relay stages the payload-free prompt `Check Relay program mail and patrol state.` with `agent
@@ -276,8 +281,8 @@ transition first. Only when the exact pane is still idle after the grace period 
 carriage return through Herdr's terminal-session control protocol:
 
 ```text
-herdr agent prompt <cto-pane> "Check Relay program mail and patrol state."
-herdr terminal session control <cto-pane> --takeover
+herdr agent prompt <tl-pane> "Check Relay program mail and patrol state."
+herdr terminal session control <tl-pane> --takeover
   {"type":"terminal.input","bytes":"DQ=="}
 ```
 
@@ -291,12 +296,14 @@ The user's currently focused workspace and pane do not change. Relay confirms a 
 The patrol arms the attention fingerprint only after confirmed delivery. Definite pre-submission
 failures retry up to three times. If text may have been staged but no turn transition can be
 confirmed, Relay records an `uncertain` wake, suppresses every further automatic doorbell for that
-patrol process, and instructs the operator to inspect and clear the CTO composer before restarting
+patrol process, and instructs the operator to inspect and clear the tech lead composer before
+restarting
 patrol. This prevents repeated prompt text from accumulating. Unchanged successfully delivered
 attention is re-armed after two hours.
 
 The attention fingerprint includes sorted unread worker-outbox message ids, not just their count, so
-a second question on the same item wakes the live CTO immediately. The CTO then reconstructs durable
+a second question on the same item wakes the live tech lead immediately. The tech lead then
+reconstructs durable
 state and performs the needed governance work in the existing CEO-facing conversation.
 
 Manage it with:
@@ -311,16 +318,18 @@ relay program patrol stop auth-platform
 `start` adopts an existing lock holder or creates an unfocused plain Herdr tab labeled
 `relay-patrol:<program>` in the program repository; it does not launch a coding agent. Both `start`
 and `run` require Herdr and fail closed with setup instructions when it is missing. The interactive
-CTO checks patrol status on entry and then stays available to the CEO. A patrol doorbell tells that
+tech lead checks patrol status on entry and then stays available to the CEO. A patrol doorbell tells
+that
 same session to reload durable state and process current mail and program observations.
 
 `patrol status` reports the runtime lock as the authority for `running`, and still surfaces `error`,
 `stop_reason`, and `warning` from the last recorded state when the patrol failed or stopped, so a
 dead patrol explains itself instead of reading as a plain `not-running`.
 
-Patrol CTO discovery requires the agent launch adapter to carry the
+Patrol tech lead discovery requires the agent launch adapter to carry the
 `relay:program:<program>` session name. Claude and Copilot support named sessions; Relay rejects
-`patrol start` and `patrol run` for agents without that capability instead of claiming the CTO is
+`patrol start` and `patrol run` for agents without that capability instead of claiming the tech lead
+is
 monitored.
 
 ### Dependency queue
@@ -359,11 +368,11 @@ and floors at zero. `open` counts actual open PRs for linked active child projec
 linked PR appears, reconciliation changes the item to `in-review` and clears the grant, so the PR is
 open rather than double-counted as reserved.
 
-The CTO serializes worker requests with:
+The tech lead serializes worker requests with:
 
 ```bash
-relay program grant-open-pr <program> <item> --by cto
-relay program revoke-open-pr <program> <item> --by cto --reason "<reason>"
+relay program grant-open-pr <program> <item> --by tl
+relay program revoke-open-pr <program> <item> --by tl --reason "<reason>"
 ```
 
 `grant-open-pr` verifies contracts and project state, checks decisions and derived capacity, then
@@ -379,7 +388,8 @@ pending notes because the inbox is durable; an actual prompt or marker failure i
 warning.
 
 This save → durable mail → doorbell order makes failures recoverable. If mail fails, the command
-reports that the grant already exists and prints a `program message notify` repair command; the CTO
+reports that the grant already exists and prints a `program message notify` repair command; the tech
+lead
 may repair the inbox or revoke the unused grant. A missing or failed Herdr prompt never rolls back
 the grant or inbox message.
 
@@ -444,7 +454,7 @@ An unreadable linked child never fails the whole program. `program status`, `pro
 warning, and the read-only UI reports the same warning under project source health. An unavailable
 child is never reported as merged or orphaned and never fabricates free capacity: its recorded pull
 request still counts as open. Item repair commands (`item link`, `item block`, `item cancel`) keep
-working so the CTO can fix the child.
+working so the tech lead can fix the child.
 
 ### Local program UI
 
@@ -465,7 +475,7 @@ The UI refreshes automatically and visualizes:
 - Every work item by status, priority, worker, mailbox, and pull request.
 - Dependency links as a circuit-style graph plus an accessible task ledger.
 - Open and resolved decisions, contracts, assumptions, warnings, and next action.
-- Patrol status, cadence, next check, exact attention reasons, CTO presence, and errors.
+- Patrol status, cadence, next check, exact attention reasons, TL presence, and errors.
 - Child requirements, plans, progress, tradeoffs, questions, follow-ups, and other known artifacts.
 - Live GitHub PR checks/review state and Herdr worker liveness when those sources are available.
 
@@ -483,13 +493,13 @@ Archived programs are viewable with the same command.
 
 | State | Canonical owner | Writer |
 | --- | --- | --- |
-| Goal narrative and guardrails | `goal.md` | CEO and CTO |
+| Goal narrative and guardrails | `goal.md` | CEO and TL |
 | Program lifecycle, items, dependencies, decisions | `program.json` | `relay program` commands |
 | Architecture contracts | `contracts/<name>/vN.md` | `contract publish`; immutable afterward |
 | Human decision history | `decisions.md` | `relay program` commands |
 | Program audit history | `progress.md` | `relay program` commands |
 | Child worktree, branch, workflow, PR | Child Relay project | Existing project and `relay state` commands |
-| Worker handoffs | Child `mail/` directories | CTO and worker message commands |
+| Worker handoffs | Child `mail/` directories | TL and worker message commands |
 | Worker process, tab, pane, and focus | Herdr runtime | Herdr; non-authoritative and re-derived |
 | Patrol process, cadence, reasons, and attention fingerprint | `~/.relay/run/<slug>/patrol.json` | `relay program patrol run`; read-only toward program/project state |
 | Managed worker start exclusion | `~/.relay/run/workers/<child-slug>/start.lock` | `relay program worker start`; kernel-released advisory lock |
@@ -509,7 +519,7 @@ Substitute `claude` or `codex` when that is your configured agent.
 
 ## Conversational workflow
 
-Create a program and enter its CTO session:
+Create a program and enter its tech lead session:
 
 ```bash
 relay program new \
@@ -517,7 +527,8 @@ relay program new \
   --name auth-platform
 ```
 
-The CTO reconstructs program state on every entry, works with you on the goal and architecture, and
+The tech lead reconstructs program state on every entry, works with you on the goal and architecture,
+and
 uses the commands below to maintain durable state. Re-enter later with:
 
 ```bash
@@ -536,7 +547,7 @@ relay program tick auth-platform
 
 The same lifecycle can be driven explicitly.
 
-### 1. Create without launching the CTO
+### 1. Create without launching the tech lead
 
 ```bash
 relay program new \
@@ -668,7 +679,8 @@ structured `{item, project, error}` warning without hiding healthy workers. Pend
 linked but not dispatched are omitted.
 
 Dispatch prints the `relay program worker start` command for the new child. The legacy
-`relay program dispatch auth-platform w1 --launch` foreground path remains available, but the CTO
+`relay program dispatch auth-platform w1 --launch` foreground path remains available, but the tech
+lead
 workflow uses Herdr tabs so the CEO-facing session stays responsive.
 
 The child receives:
@@ -688,7 +700,8 @@ relay program message send auth-platform w1 \
   --body "The existing token type cannot represent the approved expiry semantics. Change the contract or add an adapter?"
 ```
 
-The CTO lists it, opens or uses the corresponding program decision, and surfaces that decision to
+The tech lead lists it, opens or uses the corresponding program decision, and surfaces that decision
+to
 the CEO:
 
 ```bash
@@ -704,7 +717,7 @@ The aggregate JSON result is `{messages, warnings}`. Missing, orphaned, or archi
 produce per-item `{item, project, error}` warnings while messages from healthy children remain
 available. Text mode prints the same warnings and continues.
 
-After the CEO decides, the CTO resolves the program decision and replies through the mailbox:
+After the CEO decides, the tech lead resolves the program decision and replies through the mailbox:
 
 ```bash
 relay program decision resolve auth-platform d2 \
@@ -728,10 +741,10 @@ relay program message send auth-platform w1 \
   --kind pr-open --body "Ready to open the managed pull request; please grant capacity."
 ```
 
-The CTO grants capacity when available without escalating a routine request to the CEO:
+The tech lead grants capacity when available without escalating a routine request to the CEO:
 
 ```bash
-relay program grant-open-pr auth-platform w1 --by cto
+relay program grant-open-pr auth-platform w1 --by tl
 ```
 
 After reading the grant-approved inbox instruction, the worker leaves it unread and runs:
@@ -835,8 +848,8 @@ semantics only after a real program requires them.
 ## Design invariants
 
 1. The CEO remains in the goal, architecture, escalation, and final-review loops.
-2. Every issue found by the CTO or workers is surfaced to the CEO.
-3. A CTO-worker disagreement pauses affected work and escalates to the CEO.
+2. Every issue found by the tech lead or workers is surfaced to the CEO.
+3. A tech lead-worker disagreement pauses affected work and escalates to the CEO.
 4. Workers own local clarification and implementation planning.
 5. Contracts are immutable, versioned, hashed, and binding.
 6. Program machine state is changed only through `relay program`.
