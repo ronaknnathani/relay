@@ -31,6 +31,55 @@ func FindLiveWorker(agents []Agent, childSlug, repo, worktree string) (Agent, bo
 // identity.
 var ErrNoLiveTL = errors.New("no live CEO-facing tech lead session")
 
+// ErrNoLiveProjectOwner reports that no live Herdr agent carries a project's
+// Relay identity.
+var ErrNoLiveProjectOwner = errors.New("no live Relay project owner session")
+
+// DuplicateProjectOwnerError reports that more than one live Herdr agent
+// claims one project identity. Ownership is ambiguous, so no caller may act.
+type DuplicateProjectOwnerError struct {
+	Slug    string
+	PaneIDs []string
+}
+
+func (e *DuplicateProjectOwnerError) Error() string {
+	return fmt.Sprintf(
+		"project %q has %d live Relay sessions (panes %s); exactly one session owns a project—"+
+			"focus each pane with `herdr agent focus <pane>`, exit all but one, then retry",
+		e.Slug, len(e.PaneIDs), strings.Join(e.PaneIDs, ", "),
+	)
+}
+
+// FindLiveProjectOwner returns the single live Herdr agent whose terminal title
+// is exactly one project's Relay identity. Zero matches return
+// ErrNoLiveProjectOwner and more than one return a *DuplicateProjectOwnerError.
+// A near-miss title such as "relay:foo-bar" never matches "relay:foo", and
+// working-directory proximity is deliberately not an ownership signal because
+// several sessions can share one repository.
+func FindLiveProjectOwner(agents []Agent, slug string) (Agent, error) {
+	if slug == "" {
+		return Agent{}, fmt.Errorf("%w: no project was named", ErrNoLiveProjectOwner)
+	}
+	identity := "relay:" + slug
+	var matches []Agent
+	for _, agent := range agents {
+		if matchesRelayTitle(agent.TerminalTitle, identity) {
+			matches = append(matches, agent)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return Agent{}, fmt.Errorf("%w for project %q", ErrNoLiveProjectOwner, slug)
+	case 1:
+		return matches[0], nil
+	}
+	panes := make([]string, 0, len(matches))
+	for _, match := range matches {
+		panes = append(panes, match.PaneID)
+	}
+	return Agent{}, &DuplicateProjectOwnerError{Slug: slug, PaneIDs: panes}
+}
+
 // DuplicateTLError reports that more than one live Herdr agent claims one
 // program's tech-lead identity. Ownership is ambiguous, so no caller may act.
 type DuplicateTLError struct {
