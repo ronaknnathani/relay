@@ -9,6 +9,7 @@ import (
 
 	"github.com/ronaknnathani/relay/internal/mailbox"
 	"github.com/ronaknnathani/relay/internal/program"
+	"github.com/ronaknnathani/relay/internal/role"
 	"github.com/spf13/cobra"
 )
 
@@ -35,7 +36,7 @@ func newCmdProgramGrantOpenPR() *cobra.Command {
 			return runProgramGrantOpenPR(cmd.OutOrStdout(), args[0], args[1], by, jsonOutput)
 		},
 	}
-	cmd.Flags().StringVar(&by, "by", "cto", "granting program actor")
+	cmd.Flags().StringVar(&by, "by", role.TL, "granting program actor")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output grant and capacity as JSON")
 	return cmd
 }
@@ -50,7 +51,7 @@ func newCmdProgramRevokeOpenPR() *cobra.Command {
 			return runProgramRevokeOpenPR(cmd.OutOrStdout(), args[0], args[1], by, reason)
 		},
 	}
-	cmd.Flags().StringVar(&by, "by", "cto", "revoking program actor")
+	cmd.Flags().StringVar(&by, "by", role.TL, "revoking program actor")
 	cmd.Flags().StringVar(&reason, "reason", "", "reason for revoking the grant")
 	_ = cmd.MarkFlagRequired("reason")
 	return cmd
@@ -143,7 +144,7 @@ func runProgramRevokeOpenPR(out io.Writer, programSlug, itemID, by, reason strin
 		Kind:    mailbox.KindInstruction,
 		Program: p.Slug,
 		Item:    item.ID,
-		From:    mailbox.ActorCTO,
+		From:    mailbox.ActorTL,
 		To:      mailbox.ActorWorker,
 		Body:    openPRRevokeMessage(by, reason),
 	})
@@ -191,7 +192,7 @@ func sendOpenPRGrantMessage(p program.Program, item program.WorkItem) (mailbox.M
 		Kind:    mailbox.KindInstruction,
 		Program: p.Slug,
 		Item:    item.ID,
-		From:    mailbox.ActorCTO,
+		From:    mailbox.ActorTL,
 		To:      mailbox.ActorWorker,
 		Body:    openPRGrantMessage(p.Slug, item.ID),
 		ReplyTo: replyTo,
@@ -217,9 +218,9 @@ func openPRGrantMessage(programSlug, itemID string) string {
 }
 
 func openPRRevokeMessage(by, reason string) string {
-	actor := strings.TrimSpace(by)
+	actor := role.NormalizeIdentity(strings.TrimSpace(by))
 	if actor == "" {
-		actor = "cto"
+		actor = role.TL
 	}
 	return fmt.Sprintf(
 		"Open-PR grant revoked by %s: %s. Stop before open-pr and request another grant when ready.",

@@ -99,13 +99,13 @@ func TestBuildPopulatesProgramDetailAndDegradesPerSource(t *testing.T) {
 	writeTestFile(t, filepath.Join(childDir, "plan.md"), "selected plan\n")
 	if _, err := mailbox.Send(childDir, mailbox.Inbox, mailbox.Message{
 		ID: "in-1", Kind: mailbox.KindInstruction, Program: p.Slug, Item: "w2",
-		From: mailbox.ActorCTO, To: mailbox.ActorWorker, Body: "continue", Options: []string{}, CreatedAt: at,
+		From: mailbox.ActorTL, To: mailbox.ActorWorker, Body: "continue", Options: []string{}, CreatedAt: at,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := mailbox.Send(childDir, mailbox.Outbox, mailbox.Message{
 		ID: "out-1", Kind: mailbox.KindQuestion, Program: p.Slug, Item: "w2",
-		From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "ready?", Options: []string{}, CreatedAt: at,
+		From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "ready?", Options: []string{}, CreatedAt: at,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +530,7 @@ func TestBuildExposesSortedUnreadMailboxIdentifiers(t *testing.T) {
 	for _, id := range []string{"out-2", "out-1"} {
 		if _, err := mailbox.Send(childDir, mailbox.Outbox, mailbox.Message{
 			ID: id, Kind: mailbox.KindQuestion, Program: p.Slug, Item: "w1",
-			From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "ready?",
+			From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "ready?",
 			Options: []string{}, CreatedAt: at,
 		}); err != nil {
 			t.Fatal(err)

@@ -107,14 +107,14 @@ func TestSendAndListRoundTripInCreatedOrder(t *testing.T) {
 
 	later, err := Send(projectDir, Outbox, Message{
 		Kind: KindQuestion, Program: "governance", Item: "w1",
-		From: ActorWorker, To: ActorCTO, Body: "Which API?", Options: []string{"A", "B"},
+		From: ActorWorker, To: ActorTL, Body: "Which API?", Options: []string{"A", "B"},
 	})
 	if err != nil {
 		t.Fatalf("Send later: %v", err)
 	}
 	earlier, err := Send(projectDir, Outbox, Message{
 		Kind: KindPlan, Program: "governance", Item: "w1",
-		From: ActorWorker, To: ActorCTO, Body: "Review the plan.", Options: []string{},
+		From: ActorWorker, To: ActorTL, Body: "Review the plan.", Options: []string{},
 	})
 	if err != nil {
 		t.Fatalf("Send earlier: %v", err)
@@ -134,7 +134,7 @@ func TestListOrdersCreatedAtChronologically(t *testing.T) {
 	projectDir := t.TempDir()
 	later, err := Send(projectDir, Outbox, Message{
 		ID: "later", Kind: KindQuestion, Program: "governance", Item: "w1",
-		From: ActorWorker, To: ActorCTO, Body: "Later",
+		From: ActorWorker, To: ActorTL, Body: "Later",
 		CreatedAt: "2026-08-24T20:00:00-07:00",
 	})
 	if err != nil {
@@ -142,7 +142,7 @@ func TestListOrdersCreatedAtChronologically(t *testing.T) {
 	}
 	earlier, err := Send(projectDir, Outbox, Message{
 		ID: "earlier", Kind: KindQuestion, Program: "governance", Item: "w1",
-		From: ActorWorker, To: ActorCTO, Body: "Earlier",
+		From: ActorWorker, To: ActorTL, Body: "Earlier",
 		CreatedAt: "2026-08-25T02:00:00Z",
 	})
 	if err != nil {
@@ -162,7 +162,7 @@ func TestFindAndAcknowledgeMoveMessageToProcessed(t *testing.T) {
 	projectDir := t.TempDir()
 	sent, err := Send(projectDir, Inbox, Message{
 		Kind: KindDecision, Program: "governance", Item: "w2",
-		From: ActorCTO, To: ActorWorker, Body: "Use the adapter.",
+		From: ActorTL, To: ActorWorker, Body: "Use the adapter.",
 		ReplyTo: "question-1", DecisionID: "d2",
 	})
 	if err != nil {
@@ -205,7 +205,7 @@ func TestRejectsDuplicateAndPathTraversalIDs(t *testing.T) {
 	projectDir := t.TempDir()
 	message := Message{
 		ID: "fixed-id", Kind: KindQuestion, Program: "governance", Item: "w1",
-		From: ActorWorker, To: ActorCTO, Body: "Which API?",
+		From: ActorWorker, To: ActorTL, Body: "Which API?",
 		CreatedAt: "2026-08-24T20:00:00Z",
 	}
 	if _, err := Send(projectDir, Outbox, message); err != nil {
@@ -229,7 +229,7 @@ func TestListRejectsMessageWhoseIDDoesNotMatchFilename(t *testing.T) {
 	projectDir := t.TempDir()
 	message, err := Send(projectDir, Outbox, Message{
 		ID: "original", Kind: KindQuestion, Program: "governance", Item: "w1",
-		From: ActorWorker, To: ActorCTO, Body: "Which API?",
+		From: ActorWorker, To: ActorTL, Body: "Which API?",
 		CreatedAt: "2026-08-24T20:00:00Z",
 	})
 	if err != nil {
@@ -269,7 +269,7 @@ func TestAcknowledgeRejectsInvalidMessageWithoutMovingIt(t *testing.T) {
 func TestSendValidatesMessages(t *testing.T) {
 	validOutbox := Message{
 		Kind: KindQuestion, Program: "governance", Item: "w1",
-		From: ActorWorker, To: ActorCTO, Body: "Which API?",
+		From: ActorWorker, To: ActorTL, Body: "Which API?",
 	}
 	tests := []struct {
 		name    string
@@ -287,11 +287,11 @@ func TestSendValidatesMessages(t *testing.T) {
 		{name: "created", box: Outbox, message: withMessage(validOutbox, func(m *Message) { m.CreatedAt = "yesterday" })},
 		{name: "kind", box: Outbox, message: withMessage(validOutbox, func(m *Message) { m.Kind = KindDecision })},
 		{name: "actors", box: Outbox, message: withMessage(validOutbox, func(m *Message) {
-			m.From, m.To = ActorCTO, ActorWorker
+			m.From, m.To = ActorTL, ActorWorker
 		})},
 		{name: "inbox kind", box: Inbox, message: Message{
 			Kind: KindQuestion, Program: "governance", Item: "w1",
-			From: ActorCTO, To: ActorWorker, Body: "Wrong kind.",
+			From: ActorTL, To: ActorWorker, Body: "Wrong kind.",
 		}},
 	}
 	for _, test := range tests {
@@ -310,7 +310,7 @@ func TestSendReportsRandomFailure(t *testing.T) {
 
 	_, err := Send(t.TempDir(), Outbox, Message{
 		Kind: KindQuestion, Program: "governance", Item: "w1",
-		From: ActorWorker, To: ActorCTO, Body: "Which API?",
+		From: ActorWorker, To: ActorTL, Body: "Which API?",
 	})
 	if err == nil || !strings.Contains(err.Error(), "generate mailbox message id") {
 		t.Fatalf("Send error = %v", err)
@@ -344,7 +344,7 @@ func TestSendAndAcknowledgeIgnoreALeftoverLockFile(t *testing.T) {
 
 	message, err := Send(projectDir, Outbox, Message{
 		Kind: KindQuestion, Program: "governance", Item: "w1",
-		From: ActorWorker, To: ActorCTO, Body: "Which API?",
+		From: ActorWorker, To: ActorTL, Body: "Which API?",
 	})
 	if err != nil {
 		t.Fatalf("Send with a leftover lock file: %v", err)
@@ -373,7 +373,7 @@ func TestReserveExcludesALiveHolderAndRecoversFromAKilledOne(t *testing.T) {
 	send := func() (Message, error) {
 		return Send(projectDir, Outbox, Message{
 			Kind: KindQuestion, Program: "governance", Item: "w1",
-			From: ActorWorker, To: ActorCTO, Body: "Which API?",
+			From: ActorWorker, To: ActorTL, Body: "Which API?",
 		})
 	}
 	if _, err := send(); err == nil {

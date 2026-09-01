@@ -23,17 +23,17 @@ func TestProgramGrantOpenPRPersistsThenRepliesToOldestRequest(t *testing.T) {
 	for _, message := range []mailbox.Message{
 		{
 			ID: "plan-1", Kind: mailbox.KindPlan, Program: p.Slug, Item: item.ID,
-			From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "Review plan.",
+			From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "Review plan.",
 			CreatedAt: "2026-08-24T20:00:00Z",
 		},
 		{
 			ID: "pr-open-1", Kind: mailbox.KindPROpen, Program: p.Slug, Item: item.ID,
-			From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "Ready for PR.",
+			From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "Ready for PR.",
 			CreatedAt: "2026-08-24T20:00:01Z",
 		},
 		{
 			ID: "pr-open-2", Kind: mailbox.KindPROpen, Program: p.Slug, Item: item.ID,
-			From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "Still ready.",
+			From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "Still ready.",
 			CreatedAt: "2026-08-24T20:00:02Z",
 		},
 	} {
@@ -42,7 +42,7 @@ func TestProgramGrantOpenPRPersistsThenRepliesToOldestRequest(t *testing.T) {
 		}
 	}
 
-	out, err := runProgramCommand(t, "grant-open-pr", p.Slug, item.ID, "--by", "cto", "--json")
+	out, err := runProgramCommand(t, "grant-open-pr", p.Slug, item.ID, "--by", "tl", "--json")
 	if err != nil {
 		t.Fatalf("grant-open-pr: %v\n%s", err, out)
 	}
@@ -50,7 +50,7 @@ func TestProgramGrantOpenPRPersistsThenRepliesToOldestRequest(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("decode output %q: %v", out, err)
 	}
-	if got.Program != p.Slug || got.Item != item.ID || got.GrantedBy != "cto" ||
+	if got.Program != p.Slug || got.Item != item.ID || got.GrantedBy != "tl" ||
 		got.GrantedAt == "" || got.MessageReplyTo != "pr-open-1" ||
 		got.Capacity != (program.Capacity{Limit: 3, Reserved: 1, Available: 2}) {
 		t.Fatalf("output = %+v", got)
@@ -132,7 +132,7 @@ func TestProgramGrantOpenPRMailboxFailureLeavesRepairableGrant(t *testing.T) {
 		t.Fatal(loadErr)
 	}
 	granted, _ := loaded.Item(item.ID)
-	if granted.PRGrantedAt == "" || granted.PRGrantedBy != "cto" {
+	if granted.PRGrantedAt == "" || granted.PRGrantedBy != "tl" {
 		t.Fatalf("repairable grant = %+v", granted)
 	}
 }
@@ -176,7 +176,7 @@ func TestProgramGrantOpenPRAckFailureKeepsDurableGrantAndReply(t *testing.T) {
 	projectDir := messageProjectDir(manifest)
 	request, err := mailbox.Send(projectDir, mailbox.Outbox, mailbox.Message{
 		ID: "pr-open-1", Kind: mailbox.KindPROpen, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "Ready for PR.",
+		From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "Ready for PR.",
 		CreatedAt: "2026-08-24T20:00:00Z",
 	})
 	if err != nil {
@@ -216,7 +216,7 @@ func TestProgramGrantOpenPRAckFailureKeepsDurableGrantAndReply(t *testing.T) {
 func TestProgramRevokeOpenPRPersistsAndNotifiesWorker(t *testing.T) {
 	p, item, manifest, _ := createMessageFixture(t)
 	t.Setenv("HERDR_ENV", "")
-	if err := p.GrantOpenPR(item.ID, "cto", nil); err != nil {
+	if err := p.GrantOpenPR(item.ID, "tl", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
@@ -224,7 +224,7 @@ func TestProgramRevokeOpenPRPersistsAndNotifiesWorker(t *testing.T) {
 	}
 
 	out, err := runProgramCommand(t, "revoke-open-pr", p.Slug, item.ID,
-		"--by", "cto", "--reason", "capacity reassigned")
+		"--by", "tl", "--reason", "capacity reassigned")
 	if err != nil {
 		t.Fatalf("revoke-open-pr: %v\n%s", err, out)
 	}
@@ -254,7 +254,7 @@ func TestProgramRevokeOpenPRBusyDoorbellRemainsPending(t *testing.T) {
 	p, item, manifest, _ := createMessageFixture(t)
 	t.Setenv("HERDR_ENV", "1")
 	t.Setenv("HERDR_WORKSPACE_ID", "w7")
-	if err := p.GrantOpenPR(item.ID, "cto", nil); err != nil {
+	if err := p.GrantOpenPR(item.ID, "tl", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
@@ -267,7 +267,7 @@ func TestProgramRevokeOpenPRBusyDoorbellRemainsPending(t *testing.T) {
 	installWorkerFakes(t, client)
 
 	out, err := runProgramCommand(t, "revoke-open-pr", p.Slug, item.ID,
-		"--by", "cto", "--reason", "capacity reassigned")
+		"--by", "tl", "--reason", "capacity reassigned")
 	if err != nil {
 		t.Fatalf("revoke-open-pr: %v\n%s", err, out)
 	}
@@ -403,7 +403,7 @@ func TestProgramGrantOpenPRHerdrDoorbellIsBestEffort(t *testing.T) {
 
 func TestProgramStatusRendersReservedCapacity(t *testing.T) {
 	p, item, _, _ := createMessageFixture(t)
-	if err := p.GrantOpenPR(item.ID, "cto", nil); err != nil {
+	if err := p.GrantOpenPR(item.ID, "tl", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {

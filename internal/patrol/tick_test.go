@@ -115,7 +115,7 @@ func TestTickNeverMutatesProgramProjectOrMailboxAcrossObservedChanges(t *testing
 	childDir := filepath.Dir(project.ManifestPath(project.ActiveDir(), manifest.Slug))
 	if _, err := mailbox.Send(childDir, mailbox.Outbox, mailbox.Message{
 		ID: "out-1", Kind: mailbox.KindQuestion, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "question",
+		From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "question",
 		Options: []string{}, CreatedAt: p.CreatedAt,
 	}); err != nil {
 		t.Fatal(err)

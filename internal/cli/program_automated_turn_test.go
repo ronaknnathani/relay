@@ -124,8 +124,8 @@ func TestCEOOnlyCommandsRunNormallyOutsideAnAutomatedTurn(t *testing.T) {
 
 const (
 	testAutomatedSessionID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
-	testAutomatedActor     = "cto-automated:3f2504e0"
-	testAutomatedNote      = "[automated CTO turn 3f2504e0, on behalf of CEO]"
+	testAutomatedActor     = "tl-automated:3f2504e0"
+	testAutomatedNote      = "[automated tech lead turn 3f2504e0, on behalf of CEO]"
 )
 
 func startAutomatedTurn(t *testing.T, sessionID string) {
@@ -191,7 +191,7 @@ func TestAutomatedTurnStampsEveryDurableEntryItCanWrite(t *testing.T) {
 	if !strings.HasSuffix(inbox[0].Body, testAutomatedNote) {
 		t.Errorf("inbox body %q does not end with %q", inbox[0].Body, testAutomatedNote)
 	}
-	if inbox[0].From != mailbox.ActorCTO || inbox[0].To != mailbox.ActorWorker {
+	if inbox[0].From != mailbox.ActorTL || inbox[0].To != mailbox.ActorWorker {
 		t.Errorf("inbox routing = %q -> %q, want cto -> worker", inbox[0].From, inbox[0].To)
 	}
 
@@ -199,7 +199,7 @@ func TestAutomatedTurnStampsEveryDurableEntryItCanWrite(t *testing.T) {
 	// progress carry the same attribution.
 	request, err := mailbox.Send(projectDir, mailbox.Outbox, mailbox.Message{
 		Kind: mailbox.KindQuestion, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "Which API?",
+		From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "Which API?",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -276,7 +276,7 @@ func TestHumanTurnsRecordNoAutomatedAttribution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(progress), "automated CTO turn") {
+	if strings.Contains(string(progress), "automated tech lead turn") {
 		t.Errorf("human progress carries automated attribution:\n%s", progress)
 	}
 	inbox, err := mailbox.List(messageProjectDir(manifest), mailbox.Inbox)
@@ -284,7 +284,7 @@ func TestHumanTurnsRecordNoAutomatedAttribution(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(inbox) != 1 || inbox[0].AutomatedBy != "" ||
-		strings.Contains(inbox[0].Body, "automated CTO turn") {
+		strings.Contains(inbox[0].Body, "automated tech lead turn") {
 		t.Fatalf("human inbox message = %+v", inbox)
 	}
 }
@@ -300,9 +300,9 @@ func TestAutomatedActorUsesAShortSessionPrefix(t *testing.T) {
 		wantOK    bool
 	}{
 		{name: "uuid", automated: "1", session: testAutomatedSessionID, want: testAutomatedActor, wantOK: true},
-		{name: "short", automated: "1", session: "ab12", want: "cto-automated:ab12", wantOK: true},
-		{name: "unsafe", automated: "1", session: "../../escape", want: "cto-automated:escape", wantOK: true},
-		{name: "missing", automated: "1", session: "", want: "cto-automated:unknown", wantOK: true},
+		{name: "short", automated: "1", session: "ab12", want: "tl-automated:ab12", wantOK: true},
+		{name: "unsafe", automated: "1", session: "../../escape", want: "tl-automated:escape", wantOK: true},
+		{name: "missing", automated: "1", session: "", want: "tl-automated:unknown", wantOK: true},
 		{name: "human", automated: "", session: testAutomatedSessionID, want: "", wantOK: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -319,8 +319,8 @@ func TestAutomatedActorUsesAShortSessionPrefix(t *testing.T) {
 				}
 				return
 			}
-			prefix := strings.TrimPrefix(test.want, "cto-automated:")
-			want := "Opened decision d1 [automated CTO turn " + prefix + ", on behalf of CEO]"
+			prefix := strings.TrimPrefix(test.want, "tl-automated:")
+			want := "Opened decision d1 [automated tech lead turn " + prefix + ", on behalf of CEO]"
 			if entry != want {
 				t.Fatalf("entry = %q, want %q", entry, want)
 			}
@@ -464,7 +464,7 @@ func TestAutomatedAttributionNeverTurnsAnEmptyBodyIntoAMessage(t *testing.T) {
 	projectDir := messageProjectDir(manifest)
 	request, err := mailbox.Send(projectDir, mailbox.Outbox, mailbox.Message{
 		Kind: mailbox.KindQuestion, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "Which API?",
+		From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "Which API?",
 	})
 	if err != nil {
 		t.Fatal(err)

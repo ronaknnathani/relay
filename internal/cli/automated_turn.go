@@ -8,10 +8,11 @@ import (
 	"github.com/ronaknnathani/relay/internal/agent"
 	"github.com/ronaknnathani/relay/internal/mailbox"
 	"github.com/ronaknnathani/relay/internal/program"
+	"github.com/ronaknnathani/relay/internal/role"
 )
 
 // automatedTurn reports whether the current process was explicitly marked as
-// unattended. The live CTO patrol never sets this marker.
+// unattended. The live tech-lead patrol never sets this marker.
 var automatedTurn = func() bool {
 	return os.Getenv(agent.AutomatedTurnEnvVar) == "1"
 }
@@ -24,8 +25,8 @@ var automatedTurnSession = func() string {
 
 const (
 	// automatedActorPrefix prefixes every program actor a bounded automated
-	// turn writes, so no durable record can be read as a human CTO or CEO.
-	automatedActorPrefix = "cto-automated:"
+	// turn writes, so no durable record can be read as a human tech lead or CEO.
+	automatedActorPrefix = role.AutomatedTLPrefix
 	// automatedSessionPrefixLen keeps the durable identity short and quotable
 	// while staying unique enough to find the turn's transcript.
 	automatedSessionPrefixLen = 8
@@ -44,7 +45,7 @@ func requireCEOTurn(command string) error {
 	return fmt.Errorf(
 		"%s is a CEO-only decision and is blocked in a bounded automated turn (%s=1); "+
 			"record the recommendation with `relay program decision open` and let the CEO run it "+
-			"from the interactive CTO session",
+			"from the interactive tech-lead session",
 		command, agent.AutomatedTurnEnvVar,
 	)
 }
@@ -61,7 +62,7 @@ func requirePlanShapingTurn(command string) error {
 	return fmt.Errorf(
 		"%s reshapes the program plan and is blocked in a bounded automated turn (%s=1); "+
 			"record the proposal with `relay program decision open` and let the CEO shape the plan "+
-			"in the interactive CTO session",
+			"in the interactive tech-lead session",
 		command, agent.AutomatedTurnEnvVar,
 	)
 }
@@ -87,7 +88,7 @@ func automatedSessionPrefix() string {
 
 // automatedActor returns the forced program identity of the current process.
 // It is the single source of automated attribution: no flag, prompt, or agent
-// instruction can change it, so a bounded turn can never sign as `cto` or `ceo`.
+// instruction can change it, so a bounded turn can never sign as `tl` or `ceo`.
 func automatedActor() (string, bool) {
 	if !automatedTurn() {
 		return "", false
@@ -95,14 +96,26 @@ func automatedActor() (string, bool) {
 	return automatedActorPrefix + automatedSessionPrefix(), true
 }
 
+// admitProgramActor normalizes a caller-supplied actor before it is written or
+// printed. It exists because the tech-lead session that is already running was
+// started before the rename and still types `--by cto`: the retired identity is
+// admitted at the CLI boundary and converted once, so every durable record and
+// every line of output carries the canonical identity. Any other actor—`ceo`,
+// `board`, a username—is passed through untouched.
+func admitProgramActor(requested string) string {
+	return role.NormalizeIdentity(requested)
+}
+
 // programActor forces the automated identity over whatever actor the caller
-// requested. Outside a bounded automated turn the requested actor is used
-// unchanged, so human CTO and CEO commands keep their existing behavior.
+// requested. Outside a bounded automated turn the requested actor is admitted
+// after normalization, so a human tech-lead or CEO command keeps its existing
+// behavior and a retired `--by cto` from a session that started before the
+// rename still writes the canonical identity.
 func programActor(requested string) string {
 	if actor, ok := automatedActor(); ok {
 		return actor
 	}
-	return requested
+	return admitProgramActor(requested)
 }
 
 // attributeProgramEntry appends human-readable automated attribution to a
@@ -115,7 +128,7 @@ func attributeProgramEntry(text string) string {
 		return text
 	}
 	return fmt.Sprintf(
-		"%s [automated CTO turn %s, on behalf of CEO]",
+		"%s [automated tech lead turn %s, on behalf of CEO]",
 		strings.TrimRight(text, " "), automatedSessionPrefix(),
 	)
 }

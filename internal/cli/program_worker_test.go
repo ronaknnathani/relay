@@ -522,7 +522,7 @@ func TestProgramWorkerNotifyPromptsOnceForNewInbox(t *testing.T) {
 	for index, id := range []string{"instruction-1", "instruction-2"} {
 		message, err := mailbox.Send(messageProjectDir(manifest), mailbox.Inbox, mailbox.Message{
 			ID: id, Kind: mailbox.KindInstruction, Program: p.Slug, Item: item.ID,
-			From: mailbox.ActorCTO, To: mailbox.ActorWorker, Body: "Use the adapter.",
+			From: mailbox.ActorTL, To: mailbox.ActorWorker, Body: "Use the adapter.",
 			CreatedAt: time.Date(2026, time.August, 26, 7, 0, index, 0, time.UTC).Format(time.RFC3339),
 		})
 		if err != nil {
@@ -591,7 +591,7 @@ func TestProgramWorkerNotifyPromptsDoneWorker(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
 	message, err := mailbox.Send(messageProjectDir(manifest), mailbox.Inbox, mailbox.Message{
 		ID: "instruction-1", Kind: mailbox.KindInstruction, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorCTO, To: mailbox.ActorWorker, Body: "Use the adapter.",
+		From: mailbox.ActorTL, To: mailbox.ActorWorker, Body: "Use the adapter.",
 		CreatedAt: "2026-08-26T07:00:00Z",
 	})
 	if err != nil {
@@ -626,7 +626,7 @@ func TestProgramWorkerNotifyWaitsForBusyWorker(t *testing.T) {
 			p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
 			message, err := mailbox.Send(messageProjectDir(manifest), mailbox.Inbox, mailbox.Message{
 				ID: "instruction-1", Kind: mailbox.KindInstruction, Program: p.Slug, Item: item.ID,
-				From: mailbox.ActorCTO, To: mailbox.ActorWorker, Body: "Use the adapter.",
+				From: mailbox.ActorTL, To: mailbox.ActorWorker, Body: "Use the adapter.",
 				CreatedAt: "2026-08-26T07:00:00Z",
 			})
 			if err != nil {
@@ -683,7 +683,7 @@ func TestProgramWorkerNotifyReportsMarkerFailureAfterPrompt(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
 	message, err := mailbox.Send(messageProjectDir(manifest), mailbox.Inbox, mailbox.Message{
 		ID: "instruction-1", Kind: mailbox.KindInstruction, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorCTO, To: mailbox.ActorWorker, Body: "Use the adapter.",
+		From: mailbox.ActorTL, To: mailbox.ActorWorker, Body: "Use the adapter.",
 		CreatedAt: "2026-08-26T07:00:00Z",
 	})
 	if err != nil {
@@ -721,7 +721,7 @@ func TestProgramWorkerNotifySuppressesRetryAfterUncertainPrompt(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
 	message, err := mailbox.Send(messageProjectDir(manifest), mailbox.Inbox, mailbox.Message{
 		ID: "instruction-1", Kind: mailbox.KindInstruction, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorCTO, To: mailbox.ActorWorker, Body: "Use the adapter.",
+		From: mailbox.ActorTL, To: mailbox.ActorWorker, Body: "Use the adapter.",
 		CreatedAt: "2026-08-26T07:00:00Z",
 	})
 	if err != nil {
@@ -882,7 +882,7 @@ func TestProgramWorkerFailuresAreActionable(t *testing.T) {
 		p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
 		if _, err := mailbox.Send(messageProjectDir(manifest), mailbox.Inbox, mailbox.Message{
 			ID: "instruction-1", Kind: mailbox.KindInstruction, Program: p.Slug, Item: item.ID,
-			From: mailbox.ActorCTO, To: mailbox.ActorWorker, Body: "Use the adapter.",
+			From: mailbox.ActorTL, To: mailbox.ActorWorker, Body: "Use the adapter.",
 			CreatedAt: "2026-08-26T07:00:00Z",
 		}); err != nil {
 			t.Fatal(err)

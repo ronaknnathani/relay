@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ronaknnathani/relay/internal/patrollock"
+	"github.com/ronaknnathani/relay/internal/role"
 )
 
 // Box identifies an unread mailbox.
@@ -47,7 +48,7 @@ type Actor string
 // Supported mailbox actors.
 const (
 	ActorWorker Actor = "worker"
-	ActorCTO    Actor = "cto"
+	ActorTL     Actor = role.TL
 )
 
 // Message is one durable mailbox message.
@@ -61,12 +62,23 @@ type Message struct {
 	Body    string   `json:"body"`
 	Options []string `json:"options"`
 	// AutomatedBy names the bounded automated turn that wrote this message.
-	// From stays a routing endpoint, so the reader still knows whether the CTO
-	// or the worker side wrote it; AutomatedBy records that no human did.
+	// From stays a routing endpoint, so the reader still knows whether the tech
+	// lead or the worker side wrote it; AutomatedBy records that no human did.
 	AutomatedBy string `json:"automated_by,omitempty"`
 	ReplyTo     string `json:"reply_to,omitempty"`
 	DecisionID  string `json:"decision_id,omitempty"`
 	CreatedAt   string `json:"created_at"`
+}
+
+// normalize returns a copy of m with retired role identities on its routing
+// endpoints and automated marker rewritten to their canonical form. It is the
+// decode-side compatibility rule only: the body and every other free-text field
+// is content and is never touched.
+func (m Message) normalize() Message {
+	m.From = Actor(role.NormalizeIdentity(string(m.From)))
+	m.To = Actor(role.NormalizeIdentity(string(m.To)))
+	m.AutomatedBy = role.NormalizeIdentity(m.AutomatedBy)
+	return m
 }
 
 var (
@@ -75,7 +87,7 @@ var (
 	safeID                 = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	itemID                 = regexp.MustCompile(`^w[1-9][0-9]*$`)
 	decisionID             = regexp.MustCompile(`^d[1-9][0-9]*$`)
-	automatedBy            = regexp.MustCompile(`^cto-automated:[a-z0-9]{1,32}$`)
+	automatedBy            = regexp.MustCompile(`^` + role.AutomatedTLPrefix + `[a-z0-9]{1,32}$`)
 	// reserveTimeout bounds how long one mailbox writer waits for another to
 	// release the directory lock before reporting contention.
 	reserveTimeout = 10 * time.Second
@@ -138,7 +150,9 @@ func MarkNotified(projectDir, id string) (bool, error) {
 	return true, nil
 }
 
-// Send validates and atomically writes an unread message.
+// Send validates and atomically writes an unread message. Only canonical role
+// identities are accepted: legacy compatibility belongs at the decode and CLI
+// admission boundaries, so no new durable message can carry a retired actor.
 func Send(projectDir string, box Box, message Message) (Message, error) {
 	dir, err := boxDir(projectDir, box, false)
 	if err != nil {
@@ -339,6 +353,10 @@ func readMessage(path string, box Box) (Message, error) {
 	if err := json.Unmarshal(data, &message); err != nil {
 		return Message{}, fmt.Errorf("parse mailbox message %s: %w", path, err)
 	}
+	// Normalization runs before route validation so a message written before
+	// the tech-lead rename routes as canonical. It is in-memory only: reading
+	// never rewrites the file.
+	message = message.normalize()
 	if err := validateMessage(box, message); err != nil {
 		return Message{}, fmt.Errorf("validate mailbox message %s: %w", path, err)
 	}
@@ -382,8 +400,8 @@ func validateMessage(box Box, message Message) error {
 	}
 	if message.AutomatedBy != "" && !automatedBy.MatchString(message.AutomatedBy) {
 		errs = append(errs, fmt.Errorf(
-			"message automated_by %q must name a bounded automated turn as cto-automated:<session-prefix>",
-			message.AutomatedBy,
+			"message automated_by %q must name a bounded automated turn as %s<session-prefix>",
+			message.AutomatedBy, role.AutomatedTLPrefix,
 		))
 	}
 	if message.DecisionID != "" && !decisionID.MatchString(message.DecisionID) {
@@ -418,7 +436,7 @@ func safeSlug(value string) bool {
 func validRoute(box Box, message Message) bool {
 	switch box {
 	case Outbox:
-		if message.From != ActorWorker || message.To != ActorCTO {
+		if message.From != ActorWorker || message.To != ActorTL {
 			return false
 		}
 		switch message.Kind {
@@ -426,7 +444,7 @@ func validRoute(box Box, message Message) bool {
 			return true
 		}
 	case Inbox:
-		if message.From != ActorCTO || message.To != ActorWorker {
+		if message.From != ActorTL || message.To != ActorWorker {
 			return false
 		}
 		switch message.Kind {

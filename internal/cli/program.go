@@ -18,6 +18,7 @@ import (
 	"github.com/ronaknnathani/relay/internal/program"
 	"github.com/ronaknnathani/relay/internal/programview"
 	"github.com/ronaknnathani/relay/internal/project"
+	"github.com/ronaknnathani/relay/internal/role"
 	"github.com/spf13/cobra"
 )
 
@@ -73,6 +74,7 @@ func newCmdProgramSetMaxOpenPRs() *cobra.Command {
 			if err := requireCEOTurn("relay program set-max-open-prs"); err != nil {
 				return err
 			}
+			by = admitProgramActor(by)
 			count, err := strconv.Atoi(args[1])
 			if err != nil {
 				return fmt.Errorf("set max open PRs for program %q: invalid count %q: %w", args[0], args[1], err)
@@ -473,6 +475,7 @@ func newCmdProgramApprove() *cobra.Command {
 			if err := validateProgramApproval(args[0]); err != nil {
 				return err
 			}
+			by = admitProgramActor(by)
 			return runProgramTransition(cmd.OutOrStdout(), args[0], program.StateActive, by, "Approved by "+by, false)
 		},
 	}
@@ -515,7 +518,7 @@ func newCmdProgramHold() *cobra.Command {
 			if strings.TrimSpace(reason) == "" {
 				return fmt.Errorf("hold program %q: --reason is required", args[0])
 			}
-			return runProgramTransition(cmd.OutOrStdout(), args[0], program.StateHeld, "cto", "Placed on hold: "+reason, false)
+			return runProgramTransition(cmd.OutOrStdout(), args[0], program.StateHeld, role.TL, "Placed on hold: "+reason, false)
 		},
 	}
 	cmd.Flags().StringVar(&reason, "reason", "", "reason for the hold")
@@ -531,7 +534,7 @@ func newCmdProgramRelease() *cobra.Command {
 			if err := requireCEOTurn("relay program release"); err != nil {
 				return err
 			}
-			return runProgramTransition(cmd.OutOrStdout(), args[0], program.StateActive, "cto", "Released from hold", false)
+			return runProgramTransition(cmd.OutOrStdout(), args[0], program.StateActive, role.TL, "Released from hold", false)
 		},
 	}
 }
@@ -545,7 +548,7 @@ func newCmdProgramFinish() *cobra.Command {
 			if err := requireCEOTurn("relay program finish"); err != nil {
 				return err
 			}
-			return runProgramTransition(cmd.OutOrStdout(), args[0], program.StateCompleted, "cto", "Program completed", true)
+			return runProgramTransition(cmd.OutOrStdout(), args[0], program.StateCompleted, role.TL, "Program completed", true)
 		},
 	}
 }
@@ -563,7 +566,7 @@ func newCmdProgramAbandon() *cobra.Command {
 			if strings.TrimSpace(reason) == "" {
 				return fmt.Errorf("abandon program %q: --reason is required", args[0])
 			}
-			return runProgramTransition(cmd.OutOrStdout(), args[0], program.StateAbandoned, "cto", "Program abandoned: "+reason, true)
+			return runProgramTransition(cmd.OutOrStdout(), args[0], program.StateAbandoned, role.TL, "Program abandoned: "+reason, true)
 		},
 	}
 	cmd.Flags().StringVar(&reason, "reason", "", "reason for abandoning the program")
@@ -670,6 +673,7 @@ func newCmdProgramContractApprove() *cobra.Command {
 			if err := requireCEOTurn("relay program contract approve"); err != nil {
 				return err
 			}
+			by = admitProgramActor(by)
 			path, p, err := loadActiveProgram(args[0])
 			if err != nil {
 				return err
@@ -705,6 +709,7 @@ func newCmdProgramContractReject() *cobra.Command {
 			if strings.TrimSpace(reason) == "" {
 				return fmt.Errorf("reject contract %q: --reason is required", args[1])
 			}
+			by = admitProgramActor(by)
 			path, p, err := loadActiveProgram(args[0])
 			if err != nil {
 				return err
@@ -836,6 +841,7 @@ func newCmdProgramDecisionResolve() *cobra.Command {
 			if strings.TrimSpace(answer) == "" {
 				return fmt.Errorf("resolve decision %q: --answer is required", args[1])
 			}
+			by = admitProgramActor(by)
 			path, p, err := loadActiveProgram(args[0])
 			if err != nil {
 				return err

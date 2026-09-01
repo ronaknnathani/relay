@@ -56,7 +56,7 @@ func TestProgramMessageSendWritesOnlyWorkerOutbox(t *testing.T) {
 	}
 	want := []mailbox.Message{{
 		ID: id, Kind: mailbox.KindQuestion, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "Which API?",
+		From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "Which API?",
 		Options: []string{"A", "B"}, CreatedAt: messages[0].CreatedAt,
 	}}
 	if !reflect.DeepEqual(messages, want) {
@@ -189,7 +189,7 @@ func TestProgramMessageListAggregatesLinkedNonterminalOutboxes(t *testing.T) {
 
 	firstMessage, err := mailbox.Send(messageProjectDir(manifest), mailbox.Outbox, mailbox.Message{
 		ID: "later", Kind: mailbox.KindQuestion, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "Later",
+		From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "Later",
 		CreatedAt: "2026-08-24T20:00:01Z",
 	})
 	if err != nil {
@@ -197,7 +197,7 @@ func TestProgramMessageListAggregatesLinkedNonterminalOutboxes(t *testing.T) {
 	}
 	secondMessage, err := mailbox.Send(messageProjectDir(secondManifest), mailbox.Outbox, mailbox.Message{
 		ID: "earlier", Kind: mailbox.KindPlan, Program: p.Slug, Item: second.ID,
-		From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "Earlier",
+		From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "Earlier",
 		CreatedAt: "2026-08-24T20:00:00Z",
 	})
 	if err != nil {
@@ -205,7 +205,7 @@ func TestProgramMessageListAggregatesLinkedNonterminalOutboxes(t *testing.T) {
 	}
 	if _, err := mailbox.Send(messageProjectDir(canceledManifest), mailbox.Outbox, mailbox.Message{
 		ID: "ignored", Kind: mailbox.KindConflict, Program: p.Slug, Item: canceled.ID,
-		From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "Ignored",
+		From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "Ignored",
 		CreatedAt: "2026-08-24T19:00:00Z",
 	}); err != nil {
 		t.Fatal(err)
@@ -240,7 +240,7 @@ func TestProgramMessageListContinuesPastUnavailableItemsAndSkipsPendingLinks(t *
 	p, item, manifest, _ := createMessageFixture(t)
 	message, err := mailbox.Send(messageProjectDir(manifest), mailbox.Outbox, mailbox.Message{
 		ID: "question-1", Kind: mailbox.KindQuestion, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "Which API?",
+		From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "Which API?",
 		CreatedAt: "2026-08-24T20:00:00Z",
 	})
 	if err != nil {
@@ -312,7 +312,7 @@ func TestProgramMessageInboxIsReadOnly(t *testing.T) {
 	p, item, manifest, before := createMessageFixture(t)
 	message, err := mailbox.Send(messageProjectDir(manifest), mailbox.Inbox, mailbox.Message{
 		ID: "decision-1", Kind: mailbox.KindDecision, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorCTO, To: mailbox.ActorWorker, Body: "Use the adapter.",
+		From: mailbox.ActorTL, To: mailbox.ActorWorker, Body: "Use the adapter.",
 		ReplyTo: "question-1", DecisionID: "d1", CreatedAt: "2026-08-24T20:00:00Z",
 	})
 	if err != nil {
@@ -338,7 +338,7 @@ func TestProgramMessageOutboxIsReadOnly(t *testing.T) {
 	p, item, manifest, before := createMessageFixture(t)
 	message, err := mailbox.Send(messageProjectDir(manifest), mailbox.Outbox, mailbox.Message{
 		ID: "pr-open-1", Kind: mailbox.KindPROpen, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "Ready for PR.",
+		From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "Ready for PR.",
 		CreatedAt: "2026-08-24T20:00:00Z",
 	})
 	if err != nil {
@@ -367,7 +367,7 @@ func TestProgramMessageReplyWritesInboxThenAcknowledgesOutbox(t *testing.T) {
 	p, item, manifest, before := createMessageFixture(t)
 	outbox, err := mailbox.Send(messageProjectDir(manifest), mailbox.Outbox, mailbox.Message{
 		ID: "question-1", Kind: mailbox.KindQuestion, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "Which API?",
+		From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "Which API?",
 		CreatedAt: "2026-08-24T20:00:00Z",
 	})
 	if err != nil {
@@ -386,7 +386,7 @@ func TestProgramMessageReplyWritesInboxThenAcknowledgesOutbox(t *testing.T) {
 	}
 	want := []mailbox.Message{{
 		ID: replyID, Kind: mailbox.KindDecision, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorCTO, To: mailbox.ActorWorker, Body: "Use the adapter.",
+		From: mailbox.ActorTL, To: mailbox.ActorWorker, Body: "Use the adapter.",
 		Options: []string{}, ReplyTo: outbox.ID, DecisionID: "d2", CreatedAt: inbox[0].CreatedAt,
 	}}
 	if !reflect.DeepEqual(inbox, want) {
@@ -422,7 +422,7 @@ func TestProgramMessageAckMovesWorkerInboxWithoutProgramWrite(t *testing.T) {
 	p, item, manifest, before := createMessageFixture(t)
 	message, err := mailbox.Send(messageProjectDir(manifest), mailbox.Inbox, mailbox.Message{
 		ID: "feedback-1", Kind: mailbox.KindFeedback, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorCTO, To: mailbox.ActorWorker, Body: "Add the edge case.",
+		From: mailbox.ActorTL, To: mailbox.ActorWorker, Body: "Add the edge case.",
 		CreatedAt: "2026-08-24T20:00:00Z",
 	})
 	if err != nil {
@@ -447,7 +447,7 @@ func TestProgramMessageReplyAckFailurePreservesInspectableInbox(t *testing.T) {
 	projectDir := messageProjectDir(manifest)
 	outbox, err := mailbox.Send(projectDir, mailbox.Outbox, mailbox.Message{
 		ID: "question-1", Kind: mailbox.KindQuestion, Program: p.Slug, Item: item.ID,
-		From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "Which API?",
+		From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "Which API?",
 		CreatedAt: "2026-08-24T20:00:00Z",
 	})
 	if err != nil {

@@ -203,7 +203,7 @@ func sendLiveCTOMail(t *testing.T, programSlug, childDir, id string) {
 	t.Helper()
 	if _, err := mailbox.Send(childDir, mailbox.Outbox, mailbox.Message{
 		ID: id, Kind: mailbox.KindQuestion, Program: programSlug, Item: "w1",
-		From: mailbox.ActorWorker, To: mailbox.ActorCTO, Body: "ready?",
+		From: mailbox.ActorWorker, To: mailbox.ActorTL, Body: "ready?",
 		Options: []string{}, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}); err != nil {
 		t.Fatal(err)
