@@ -208,6 +208,11 @@ func newCmdProgramPatrolRun() *cobra.Command {
 				Agents:       client,
 				Turns:        liveTLTurnRunner{client: client},
 				Notifier:     client,
+				// The patrol pane is the patrol's log. High-level events go to
+				// this process's own stdout and stderr; nothing is written to a
+				// file, so the pane is where the CEO reads what the patrol did.
+				Out: command.OutOrStdout(),
+				Err: command.ErrOrStderr(),
 			}
 			if err := patrolRunLoop(ctx, args[0], options); err != nil {
 				return err

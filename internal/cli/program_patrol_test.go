@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -191,6 +192,42 @@ func TestProgramPatrolRunUsesPatrolHerdrClientAndLiveDoorbell(t *testing.T) {
 
 	if _, err := runProgramCommand(t, "patrol", "run", p.Slug); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The patrol pane is the patrol's log: the foreground process hands its own
+// stdout and stderr to the loop, and nothing is written to a file.
+func TestProgramPatrolRunGivesTheLoopItsPaneWriters(t *testing.T) {
+	p := createPatrolProgram(t, "pane-events", program.StateActive)
+	client := &fakeHerdrClient{}
+	installPatrolFakes(t, client)
+	patrolRunLoop = func(_ context.Context, _ string, options patrol.Options) error {
+		if options.Out == nil || options.Err == nil {
+			t.Fatalf("patrol options carry no pane writers: %+v", options)
+		}
+		fmt.Fprintln(options.Out, "2026-09-01T04:45:00Z patrol started program=pane-events")
+		fmt.Fprintln(options.Err, "2026-09-01T04:45:00Z warning: TL wake absent program=pane-events")
+		return nil
+	}
+	patrolReadState = func(slug string) (patrol.State, error) {
+		return patrol.State{
+			Schema: patrol.SchemaVersion, Version: 1, ProgramSlug: slug,
+			Status: patrol.StatusStopped, Reasons: []patrol.Reason{},
+		}, nil
+	}
+
+	output, err := runProgramCommand(t, "patrol", "run", p.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"patrol started program=pane-events",
+		"warning: TL wake absent program=pane-events",
+		"Patrol stopped for pane-events",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("patrol run output %q is missing %q", output, want)
+		}
 	}
 }
 

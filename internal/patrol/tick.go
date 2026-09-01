@@ -2,6 +2,7 @@ package patrol
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -31,7 +32,14 @@ type Options struct {
 	// Turns rings the existing live tech lead session when attention changes.
 	Turns TurnRunner
 	// Notifier optionally raises a best-effort desktop notification.
-	Notifier     Notifier
+	Notifier Notifier
+	// Out receives routine operational patrol events and Err receives the
+	// outcomes that leave attention undelivered. The foreground `relay program
+	// patrol run` process supplies its own stdout and stderr, which makes the
+	// Herdr patrol pane the patrol's log; nothing is ever written to a file. A
+	// nil writer is silent.
+	Out          io.Writer
+	Err          io.Writer
 	PID          int
 	RelayVersion string
 }

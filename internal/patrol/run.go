@@ -30,6 +30,7 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 	}()
 
 	options = normalizedRunOptions(options)
+	events := newEventLog(options.Out, options.Err)
 	now := options.Now().UTC()
 	state := State{
 		Schema:       SchemaVersion,
@@ -42,7 +43,10 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 		Reasons:      []Reason{},
 		UpdatedAt:    now.Format(time.RFC3339),
 	}
-	if err := WriteState(state); err != nil {
+	if err := events.started(now, slug); err != nil {
+		return failedRunState(events, &state, now, err)
+	}
+	if err := writeRunState(events, state, now); err != nil {
 		return err
 	}
 
@@ -62,7 +66,13 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 				state.NextTickAt = ""
 				state.Error = ""
 				state.ConsecutiveErrors = 0
-				return true, WriteState(state)
+				if err := events.stopped(tickNow, slug, observation.StopReason); err != nil {
+					return true, failedRunState(events, &state, tickNow, err)
+				}
+				return true, writeRunState(events, state, tickNow)
+			}
+			if err := events.tick(tickNow, observation.Reasons, observation.DelaySeconds); err != nil {
+				return true, failedRunState(events, &state, tickNow, err)
 			}
 			if observation.AttentionFingerprint == "" {
 				state.AttentionFingerprint = ""
@@ -74,10 +84,19 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 			if agentsErr != nil {
 				state.TLPresent = false
 				notificationWarning = agentsErr.Error()
+				if err := events.failure(tickNow, fmt.Sprintf(
+					"%v; tech lead presence is unknown this tick", agentsErr,
+				)); err != nil {
+					return true, failedRunState(events, &state, tickNow, err)
+				}
 			} else {
-				notificationWarning = requestTLTurn(
+				outcome := requestTLTurn(
 					ctx, &state, observation, agents, options.Turns, options.Notifier, tickNow,
-				).Warning
+				)
+				notificationWarning = outcome.Warning
+				if err := events.wake(tickNow, slug, outcome); err != nil {
+					return true, failedRunState(events, &state, tickNow, err)
+				}
 			}
 		}
 		if tickErr != nil {
@@ -91,15 +110,21 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 			state.Error = tickErr.Error()
 			state.DelaySeconds = int64(attentionDelay / time.Second)
 			state.NextTickAt = tickNow.Add(attentionDelay).Format(time.RFC3339)
+			if err := events.failure(tickNow, fmt.Sprintf(
+				"patrol observation failed: %v; retrying in %s",
+				tickErr, cadenceLabel(state.DelaySeconds),
+			)); err != nil {
+				return true, failedRunState(events, &state, tickNow, err)
+			}
 			if state.ConsecutiveErrors >= 3 {
 				state.Status = StatusFailed
-				if err := WriteState(state); err != nil {
-					return true, errors.Join(tickErr, err)
-				}
-				return true, tickErr
+				failure := events.failure(tickNow, fmt.Sprintf(
+					"patrol failed program=%s after %d consecutive errors", slug, state.ConsecutiveErrors,
+				))
+				return true, errors.Join(tickErr, failure, writeRunState(events, state, tickNow))
 			}
 			state.Status = StatusRunning
-			return false, WriteState(state)
+			return false, writeRunState(events, state, tickNow)
 		}
 		lastErrorClass = ""
 		state.ConsecutiveErrors = 0
@@ -108,7 +133,10 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 		state.StopReason = ""
 		state.Status = StatusRunning
 		state.NextTickAt = tickNow.Add(time.Duration(state.DelaySeconds) * time.Second).Format(time.RFC3339)
-		return false, WriteState(state)
+		if err := events.nextTick(tickNow, state.NextTickAt, state.DelaySeconds); err != nil {
+			return true, failedRunState(events, &state, tickNow, err)
+		}
+		return false, writeRunState(events, state, tickNow)
 	}
 
 	done, err := runTick()
@@ -126,12 +154,15 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 			state.NextTickAt = ""
 			state.Error = ""
 			state.UpdatedAt = now.Format(time.RFC3339)
-			return WriteState(state)
+			return errors.Join(
+				events.stopped(now, slug, state.StopReason), writeRunState(events, state, now),
+			)
 		case <-ticker.C():
 			now := options.Now().UTC()
 			next, err := time.Parse(time.RFC3339, state.NextTickAt)
 			if err != nil {
-				return fmt.Errorf("parse next patrol tick %q: %w", state.NextTickAt, err)
+				parseErr := fmt.Errorf("parse next patrol tick %q: %w", state.NextTickAt, err)
+				return errors.Join(parseErr, events.failure(now, parseErr.Error()))
 			}
 			if now.Before(next) {
 				continue
@@ -142,6 +173,26 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 			}
 		}
 	}
+}
+
+// writeRunState records runtime state and reports a failure to write it on
+// stderr, because a patrol whose state file is stale silently misleads both
+// `relay program patrol status` and the Program UI.
+func writeRunState(events eventLog, state State, at time.Time) error {
+	err := WriteState(state)
+	if err == nil {
+		return nil
+	}
+	return errors.Join(err, events.failure(at, fmt.Sprintf("write patrol runtime state: %v", err)))
+}
+
+// failedRunState records why a patrol stopped when its own events could not be
+// written. The pane is gone, so the reason has to survive in runtime state.
+func failedRunState(events eventLog, state *State, at time.Time, cause error) error {
+	state.Status = StatusFailed
+	state.Error = cause.Error()
+	state.UpdatedAt = at.Format(time.RFC3339)
+	return errors.Join(cause, writeRunState(events, *state, at))
 }
 
 func normalizedRunOptions(options Options) Options {
