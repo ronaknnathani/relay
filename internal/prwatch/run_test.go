@@ -746,3 +746,155 @@ func TestRunRefusesASecondWatcher(t *testing.T) {
 		t.Fatalf("second Run = %v, want ErrAlreadyRunning", err)
 	}
 }
+
+func TestClosedUnmergedWakesTheOwnerThenFinishes(t *testing.T) {
+	closed := quietObservation()
+	closed.PR.State = "CLOSED"
+	harness := newWatchHarness(t, ModeStandalone, "", closed)
+
+	harness.out.awaitLine(t, "owner wake delivered")
+	harness.out.awaitLine(t, "reason=closed-unmerged")
+	harness.awaitExit()
+
+	if harness.client.promptCount() != 1 {
+		t.Errorf("prompts = %v, want exactly one escalation", harness.client.promptTexts())
+	}
+	state := harness.state()
+	if state.Status != StatusComplete {
+		t.Errorf("status = %q, want a finished watch on a closed pull request", state.Status)
+	}
+	if !strings.Contains(state.StopReason, "closed without merging") {
+		t.Errorf("stop reason = %q, want the closed-unmerged escalation", state.StopReason)
+	}
+	if state.NextCheckAt != "" || state.AttentionPending {
+		t.Errorf("state = %+v, want no further check scheduled", state)
+	}
+}
+
+func TestClosedUnmergedKeepsWatchingUntilTheEscalationLands(t *testing.T) {
+	closed := quietObservation()
+	closed.PR.State = "CLOSED"
+	harness := newWatchHarnessWithClient(t, ModeStandalone, "", closed,
+		func(client *fakeOwnerClient) { client.agents = nil })
+
+	harness.err.awaitLine(t, "owner wake owner-missing")
+	harness.out.awaitLine(t, "next check at=")
+	state := harness.state()
+	if state.Status != StatusRunning {
+		t.Fatalf("status = %q, want a watcher still trying to escalate", state.Status)
+	}
+
+	// The owner comes back, takes the escalation, and only then does the watch
+	// finish: a closed pull request nobody was told about is not handled.
+	harness.client.setAgents([]herdr.Agent{liveAgent("relay:demo", "pane-owner", herdr.StatusIdle)})
+	harness.setNow(harness.clock().Add(FastCadence))
+	harness.tick()
+	harness.out.awaitLine(t, "reason=closed-unmerged")
+	harness.awaitExit()
+	if harness.state().Status != StatusComplete {
+		t.Errorf("status = %q, want a finished watch once the escalation landed", harness.state().Status)
+	}
+}
+
+// A merged stack front stays actionable: the orchestrator has to retarget the
+// next pull request, and only it knows when that is done, so it stops the
+// watcher explicitly.
+func TestMergedStackFrontKeepsWatchingUntilItIsStopped(t *testing.T) {
+	merged := quietObservation()
+	merged.PR.State = "MERGED"
+	harness := newWatchHarness(t, ModeStack, "stack-run", merged)
+
+	harness.out.awaitLine(t, "owner wake delivered")
+	harness.out.awaitLine(t, "next check at=")
+	state := harness.state()
+	if state.Status != StatusRunning {
+		t.Fatalf("status = %q, want the stack front watcher still running", state.Status)
+	}
+	if state.CurrentFingerprint == "" {
+		t.Fatal("stack front merge produced no actionable digest")
+	}
+
+	// It keeps re-reporting the same merge until somebody stops it, because
+	// nothing local can assert the front-advance happened.
+	next := harness.runScheduledCheck()
+	if next.CurrentFingerprint != state.CurrentFingerprint {
+		t.Errorf("fingerprint = %q, want the merge still reported", next.CurrentFingerprint)
+	}
+	if harness.client.promptCount() != 2 {
+		t.Errorf("prompts = %v, want the orchestrator woken again", harness.client.promptTexts())
+	}
+}
+
+func TestNewActionableAttentionResetsTheCadence(t *testing.T) {
+	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
+	harness.out.awaitLine(t, "next check at=")
+	for i := 0; i < 6; i++ {
+		harness.runScheduledCheck()
+	}
+	if got := harness.state().DelaySeconds; got != int64(SlowCadence/time.Second) {
+		t.Fatalf("cadence = %ds, want the 60m backoff before the reset", got)
+	}
+
+	harness.setObservation(actionableObservation(), nil)
+	state := harness.runScheduledCheck()
+	if state.ScheduledChecks != 0 || state.DelaySeconds != int64(FastCadence/time.Second) {
+		t.Errorf("state = %+v, want 15m once attention appeared", state)
+	}
+}
+
+// A wake is decided from one observation and delivered a moment later. If the
+// watcher moved on in between, the owner must not be handed a fingerprint that
+// is no longer its current attention.
+func TestAWakeIsAbandonedWhenTheObservationIsNoLongerCurrent(t *testing.T) {
+	withRuntimeHome(t)
+	out, errOut := newSignalWriter(), newSignalWriter()
+	client := &fakeOwnerClient{agents: []herdr.Agent{
+		liveAgent("relay:demo", "pane-owner", herdr.StatusIdle),
+	}}
+	runner := &checkRunner{
+		slug:   "demo",
+		owner:  "demo",
+		target: Target{Slug: "demo", PRNumber: 42},
+		options: normalizedOptions(Options{
+			Mode: ModeStandalone, Client: client,
+			Now: func() time.Time { return time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC) },
+		}),
+		events: newEventLog(out, errOut),
+	}
+	digest := BuildDigest("demo", ModeStandalone, actionableObservation(), observedAt)
+	now := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+
+	for name, superseded := range map[string]State{
+		"another observation replaced it": {
+			Status: StatusRunning, AttentionPending: true,
+			CurrentFingerprint: Fingerprint([]Item{{Key: "comment:999:t9"}}),
+		},
+		"the attention cleared": {
+			Status: StatusRunning, CurrentFingerprint: digest.Fingerprint,
+		},
+		"the watcher finished": {
+			Status: StatusComplete, AttentionPending: true,
+			CurrentFingerprint: digest.Fingerprint,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := UpdateState("demo", func(State) (State, error) { return superseded, nil }); err != nil {
+				t.Fatalf("UpdateState: %v", err)
+			}
+			before := client.promptCount()
+			terminal, err := runner.wake(now, schedule{}, digest)
+			if err != nil {
+				t.Fatalf("wake: %v", err)
+			}
+			if terminal {
+				t.Error("an abandoned wake reported the watcher terminal")
+			}
+			if client.promptCount() != before {
+				t.Errorf("prompts = %v, want none for a superseded observation", client.promptTexts())
+			}
+		})
+	}
+	if !strings.Contains(out.String(), "owner wake skipped") {
+		t.Errorf("watcher events did not record the skipped wake:\n%s", out.String())
+	}
+}

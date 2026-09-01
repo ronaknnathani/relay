@@ -92,7 +92,18 @@ A reply posted anywhere else answers nothing. Reconciling sources together let o
 independent pieces of feedback as handled, which silently dropped review comments nobody addressed.
 
 Not actionable: pending or queued checks alone, an untouched review-required state, and a draft alone.
-A merged pull request completes a standalone or managed watch silently, with no owner wake.
+
+## Terminal states
+
+| Outcome | What the watcher does |
+|---|---|
+| merged, standalone or managed | finishes immediately and silently, with no owner wake |
+| closed without merging | wakes the owner with the escalation, then finishes once that wake is *delivered* — an undelivered escalation holds the fast cadence and retries |
+| merged stack front | wakes the orchestrator every check until the orchestrator runs `relay pr watch stop`, because only it knows the front-advance is done |
+| three consecutive observation failures | fails visibly rather than running blind |
+
+A watcher that reached a terminal state releases its lock and its process exits; `relay pr watch stop`
+closes the Herdr tab it was running in.
 
 Nothing about a previous observation is carried into a new one. There is no acknowledgement, no
 watermark, and no local claim that attention was handled: an item stops being reported only when the
