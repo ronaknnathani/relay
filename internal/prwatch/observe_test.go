@@ -130,7 +130,7 @@ func TestHumanCommentIsActionableUntilTheAgentReplies(t *testing.T) {
 
 	answered := observation
 	answered.Comments = append(append([]Activity{}, observation.Comments...),
-		agentReply("2", pr.Author, "renamed", "2026-01-02T00:00:00Z"))
+		agentReply("comment:1", "2", pr.Author, "renamed", "2026-01-02T00:00:00Z"))
 	if got := BuildDigest("demo", ModeStandalone, answered, observedAt); len(got.Items) != 0 {
 		t.Fatalf("digest items = %+v, want none once the agent replied", got.Items)
 	}
@@ -166,7 +166,7 @@ func TestUnresolvedThreadsAndNewRepliesAreActionable(t *testing.T) {
 		ID: "THREAD_2", IsResolved: true, Path: "go.mod", Line: 3, CommentsTotal: 2,
 		Comments: []Activity{
 			human("21", "reviewer", "bump this", "2026-01-01T00:00:00Z"),
-			agentReply("22", pr.Author, "bumped", "2026-01-02T00:00:00Z"),
+			agentReply("review-thread:THREAD_2:21", "22", pr.Author, "bumped", "2026-01-02T00:00:00Z"),
 		},
 	}
 	digest := BuildDigest("demo", ModeStandalone, Observation{
@@ -398,8 +398,16 @@ func TestLoadTargetWithoutAPullRequestNamesTheRecordingCommand(t *testing.T) {
 }
 
 // agentReply builds the exact shape every automated Relay pull request reply
-// carries: the hidden machine marker, then the visible disclosure.
-func agentReply(id, login, body, updated string) Activity {
+// carries: the marker naming the exact activity it answers, then the visible
+// disclosure.
+func agentReply(answers, id, login, body, updated string) Activity {
+	return human(id, login,
+		AgentReplyMarkerFor(answers)+"\n🤖 copilot on behalf of author-human\n\n"+body, updated)
+}
+
+// legacyAgentReply builds a reply written before markers named what they
+// answer, which is still recognized as an agent reply.
+func legacyAgentReply(id, login, body, updated string) Activity {
 	return human(id, login,
 		AgentReplyMarker+"\n🤖 copilot on behalf of author-human\n\n"+body, updated)
 }
@@ -414,9 +422,18 @@ func TestOnlyTheExactMarkerClassifiesAnAgentReply(t *testing.T) {
 		"emoji only": human("2", "reviewer",
 			"🤖 nice bot, but this is still wrong", "2026-01-02T00:00:00Z"),
 		"quoted marker": human("2", "reviewer",
+			"> "+AgentReplyMarkerFor("comment:1")+"\n> earlier reply\n\nstill wrong",
+			"2026-01-02T00:00:00Z"),
+		"quoted legacy marker": human("2", "reviewer",
 			"> "+AgentReplyMarker+"\n> earlier reply\n\nstill wrong", "2026-01-02T00:00:00Z"),
 		"emoji disclosure without the marker": human("2", pr.Author,
 			"🤖 copilot on behalf of author-human: renamed", "2026-01-02T00:00:00Z"),
+		"an unclosed marker": human("2", pr.Author,
+			"<!-- relay-agent-reply answers=comment:1\nrenamed", "2026-01-02T00:00:00Z"),
+		"a marker naming another comment": agentReply("comment:99", "2", pr.Author,
+			"renamed something else", "2026-01-02T00:00:00Z"),
+		"a bare marker in the conversation": legacyAgentReply("2", pr.Author,
+			"renamed", "2026-01-02T00:00:00Z"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			digest := BuildDigest("demo", ModeStandalone, Observation{
@@ -430,11 +447,190 @@ func TestOnlyTheExactMarkerClassifiesAnAgentReply(t *testing.T) {
 	}
 
 	answered := BuildDigest("demo", ModeStandalone, Observation{
-		PR:       pr,
-		Comments: []Activity{question, agentReply("2", pr.Author, "renamed", "2026-01-02T00:00:00Z")},
+		PR: pr,
+		Comments: []Activity{
+			question, agentReply("comment:1", "2", pr.Author, "renamed", "2026-01-02T00:00:00Z"),
+		},
 	}, observedAt)
 	if len(answered.Items) != 0 {
 		t.Fatalf("digest items = %+v, want none once the marked agent reply landed", answered.Items)
+	}
+}
+
+// Every actionable item names the exact reference a reply must carry, so an
+// agent never has to derive one.
+func TestEveryAnswerableItemCarriesItsOwnMarkerReference(t *testing.T) {
+	pr := openPR()
+	review := human("100", "reviewer", "needs a design note", "2026-01-01T10:00:00Z")
+	review.State = "COMMENTED"
+	inline := human("300", "reviewer", "rename this", "2026-01-01T10:00:00Z")
+	inline.Path, inline.Line = "main.go", 12
+	digest := BuildDigest("demo", ModeStandalone, Observation{
+		PR:             pr,
+		Comments:       []Activity{human("200", "reviewer", "update the README", "2026-01-01T10:00:00Z")},
+		Reviews:        []Activity{review},
+		InlineComments: []Activity{inline},
+		Threads: []ReviewThread{{
+			ID: "THREAD_1", Path: "store.go", Line: 40, CommentsTotal: 1,
+			Comments: []Activity{human("400", "reviewer", "and this", "2026-01-01T10:00:00Z")},
+		}},
+	}, observedAt)
+
+	want := map[string]string{
+		"200":      "comment:200",
+		"100":      "review:100",
+		"300":      "inline-comment:300",
+		"THREAD_1": "review-thread:THREAD_1:400",
+	}
+	if len(digest.Items) != len(want) {
+		t.Fatalf("digest items = %+v, want one per answerable source", digest.Items)
+	}
+	for _, item := range digest.Items {
+		if item.Answers != want[item.ID] {
+			t.Errorf("item %s answers = %q, want %q", item.ID, item.Answers, want[item.ID])
+		}
+		if !strings.Contains(AgentReplyMarkerFor(item.Answers), "answers="+item.Answers+" -->") {
+			t.Errorf("marker for %q = %q", item.Answers, AgentReplyMarkerFor(item.Answers))
+		}
+	}
+}
+
+// The regression a per-stream "latest agent reply" timestamp caused: the
+// watcher observed A at 10:15, a human wrote B at 10:19 that no digest had ever
+// carried, and the agent's 10:20 answer to A hid B forever. A reply answers the
+// id it names and nothing else.
+func TestAnAnsweredCommentDoesNotHideAnUnseenSiblingComment(t *testing.T) {
+	pr := openPR()
+	seen := human("200", "reviewer", "please rename this", "2026-01-01T10:00:00Z")
+	unseen := human("201", "reviewer", "and the README is wrong", "2026-01-01T10:19:00Z")
+	answer := agentReply("comment:200", "202", pr.Author, "renamed", "2026-01-01T10:20:00Z")
+
+	digest := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr, Comments: []Activity{seen, unseen, answer},
+	}, observedAt)
+	assertReasons(t, digest, ReasonNewComment)
+	if digest.Items[0].ID != "201" {
+		t.Fatalf("item = %+v, want the comment written after the watcher last looked", digest.Items[0])
+	}
+}
+
+func TestAnAnsweredReviewDoesNotHideAnUnseenSiblingReview(t *testing.T) {
+	pr := openPR()
+	seen := human("100", "reviewer", "this needs a design note", "2026-01-01T10:00:00Z")
+	seen.State = "COMMENTED"
+	unseen := human("101", "reviewer", "and the API shape is wrong", "2026-01-01T10:19:00Z")
+	unseen.State = "COMMENTED"
+	answer := agentReply("review:100", "102", pr.Author, "added the note", "2026-01-01T10:20:00Z")
+	answer.State = "COMMENTED"
+
+	digest := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr, Reviews: []Activity{seen, unseen, answer},
+	}, observedAt)
+	assertReasons(t, digest, ReasonNewReview)
+	if digest.Items[0].ID != "101" {
+		t.Fatalf("item = %+v, want the unanswered review body", digest.Items[0])
+	}
+}
+
+func TestAnAnsweredInlineCommentDoesNotHideAnUnseenSiblingComment(t *testing.T) {
+	pr := openPR()
+	seen := human("300", "reviewer", "rename this", "2026-01-01T10:00:00Z")
+	seen.Path, seen.Line = "main.go", 12
+	unseen := human("301", "reviewer", "and this one too", "2026-01-01T10:19:00Z")
+	unseen.Path, unseen.Line = "store.go", 40
+	answer := agentReply("inline-comment:300", "302", pr.Author, "renamed", "2026-01-01T10:20:00Z")
+	answer.Path, answer.Line, answer.InReplyTo = "main.go", 12, "300"
+
+	digest := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr, InlineComments: []Activity{seen, unseen, answer},
+	}, observedAt)
+	assertReasons(t, digest, ReasonNewInlineComment)
+	if digest.Items[0].ID != "301" {
+		t.Fatalf("item = %+v, want the unanswered inline comment", digest.Items[0])
+	}
+}
+
+func TestAnAnsweredThreadCommentDoesNotHideAnUnseenReply(t *testing.T) {
+	pr := openPR()
+	seen := human("20", "reviewer", "rename this", "2026-01-01T10:00:00Z")
+	unseen := human("21", "reviewer", "and explain why", "2026-01-01T10:19:00Z")
+	answer := agentReply("review-thread:THREAD_1:20", "22", pr.Author, "renamed",
+		"2026-01-01T10:20:00Z")
+	thread := ReviewThread{
+		ID: "THREAD_1", Path: "main.go", Line: 12, CommentsTotal: 3,
+		Comments: []Activity{seen, unseen, answer},
+	}
+
+	digest := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr, Threads: []ReviewThread{thread},
+	}, observedAt)
+	assertReasons(t, digest, ReasonUnresolvedThread)
+	item := digest.Items[0]
+	if item.Body != "and explain why" || item.Answers != "review-thread:THREAD_1:21" {
+		t.Fatalf("item = %+v, want the reply the agent never answered", item)
+	}
+	if item.Key != "thread:THREAD_1:21:2026-01-01T10:19:00Z" {
+		t.Errorf("item key = %q, want the unanswered reply's identity", item.Key)
+	}
+
+	// Answering that reply too leaves the thread quiet.
+	thread.Comments = append(thread.Comments,
+		agentReply("review-thread:THREAD_1:21", "23", pr.Author, "explained",
+			"2026-01-01T10:30:00Z"))
+	quiet := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr, Threads: []ReviewThread{thread},
+	}, observedAt)
+	if len(quiet.Items) != 0 {
+		t.Fatalf("digest items = %+v, want none once every reply was answered", quiet.Items)
+	}
+}
+
+// A reply written before markers named what they answer still counts, but only
+// for the exact comment GitHub chained it to.
+func TestALegacyBareMarkerAnswersOnlyTheCommentItRepliesTo(t *testing.T) {
+	pr := openPR()
+	root := human("300", "reviewer", "rename this", "2026-01-01T10:00:00Z")
+	root.Path, root.Line = "main.go", 12
+	sibling := human("301", "reviewer", "and this one too", "2026-01-01T10:19:00Z")
+	sibling.Path, sibling.Line = "store.go", 40
+	legacy := legacyAgentReply("302", pr.Author, "renamed", "2026-01-01T10:20:00Z")
+	legacy.Path, legacy.Line, legacy.InReplyTo = "main.go", 12, "300"
+
+	digest := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr, InlineComments: []Activity{root, sibling, legacy},
+	}, observedAt)
+	assertReasons(t, digest, ReasonNewInlineComment)
+	if digest.Items[0].ID != "301" {
+		t.Fatalf("item = %+v, want only the comment the legacy reply never answered",
+			digest.Items[0])
+	}
+
+	// A bare marker chained to nothing answers nothing at all.
+	unchained := legacyAgentReply("303", pr.Author, "renamed", "2026-01-01T10:20:00Z")
+	unchained.Path, unchained.Line = "main.go", 12
+	loose := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr, InlineComments: []Activity{root, unchained},
+	}, observedAt)
+	assertReasons(t, loose, ReasonNewInlineComment)
+	if loose.Items[0].ID != "300" {
+		t.Errorf("item = %+v, want the inline comment still actionable", loose.Items[0])
+	}
+}
+
+// A human editing the activity an agent already answered moves it past the
+// reply, so it is feedback again.
+func TestAHumanEditAfterAnAnsweredReplyIsActionableAgain(t *testing.T) {
+	pr := openPR()
+	edited := human("200", "reviewer", "please rename this, and rebase", "2026-01-01T10:40:00Z")
+	edited.CreatedAt = "2026-01-01T10:00:00Z"
+	answer := agentReply("comment:200", "201", pr.Author, "renamed", "2026-01-01T10:20:00Z")
+
+	digest := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr, Comments: []Activity{edited, answer},
+	}, observedAt)
+	assertReasons(t, digest, ReasonNewComment)
+	if digest.Items[0].ID != "200" {
+		t.Errorf("item = %+v, want the edited comment actionable again", digest.Items[0])
 	}
 }
 
@@ -444,7 +640,7 @@ func TestANewHumanReplyAfterTheMarkerReactivatesTheSource(t *testing.T) {
 		PR: pr,
 		Comments: []Activity{
 			human("1", "reviewer", "please rename this", "2026-01-01T00:00:00Z"),
-			agentReply("2", pr.Author, "renamed", "2026-01-02T00:00:00Z"),
+			agentReply("comment:1", "2", pr.Author, "renamed", "2026-01-02T00:00:00Z"),
 			human("3", "reviewer", "still wrong", "2026-01-03T00:00:00Z"),
 		},
 	}, observedAt)
@@ -462,7 +658,7 @@ func TestAnAgentReplyAtTheSameInstantAnswersTheSource(t *testing.T) {
 		PR: pr,
 		Comments: []Activity{
 			human("1", "reviewer", "please rename this", "2026-01-01T00:00:00Z"),
-			agentReply("2", pr.Author, "renamed", "2026-01-01T00:00:00Z"),
+			agentReply("comment:1", "2", pr.Author, "renamed", "2026-01-01T00:00:00Z"),
 		},
 	}, observedAt)
 	if len(digest.Items) != 0 {
@@ -485,7 +681,7 @@ func TestAnAgentReplyOnOneSourceDoesNotAnswerAnother(t *testing.T) {
 	secondInline.Path, secondInline.Line = "store.go", 40
 
 	// Twenty minutes later the agent replies to exactly one inline comment.
-	answer := agentReply("302", pr.Author, "renamed", "2026-01-01T10:20:00Z")
+	answer := agentReply("inline-comment:300", "302", pr.Author, "renamed", "2026-01-01T10:20:00Z")
 	answer.Path, answer.Line = "main.go", 12
 	answer.InReplyTo = "300"
 
@@ -508,7 +704,7 @@ func TestAnAgentReplyAnswersOnlyItsOwnInlineThread(t *testing.T) {
 	pr := openPR()
 	first := human("300", "reviewer", "rename this", "2026-01-01T10:00:00Z")
 	first.Path, first.Line = "main.go", 12
-	answer := agentReply("302", pr.Author, "renamed", "2026-01-01T10:20:00Z")
+	answer := agentReply("inline-comment:300", "302", pr.Author, "renamed", "2026-01-01T10:20:00Z")
 	answer.Path, answer.Line = "main.go", 12
 	answer.InReplyTo = "300"
 
@@ -520,7 +716,7 @@ func TestAnAgentReplyAnswersOnlyItsOwnInlineThread(t *testing.T) {
 	}
 
 	// A reply chained onto the same root answers the root too.
-	chained := agentReply("303", pr.Author, "and again", "2026-01-01T10:30:00Z")
+	chained := agentReply("inline-comment:300", "303", pr.Author, "and again", "2026-01-01T10:30:00Z")
 	chained.InReplyTo = "302"
 	followUp := human("304", "reviewer", "still wrong", "2026-01-01T10:40:00Z")
 	followUp.InReplyTo = "300"
@@ -539,7 +735,7 @@ func TestAnAgentReviewAnswersOnlyReviewBodies(t *testing.T) {
 	review := human("100", "reviewer", "this needs a design note", "2026-01-01T10:00:00Z")
 	review.State = "COMMENTED"
 	conversation := human("200", "reviewer", "and please update the README", "2026-01-01T10:00:00Z")
-	answeringReview := agentReply("101", pr.Author, "added the design note", "2026-01-01T10:20:00Z")
+	answeringReview := agentReply("review:100", "101", pr.Author, "added the design note", "2026-01-01T10:20:00Z")
 	answeringReview.State = "COMMENTED"
 
 	digest := BuildDigest("demo", ModeStandalone, Observation{
@@ -657,7 +853,7 @@ func TestActivityWithNoTimestampIsNeverTreatedAsAnswered(t *testing.T) {
 	undated := human("1", "reviewer", "please rename this", "")
 	digest := BuildDigest("demo", ModeStandalone, Observation{
 		PR:       pr,
-		Comments: []Activity{undated, agentReply("2", pr.Author, "renamed", "2026-01-02T00:00:00Z")},
+		Comments: []Activity{undated, agentReply("comment:1", "2", pr.Author, "renamed", "2026-01-02T00:00:00Z")},
 	}, observedAt)
 	assertReasons(t, digest, ReasonNewComment)
 	if digest.Items[0].ID != "1" {

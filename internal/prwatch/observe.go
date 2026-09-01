@@ -12,17 +12,55 @@ import (
 	"github.com/ronaknnathani/relay/internal/project"
 )
 
-// AgentReplyMarker is the exact hidden marker every automated Relay reply to a
-// pull request carries on a line of its own, immediately before its visible
-// "🤖 <agent> on behalf of <author>" disclosure. It is the only signal that
-// tells an agent reply from a human one.
+// AgentReplyMarker is the legacy bare marker: the hidden token automated Relay
+// replies carried before they named what they answered. It is still recognized
+// as an agent reply, but on its own it answers only the one activity GitHub
+// itself chains it to — see legacyAnswers.
 //
-// It is a machine token, not prose: an emoji, a phrase, or an author login can
-// all be typed by a human quoting or joking about a bot, and any of those
-// mistaken for an agent reply would silence live review feedback. Requiring the
-// marker to start its line means quoting an earlier agent reply — which
-// markdown renders as "> <!-- relay-agent-reply -->" — is still human activity.
+// The marker is a machine token, not prose: an emoji, a phrase, or an author
+// login can all be typed by a human quoting or joking about a bot, and any of
+// those mistaken for an agent reply would silence live review feedback.
+// Requiring the marker to start its line means quoting an earlier agent reply —
+// which markdown renders as "> <!-- relay-agent-reply -->" — is still human
+// activity.
 const AgentReplyMarker = "<!-- relay-agent-reply -->"
+
+// The anchored marker every automated Relay reply carries on a line of its own,
+// immediately before its visible "🤖 <agent> on behalf of <author>" disclosure:
+//
+//	<!-- relay-agent-reply answers=comment:200 -->
+//
+// The reference is the exact activity the reply answers, which is the source
+// and id the digest item carries in its Answers token. Anchoring on an id
+// rather than on a timestamp is what keeps a reply from hiding feedback the
+// watcher never showed anybody: a reply to comment 200 says nothing about
+// comment 201, whenever either was written.
+const (
+	agentReplyMarkerPrefix = "<!-- relay-agent-reply"
+	agentReplyMarkerEnd    = "-->"
+	agentReplyAnswersField = "answers="
+)
+
+// AgentReplyMarkerFor renders the exact marker line a reply answering one
+// digest item's Answers token must carry.
+func AgentReplyMarkerFor(answers string) string {
+	return agentReplyMarkerPrefix + " " + agentReplyAnswersField + answers + " " + agentReplyMarkerEnd
+}
+
+// AnswerRef renders the marker reference that answers one source and id. It is
+// what a digest item carries in Answers and what pr-fix copies verbatim into
+// the marker it posts.
+func AnswerRef(source, id string) string {
+	return source + ":" + id
+}
+
+// threadAnswerRef renders the reference for one comment inside a review thread.
+// It names the thread and the exact comment the digest reported, because a
+// thread is one item whose identity moves with its newest unanswered comment: a
+// reference to the thread alone would answer replies the digest never showed.
+func threadAnswerRef(threadID, commentID string) string {
+	return AnswerRef(SourceReviewThread, threadID+":"+commentID)
+}
 
 // failingConclusions are the check conclusions that always need attention. A
 // watcher never decides whether a failure is an infrastructure flake or a real
@@ -270,17 +308,18 @@ func classifyReviewDecision(pr PullRequest, reviews []Activity) []Item {
 // classifyConversation reports human conversation comments and review bodies
 // the agent has not answered on that exact source.
 //
-// Each source is reconciled on its own. A conversation comment is answered only
-// by a later agent comment in the conversation, and a review body only by a
-// later agent review; a reply left anywhere else on the pull request answers
-// neither. Reconciling them together let one reply mark several independent
-// pieces of feedback as handled, which silently dropped review comments nobody
-// ever addressed.
+// Each source is reconciled on its own, and each activity on its own id. A
+// conversation comment is answered only by a later agent comment whose marker
+// names that comment, and a review body only by a later agent review whose
+// marker names that review. Reconciling a whole stream against one "latest
+// agent reply" timestamp let a reply to one comment hide every other comment
+// written before it — including feedback no digest had ever reported.
 func classifyConversation(observation Observation) []Item {
-	answered := latestAgentReply(observation.Comments)
+	answered := answeredRefs(observation.Comments)
 	var items []Item
 	for _, comment := range observation.Comments {
-		if !isHuman(comment) || answeredBy(answered, comment.UpdatedAt) {
+		ref := AnswerRef(SourceComment, comment.ID)
+		if !isHuman(comment) || answeredBy(answered[ref], comment.UpdatedAt) {
 			continue
 		}
 		items = append(items, Item{
@@ -288,18 +327,20 @@ func classifyConversation(observation Observation) []Item {
 			Source:    SourceComment,
 			ID:        comment.ID,
 			Key:       fmt.Sprintf("comment:%s:%s", comment.ID, comment.UpdatedAt),
+			Answers:   ref,
 			Body:      comment.Body,
 			Author:    comment.Author.Login,
 			UpdatedAt: comment.UpdatedAt,
 			URL:       comment.URL,
 		})
 	}
-	answeredReviews := latestAgentReply(observation.Reviews)
+	answeredReviews := answeredRefs(observation.Reviews)
 	for _, review := range observation.Reviews {
 		if strings.TrimSpace(review.Body) == "" {
 			continue
 		}
-		if !isHuman(review) || answeredBy(answeredReviews, review.UpdatedAt) {
+		ref := AnswerRef(SourceReview, review.ID)
+		if !isHuman(review) || answeredBy(answeredReviews[ref], review.UpdatedAt) {
 			continue
 		}
 		items = append(items, Item{
@@ -307,6 +348,7 @@ func classifyConversation(observation Observation) []Item {
 			Source:    SourceReview,
 			ID:        review.ID,
 			Key:       fmt.Sprintf("review:%s:%s", review.ID, review.UpdatedAt),
+			Answers:   ref,
 			Body:      review.Body,
 			Author:    review.Author.Login,
 			UpdatedAt: review.UpdatedAt,
@@ -317,36 +359,10 @@ func classifyConversation(observation Observation) []Item {
 	return items
 }
 
-// inlineThreadRoots maps every inline comment to the comment that opened its
-// thread, following GitHub's in-reply-to chain. A comment that replies to
-// nothing is its own root, and a chain that cannot be resolved — a reply whose
-// parent was not returned, or a cycle — stops at the last id it reached.
-func inlineThreadRoots(comments []Activity) map[string]string {
-	parent := make(map[string]string, len(comments))
-	for _, comment := range comments {
-		if comment.InReplyTo != "" && comment.InReplyTo != comment.ID {
-			parent[comment.ID] = comment.InReplyTo
-		}
-	}
-	roots := make(map[string]string, len(comments))
-	for _, comment := range comments {
-		root := comment.ID
-		for step := 0; step < len(comments); step++ {
-			next, found := parent[root]
-			if !found {
-				break
-			}
-			root = next
-		}
-		roots[comment.ID] = root
-	}
-	return roots
-}
-
 // classifyThreadlessInline covers inline comments GitHub did not return in a
 // review thread, so an inline comment is never silently dropped. Each inline
-// thread is reconciled against the agent replies chained onto that same root
-// comment, so answering one file's comment never answers another's.
+// comment is reconciled against the agent replies that name it, so answering
+// one file's comment never answers another's.
 func classifyThreadlessInline(observation Observation) []Item {
 	threaded := make(map[string]bool)
 	for _, thread := range observation.Threads {
@@ -354,23 +370,16 @@ func classifyThreadlessInline(observation Observation) []Item {
 			threaded[comment.ID] = true
 		}
 	}
-	roots := inlineThreadRoots(observation.InlineComments)
-	answered := make(map[string]string, len(roots))
-	for _, comment := range observation.InlineComments {
-		if !isAgentReply(comment) {
-			continue
-		}
-		root := roots[comment.ID]
-		if newerThan(comment.UpdatedAt, answered[root]) {
-			answered[root] = comment.UpdatedAt
-		}
-	}
+	answered := answeredRefs(observation.InlineComments)
+	legacy := legacyAnswers(observation.InlineComments)
 	var items []Item
 	for _, comment := range observation.InlineComments {
-		if threaded[comment.ID] {
+		if threaded[comment.ID] || !isHuman(comment) {
 			continue
 		}
-		if !isHuman(comment) || answeredBy(answered[roots[comment.ID]], comment.UpdatedAt) {
+		ref := AnswerRef(SourceInlineComment, comment.ID)
+		if answeredBy(answered[ref], comment.UpdatedAt) ||
+			answeredBy(legacy[comment.ID], comment.UpdatedAt) {
 			continue
 		}
 		items = append(items, Item{
@@ -378,6 +387,7 @@ func classifyThreadlessInline(observation Observation) []Item {
 			Source:    SourceInlineComment,
 			ID:        comment.ID,
 			Key:       fmt.Sprintf("inline-comment:%s:%s", comment.ID, comment.UpdatedAt),
+			Answers:   ref,
 			Body:      comment.Body,
 			Author:    comment.Author.Login,
 			UpdatedAt: comment.UpdatedAt,
@@ -389,18 +399,21 @@ func classifyThreadlessInline(observation Observation) []Item {
 	return items
 }
 
-// classifyThreads reports review threads whose latest activity is human: every
-// unresolved thread, and a resolved thread that received a new human reply
-// after the agent answered it. A thread is reconciled only against its own
-// replies.
+// classifyThreads reports every review thread that still holds human activity
+// no agent reply names.
+//
+// A thread is reported against its newest unanswered human comment, so a reply
+// that answers one comment never answers a second one posted beside it, and a
+// new human reply moves the item's identity and wakes the owner again.
 func classifyThreads(threads []ReviewThread) []Item {
 	var items []Item
 	for _, thread := range threads {
-		latest, found := latestActivity(thread.Comments)
-		if !found || !isHuman(latest) {
-			continue
-		}
-		if thread.IsResolved && answeredBy(latestAgentReply(thread.Comments), latest.UpdatedAt) {
+		answered := answeredRefs(thread.Comments)
+		latest, found := latestUnanswered(thread.Comments, func(comment Activity) bool {
+			return answeredBy(answered[threadAnswerRef(thread.ID, comment.ID)], comment.UpdatedAt) ||
+				answeredBy(answered[AnswerRef(SourceInlineComment, comment.ID)], comment.UpdatedAt)
+		})
+		if !found {
 			continue
 		}
 		items = append(items, Item{
@@ -408,6 +421,7 @@ func classifyThreads(threads []ReviewThread) []Item {
 			Source:         SourceReviewThread,
 			ID:             thread.ID,
 			Key:            fmt.Sprintf("thread:%s:%s:%s", thread.ID, latest.ID, latest.UpdatedAt),
+			Answers:        threadAnswerRef(thread.ID, latest.ID),
 			Body:           latest.Body,
 			Author:         latest.Author.Login,
 			UpdatedAt:      latest.UpdatedAt,
@@ -466,43 +480,132 @@ func isHuman(activity Activity) bool {
 }
 
 // isAgentReply reports whether one activity is a Relay agent reply, which is
-// true exactly when the marker starts one of its lines.
+// true exactly when a marker starts one of its lines.
 func isAgentReply(activity Activity) bool {
-	if activity.Author.Bot {
-		return false
-	}
-	for _, line := range strings.Split(activity.Body, "\n") {
-		if strings.HasPrefix(line, AgentReplyMarker) {
-			return true
-		}
-	}
-	return false
+	return parseReplyMarker(activity).marked
 }
 
-// latestAgentReply returns the timestamp of the newest Relay agent reply in one
-// activity stream. Only the stream it is given is consulted, so an answer
-// posted somewhere else on the pull request never counts as an answer here.
-func latestAgentReply(activities []Activity) string {
-	latest := ""
-	for _, activity := range activities {
-		if isAgentReply(activity) && newerThan(activity.UpdatedAt, latest) {
-			latest = activity.UpdatedAt
+// replyMarker is what one activity's marker lines claim. A marked reply is
+// never actionable itself; answers names the exact activities it answers, and
+// is empty for a legacy bare marker.
+type replyMarker struct {
+	marked  bool
+	answers map[string]bool
+}
+
+// parseReplyMarker reads every marker line of one activity. A marker is a whole
+// HTML comment starting its own line, so a quoted or indented one — which is a
+// human talking about an agent reply — is not a marker.
+func parseReplyMarker(activity Activity) replyMarker {
+	parsed := replyMarker{}
+	if activity.Author.Bot {
+		return parsed
+	}
+	for _, line := range strings.Split(activity.Body, "\n") {
+		rest, isMarker := strings.CutPrefix(line, agentReplyMarkerPrefix)
+		if !isMarker || !strings.HasPrefix(rest, " ") {
+			continue
+		}
+		fields, _, closed := strings.Cut(rest, agentReplyMarkerEnd)
+		if !closed {
+			continue
+		}
+		parsed.marked = true
+		for _, field := range strings.Fields(fields) {
+			ref, named := strings.CutPrefix(field, agentReplyAnswersField)
+			if !named {
+				continue
+			}
+			if ref = normalizeAnswerRef(ref); ref == "" {
+				continue
+			}
+			if parsed.answers == nil {
+				parsed.answers = map[string]bool{}
+			}
+			parsed.answers[ref] = true
 		}
 	}
-	return latest
+	return parsed
+}
+
+// normalizeAnswerRef canonicalizes one marker reference so a reply and the
+// digest item it answers agree on the same token. Only the source is case
+// folded; an id is GitHub's and is compared exactly.
+func normalizeAnswerRef(ref string) string {
+	source, id, found := strings.Cut(strings.TrimSpace(ref), ":")
+	if !found || source == "" || id == "" {
+		return ""
+	}
+	return strings.ToLower(source) + ":" + id
+}
+
+// answeredRefs returns, for every reference the agent replies in one stream
+// name, the newest reply that names it. Only the stream it is given is
+// consulted, so an answer posted somewhere else on the pull request never
+// counts as an answer here.
+func answeredRefs(activities []Activity) map[string]string {
+	answered := map[string]string{}
+	for _, activity := range activities {
+		for ref := range parseReplyMarker(activity).answers {
+			if newerThan(activity.UpdatedAt, answered[ref]) {
+				answered[ref] = activity.UpdatedAt
+			}
+		}
+	}
+	return answered
+}
+
+// legacyAnswers supports agent replies written before markers named what they
+// answer. A bare marker answers exactly the one comment GitHub itself chained
+// the reply to and nothing else: an id GitHub assigned cannot silently cover a
+// sibling comment the reply never saw. There is no equivalent for conversation
+// comments, review bodies, or thread replies, because nothing there ties a bare
+// reply to a single activity — such a reply keeps waking the owner until an
+// anchored one answers it, which is the safe direction to be wrong in.
+func legacyAnswers(comments []Activity) map[string]string {
+	answered := map[string]string{}
+	for _, comment := range comments {
+		parsed := parseReplyMarker(comment)
+		if !parsed.marked || len(parsed.answers) > 0 || comment.InReplyTo == "" {
+			continue
+		}
+		if newerThan(comment.UpdatedAt, answered[comment.InReplyTo]) {
+			answered[comment.InReplyTo] = comment.UpdatedAt
+		}
+	}
+	return answered
 }
 
 // answeredBy reports whether an agent reply at replyAt answers human activity
 // at activityAt. Equal timestamps count: GitHub reports seconds, and a reply
-// written in the same second as the comment it answers is still an answer.
-// Activity GitHub gave no timestamp at all is never treated as answered — a
-// watcher that cannot order two events keeps the feedback rather than hiding
-// it.
+// written in the same second as the comment it answers is still an answer. A
+// human edit after the reply moves activityAt forward, so the source becomes
+// actionable again. Activity GitHub gave no timestamp at all is never treated
+// as answered — a watcher that cannot order two events keeps the feedback
+// rather than hiding it.
 func answeredBy(replyAt, activityAt string) bool {
 	if replyAt == "" || activityAt == "" {
 		return false
 	}
 	return !newerThan(activityAt, replyAt)
+}
+
+// latestUnanswered returns the newest human activity answered reports nothing
+// answers. Ties keep the later one in stream order, which is the order GitHub
+// returns a conversation in.
+func latestUnanswered(activities []Activity, answered func(Activity) bool) (Activity, bool) {
+	var latest Activity
+	found := false
+	for _, activity := range activities {
+		if !isHuman(activity) || answered(activity) {
+			continue
+		}
+		if !found || !newerThan(latest.UpdatedAt, activity.UpdatedAt) {
+			latest = activity
+			found = true
+		}
+	}
+	return latest, found
 }
 
 func latestActivity(activities []Activity) (Activity, bool) {

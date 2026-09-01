@@ -106,6 +106,12 @@ type Item struct {
 	Source string `json:"source"`
 	ID     string `json:"id"`
 	Key    string `json:"key"`
+	// Answers is the exact reference an agent reply must name in its
+	// `<!-- relay-agent-reply answers=... -->` marker to answer this item. It
+	// is the item's own source and id, so a reply covers this item and nothing
+	// else — not a sibling comment the digest never reported. Items nobody
+	// replies to, such as a check or a merge state, carry none.
+	Answers string `json:"answers,omitempty"`
 	// Body is the human-authored text the woken owner needs. It lives only in
 	// the mode 0600 digest and is never printed to watcher stdout or stderr.
 	Body            string `json:"body,omitempty"`
