@@ -95,7 +95,7 @@ func TestCopilotPackageInvariants(t *testing.T) {
 			t.Errorf("pr-monitor is missing %q", snippet)
 		}
 	}
-	cto := readFile(t, filepath.Join(out, "skills", "cto", "SKILL.md"))
+	tl := readFile(t, filepath.Join(out, "skills", "tl", "SKILL.md"))
 	for _, snippet := range []string{
 		`relay program patrol status "$PROGRAM" --json`,
 		`relay program patrol start "$PROGRAM"`,
@@ -103,7 +103,7 @@ func TestCopilotPackageInvariants(t *testing.T) {
 		"terminal-session control stream",
 		"still idle after the grace period",
 		"never focuses the pane",
-		"another CTO session",
+		"another tech lead session",
 		"never invokes\n`program tick`",
 		"reload durable state\nbefore acting",
 		"suppresses all further doorbells",
@@ -112,16 +112,16 @@ func TestCopilotPackageInvariants(t *testing.T) {
 		"There is no plain-terminal fallback",
 		"stop_reason",
 	} {
-		if !strings.Contains(cto, snippet) {
-			t.Errorf("cto is missing adaptive patrol guidance %q", snippet)
+		if !strings.Contains(tl, snippet) {
+			t.Errorf("tl is missing adaptive patrol guidance %q", snippet)
 		}
 	}
 	for _, forbidden := range []string{
-		"/loop", "/every", "program worker prompt", "fresh, bounded CTO-role session",
+		"/loop", "/every", "program worker prompt", "fresh, bounded tech lead-role session",
 		"RELAY_AUTOMATED_TURN=1",
 	} {
-		if strings.Contains(cto, forbidden) {
-			t.Errorf("cto still contains retired patrol transport text %q", forbidden)
+		if strings.Contains(tl, forbidden) {
+			t.Errorf("tl still contains retired patrol transport text %q", forbidden)
 		}
 	}
 	for _, forbidden := range []string{
@@ -129,8 +129,8 @@ func TestCopilotPackageInvariants(t *testing.T) {
 		`if [ "${HERDR_ENV:-}" = "1" ]`,
 		"manual foreground command",
 	} {
-		if strings.Contains(cto, forbidden) {
-			t.Errorf("cto still offers a non-Herdr managed fallback %q", forbidden)
+		if strings.Contains(tl, forbidden) {
+			t.Errorf("tl still offers a non-Herdr managed fallback %q", forbidden)
 		}
 	}
 }

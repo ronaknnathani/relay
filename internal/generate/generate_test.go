@@ -171,13 +171,13 @@ func TestDeliverPRGoalGuidanceIsGeneratedForEveryHarness(t *testing.T) {
 	}
 }
 
-func TestCTOProgramGuidanceIsGeneratedForEveryHarness(t *testing.T) {
+func TestTLProgramGuidanceIsGeneratedForEveryHarness(t *testing.T) {
 	for _, agentName := range []string{"claude", "copilot", "codex"} {
 		t.Run(agentName, func(t *testing.T) {
 			_, out := generateAgent(t, agentName)
-			body := readFile(t, filepath.Join(out, "skills", "cto", "SKILL.md"))
+			body := readFile(t, filepath.Join(out, "skills", "tl", "SKILL.md"))
 			for _, want := range []string{
-				`description: "Manage a Relay program as the CEO-facing CTO:`,
+				`description: "Manage a Relay program as the CEO-facing tech lead:`,
 				"relay program status",
 				"relay program tick",
 				"relay program message list \"$PROGRAM\" --json",
@@ -196,7 +196,7 @@ func TestCTOProgramGuidanceIsGeneratedForEveryHarness(t *testing.T) {
 				"Never invoke `stack-ship`",
 			} {
 				if !strings.Contains(body, want) {
-					t.Errorf("%s cto skill is missing program guidance %q", agentName, want)
+					t.Errorf("%s tl skill is missing program guidance %q", agentName, want)
 				}
 			}
 		})
@@ -207,7 +207,7 @@ func TestManagedHerdrPolicyIsGeneratedForEveryHarness(t *testing.T) {
 	for _, agentName := range []string{"claude", "copilot", "codex"} {
 		t.Run(agentName, func(t *testing.T) {
 			_, out := generateAgent(t, agentName)
-			cto := readFile(t, filepath.Join(out, "skills", "cto", "SKILL.md"))
+			tl := readFile(t, filepath.Join(out, "skills", "tl", "SKILL.md"))
 			for _, want := range []string{
 				"Managed programs run only under Herdr",
 				"relay program worker start",
@@ -215,8 +215,8 @@ func TestManagedHerdrPolicyIsGeneratedForEveryHarness(t *testing.T) {
 				"per-child start lock",
 				"closed without merging",
 			} {
-				if !strings.Contains(cto, want) {
-					t.Errorf("%s cto skill is missing managed Herdr policy %q", agentName, want)
+				if !strings.Contains(tl, want) {
+					t.Errorf("%s tl skill is missing managed Herdr policy %q", agentName, want)
 				}
 			}
 			deliver := readFile(t, filepath.Join(out, "skills", "deliver-pr", "SKILL.md"))
@@ -230,7 +230,7 @@ func TestManagedHerdrPolicyIsGeneratedForEveryHarness(t *testing.T) {
 				}
 			}
 			for _, forbidden := range []string{"Outside Herdr", "manual foreground command"} {
-				if strings.Contains(cto, forbidden) || strings.Contains(deliver, forbidden) {
+				if strings.Contains(tl, forbidden) || strings.Contains(deliver, forbidden) {
 					t.Errorf("%s skills still offer a non-Herdr managed fallback %q", agentName, forbidden)
 				}
 			}

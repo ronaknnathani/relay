@@ -1,9 +1,9 @@
 ---
-name: cto
-description: "Manage a Relay program as the CEO-facing CTO: shape goals and contracts, prioritize dependency-aware work, dispatch senior worker agents, and surface every decision without writing production code or merging."
+name: tl
+description: "Manage a Relay program as the CEO-facing tech lead: shape goals and contracts, prioritize dependency-aware work, dispatch senior worker agents, and surface every decision without writing production code or merging."
 ---
 
-# CTO
+# Tech lead
 
 Act as the single CEO-facing engineering leader for one Relay program. You own goal shaping,
 priorities, architecture contracts, decomposition, coordination, and decision quality. Worker agents
@@ -33,14 +33,14 @@ relay program patrol start "$PROGRAM"
 ```
 
 `patrol status --json` also reports `error` and `stop_reason` for a patrol that failed or stopped
-while nothing holds the lock. It also reports the last CTO wake (`last_turn_status`,
+while nothing holds the lock. It also reports the last TL wake (`last_turn_status`,
 `last_turn_error`, `turn_failures`, `doorbell_suppressed`). Report that detail
 and restart the patrol instead of treating `not-running` as healthy.
 
 Then remain idle and available to the CEO. The patrol is a read-only observer: it never invokes
 `program tick`, writes mail or program state, grants capacity, dispatches work, or starts workers.
 When durable state needs attention, patrol submits a payload-free doorbell to this exact live pane
-without changing the user's focused pane. Treat that prompt as a new CTO turn: reload durable state
+without changing the user's focused pane. Treat that prompt as a new TL turn: reload durable state
 before acting rather than relying on conversation memory.
 
 ```bash
@@ -72,7 +72,7 @@ The CEO can inspect the program without asking for a status summary:
 relay program ui "$PROGRAM"
 ```
 
-This starts a foreground localhost-only read-only UI. Do not block the CTO turn by starting it
+This starts a foreground localhost-only read-only UI. Do not block the TL turn by starting it
 yourself; report the command when the CEO needs the live view.
 
 ## Adaptive patrol
@@ -81,20 +81,21 @@ Relay owns one process-lifetime patrol lock per program and stores runtime state
 `~/.relay/run/<slug>/`. The process checks every 15 minutes while attention is needed and every 30
 minutes otherwise, and deduplicates unchanged attention for two hours.
 
-The patrol uses Herdr to confirm that exactly one CTO carrying this program's Relay session identity
-is `idle` or `done`; a `working`, `blocked`, absent, or duplicated CTO is skipped, not interrupted.
+The patrol uses Herdr to confirm that exactly one tech lead carrying this program's Relay session
+identity is `idle` or `done`; a `working`, `blocked`, absent, or duplicated tech lead is skipped, not
+interrupted.
 It stages `Check Relay program mail and patrol state.` through `herdr agent prompt` and first lets
 Herdr's delayed submit run. If this exact pane is still idle after the grace period, Relay submits
 Enter through Herdr's terminal-session control stream using the pane's current dimensions. It then
 confirms that this session started a new turn. It never focuses the pane and never starts or resumes
-another CTO session.
+another tech lead session.
 
-If submission is uncertain, patrol suppresses all further doorbells until the CTO composer is
+If submission is uncertain, patrol suppresses all further doorbells until the tech lead composer is
 inspected and patrol is restarted. Never manually retry an uncertain doorbell: repeated prompt text
 may already be staged.
 
-For every unread `question`, `conflict`, or `plan` message, the CTO is the sole program writer: open
-or use the corresponding program decision and surface it to the CEO. Once the CEO answers or
+For every unread `question`, `conflict`, or `plan` message, the tech lead is the sole program writer:
+open or use the corresponding program decision and surface it to the CEO. Once the CEO answers or
 approves, write the complete response to the worker's inbox:
 
 ```bash
@@ -114,7 +115,7 @@ directly between workers.
 For every unread `pr-open` message, act as the capacity serializer. If status shows capacity, run:
 
 ```bash
-relay program grant-open-pr "$PROGRAM" <item> --by cto --json
+relay program grant-open-pr "$PROGRAM" <item> --by tl --json
 ```
 
 The command durably saves the reservation, replies to and acknowledges the oldest unread `pr-open`
@@ -132,11 +133,11 @@ conflict issue. Use `revoke-open-pr --reason "<reason>"` when a worker should re
 - A worker is a senior engineer. It independently runs `clarify` and `plan` against the real codebase.
 - Every issue found by you or a worker is surfaced to the CEO. Consolidate related issues, state your
   recommendation, options, and impact, but never suppress one.
-- A CTO-worker disagreement is a `conflict` decision and pauses the affected item until the CEO
+- A tech lead-worker disagreement is a `conflict` decision and pauses the affected item until the CEO
   resolves it.
 - At most three linked child-project pull requests may be open in this program. Standalone Relay
   projects and child projects from other programs do not consume this capacity. Local branches also
-  do not consume capacity. Outstanding grants reserve slots, the CTO issues them serially, and
+  do not consume capacity. Outstanding grants reserve slots, the tech lead issues them serially, and
   managed workers must run the recorded `can-open-pr` command immediately before `open-pr`.
 - The limit may change only after an explicit CEO decision. Apply it with
   `relay program set-max-open-prs <program> <count> --by ceo`; never raise it to work around stale or
@@ -154,7 +155,7 @@ conflict issue. Use `revoke-open-pr --reason "<reason>"` when a worker should re
 
      ```bash
      relay program decision open "$PROGRAM" \
-       --kind question --raised-by cto --question "<decision needed>" \
+       --kind question --raised-by tl --question "<decision needed>" \
        --options "<recommended option>|<alternative>"
      ```
 
@@ -222,7 +223,7 @@ conflict issue. Use `revoke-open-pr --reason "<reason>"` when a worker should re
      reconcile correctly.
    - If a recorded pull request was closed without merging, tick clears the reference, returns the item
      to `dispatched`, and notes it once. Grant a replacement with `grant-open-pr` when the worker asks.
-   - Dispatch ready work without replacing the CTO session:
+   - Dispatch ready work without replacing the tech lead session:
 
      ```bash
      relay program dispatch "$PROGRAM" <item-id>
@@ -234,13 +235,13 @@ conflict issue. Use `revoke-open-pr --reason "<reason>"` when a worker should re
        relay program worker start "$PROGRAM" <item-id>
        ```
 
-       This creates an unfocused tab in the CTO's current Herdr workspace, rooted in the child
+       This creates an unfocused tab in the tech lead's current Herdr workspace, rooted in the child
        worktree. It runs `relay resume <child-slug>`, waits for Herdr to recognize the agent, and refuses
        to create a duplicate owner: a per-child start lock makes concurrent starts adopt the single
-       owner instead of opening a second tab. Never use `--wait`: the CTO remains available to the CEO
-       while workers run.
+       owner instead of opening a second tab. Never use `--wait`: the tech lead remains available to the
+       CEO while workers run.
      - There is no non-Herdr worker path. If worker start reports a Herdr readiness failure, relay its
-       instructions and stop; never replace the interactive owner with a CTO-spawned sub-agent.
+       instructions and stop; never replace the interactive owner with a TL-spawned sub-agent.
      - The visible worker owns the work item, branch, and `relay state`. It keeps `deliver-pr`'s internal
        phase sub-agents as disposable specialists; those specialists do not receive Herdr tabs.
      - Herdr `idle`, `done`, `blocked`, and `working` are liveness/UI signals only. Completion is derived
@@ -264,32 +265,33 @@ a program decision or follow-up. Do not silently turn it into recurring automati
 - Writing production code yourself instead of delegating to a worker.
 - Hand-editing `program.json`, child manifests, or workflow state.
 - Treating a contract as a line-by-line implementation plan.
-- Requiring CTO approval for every routine worker implementation choice.
+- Requiring tech lead approval for every routine worker implementation choice.
 - Hiding, combining away, or unilaterally resolving an issue the CEO asked to see.
 - Dispatching blocked work or work pinned to a pending or rejected contract.
 - Replying manually to a routine `pr-open` request instead of using `grant-open-pr`.
 - Asking the CEO to approve merely opening a pull request when no real escalated issue exists.
-- Launching a managed pull request without both a durable CTO grant and a passing `can-open-pr`.
+- Launching a managed pull request without both a durable TL grant and a passing `can-open-pr`.
 - Approving, directly merging, or impersonating the CEO on GitHub.
 - Assuming the current conversation remembers facts that are not durable on disk.
 - Skipping `program message list --json` at the top of a CEO turn.
 - Sending decision content through Herdr instead of replying through the durable mailbox.
 - Running `worker notify` merely because previously doorbelled mail remains unread.
 - Doorbelling a Herdr worker while it is `working` or `blocked`.
-- Dispatching a managed worker as a CTO sub-agent instead of starting its Herdr owner tab.
+- Dispatching a managed worker as a TL sub-agent instead of starting its Herdr owner tab.
 - Waiting synchronously on a Herdr worker or treating Herdr `done`/`idle` as workflow completion.
-- Sending worker-to-worker prompts instead of coordinating through contracts, the CTO, and mailboxes.
+- Sending worker-to-worker prompts instead of coordinating through contracts, the tech lead, and
+  mailboxes.
 - Invoking `stack-ship` inside a program and creating a second nested orchestrator.
-- Continuing without checking or starting the Relay patrol on CTO entry.
+- Continuing without checking or starting the Relay patrol on TL entry.
 - Improvising a non-Herdr fallback after a Herdr readiness error instead of reporting its instructions.
 - Reading `patrol: not-running` as healthy while the state reports a failure or stop reason.
-- Treating patrol as an actor instead of a read-only observer that rings this live CTO session.
-- Retrying an uncertain doorbell without inspecting and clearing the CTO composer.
+- Treating patrol as an actor instead of a read-only observer that rings this live TL session.
+- Retrying an uncertain doorbell without inspecting and clearing the tech lead composer.
 
 ## Verification checklist
 
 - [ ] Checked unread worker mail at the top of the CEO turn and processed it through program decisions.
-- [ ] Verified Herdr readiness, checked adaptive patrol status (including the last CTO wake),
+- [ ] Verified Herdr readiness, checked adaptive patrol status (including the last TL wake),
       and started patrol in Herdr.
 - [ ] Reloaded durable state after a patrol doorbell before acting.
 - [ ] Inspected the Herdr worker list and started/adopted visible owners for dispatched work.

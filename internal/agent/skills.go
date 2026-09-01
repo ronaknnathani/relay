@@ -28,6 +28,48 @@ func UnlinkSkills(a Agent, opts SkillSyncOptions) error {
 	return syncSkills(a, opts, false)
 }
 
+// RemoveRetiredSkill unlinks one retired skill name from the agent's personal
+// skills directory, but only when it is a symlink Relay itself installed. A
+// foreign symlink, a real directory, or a plain file of the same name belongs
+// to someone else and is left exactly as it is. This is deliberately surgical:
+// a broad sweep of "everything not in the source tree" would delete a user's
+// own work the first time they renamed a skill upstream.
+func RemoveRetiredSkill(a Agent, name string, opts SkillSyncOptions) error {
+	installedDir, err := skillsDirForAgent(a)
+	if err != nil {
+		return err
+	}
+	out := opts.Stdout
+	if out == nil {
+		out = io.Discard
+	}
+	target := filepath.Join(installedDir, name)
+	info, err := os.Lstat(target)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat retired skill %s: %w", target, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		fmt.Fprintf(out, "  keeping %s: %s is not a relay-managed symlink\n", name, target)
+		return nil
+	}
+	current, err := os.Readlink(target)
+	if err != nil {
+		return fmt.Errorf("readlink %s: %w", target, err)
+	}
+	if !isManagedTarget(current, opts.ManagedRoots) {
+		fmt.Fprintf(out, "  keeping %s: %s -> %s is not managed by relay\n", name, target, current)
+		return nil
+	}
+	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove retired skill link %s: %w", target, err)
+	}
+	fmt.Fprintf(out, "  removed retired %s\n", name)
+	return nil
+}
+
 func syncSkills(a Agent, opts SkillSyncOptions, link bool) error {
 	installedDir, err := skillsDirForAgent(a)
 	if err != nil {

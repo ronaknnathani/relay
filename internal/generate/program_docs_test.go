@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// The CTO skill and program guide describe the focusless live-pane doorbell
-// implemented by the patrol and worker notification paths.
-func TestProgramDocsDescribeLiveCTODoorbells(t *testing.T) {
+// The tech lead skill and program guide describe the focusless live-pane
+// doorbell implemented by the patrol and worker notification paths.
+func TestProgramDocsDescribeLiveTLDoorbells(t *testing.T) {
 	root := repoRoot(t)
 	for _, test := range []struct {
 		path      string
@@ -17,17 +17,17 @@ func TestProgramDocsDescribeLiveCTODoorbells(t *testing.T) {
 		forbidden []string
 	}{
 		{
-			path: filepath.Join("skills", "cto", "SKILL.md"),
+			path: filepath.Join("skills", "tl", "SKILL.md"),
 			required: []string{
 				"payload-free doorbell to this exact live pane",
 				"terminal-session control stream",
 				"never focuses the pane",
-				"another CTO session",
+				"another tech lead session",
 				"suppresses all further doorbells",
 			},
 			forbidden: []string{
 				"/loop", "/every", "program worker prompt",
-				"fresh, bounded CTO-role session",
+				"fresh, bounded tech lead-role session",
 				"RELAY_AUTOMATED_TURN=1",
 			},
 		},
