@@ -687,7 +687,7 @@ func readPRWatchState(t *testing.T, slug string) prwatch.State {
 }
 
 // stopRunOnce makes IsRunning report a watcher that stops after the first call,
-// which is what signalling and awaiting its exit looks like.
+// which is what signaling and awaiting its exit looks like.
 func stopRunOnce() {
 	calls := 0
 	prWatchIsRunning = func(string) (bool, error) {
