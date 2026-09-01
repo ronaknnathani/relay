@@ -7,6 +7,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -56,10 +57,15 @@ func TestTurnArmsFingerprintOnlyAfterASuccessfulTurn(t *testing.T) {
 	state := State{ProgramSlug: "alpha", Reasons: []Reason{}}
 	runner := &recordingTurnRunner{}
 
-	if warning := requestTLTurn(
+	outcome := requestTLTurn(
 		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), runner, nil, now,
-	); warning != "" {
-		t.Fatalf("successful turn warned: %q", warning)
+	)
+	if outcome.Warning != "" {
+		t.Fatalf("successful turn warned: %q", outcome.Warning)
+	}
+	if outcome.Kind != wakeDelivered || !slices.Equal(outcome.Panes, []string{"tl-alpha"}) ||
+		outcome.Status != string(herdr.StatusIdle) {
+		t.Fatalf("delivered outcome = %+v", outcome)
 	}
 	if len(runner.requests) != 1 ||
 		runner.requests[0].ProgramSlug != "alpha" ||
@@ -76,22 +82,22 @@ func TestTurnArmsFingerprintOnlyAfterASuccessfulTurn(t *testing.T) {
 	}
 
 	// Unchanged attention is not re-run before the two-hour rearm.
-	if warning := requestTLTurn(
+	if outcome := requestTLTurn(
 		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), runner, nil,
 		now.Add(time.Hour),
-	); warning != "" {
-		t.Fatal(warning)
+	); outcome.Warning != "" || outcome.Kind != wakeNotNeeded {
+		t.Fatalf("unchanged attention outcome = %+v", outcome)
 	}
 	if len(runner.requests) != 1 {
 		t.Fatalf("unchanged attention re-ran a turn: %d requests", len(runner.requests))
 	}
 
 	// The two-hour rearm rings the same live tech lead for unchanged attention.
-	if warning := requestTLTurn(
+	if outcome := requestTLTurn(
 		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), runner, nil,
 		now.Add(2*time.Hour),
-	); warning != "" {
-		t.Fatal(warning)
+	); outcome.Warning != "" || outcome.Kind != wakeDelivered {
+		t.Fatalf("rearmed outcome = %+v", outcome)
 	}
 	if len(runner.requests) != 2 {
 		t.Fatalf("two-hour rearm requests = %d, want 2", len(runner.requests))
@@ -105,22 +111,38 @@ func TestTurnLeavesFingerprintUnchangedOnFailureTimeoutAndSkip(t *testing.T) {
 		result TurnResult
 		err    error
 		fails  int
+		kind   wakeKind
 	}{
-		{name: "failed", result: TurnResult{Status: TurnFailed, Error: "exit status 1"}, fails: 1},
-		{name: "timed out", result: TurnResult{Status: TurnTimedOut, Error: "10m limit"}, fails: 1},
-		{name: "runner error", result: TurnResult{}, err: errors.New("cannot start"), fails: 1},
-		{name: "skipped", result: TurnResult{Status: TurnSkipped, Reason: "another writer is running"}, fails: 0},
+		{
+			name: "failed", result: TurnResult{Status: TurnFailed, Error: "exit status 1"},
+			fails: 1, kind: wakeFailed,
+		},
+		{
+			name: "timed out", result: TurnResult{Status: TurnTimedOut, Error: "10m limit"},
+			fails: 1, kind: wakeFailed,
+		},
+		{
+			name: "runner error", result: TurnResult{}, err: errors.New("cannot start"),
+			fails: 1, kind: wakeFailed,
+		},
+		{
+			name: "skipped", result: TurnResult{Status: TurnSkipped, Reason: "another writer is running"},
+			fails: 0, kind: wakeSkipped,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := State{ProgramSlug: "alpha", Reasons: []Reason{}}
 			runner := &recordingTurnRunner{
 				results: []TurnResult{test.result}, errs: []error{test.err},
 			}
-			warning := requestTLTurn(
+			outcome := requestTLTurn(
 				context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), runner, nil, now,
 			)
-			if warning == "" {
+			if outcome.Warning == "" {
 				t.Fatal("unsuccessful turn produced no warning")
+			}
+			if outcome.Kind != test.kind {
+				t.Fatalf("outcome kind = %q, want %q", outcome.Kind, test.kind)
 			}
 			if state.AttentionFingerprint != "" || state.LastNotifiedAt != "" {
 				t.Fatalf("unsuccessful turn armed the fingerprint: %+v", state)
@@ -134,11 +156,11 @@ func TestTurnLeavesFingerprintUnchangedOnFailureTimeoutAndSkip(t *testing.T) {
 
 			// The next tick retries because attention is still unarmed.
 			runner.results, runner.errs, runner.index = nil, nil, 0
-			if warning := requestTLTurn(
+			if outcome := requestTLTurn(
 				context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), runner, nil,
 				now.Add(time.Minute),
-			); warning != "" {
-				t.Fatal(warning)
+			); outcome.Warning != "" {
+				t.Fatal(outcome.Warning)
 			}
 			if state.AttentionFingerprint != "fp-1" {
 				t.Fatalf("retry did not arm the fingerprint: %+v", state)
@@ -159,10 +181,10 @@ func TestTurnSuppressesAfterThreeConsecutiveFailuresUntilAttentionChanges(t *tes
 	}
 	for attempt := 1; attempt <= 3; attempt++ {
 		at := now.Add(time.Duration(attempt) * time.Minute)
-		if warning := requestTLTurn(
+		if outcome := requestTLTurn(
 			context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), failing, nil, at,
-		); warning == "" {
-			t.Fatalf("attempt %d produced no warning", attempt)
+		); outcome.Warning == "" || outcome.Kind != wakeFailed {
+			t.Fatalf("attempt %d outcome = %+v", attempt, outcome)
 		}
 		if state.TurnFailures != attempt {
 			t.Fatalf("attempt %d failures = %d", attempt, state.TurnFailures)
@@ -171,26 +193,29 @@ func TestTurnSuppressesAfterThreeConsecutiveFailuresUntilAttentionChanges(t *tes
 
 	// A fourth tick must not attempt a turn at all.
 	suppressed := &recordingTurnRunner{}
-	warning := requestTLTurn(
+	outcome := requestTLTurn(
 		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), suppressed, nil,
 		now.Add(10*time.Minute),
 	)
 	if len(suppressed.requests) != 0 {
 		t.Fatalf("suppressed patrol still ran %d turns", len(suppressed.requests))
 	}
+	if outcome.Kind != wakeSuppressed {
+		t.Errorf("suppressed outcome kind = %q, want %q", outcome.Kind, wakeSuppressed)
+	}
 	for _, want := range []string{"suppressed", "3"} {
-		if !strings.Contains(warning, want) {
-			t.Errorf("suppression warning %q is missing %q", warning, want)
+		if !strings.Contains(outcome.Warning, want) {
+			t.Errorf("suppression warning %q is missing %q", outcome.Warning, want)
 		}
 	}
 
 	// Changed attention resets the failure budget and resumes live doorbells.
 	recovering := &recordingTurnRunner{}
-	if warning := requestTLTurn(
+	if outcome := requestTLTurn(
 		context.Background(), &state, attention("alpha", "fp-2"), idleTL("alpha"), recovering, nil,
 		now.Add(11*time.Minute),
-	); warning != "" {
-		t.Fatal(warning)
+	); outcome.Warning != "" {
+		t.Fatal(outcome.Warning)
 	}
 	if len(recovering.requests) != 1 || state.TurnFailures != 0 || state.AttentionFingerprint != "fp-2" {
 		t.Fatalf("recovery = requests %d state %+v", len(recovering.requests), state)
@@ -204,13 +229,14 @@ func TestTurnGatesOnExactIdleOrDoneTL(t *testing.T) {
 		runner := &recordingTurnRunner{}
 		agents := idleTL("alpha")
 		agents[0].Status = status
-		if warning := requestTLTurn(
+		outcome := requestTLTurn(
 			context.Background(), &state, attention("alpha", "fp-1"), agents, runner, nil, now,
-		); warning != "" {
-			t.Fatalf("%s tech lead warned: %q", status, warning)
+		)
+		if outcome.Warning != "" {
+			t.Fatalf("%s tech lead warned: %q", status, outcome.Warning)
 		}
-		if len(runner.requests) != 1 {
-			t.Fatalf("%s tech lead ran %d turns, want 1", status, len(runner.requests))
+		if len(runner.requests) != 1 || outcome.Kind != wakeDelivered {
+			t.Fatalf("%s tech lead ran %d turns (%+v), want 1 delivered", status, len(runner.requests), outcome)
 		}
 	}
 
@@ -219,10 +245,15 @@ func TestTurnGatesOnExactIdleOrDoneTL(t *testing.T) {
 		runner := &recordingTurnRunner{}
 		agents := idleTL("alpha")
 		agents[0].Status = status
-		if warning := requestTLTurn(
+		outcome := requestTLTurn(
 			context.Background(), &state, attention("alpha", "fp-1"), agents, runner, nil, now,
-		); warning != "" {
-			t.Fatalf("%s tech lead warned: %q", status, warning)
+		)
+		if outcome.Warning != "" {
+			t.Fatalf("%s tech lead warned: %q", status, outcome.Warning)
+		}
+		if outcome.Kind != wakeBusy || !slices.Equal(outcome.Panes, []string{"tl-alpha"}) ||
+			outcome.Status != string(status) {
+			t.Fatalf("%s tech lead outcome = %+v", status, outcome)
 		}
 		if len(runner.requests) != 0 {
 			t.Fatalf("%s tech lead received a live doorbell", status)
@@ -235,10 +266,10 @@ func TestTurnGatesOnExactIdleOrDoneTL(t *testing.T) {
 	// Two programs in one repository must not be confused for each other.
 	state := State{ProgramSlug: "alpha", Reasons: []Reason{}}
 	runner := &recordingTurnRunner{}
-	if warning := requestTLTurn(
+	if outcome := requestTLTurn(
 		context.Background(), &state, attention("alpha", "fp-1"), idleTL("beta"), runner, nil, now,
-	); warning != "" {
-		t.Fatal(warning)
+	); outcome.Warning != "" || outcome.Kind != wakeAbsent {
+		t.Fatalf("absent tech lead outcome = %+v", outcome)
 	}
 	if len(runner.requests) != 0 || state.TLPresent {
 		t.Fatalf("another program's tech lead was used: requests %d state %+v", len(runner.requests), state)
@@ -255,11 +286,11 @@ func TestTurnClearsAttentionOnDrainAndResetsFailures(t *testing.T) {
 		TurnFailures:         3,
 	}
 	runner := &recordingTurnRunner{}
-	if warning := requestTLTurn(
+	if outcome := requestTLTurn(
 		context.Background(), &state, Observation{ProgramSlug: "alpha"}, idleTL("alpha"), runner, nil,
 		now.Add(time.Minute),
-	); warning != "" {
-		t.Fatal(warning)
+	); outcome.Warning != "" || outcome.Kind != wakeNotNeeded {
+		t.Fatalf("drained outcome = %+v", outcome)
 	}
 	if state.AttentionFingerprint != "" || state.LastNotifiedAt != "" || state.TurnFailures != 0 {
 		t.Fatalf("drained state = %+v", state)
@@ -269,11 +300,11 @@ func TestTurnClearsAttentionOnDrainAndResetsFailures(t *testing.T) {
 	}
 
 	// Recurring attention rings the live tech lead immediately.
-	if warning := requestTLTurn(
+	if outcome := requestTLTurn(
 		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), runner, nil,
 		now.Add(2*time.Minute),
-	); warning != "" {
-		t.Fatal(warning)
+	); outcome.Warning != "" {
+		t.Fatal(outcome.Warning)
 	}
 	if len(runner.requests) != 1 || state.AttentionFingerprint != "fp-1" {
 		t.Fatalf("recurrence = requests %d state %+v", len(runner.requests), state)
@@ -282,12 +313,12 @@ func TestTurnClearsAttentionOnDrainAndResetsFailures(t *testing.T) {
 
 func TestTurnWarnsWhenNoRunnerIsConfigured(t *testing.T) {
 	state := State{ProgramSlug: "alpha", Reasons: []Reason{}}
-	warning := requestTLTurn(
+	outcome := requestTLTurn(
 		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), nil, nil,
 		time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC),
 	)
-	if warning == "" {
-		t.Fatal("missing runner produced no warning")
+	if outcome.Warning == "" || outcome.Kind != wakeFailed {
+		t.Fatalf("missing runner outcome = %+v", outcome)
 	}
 	if state.AttentionFingerprint != "" {
 		t.Fatalf("missing runner armed the fingerprint: %+v", state)
@@ -310,11 +341,11 @@ func TestTurnNotificationIsBestEffort(t *testing.T) {
 	now := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 	state := State{ProgramSlug: "alpha", Reasons: []Reason{}}
 	notifier := &recordingNotifier{err: errors.New("no desktop session")}
-	if warning := requestTLTurn(
+	if outcome := requestTLTurn(
 		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"),
 		&recordingTurnRunner{}, notifier, now,
-	); warning != "" {
-		t.Fatalf("failing notifier changed the outcome: %q", warning)
+	); outcome.Warning != "" {
+		t.Fatalf("failing notifier changed the outcome: %q", outcome.Warning)
 	}
 	if notifier.calls != 1 || state.AttentionFingerprint != "fp-1" {
 		t.Fatalf("notifier calls = %d state = %+v", notifier.calls, state)
@@ -387,17 +418,20 @@ func TestTurnSkipsAndWarnsWhenTwoLiveTLsClaimTheProgram(t *testing.T) {
 		{PaneID: "p2", TerminalTitle: "relay:program:alpha", Status: herdr.StatusWorking},
 	}
 
-	warning := requestTLTurn(
+	outcome := requestTLTurn(
 		context.Background(), &state, attention("alpha", "fp-1"), duplicates, runner, nil, now,
 	)
 	if len(runner.requests) != 0 {
 		t.Fatalf("a turn ran with duplicate tech leads: %+v", runner.requests)
 	}
+	if outcome.Kind != wakeDuplicate || !slices.Equal(outcome.Panes, []string{"p1", "p2"}) {
+		t.Fatalf("duplicate outcome = %+v, want both pane IDs", outcome)
+	}
 	for _, want := range []string{
 		`skipped the live tech lead doorbell for program "alpha"`, "2 live tech lead sessions", "p1", "p2",
 	} {
-		if !strings.Contains(warning, want) {
-			t.Errorf("warning %q is missing %q", warning, want)
+		if !strings.Contains(outcome.Warning, want) {
+			t.Errorf("warning %q is missing %q", outcome.Warning, want)
 		}
 	}
 
@@ -416,25 +450,31 @@ func TestUncertainDoorbellSuppressesAllAutomaticRetriesUntilRestart(t *testing.T
 		Status: TurnUncertain,
 		Error:  "terminal-targeted Enter was sent, but no new turn was observed",
 	}}}
-	warning := requestTLTurn(
+	outcome := requestTLTurn(
 		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), uncertain, nil, now,
 	)
-	if warning == "" || !state.DoorbellSuppressed ||
+	if outcome.Warning == "" || !state.DoorbellSuppressed ||
 		state.LastTurnStatus != string(TurnUncertain) {
-		t.Fatalf("uncertain doorbell state = %+v warning = %q", state, warning)
+		t.Fatalf("uncertain doorbell state = %+v warning = %q", state, outcome.Warning)
+	}
+	if outcome.Kind != wakeUncertain {
+		t.Errorf("uncertain outcome kind = %q, want %q", outcome.Kind, wakeUncertain)
 	}
 
 	retry := &recordingTurnRunner{}
-	warning = requestTLTurn(
+	outcome = requestTLTurn(
 		context.Background(), &state, attention("alpha", "fp-2"), idleTL("alpha"), retry, nil,
 		now.Add(3*time.Hour),
 	)
 	if len(retry.requests) != 0 {
 		t.Fatalf("uncertain delivery retried with changed attention: %+v", retry.requests)
 	}
+	if outcome.Kind != wakeSuppressed {
+		t.Errorf("suppressed retry kind = %q, want %q", outcome.Kind, wakeSuppressed)
+	}
 	for _, want := range []string{"suppressed", "inspect and clear", "restart"} {
-		if !strings.Contains(warning, want) {
-			t.Errorf("suppression warning %q is missing %q", warning, want)
+		if !strings.Contains(outcome.Warning, want) {
+			t.Errorf("suppression warning %q is missing %q", outcome.Warning, want)
 		}
 	}
 }

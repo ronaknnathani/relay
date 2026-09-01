@@ -77,7 +77,7 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 			} else {
 				notificationWarning = requestTLTurn(
 					ctx, &state, observation, agents, options.Turns, options.Notifier, tickNow,
-				)
+				).Warning
 			}
 		}
 		if tickErr != nil {

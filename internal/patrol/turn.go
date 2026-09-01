@@ -29,6 +29,42 @@ const (
 	TurnUncertain TurnStatus = "uncertain"
 )
 
+// wakeKind names, as a stable enum, what the patrol decided about ringing the
+// live tech lead. It is the only wake detail that is safe to print: it carries
+// no prompt text, no attention fingerprint, and no agent session identity.
+type wakeKind string
+
+// Wake decisions and results.
+const (
+	// wakeNotNeeded covers both no attention at all and attention that was
+	// already delivered and has not re-armed yet.
+	wakeNotNeeded  wakeKind = "not-needed"
+	wakeAbsent     wakeKind = "absent"
+	wakeBusy       wakeKind = "busy"
+	wakeDuplicate  wakeKind = "duplicate"
+	wakeDelivered  wakeKind = "delivered"
+	wakeSkipped    wakeKind = "skipped"
+	wakeFailed     wakeKind = "failed"
+	wakeUncertain  wakeKind = "uncertain"
+	wakeSuppressed wakeKind = "suppressed"
+)
+
+// turnOutcome reports one wake decision twice over: Warning is the full
+// operator-facing detail recorded in patrol state, while Kind, Panes, and
+// Status are the redacted form the patrol prints.
+type turnOutcome struct {
+	Kind    wakeKind
+	Panes   []string
+	Status  string
+	Warning string
+}
+
+// degraded reports whether the outcome left attention undelivered, which is
+// what separates a stderr warning from a routine stdout event.
+func (o turnOutcome) degraded() bool {
+	return o.Kind != wakeDelivered && o.Kind != wakeNotNeeded
+}
+
 // TurnRequest describes the live tech lead doorbell the patrol wants delivered.
 type TurnRequest struct {
 	ProgramSlug string
@@ -60,7 +96,7 @@ type Notifier interface {
 }
 
 // requestTLTurn rings the live tech lead at most once for the current
-// attention. It returns a warning string instead of an error because a delivery
+// attention. It returns an outcome instead of an error because a delivery
 // problem must degrade the patrol, never stop it.
 func requestTLTurn(
 	ctx context.Context,
@@ -70,42 +106,57 @@ func requestTLTurn(
 	runner TurnRunner,
 	notifier Notifier,
 	now time.Time,
-) string {
+) turnOutcome {
 	tl, tlErr := herdr.FindLiveTL(agents, observation.ProgramSlug)
 	// Tech lead presence means exactly one identified owner. Zero owners and two
 	// rival owners are both reported as absent, because neither state gives the
 	// patrol a tech lead it may act beside.
 	state.TLPresent = tlErr == nil
+	found := turnOutcome{Status: string(tl.Status)}
+	if tlErr == nil {
+		found.Panes = []string{tl.PaneID}
+	}
+	if duplicates := new(herdr.DuplicateTLError); errors.As(tlErr, &duplicates) {
+		found.Panes = append([]string(nil), duplicates.PaneIDs...)
+	}
+	outcome := func(kind wakeKind, warning string) turnOutcome {
+		result := found
+		result.Kind = kind
+		result.Warning = warning
+		return result
+	}
 	if observation.AttentionFingerprint == "" {
 		state.AttentionFingerprint = ""
 		state.LastNotifiedAt = ""
 		state.LastTurnFingerprint = ""
 		state.TurnFailures = 0
-		return ""
+		return outcome(wakeNotNeeded, "")
 	}
 	if state.DoorbellSuppressed {
-		return fmt.Sprintf(
+		return outcome(wakeSuppressed, fmt.Sprintf(
 			"live tech lead doorbells for program %q are suppressed after an unconfirmed delivery; "+
 				"inspect and clear the tech lead composer, then restart the patrol",
 			observation.ProgramSlug,
-		)
+		))
 	}
 	if tlErr != nil {
 		if errors.Is(tlErr, herdr.ErrNoLiveTL) {
-			return ""
+			return outcome(wakeAbsent, "")
 		}
 		// Ambiguous tech lead ownership is not a silent skip: the CEO has to
 		// close the duplicate pane before automation can safely act on this
 		// program.
-		return fmt.Sprintf(
+		return outcome(wakeDuplicate, fmt.Sprintf(
 			"skipped the live tech lead doorbell for program %q: %s",
 			observation.ProgramSlug, tlErr,
-		)
+		))
 	}
 	switch tl.Status {
 	case herdr.StatusIdle, herdr.StatusDone:
 	default:
-		return ""
+		// A working tech lead is already awake: the attention stays pending and
+		// the next tick rings it once it goes idle.
+		return outcome(wakeBusy, "")
 	}
 
 	// The failure budget is counted against the attention that was attempted,
@@ -116,20 +167,20 @@ func requestTLTurn(
 	}
 	changed := observation.AttentionFingerprint != state.AttentionFingerprint
 	if !changed && !rearmed(state.LastNotifiedAt, now) {
-		return ""
+		return outcome(wakeNotNeeded, "")
 	}
 	if state.TurnFailures >= turnFailureLimit {
-		return fmt.Sprintf(
+		return outcome(wakeSuppressed, fmt.Sprintf(
 			"live tech lead doorbells for program %q are suppressed after %d consecutive failures (%s); "+
 				"they resume when attention changes or after `relay program patrol stop`/`start`",
 			observation.ProgramSlug, state.TurnFailures, lastTurnDetail(state),
-		)
+		))
 	}
 	if runner == nil {
-		return fmt.Sprintf(
+		return outcome(wakeFailed, fmt.Sprintf(
 			"ring the live tech lead for program %q: no doorbell runner is configured",
 			observation.ProgramSlug,
-		)
+		))
 	}
 
 	result, err := runner.RunTurn(ctx, TurnRequest{
@@ -154,20 +205,20 @@ func requestTLTurn(
 		state.LastNotifiedAt = now.UTC().Format(time.RFC3339)
 		state.TurnFailures = 0
 		state.DoorbellSuppressed = false
-		return ""
+		return outcome(wakeDelivered, "")
 	case TurnUncertain:
 		state.DoorbellSuppressed = true
-		return fmt.Sprintf(
+		return outcome(wakeUncertain, fmt.Sprintf(
 			"live tech lead doorbell for program %q was not confirmed: %s; "+
 				"automatic retries are suppressed until the tech lead composer is inspected "+
 				"and the patrol is restarted",
 			observation.ProgramSlug, turnError(result),
-		)
+		))
 	case TurnSkipped:
-		return fmt.Sprintf(
+		return outcome(wakeSkipped, fmt.Sprintf(
 			"live tech lead doorbell for program %q was skipped: %s",
 			observation.ProgramSlug, skipReason(result),
-		)
+		))
 	default:
 		state.TurnFailures++
 		warning := fmt.Sprintf(
@@ -181,7 +232,7 @@ func requestTLTurn(
 				state.TurnFailures,
 			)
 		}
-		return warning
+		return outcome(wakeFailed, warning)
 	}
 }
 
