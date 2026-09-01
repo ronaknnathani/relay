@@ -72,7 +72,10 @@ func Find(slug string) (string, error) {
 	return "", fmt.Errorf("program %q not found", slug)
 }
 
-// Load reads, decodes, and validates a program manifest.
+// Load reads, decodes, and validates a program manifest. Retired role
+// identities are normalized to their canonical form immediately after decoding,
+// so a manifest written before the tech-lead rename loads as canonical state
+// and never reaches validation with a legacy actor.
 func Load(path string) (Program, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -82,6 +85,7 @@ func Load(path string) (Program, error) {
 	if err := json.Unmarshal(data, &program); err != nil {
 		return Program{}, fmt.Errorf("parse program %s: %w", path, err)
 	}
+	program = program.Normalize()
 	if err := program.Validate(); err != nil {
 		return Program{}, fmt.Errorf("validate program %s: %w", path, err)
 	}
@@ -114,9 +118,11 @@ func LoadAll(dir string) ([]Program, error) {
 }
 
 // Create writes a new active program using O_EXCL so an existing manifest is
-// never overwritten.
+// never overwritten. Actor fields are normalized first, so a durable manifest
+// only ever carries canonical role identities.
 func Create(program Program) error {
 	now := timestamp()
+	program = program.Normalize()
 	if program.Revision == 0 {
 		program.Revision = 1
 	}
@@ -158,8 +164,10 @@ func Create(program Program) error {
 // Save atomically replaces path when program's revision still matches disk. The
 // kernel-held save lock serializes the revision read, temporary write, and
 // rename; it is released automatically when a holding process exits or crashes.
+// Actor fields are normalized first, so saving state loaded from a manifest
+// written before the tech-lead rename emits canonical role identities.
 func Save(path string, program Program) (retErr error) {
-	next := program
+	next := program.Normalize()
 	next.UpdatedAt = timestamp()
 	if err := next.Validate(); err != nil {
 		return fmt.Errorf("save program %q: %w", next.Slug, err)

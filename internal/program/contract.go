@@ -89,7 +89,7 @@ func (p *Program) PublishContract(programDir, name, sourcePath string) (Contract
 	next.UpdatedAt = now
 	if _, created, err := next.OpenDecision(Decision{
 		Kind:        DecisionContract,
-		RaisedBy:    RaisedByCTO,
+		RaisedBy:    RaisedByTL,
 		ContractRef: ref,
 		Question:    "Approve contract " + ref + "?",
 		Options:     []string{"approve", "reject"},

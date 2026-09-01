@@ -185,11 +185,11 @@ func TestGrantOpenPRSerializesReservedCapacity(t *testing.T) {
 		{Slug: "open-two", Repo: p.Repo, HasPR: true, PRRef: "#2"},
 	}
 
-	if err := p.GrantOpenPR(first.ID, "cto", projects); err != nil {
+	if err := p.GrantOpenPR(first.ID, "tl", projects); err != nil {
 		t.Fatalf("GrantOpenPR first: %v", err)
 	}
 	granted, _ := p.Item(first.ID)
-	if granted.PRGrantedAt == "" || granted.PRGrantedBy != "cto" {
+	if granted.PRGrantedAt == "" || granted.PRGrantedBy != "tl" {
 		t.Fatalf("first grant = %+v", granted)
 	}
 	if capacity := p.Plan(projects).Capacity; capacity != (Capacity{
@@ -197,14 +197,14 @@ func TestGrantOpenPRSerializesReservedCapacity(t *testing.T) {
 	}) {
 		t.Fatalf("capacity after first grant = %+v", capacity)
 	}
-	if err := p.GrantOpenPR(second.ID, "cto", projects); err == nil {
+	if err := p.GrantOpenPR(second.ID, "tl", projects); err == nil {
 		t.Fatal("second grant succeeded without capacity")
 	}
 
-	if err := p.RevokeOpenPR(first.ID, "cto", "worker paused"); err != nil {
+	if err := p.RevokeOpenPR(first.ID, "tl", "worker paused"); err != nil {
 		t.Fatalf("RevokeOpenPR first: %v", err)
 	}
-	if err := p.GrantOpenPR(second.ID, "cto", projects); err != nil {
+	if err := p.GrantOpenPR(second.ID, "tl", projects); err != nil {
 		t.Fatalf("GrantOpenPR second after revoke: %v", err)
 	}
 }
@@ -220,7 +220,7 @@ func TestReconcileConvertsOpenPRGrantWithoutDoubleCounting(t *testing.T) {
 		{Slug: "open-one", Repo: p.Repo, HasPR: true, PRRef: "#1"},
 		{Slug: "open-two", Repo: p.Repo, HasPR: true, PRRef: "#2"},
 	}
-	if err := p.GrantOpenPR(item.ID, "cto", openProjects); err != nil {
+	if err := p.GrantOpenPR(item.ID, "tl", openProjects); err != nil {
 		t.Fatal(err)
 	}
 	projects := append(append([]ProjectView(nil), openProjects...), ProjectView{
@@ -354,7 +354,7 @@ func TestPlanCapacityFreesClosedPullRequestAndCountsReplacementGrant(t *testing.
 		t.Fatalf("closed capacity = %+v", capacity)
 	}
 
-	if err := p.GrantOpenPR(item.ID, "cto", views); err != nil {
+	if err := p.GrantOpenPR(item.ID, "tl", views); err != nil {
 		t.Fatalf("grant after close: %v", err)
 	}
 	if capacity := p.Plan(views).Capacity; capacity.Reserved != 1 || capacity.Available != 0 {
@@ -370,11 +370,11 @@ func TestGrantOpenPRClearsKnownClosedPullRequestReference(t *testing.T) {
 	recordItemPR(t, &p, item.ID, "#202")
 	closed := []ProjectView{{Slug: "closed-project", Repo: p.Repo, PRRef: "#202", PRClosed: true}}
 
-	if err := p.GrantOpenPR(item.ID, "cto", closed); err != nil {
+	if err := p.GrantOpenPR(item.ID, "tl", closed); err != nil {
 		t.Fatalf("grant with closed recorded PR: %v", err)
 	}
 	got, _ := p.Item(item.ID)
-	if got.PRRef != "" || got.PRGrantedBy != "cto" {
+	if got.PRRef != "" || got.PRGrantedBy != "tl" {
 		t.Fatalf("granted item = %+v", got)
 	}
 }
@@ -387,7 +387,7 @@ func TestGrantOpenPRStillRejectsOpenRecordedPullRequest(t *testing.T) {
 	recordItemPR(t, &p, item.ID, "#9")
 	open := []ProjectView{{Slug: "open-project", Repo: p.Repo, HasPR: true, PRRef: "#9"}}
 
-	err := p.GrantOpenPR(item.ID, "cto", open)
+	err := p.GrantOpenPR(item.ID, "tl", open)
 	if err == nil || !strings.Contains(err.Error(), "already recorded") {
 		t.Fatalf("grant with open recorded PR error = %v", err)
 	}

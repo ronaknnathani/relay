@@ -55,24 +55,24 @@ func TestProgramTransitions(t *testing.T) {
 	if p.ApprovedBy != "ceo" || p.ApprovedAt == "" {
 		t.Fatalf("approval fields = %q, %q", p.ApprovedBy, p.ApprovedAt)
 	}
-	if err := p.Transition(StateHeld, "cto"); err != nil {
+	if err := p.Transition(StateHeld, "tl"); err != nil {
 		t.Fatalf("active -> held: %v", err)
 	}
-	if err := p.Transition(StateActive, "cto"); err != nil {
+	if err := p.Transition(StateActive, "tl"); err != nil {
 		t.Fatalf("held -> active: %v", err)
 	}
 
 	item := addTestItem(t, &p, "unfinished", PriorityP0)
-	if err := p.Transition(StateCompleted, "cto"); err == nil {
+	if err := p.Transition(StateCompleted, "tl"); err == nil {
 		t.Fatal("completed program with unfinished item")
 	}
 	if err := p.CancelItem(item.ID, "no longer needed"); err != nil {
 		t.Fatalf("CancelItem: %v", err)
 	}
-	if err := p.Transition(StateCompleted, "cto"); err != nil {
+	if err := p.Transition(StateCompleted, "tl"); err != nil {
 		t.Fatalf("active -> completed: %v", err)
 	}
-	if err := p.Transition(StateHeld, "cto"); err == nil {
+	if err := p.Transition(StateHeld, "tl"); err == nil {
 		t.Fatal("transition from terminal state succeeded")
 	}
 }
@@ -108,11 +108,11 @@ func TestAbandonAnyNonterminalState(t *testing.T) {
 				activateTestProgram(t, &p)
 			case StateHeld:
 				activateTestProgram(t, &p)
-				if err := p.Transition(StateHeld, "cto"); err != nil {
+				if err := p.Transition(StateHeld, "tl"); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if err := p.Transition(StateAbandoned, "cto"); err != nil {
+			if err := p.Transition(StateAbandoned, "tl"); err != nil {
 				t.Fatalf("%s -> abandoned: %v", state, err)
 			}
 		})
@@ -131,7 +131,7 @@ func TestIDsUseMaxPlusOne(t *testing.T) {
 
 	d1, _, err := p.OpenDecision(Decision{
 		Kind:     DecisionQuestion,
-		RaisedBy: RaisedByCTO,
+		RaisedBy: RaisedByTL,
 		Question: "one?",
 	})
 	if err != nil {
@@ -139,7 +139,7 @@ func TestIDsUseMaxPlusOne(t *testing.T) {
 	}
 	d2, _, err := p.OpenDecision(Decision{
 		Kind:     DecisionQuestion,
-		RaisedBy: RaisedByCTO,
+		RaisedBy: RaisedByTL,
 		Question: "two?",
 	})
 	if err != nil {
@@ -148,7 +148,7 @@ func TestIDsUseMaxPlusOne(t *testing.T) {
 	p.Decisions[1].ID = "d4"
 	d3, _, err := p.OpenDecision(Decision{
 		Kind:     DecisionQuestion,
-		RaisedBy: RaisedByCTO,
+		RaisedBy: RaisedByTL,
 		Question: "three?",
 	})
 	if err != nil {
@@ -271,10 +271,10 @@ func TestBlockAndCancelClearOpenPRGrants(t *testing.T) {
 	activateTestProgram(t, &p)
 	blocked := dispatchedTestItem(t, &p, "blocked", "blocked-child")
 	canceled := dispatchedTestItem(t, &p, "canceled", "canceled-child")
-	if err := p.GrantOpenPR(blocked.ID, "cto", nil); err != nil {
+	if err := p.GrantOpenPR(blocked.ID, "tl", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.GrantOpenPR(canceled.ID, "cto", nil); err != nil {
+	if err := p.GrantOpenPR(canceled.ID, "tl", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -319,7 +319,7 @@ func TestValidationRejectsInvalidOpenPRGrantFields(t *testing.T) {
 		{
 			name: "missing grant timestamp",
 			mutate: func(item *WorkItem) {
-				item.PRGrantedBy = "cto"
+				item.PRGrantedBy = "tl"
 			},
 			want: "requires pr_granted_at and pr_granted_by",
 		},
@@ -330,7 +330,7 @@ func TestValidationRejectsInvalidOpenPRGrantFields(t *testing.T) {
 				item.PRRef = "#42"
 				item.InReviewAt = item.UpdatedAt
 				item.PRGrantedAt = item.UpdatedAt
-				item.PRGrantedBy = "cto"
+				item.PRGrantedBy = "tl"
 			},
 			want: "requires dispatched status",
 		},
@@ -365,7 +365,7 @@ func TestGrantOpenPRRequiresApprovedContractsAndNoDecisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.GrantOpenPR(item.ID, "cto", nil); err == nil ||
+	if err := p.GrantOpenPR(item.ID, "tl", nil); err == nil ||
 		!strings.Contains(err.Error(), "unresolved item decision") {
 		t.Fatalf("decision grant error = %v", err)
 	}
@@ -375,7 +375,7 @@ func TestGrantOpenPRRequiresApprovedContractsAndNoDecisions(t *testing.T) {
 	p.Contracts[0].Status = ContractPending
 	p.Contracts[0].ApprovedAt = ""
 	p.Contracts[0].ApprovedBy = ""
-	if err := p.GrantOpenPR(item.ID, "cto", nil); err == nil ||
+	if err := p.GrantOpenPR(item.ID, "tl", nil); err == nil ||
 		!strings.Contains(err.Error(), `contract "api@v1" is pending, want approved`) {
 		t.Fatalf("contract grant error = %v", err)
 	}
@@ -465,7 +465,7 @@ func TestUpdateItemIsAtomicAndValidatesDependencies(t *testing.T) {
 func TestTerminalProgramRejectsMutation(t *testing.T) {
 	p := newTestProgram(t)
 	activateTestProgram(t, &p)
-	if err := p.Transition(StateCompleted, "cto"); err != nil {
+	if err := p.Transition(StateCompleted, "tl"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := p.AddItem(WorkItem{Title: "late", Priority: PriorityP0}); err == nil {
@@ -473,7 +473,7 @@ func TestTerminalProgramRejectsMutation(t *testing.T) {
 	}
 	if _, _, err := p.OpenDecision(Decision{
 		Kind:     DecisionQuestion,
-		RaisedBy: RaisedByCTO,
+		RaisedBy: RaisedByTL,
 		Question: "late?",
 	}); err == nil {
 		t.Fatal("opened decision on completed program")

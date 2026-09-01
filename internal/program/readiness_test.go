@@ -25,7 +25,7 @@ func TestReadinessOrderAndReasons(t *testing.T) {
 	activateTestProgram(t, &p)
 	decision, _, err := p.OpenDecision(Decision{
 		Kind:     DecisionQuestion,
-		RaisedBy: RaisedByCTO,
+		RaisedBy: RaisedByTL,
 		ItemID:   w3.ID,
 		Question: "implementation?",
 		Options:  []string{"a", "b"},

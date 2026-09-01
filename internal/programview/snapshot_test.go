@@ -60,7 +60,7 @@ func TestBuildPopulatesProgramDetailAndDegradesPerSource(t *testing.T) {
 		}},
 		Decisions: []program.Decision{
 			{ID: "d1", Kind: program.DecisionQuestion, RaisedBy: program.RaisedByWorker, ItemID: "w4", Question: "Who owns this?", Options: []string{"platform"}, CreatedAt: at},
-			{ID: "d2", Kind: program.DecisionQuestion, RaisedBy: program.RaisedByCTO, Question: "Ship?", Options: []string{"yes"}, Answer: "yes", ResolvedBy: "ceo", CreatedAt: at, ResolvedAt: at},
+			{ID: "d2", Kind: program.DecisionQuestion, RaisedBy: program.RaisedByTL, Question: "Ship?", Options: []string{"yes"}, Answer: "yes", ResolvedBy: "ceo", CreatedAt: at, ResolvedAt: at},
 		},
 	}
 	if err := program.Create(p); err != nil {

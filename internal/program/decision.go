@@ -40,8 +40,8 @@ func (p *Program) OpenDecision(decision Decision) (result Decision, created bool
 
 // findOpenDuplicate returns the currently-open decision that already asks the
 // same governance question. Raiser and options are intentionally not part of
-// the identity: the same question raised by the worker and by the CTO, or with
-// a shortened option list, is still one decision for the CEO.
+// the identity: the same question raised by the worker and by the tech lead, or
+// with a shortened option list, is still one decision for the CEO.
 func (p Program) findOpenDuplicate(decision Decision) (Decision, bool) {
 	question := normalizedQuestion(decision.Question)
 	if question == "" {

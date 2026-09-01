@@ -818,7 +818,7 @@ func newCmdProgramDecisionOpen() *cobra.Command {
 	cmd.Flags().StringVar(&question, "question", "", "decision question")
 	cmd.Flags().StringVar(&itemID, "item", "", "related work item ID")
 	cmd.Flags().StringVar(&kind, "kind", string(program.DecisionQuestion), "decision kind")
-	cmd.Flags().StringVar(&raisedBy, "raised-by", string(program.RaisedByCTO), "decision raiser")
+	cmd.Flags().StringVar(&raisedBy, "raised-by", string(program.RaisedByTL), "decision raiser")
 	cmd.Flags().StringVar(&optionsText, "options", "", "pipe-separated decision options")
 	return cmd
 }

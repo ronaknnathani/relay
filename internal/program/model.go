@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ronaknnathani/relay/internal/project"
+	"github.com/ronaknnathani/relay/internal/role"
 )
 
 // State is a program lifecycle state.
@@ -81,20 +83,23 @@ type RaisedBy string
 
 // Supported decision raisers.
 const (
-	RaisedByCTO    RaisedBy = "cto"
+	RaisedByTL     RaisedBy = role.TL
 	RaisedByWorker RaisedBy = "worker"
 )
 
-// RaisedByAutomatedCTOPrefix prefixes the raiser a bounded automated CTO turn
-// records, as in "cto-automated:3f2504e0". A decision the CEO reads therefore
-// always shows whether a human CTO or an unattended turn raised it.
-const RaisedByAutomatedCTOPrefix = "cto-automated:"
+// RaisedByAutomatedTLPrefix prefixes the raiser a bounded automated tech-lead
+// turn records, as in "tl-automated:3f2504e0". A decision the CEO reads
+// therefore always shows whether a human tech lead or an unattended turn
+// raised it.
+const RaisedByAutomatedTLPrefix = role.AutomatedTLPrefix
 
-var automatedRaiser = regexp.MustCompile(`^cto-automated:[a-z0-9]{1,32}$`)
+var automatedRaiser = regexp.MustCompile(`^` + RaisedByAutomatedTLPrefix + `[a-z0-9]{1,32}$`)
 
-// ValidRaisedBy reports whether value names a supported decision raiser.
+// ValidRaisedBy reports whether value names a supported decision raiser. Only
+// canonical identities pass: a manifest written before the tech-lead rename is
+// normalized by Load before it reaches validation.
 func ValidRaisedBy(value RaisedBy) bool {
-	return value == RaisedByCTO || value == RaisedByWorker ||
+	return value == RaisedByTL || value == RaisedByWorker ||
 		automatedRaiser.MatchString(string(value))
 }
 
@@ -208,6 +213,33 @@ func New(slug, title, repo, agent string, maxOpenPRs int) (Program, error) {
 		return Program{}, err
 	}
 	return p, nil
+}
+
+// Normalize returns a copy of p with every actor-bearing field rewritten from
+// a retired role identity onto its canonical equivalent. It is the decode-side
+// compatibility rule for manifests written before the tech-lead rename: only
+// exact identities are replaced, so questions, answers, notes, titles, and
+// human usernames are never edited. Load applies it before validation and the
+// writers apply it before persisting, so a legacy manifest reads as canonical
+// and saves as canonical.
+func (p Program) Normalize() Program {
+	next := p
+	next.ApprovedBy = role.NormalizeIdentity(p.ApprovedBy)
+	next.Items = slices.Clone(p.Items)
+	for i := range next.Items {
+		next.Items[i].PRGrantedBy = role.NormalizeIdentity(next.Items[i].PRGrantedBy)
+	}
+	next.Contracts = slices.Clone(p.Contracts)
+	for i := range next.Contracts {
+		next.Contracts[i].ApprovedBy = role.NormalizeIdentity(next.Contracts[i].ApprovedBy)
+		next.Contracts[i].RejectedBy = role.NormalizeIdentity(next.Contracts[i].RejectedBy)
+	}
+	next.Decisions = slices.Clone(p.Decisions)
+	for i := range next.Decisions {
+		next.Decisions[i].RaisedBy = RaisedBy(role.NormalizeIdentity(string(next.Decisions[i].RaisedBy)))
+		next.Decisions[i].ResolvedBy = role.NormalizeIdentity(next.Decisions[i].ResolvedBy)
+	}
+	return next
 }
 
 // Validate checks every structural invariant required by program mutations

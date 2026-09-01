@@ -149,7 +149,7 @@ func TestProgramResumeLaunchesFreshCTOReentry(t *testing.T) {
 	}
 	if _, _, err := p.OpenDecision(program.Decision{
 		Kind:     program.DecisionQuestion,
-		RaisedBy: program.RaisedByCTO,
+		RaisedBy: program.RaisedByTL,
 		Question: "Which rollout?",
 	}); err != nil {
 		t.Fatal(err)

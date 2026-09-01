@@ -147,10 +147,10 @@ func TestSaveSerializesConcurrentOpenPRGrants(t *testing.T) {
 		{Slug: "open-one", Repo: p.Repo, HasPR: true, PRRef: "#1"},
 		{Slug: "open-two", Repo: p.Repo, HasPR: true, PRRef: "#2"},
 	}
-	if err := left.GrantOpenPR(first.ID, "cto", projects); err != nil {
+	if err := left.GrantOpenPR(first.ID, "tl", projects); err != nil {
 		t.Fatal(err)
 	}
-	if err := right.GrantOpenPR(second.ID, "cto", projects); err != nil {
+	if err := right.GrantOpenPR(second.ID, "tl", projects); err != nil {
 		t.Fatal(err)
 	}
 

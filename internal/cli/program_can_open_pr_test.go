@@ -265,7 +265,7 @@ func TestProgramCanOpenPRRefusesDecisionsAndContractTamper(t *testing.T) {
 			name: "program decision",
 			mutate: func(t *testing.T, p *program.Program, _ program.WorkItem) {
 				if _, _, err := p.OpenDecision(program.Decision{
-					Kind: program.DecisionQuestion, RaisedBy: program.RaisedByCTO, Question: "Proceed?",
+					Kind: program.DecisionQuestion, RaisedBy: program.RaisedByTL, Question: "Proceed?",
 				}); err != nil {
 					t.Fatal(err)
 				}

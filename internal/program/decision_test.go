@@ -13,7 +13,7 @@ func TestDecisionLifecycleAndQueries(t *testing.T) {
 	item := addTestItem(t, &p, "change", PriorityP0)
 	programDecision, _, err := p.OpenDecision(Decision{
 		Kind:     DecisionQuestion,
-		RaisedBy: RaisedByCTO,
+		RaisedBy: RaisedByTL,
 		Question: "ship?",
 		Options:  []string{"yes", "no"},
 	})
@@ -82,7 +82,7 @@ func TestOpenDecisionDedupesCurrentlyOpenDecisions(t *testing.T) {
 	item := addTestItem(t, &p, "change", PriorityP0)
 	first, created, err := p.OpenDecision(Decision{
 		Kind:     DecisionQuestion,
-		RaisedBy: RaisedByCTO,
+		RaisedBy: RaisedByTL,
 		ItemID:   item.ID,
 		Question: "Which storage engine should item w1 use?",
 		Options:  []string{"postgres", "sqlite"},
@@ -119,9 +119,9 @@ func TestOpenDecisionDedupesCurrentlyOpenDecisions(t *testing.T) {
 
 	// A different item, kind, or question is a genuinely new decision.
 	for _, next := range []Decision{
-		{Kind: DecisionQuestion, RaisedBy: RaisedByCTO, Question: "Which storage engine should item w1 use?"},
-		{Kind: DecisionConflict, RaisedBy: RaisedByCTO, ItemID: item.ID, Question: "Which storage engine should item w1 use?"},
-		{Kind: DecisionQuestion, RaisedBy: RaisedByCTO, ItemID: item.ID, Question: "Something else entirely?"},
+		{Kind: DecisionQuestion, RaisedBy: RaisedByTL, Question: "Which storage engine should item w1 use?"},
+		{Kind: DecisionConflict, RaisedBy: RaisedByTL, ItemID: item.ID, Question: "Which storage engine should item w1 use?"},
+		{Kind: DecisionQuestion, RaisedBy: RaisedByTL, ItemID: item.ID, Question: "Something else entirely?"},
 	} {
 		_, created, err := p.OpenDecision(next)
 		if err != nil {
@@ -137,7 +137,7 @@ func TestOpenDecisionDedupesCurrentlyOpenDecisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	reopened, created, err := p.OpenDecision(Decision{
-		Kind: DecisionQuestion, RaisedBy: RaisedByCTO, ItemID: item.ID,
+		Kind: DecisionQuestion, RaisedBy: RaisedByTL, ItemID: item.ID,
 		Question: "Which storage engine should item w1 use?",
 	})
 	if err != nil {
@@ -161,7 +161,7 @@ func TestOpenDecisionDedupesContractDecisionsByRef(t *testing.T) {
 	}
 	first := p.OpenDecisions()[0]
 	same, created, err := p.OpenDecision(Decision{
-		Kind: DecisionContract, RaisedBy: RaisedByCTO, ContractRef: contract.Ref,
+		Kind: DecisionContract, RaisedBy: RaisedByTL, ContractRef: contract.Ref,
 		Question: "Approve contract " + contract.Ref + "?", Options: []string{"approve", "reject"},
 	})
 	if err != nil {
