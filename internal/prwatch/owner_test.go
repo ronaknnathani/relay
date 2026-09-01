@@ -4,13 +4,17 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ronaknnathani/relay/internal/herdr"
 )
 
 // fakeOwnerClient answers agent lookups from a fixed list and records prompts.
+// It is mutex-guarded because a running watcher calls it from its own
+// goroutine while the test inspects and reconfigures it.
 type fakeOwnerClient struct {
+	mu        sync.Mutex
 	agents    []herdr.Agent
 	agentsErr error
 	promptErr error
@@ -19,6 +23,8 @@ type fakeOwnerClient struct {
 }
 
 func (f *fakeOwnerClient) Agents() ([]herdr.Agent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.agentsErr != nil {
 		return nil, f.agentsErr
 	}
@@ -26,9 +32,31 @@ func (f *fakeOwnerClient) Agents() ([]herdr.Agent, error) {
 }
 
 func (f *fakeOwnerClient) PromptAgent(target, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.targets = append(f.targets, target)
 	f.prompts = append(f.prompts, text)
 	return f.promptErr
+}
+
+func (f *fakeOwnerClient) setAgents(agents []herdr.Agent) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.agents = agents
+}
+
+// promptCount reports how many prompts the watcher has delivered so far.
+func (f *fakeOwnerClient) promptCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.prompts)
+}
+
+// promptTexts copies the delivered prompts for inspection.
+func (f *fakeOwnerClient) promptTexts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.prompts...)
 }
 
 func liveAgent(title, pane string, status herdr.Status) herdr.Agent {

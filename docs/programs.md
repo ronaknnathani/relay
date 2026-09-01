@@ -838,8 +838,9 @@ optionally wrap it in a background process. The controller will:
 - Recover after crashes without creating two branch writers.
 
 Per-project pull request attention already works this way: `relay pr watch --mode managed` observes a
-worker's pull request, wakes that exact worker pane, and acknowledges its GitHub watermarks only after
-the worker covered the digest. Exactly one watcher owns each pull request.
+worker's pull request and wakes that exact worker pane. It keeps no local record of what was handled —
+every check re-reads the live pull request, so attention clears only when GitHub itself stops showing
+it. Exactly one watcher owns each pull request.
 
 ### V3: explicit QA missions
 

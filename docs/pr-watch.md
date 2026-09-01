@@ -14,12 +14,11 @@ relay pr watch status <project-slug> [--json]
 relay pr watch stop <project-slug>
 relay pr watch tick <project-slug> [--json]
 relay pr watch digest <project-slug> --fingerprint <64-hex> [--json]
-relay pr watch acknowledge <project-slug> --fingerprint <64-hex> --outcome handled|escalated|obsolete [--json]
 ```
 
 `start` and the hidden `run` process require Herdr: `start` hosts the watcher as a plain Herdr tab
-labelled `relay-pr-watch:<project-slug>` and the watcher wakes a live pane. `status`, `stop`, `tick`,
-`digest`, and `acknowledge` work with no Herdr, which is the manual path.
+labelled `relay-pr-watch:<project-slug>` and the watcher wakes a live pane. `status`, `stop`, `tick`, and
+`digest` work with no Herdr, which is the manual path.
 
 `tick` performs a fresh observation and records its digest without touching the watcher's schedule, so
 it is safe to run beside a running watcher.
@@ -46,13 +45,17 @@ automatic wakes until the watcher is restarted, because retrying can duplicate t
 
 ## Cadence
 
-- The immediate observation at start is a **baseline**, not a scheduled check. A first-ever start
-  records it without waking anyone; a restart may wake for attention that is still unacknowledged.
+- Every start runs an immediate observation. It is not a scheduled check, and it wakes the owner right
+  away if the pull request already needs attention — first start or restart alike.
 - Scheduled checks 1–4 run every 15 minutes, 5–6 every 30, and 7 onward every 60.
-- A new head SHA or an acknowledgement resets the count to zero and the next check to 15 minutes.
-- A pending check becoming another pending check is not a reset.
-- The watcher wakes internally every 30 seconds to compare the clock with the next scheduled check and
-  to pick up an acknowledgement another process recorded. Those wakes print nothing.
+- A new head SHA, or a different set of actionable items — including attention appearing or clearing
+  entirely — resets the count to zero and the next check to 15 minutes.
+- A pending check becoming another pending check changes neither, so it is not a reset.
+- Every watcher process start resets the count to zero and the next check to 15 minutes.
+- An undelivered wake because the owner was missing, duplicated, busy, or unreachable holds the fast
+  cadence and spends no scheduled check: the pull request did not get quieter, the delivery failed.
+- The watcher wakes internally every 30 seconds to compare the clock with the next scheduled check.
+  Those wakes print nothing.
 
 ## What counts as actionable
 
@@ -62,9 +65,12 @@ unresolved threads and new replies on answered ones, merge conflicts, a branch b
 approved green clean default-base pull request whose auto-merge is not armed, a pull request closed
 without merging, and — in stack mode only — a merged front pull request.
 
-Not actionable: pending or queued checks alone, an untouched review-required state, a draft alone, and
-a digest that was already acknowledged. A merged pull request completes a standalone or managed watch
-silently, with no owner wake.
+Not actionable: pending or queued checks alone, an untouched review-required state, and a draft alone.
+A merged pull request completes a standalone or managed watch silently, with no owner wake.
+
+Nothing about a previous observation is carried into a new one. There is no acknowledgement, no
+watermark, and no local claim that attention was handled: an item stops being reported only when the
+current remote truth no longer shows it.
 
 ## Runtime layout
 
@@ -72,9 +78,8 @@ silently, with no owner wake.
 ~/.relay/run/pr-watch/<project-slug>/
   watch.lock                            lifetime singleton lock
   state.lock                            short mutation lock
-  watch.json                            lifecycle, cadence, pull request, owner, current digest
-  digests/<fingerprint>.json            immutable, mode 0600
-  acknowledgements/<fingerprint>.json   immutable, mode 0600
+  watch.json                            lifecycle, cadence, pull request, owner, tab, current digest
+  digests/<fingerprint>.json            newest observation of one item set, mode 0600
 ```
 
 Every record is written atomically at mode 0600. Digests are the only place comment bodies are kept;
@@ -85,13 +90,12 @@ A fingerprint is the SHA-256 of the digest's sorted unique item keys, so it is s
 re-observation of the same activity and never covers a body. No actionable items means an empty
 fingerprint and no digest file.
 
-## Acknowledgement
+## Digests
 
-Acknowledging means every item in a digest was covered — handled, durably escalated, or obsolete. It
-does not mean the pull request is green. The record is immutable: repeating the same outcome is a
-no-op, and a different outcome for a recorded fingerprint is refused. Acknowledging also folds that
-digest's exact item keys into the watcher's watermark, so the same activity stops surfacing while
-newer activity on the same source still does.
+A fingerprint fixes a digest's item set, so re-observing the same activity always lands on the same
+record. Everything else in that record — the head SHA, merge state, review decision, auto-merge, the
+waiting codes, and the bodies themselves — is refreshed on every observation and written atomically,
+so a reader never acts on a stale snapshot of a pull request that has moved on.
 
-Runtime records are pruned to the newest 100 digests and 200 acknowledgements. The current digest and
-every unacknowledged digest are always retained, and only regular files are ever removed.
+Digests are pruned to the newest 100 records. The digest the watcher currently carries is always
+retained, and only regular files are ever removed.

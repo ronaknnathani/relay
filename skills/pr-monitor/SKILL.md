@@ -1,13 +1,21 @@
 ---
 name: pr-monitor
-description: Handle one pull request attention event end to end — read the watcher digest, triage it, delegate the fixing to pr-fix, acknowledge the digest, and exit. Use when the PR watcher wakes you, or run it manually for a one-shot check of an open PR.
+description: Handle one pull request attention event end to end — read the watcher digest, triage it, delegate the fixing to pr-fix, re-observe the pull request, and exit. Use when the PR watcher wakes you, or run it manually for a one-shot check of an open PR.
 ---
 
 # PR Monitor
 
 Handle **one** pull request attention event, then stop. You are a **router**: the `relay pr watch`
-runtime does the observing, you interpret its digest, delegate the fixing to `pr-fix`, record what you
-covered, and exit. You never write code, never post in your own voice, never approve, and never merge.
+runtime does the observing, you interpret its digest, delegate the fixing to `pr-fix`, re-observe the
+pull request, and exit. You never write code, never post in your own voice, never approve, and never
+merge.
+
+There is **no acknowledgement**. The watcher never records that attention was handled, because a local
+claim can be wrong. Every tick re-reads the live pull request, and an item disappears only when the
+remote state itself no longer shows it: the check passes or reruns, the head SHA changes, the conflict
+clears, the thread resolves, your reply lands on that exact source, auto-merge is armed, or the pull
+request closes or merges. If nothing changed, the problem is still there and it will wake you again —
+which is correct.
 
 This skill has **no loop**. It does not schedule, does not recur, and does not own a next-tick time.
 The watcher owns cadence; one run of this skill owns one digest.
@@ -22,6 +30,9 @@ The watcher owns cadence; one run of this skill owns one digest.
 relay pr watch digest "$SLUG" --fingerprint "$FP" --json
 relay pr watch status "$SLUG" --json     # current fingerprint, cadence, last wake, suppression
 ```
+
+The digest record is refreshed on every observation, so the pull request metadata and bodies it
+carries are the newest the watcher saw for that fingerprint — never a stale snapshot.
 
 **Invoked manually, or with no Herdr.** Observe first, then act on what that observation recorded:
 
@@ -93,31 +104,29 @@ These change no code, so they are yours — run them after `pr-fix` returns, so 
 - **`closed-unmerged`** → do not reopen it; surface it to the author as a durable escalation.
 - **`stack-front-merged`** → report it to the stack orchestrator; the front-advance is its job.
 
-### 4. Acknowledge — only once every item is covered
-
-Acknowledging means every item in the digest was handled or durably escalated. It does **not** mean the
-pull request is green.
-
-```bash
-relay pr watch acknowledge "$SLUG" --fingerprint "$FP" --outcome handled     # the work was done
-relay pr watch acknowledge "$SLUG" --fingerprint "$FP" --outcome escalated   # durably raised to the author
-relay pr watch acknowledge "$SLUG" --fingerprint "$FP" --outcome obsolete    # the digest no longer describes the PR
-```
-
-If `pr-fix` failed or came back partial, **do not acknowledge**. Leave the digest unacknowledged, say
-what remains, and let the next scheduled check bring it back. Acknowledging resets the watcher to its
-15-minute cadence; the same outcome twice is a no-op, and a different outcome for the same fingerprint
-is refused.
-
-### 5. Re-observe once, report, exit
+### 4. Re-observe once — the remote state is the record
 
 ```bash
 relay pr watch tick "$SLUG" --json
 ```
 
-Report a one-screen digest: what the attention was, what was delegated, what you did yourself, the
-acknowledgement outcome, and the post-fix state. Then **stop**. Do not wait, do not schedule, do not
-start another cycle.
+This is the only "did it work" signal there is. Compare it to the digest you started from:
+
+- an item that is **gone** was genuinely resolved on GitHub;
+- an item that is **still there** was not, whatever `pr-fix` reported.
+
+If `pr-fix` failed or came back partial, say exactly what remains. There is nothing to suppress and
+nothing to record: the next scheduled check re-observes and brings back whatever is still true.
+
+### 5. Report, exit
+
+Report a one-screen digest: what the attention was, what was delegated, what you did yourself, and
+what the re-observation still shows. Then **stop**. Do not wait, do not schedule, do not start another
+cycle.
+
+If the pull request was **closed without merging**, the watcher hands you that escalation once and
+then finishes — surface it to the author. If a merged **stack front** woke you, the stack orchestrator
+owns the front-advance and must stop the old watcher with `relay pr watch stop <front-project-slug>`.
 
 ## Under a project workflow
 
@@ -129,18 +138,19 @@ adopts the running one.
 ## Guardrails (non-negotiable)
 
 - **No loop.** One digest, one run, one exit. Never claim continuous monitoring.
+- **No local "handled" claim.** The remote pull request is the only record of what is resolved.
 - **Approval is the only merge path.** Never self-approve, never `gh pr merge` to merge now, never
   dismiss a review to unblock. Auto-merge fires on a genuine human code-owner approval.
 - **Never impersonate.** Every agent reply is prefixed `🤖 <agent> on behalf of <author>` — that
   disclosure is also how the watcher tells an agent reply from a human one.
 - **Never silence a failure** (enforced inside `pr-fix`).
 - **One writer per branch** — serialize every push.
-- **Never acknowledge unfinished work**, and never acknowledge a fingerprint you did not read.
+- **Never report an item as resolved** unless the re-observation stopped showing it.
 
 ## Red flags
 
 - Running a broad `gh` comment/check sweep instead of reading the digest the watcher already recorded.
-- Acknowledging after a failed or partial `pr-fix`.
+- Reporting work as done on `pr-fix`'s word instead of on the re-observation.
 - Handing `pr-fix` an infra flake, or rerunning a check it is already fixing.
 - Two sub-agents pushing the same branch in one run.
 - Scheduling a follow-up tick, recording a next-tick time, or starting a loop.
@@ -152,5 +162,5 @@ adopts the running one.
 - [ ] Every `failing-check` was classified flake vs real before anything was delegated or rerun.
 - [ ] Real failures, comments, threads, and conflicts went to a single delegated `pr-fix` call carrying their bodies and ids.
 - [ ] Flake reruns, the stale rebase, and auto-merge re-arming happened here, after `pr-fix` returned.
-- [ ] The digest was acknowledged only once every item was handled or durably escalated.
-- [ ] One `relay pr watch tick` ran, the outcome was reported, and the run exited without scheduling anything.
+- [ ] One `relay pr watch tick` ran and every claim of "resolved" is backed by an item it no longer reports.
+- [ ] The outcome was reported and the run exited without scheduling anything.

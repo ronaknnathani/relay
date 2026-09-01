@@ -55,7 +55,7 @@ func TestFailingChecksAreActionableAndPendingChecksAreNot(t *testing.T) {
 			{Name: "docs", Status: "COMPLETED", Conclusion: "SKIPPED"},
 		},
 	}
-	digest := BuildDigest("demo", ModeStandalone, observation, State{}, observedAt)
+	digest := BuildDigest("demo", ModeStandalone, observation, observedAt)
 
 	assertReasons(t, digest, ReasonFailingCheck)
 	item := digest.Items[0]
@@ -75,7 +75,7 @@ func TestPendingChecksAloneProduceNoFingerprint(t *testing.T) {
 		PR:     openPR(),
 		Checks: []Check{{Name: "build", Status: "IN_PROGRESS"}},
 	}
-	digest := BuildDigest("demo", ModeStandalone, observation, State{}, observedAt)
+	digest := BuildDigest("demo", ModeStandalone, observation, observedAt)
 	if digest.Fingerprint != "" || len(digest.Items) != 0 {
 		t.Fatalf("digest = %+v, want no actionable items", digest)
 	}
@@ -91,7 +91,7 @@ func TestChangesRequestedIsActionableWithTheReviewBody(t *testing.T) {
 	review.State = "CHANGES_REQUESTED"
 	digest := BuildDigest("demo", ModeStandalone, Observation{
 		PR: pr, Reviews: []Activity{review},
-	}, State{}, observedAt)
+	}, observedAt)
 
 	assertReasons(t, digest, ReasonChangesRequested, ReasonNewReview)
 	for _, item := range digest.Items {
@@ -104,7 +104,7 @@ func TestChangesRequestedIsActionableWithTheReviewBody(t *testing.T) {
 func TestDraftAndReviewRequiredAloneAreNotActionable(t *testing.T) {
 	pr := openPR()
 	pr.Draft = true
-	digest := BuildDigest("demo", ModeStandalone, Observation{PR: pr}, State{}, observedAt)
+	digest := BuildDigest("demo", ModeStandalone, Observation{PR: pr}, observedAt)
 
 	if len(digest.Items) != 0 {
 		t.Fatalf("digest items = %+v, want none for a draft awaiting review", digest.Items)
@@ -122,7 +122,7 @@ func TestHumanCommentIsActionableUntilTheAgentReplies(t *testing.T) {
 		PR:       pr,
 		Comments: []Activity{human("1", "reviewer", "please rename this", "2026-01-01T00:00:00Z")},
 	}
-	digest := BuildDigest("demo", ModeStandalone, observation, State{}, observedAt)
+	digest := BuildDigest("demo", ModeStandalone, observation, observedAt)
 	assertReasons(t, digest, ReasonNewComment)
 	if digest.Items[0].Body != "please rename this" {
 		t.Errorf("item = %+v, want the comment body", digest.Items[0])
@@ -131,14 +131,14 @@ func TestHumanCommentIsActionableUntilTheAgentReplies(t *testing.T) {
 	answered := observation
 	answered.Comments = append(append([]Activity{}, observation.Comments...),
 		human("2", pr.Author, "🤖 copilot on behalf of author-human: renamed", "2026-01-02T00:00:00Z"))
-	if got := BuildDigest("demo", ModeStandalone, answered, State{}, observedAt); len(got.Items) != 0 {
+	if got := BuildDigest("demo", ModeStandalone, answered, observedAt); len(got.Items) != 0 {
 		t.Fatalf("digest items = %+v, want none once the agent replied", got.Items)
 	}
 
 	replied := answered
 	replied.Comments = append(append([]Activity{}, answered.Comments...),
 		human("3", "reviewer", "still wrong", "2026-01-03T00:00:00Z"))
-	newer := BuildDigest("demo", ModeStandalone, replied, State{}, observedAt)
+	newer := BuildDigest("demo", ModeStandalone, replied, observedAt)
 	assertReasons(t, newer, ReasonNewComment)
 	if newer.Items[0].ID != "3" {
 		t.Errorf("item = %+v, want the newest human reply", newer.Items[0])
@@ -150,7 +150,7 @@ func TestBotCommentsAreNotActionable(t *testing.T) {
 		UpdatedAt: "2026-01-01T00:00:00Z"}
 	digest := BuildDigest("demo", ModeStandalone, Observation{
 		PR: openPR(), Comments: []Activity{bot},
-	}, State{}, observedAt)
+	}, observedAt)
 	if len(digest.Items) != 0 {
 		t.Fatalf("digest items = %+v, want none for a bot comment", digest.Items)
 	}
@@ -171,7 +171,7 @@ func TestUnresolvedThreadsAndNewRepliesAreActionable(t *testing.T) {
 	}
 	digest := BuildDigest("demo", ModeStandalone, Observation{
 		PR: pr, Threads: []ReviewThread{unresolved, answeredResolved},
-	}, State{}, observedAt)
+	}, observedAt)
 	assertReasons(t, digest, ReasonUnresolvedThread)
 	if digest.Items[0].ThreadID != "THREAD_1" || digest.Items[0].Path != "main.go" {
 		t.Errorf("item = %+v, want the unresolved thread", digest.Items[0])
@@ -182,7 +182,7 @@ func TestUnresolvedThreadsAndNewRepliesAreActionable(t *testing.T) {
 		human("23", "reviewer", "not quite", "2026-01-04T00:00:00Z"))
 	withReply := BuildDigest("demo", ModeStandalone, Observation{
 		PR: pr, Threads: []ReviewThread{reopened},
-	}, State{}, observedAt)
+	}, observedAt)
 	assertReasons(t, withReply, ReasonUnresolvedThread)
 	if withReply.Items[0].ID != "THREAD_2" || !withReply.Items[0].ThreadResolved {
 		t.Errorf("item = %+v, want the new reply on the resolved thread", withReply.Items[0])
@@ -200,13 +200,13 @@ func TestInlineCommentOutsideAThreadIsStillReported(t *testing.T) {
 			ID: "THREAD_1", Comments: []Activity{inline},
 		}},
 	}
-	if got := reasons(BuildDigest("demo", ModeStandalone, threaded, State{}, observedAt)); len(got) != 1 ||
+	if got := reasons(BuildDigest("demo", ModeStandalone, threaded, observedAt)); len(got) != 1 ||
 		got[0] != ReasonUnresolvedThread {
 		t.Fatalf("reasons = %v, want the thread to own the inline comment", got)
 	}
 
 	orphan := Observation{PR: pr, InlineComments: []Activity{inline}}
-	digest := BuildDigest("demo", ModeStandalone, orphan, State{}, observedAt)
+	digest := BuildDigest("demo", ModeStandalone, orphan, observedAt)
 	assertReasons(t, digest, ReasonNewInlineComment)
 	if digest.Items[0].Path != "main.go" || digest.Items[0].Line != 12 {
 		t.Errorf("item = %+v, want the file and line", digest.Items[0])
@@ -217,12 +217,12 @@ func TestConflictAndStaleAreActionable(t *testing.T) {
 	dirty := openPR()
 	dirty.MergeStateStatus = "DIRTY"
 	dirty.Mergeable = "CONFLICTING"
-	assertReasons(t, BuildDigest("demo", ModeStandalone, Observation{PR: dirty}, State{}, observedAt),
+	assertReasons(t, BuildDigest("demo", ModeStandalone, Observation{PR: dirty}, observedAt),
 		ReasonMergeConflict)
 
 	behind := openPR()
 	behind.MergeStateStatus = "BEHIND"
-	assertReasons(t, BuildDigest("demo", ModeStandalone, Observation{PR: behind}, State{}, observedAt),
+	assertReasons(t, BuildDigest("demo", ModeStandalone, Observation{PR: behind}, observedAt),
 		ReasonStale)
 }
 
@@ -231,12 +231,12 @@ func TestApprovedGreenCleanPRWithoutAutoMergeIsActionable(t *testing.T) {
 	pr.ReviewDecision = "APPROVED"
 	pr.MergeStateStatus = "CLEAN"
 	observation := Observation{PR: pr, Checks: []Check{{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"}}}
-	assertReasons(t, BuildDigest("demo", ModeStandalone, observation, State{}, observedAt),
+	assertReasons(t, BuildDigest("demo", ModeStandalone, observation, observedAt),
 		ReasonAutoMergeNotArmed)
 
 	armed := observation
 	armed.PR.AutoMerge = true
-	digest := BuildDigest("demo", ModeStandalone, armed, State{}, observedAt)
+	digest := BuildDigest("demo", ModeStandalone, armed, observedAt)
 	if len(digest.Items) != 0 {
 		t.Fatalf("digest items = %+v, want none once auto-merge is armed", digest.Items)
 	}
@@ -246,13 +246,13 @@ func TestApprovedGreenCleanPRWithoutAutoMergeIsActionable(t *testing.T) {
 
 	nonDefaultBase := observation
 	nonDefaultBase.PR.BaseRef = "stack/api"
-	if got := BuildDigest("demo", ModeStandalone, nonDefaultBase, State{}, observedAt); len(got.Items) != 0 {
+	if got := BuildDigest("demo", ModeStandalone, nonDefaultBase, observedAt); len(got.Items) != 0 {
 		t.Errorf("digest items = %+v, want none for a non-default base", got.Items)
 	}
 
 	pendingChecks := observation
 	pendingChecks.Checks = append(pendingChecks.Checks, Check{Name: "lint", Status: "IN_PROGRESS"})
-	if got := BuildDigest("demo", ModeStandalone, pendingChecks, State{}, observedAt); len(got.Items) != 0 {
+	if got := BuildDigest("demo", ModeStandalone, pendingChecks, observedAt); len(got.Items) != 0 {
 		t.Errorf("digest items = %+v, want none while checks are pending", got.Items)
 	}
 }
@@ -261,7 +261,7 @@ func TestMergedPullRequestCompletesUnlessItIsAStackFront(t *testing.T) {
 	pr := openPR()
 	pr.State = "MERGED"
 	for _, mode := range []Mode{ModeStandalone, ModeManaged} {
-		digest := BuildDigest("demo", mode, Observation{PR: pr}, State{}, observedAt)
+		digest := BuildDigest("demo", mode, Observation{PR: pr}, observedAt)
 		if !digest.Complete || len(digest.Items) != 0 || digest.Fingerprint != "" {
 			t.Errorf("%s digest = %+v, want a silent complete record", mode, digest)
 		}
@@ -270,7 +270,7 @@ func TestMergedPullRequestCompletesUnlessItIsAStackFront(t *testing.T) {
 		}
 	}
 
-	stack := BuildDigest("demo", ModeStack, Observation{PR: pr}, State{}, observedAt)
+	stack := BuildDigest("demo", ModeStack, Observation{PR: pr}, observedAt)
 	assertReasons(t, stack, ReasonStackFrontMerged)
 	if stack.Complete {
 		t.Error("stack front digest reported complete; the orchestrator still has to retarget")
@@ -280,30 +280,10 @@ func TestMergedPullRequestCompletesUnlessItIsAStackFront(t *testing.T) {
 func TestClosedUnmergedIsActionable(t *testing.T) {
 	pr := openPR()
 	pr.State = "CLOSED"
-	digest := BuildDigest("demo", ModeStandalone, Observation{PR: pr}, State{}, observedAt)
+	digest := BuildDigest("demo", ModeStandalone, Observation{PR: pr}, observedAt)
 	assertReasons(t, digest, ReasonClosedUnmerged)
 	if digest.Complete {
 		t.Error("closed-unmerged digest reported complete")
-	}
-}
-
-func TestAcknowledgedKeysAreFilteredButNewerActivityIsNot(t *testing.T) {
-	pr := openPR()
-	first := human("1", "reviewer", "please rename this", "2026-01-01T00:00:00Z")
-	observation := Observation{PR: pr, Comments: []Activity{first}}
-	digest := BuildDigest("demo", ModeStandalone, observation, State{}, observedAt)
-	acknowledged := State{}.WithAcknowledgedKeys(ItemKeys(digest.Items))
-
-	if got := BuildDigest("demo", ModeStandalone, observation, acknowledged, observedAt); len(got.Items) != 0 {
-		t.Fatalf("digest items = %+v, want none for an acknowledged comment", got.Items)
-	}
-
-	edited := observation
-	edited.Comments = []Activity{human("1", "reviewer", "please rename this properly", "2026-01-05T00:00:00Z")}
-	updated := BuildDigest("demo", ModeStandalone, edited, acknowledged, observedAt)
-	assertReasons(t, updated, ReasonNewComment)
-	if updated.Fingerprint == digest.Fingerprint {
-		t.Error("edited comment kept the acknowledged fingerprint")
 	}
 }
 
@@ -313,8 +293,8 @@ func TestFingerprintIsStableAcrossReobservation(t *testing.T) {
 		Comments: []Activity{human("1", "reviewer", "please rename this", "2026-01-01T00:00:00Z")},
 		Checks:   []Check{{Name: "build", Status: "COMPLETED", Conclusion: "FAILURE", RunID: "1"}},
 	}
-	first := BuildDigest("demo", ModeStandalone, observation, State{}, observedAt)
-	later := BuildDigest("demo", ModeStandalone, observation, State{}, observedAt.Add(time.Hour))
+	first := BuildDigest("demo", ModeStandalone, observation, observedAt)
+	later := BuildDigest("demo", ModeStandalone, observation, observedAt.Add(time.Hour))
 	if first.Fingerprint != later.Fingerprint {
 		t.Errorf("fingerprint changed across re-observation: %q vs %q", first.Fingerprint, later.Fingerprint)
 	}
@@ -330,13 +310,15 @@ func TestNewHeadRefreshesCheckAndConflictKeys(t *testing.T) {
 		PR:     pr,
 		Checks: []Check{{Name: "build", Status: "COMPLETED", Conclusion: "FAILURE", RunID: "1"}},
 	}
-	first := BuildDigest("demo", ModeStandalone, observation, State{}, observedAt)
-	acknowledged := State{}.WithAcknowledgedKeys(ItemKeys(first.Items))
+	first := BuildDigest("demo", ModeStandalone, observation, observedAt)
 
 	pushed := observation
 	pushed.PR.HeadSHA = "head333"
-	after := BuildDigest("demo", ModeStandalone, pushed, acknowledged, observedAt)
+	after := BuildDigest("demo", ModeStandalone, pushed, observedAt)
 	assertReasons(t, after, ReasonFailingCheck, ReasonMergeConflict)
+	if after.Fingerprint == first.Fingerprint {
+		t.Error("a new head kept the previous fingerprint; check and conflict keys must carry the head")
+	}
 }
 
 func containsString(values []string, want string) bool {

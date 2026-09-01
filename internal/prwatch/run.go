@@ -49,9 +49,14 @@ type Options struct {
 	// supplies its own stdout and stderr, which makes the Herdr watcher pane
 	// the watcher's log; nothing is ever written to a file. A nil writer is
 	// silent.
-	Out          io.Writer
-	Err          io.Writer
-	PID          int
+	Out io.Writer
+	Err io.Writer
+	PID int
+	// TabID and PaneID are the Herdr tab and pane hosting this watcher. They
+	// are recorded in runtime state so `relay pr watch stop` closes the exact
+	// pane it started and never guesses at one.
+	TabID        string
+	PaneID       string
 	RelayVersion string
 }
 
@@ -115,7 +120,7 @@ func Tick(ctx context.Context, slug string, options Options) (Digest, error) {
 	if err != nil {
 		return Digest{}, fmt.Errorf("observe pull request #%d for project %q: %w", target.PRNumber, slug, err)
 	}
-	digest := BuildDigest(slug, mode, observation, state, options.Now().UTC())
+	digest := BuildDigest(slug, mode, observation, options.Now().UTC())
 	if digest.Fingerprint != "" {
 		if err := WriteDigest(digest); err != nil {
 			return Digest{}, err
@@ -125,9 +130,11 @@ func Tick(ctx context.Context, slug string, options Options) (Digest, error) {
 }
 
 // Run holds the watcher singleton lock and observes the project's pull request
-// until it merges, the context is canceled, or observation fails repeatedly.
-// The first-ever start records a baseline without waking anyone; a restart may
-// wake for attention that is still unacknowledged.
+// until it reaches a terminal state, the context is canceled, or observation
+// fails repeatedly. Every start — first or restart — begins with an immediate
+// observation that wakes the owner if the pull request already needs attention,
+// because the watcher asserts nothing locally about what an owner has already
+// done: only the current remote truth decides.
 func Run(ctx context.Context, slug string, options Options) (retErr error) {
 	options = normalizedOptions(options)
 	target, err := options.Locate(slug)
@@ -148,15 +155,23 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 
 	events := newEventLog(options.Out, options.Err)
 	now := options.Now().UTC()
-	state, err := UpdateState(slug, func(state State) (State, error) {
+	if _, err := UpdateState(slug, func(state State) (State, error) {
 		state.Mode = options.Mode
 		state.OwnerSlug = owner
 		state.PID = options.PID
+		state.TabID = options.TabID
+		state.PaneID = options.PaneID
 		state.RelayVersion = options.RelayVersion
 		state.Status = StatusRunning
 		state.StartedAt = now.Format(time.RFC3339)
 		state.PRNumber = target.PRNumber
 		state.PRURL = target.PRURL
+		// Every start restarts the backoff. A restart is an operator action, and
+		// resuming a slow cadence would make a freshly started watcher look
+		// asleep for up to an hour.
+		state.ScheduledChecks = 0
+		state.DelaySeconds = int64(FastCadence / time.Second)
+		state.NextCheckAt = now.Add(FastCadence).Format(time.RFC3339)
 		state.ConsecutiveErrors = 0
 		state.Error = ""
 		state.Warning = ""
@@ -166,8 +181,7 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 		state.WakesSuppressed = false
 		state.UpdatedAt = now.Format(time.RFC3339)
 		return state, nil
-	})
-	if err != nil {
+	}); err != nil {
 		return err
 	}
 	if err := events.started(now, slug, options.Mode, owner, target.PRNumber); err != nil {
@@ -181,7 +195,7 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 		options: options,
 		events:  events,
 	}
-	done, err := runner.run(ctx, !state.Baselined)
+	done, err := runner.run(ctx, true)
 	if err != nil || done {
 		return err
 	}
@@ -228,8 +242,8 @@ type checkRunner struct {
 }
 
 // due reports whether the next scheduled check has come around, reading the
-// latest persisted state so an acknowledgement recorded by another process
-// takes effect on the next internal wake.
+// latest persisted state so a schedule another process changed takes effect on
+// the next internal wake.
 func (r *checkRunner) due(now time.Time) (bool, error) {
 	state, err := ReadState(r.slug)
 	if err != nil {
@@ -245,30 +259,87 @@ func (r *checkRunner) due(now time.Time) (bool, error) {
 	return !now.Before(next), nil
 }
 
-// run performs one observation. baseline marks the first-ever observation,
-// which records attention without waking anyone. It reports whether the
-// watcher should stop.
-func (r *checkRunner) run(ctx context.Context, baseline bool) (bool, error) {
+// run performs one observation. immediate marks the observation a watcher runs
+// as soon as it starts, which is not a scheduled check but may still wake the
+// owner. It reports whether the watcher should stop.
+func (r *checkRunner) run(ctx context.Context, immediate bool) (bool, error) {
 	now := r.options.Now().UTC()
 	observation, observeErr := r.options.Observe(ctx, r.target)
 	if observeErr != nil {
 		return r.recordObservationError(now, observeErr)
 	}
 
-	var digest Digest
-	var delay time.Duration
+	digest := BuildDigest(r.slug, r.options.Mode, observation, now)
+	if digest.Fingerprint != "" {
+		if err := WriteDigest(digest); err != nil {
+			return true, errors.Join(err, r.events.failure(now, err.Error()))
+		}
+	}
+	state, schedule, err := r.recordObservation(now, digest, immediate)
+	if err != nil {
+		return true, err
+	}
+	label := "start"
+	if !immediate {
+		label = fmt.Sprintf("check n=%d", state.ScheduledChecks)
+	}
+	if err := r.events.observation(now, label, digest, schedule.delay); err != nil {
+		return true, recordFailure(r.slug, now, err)
+	}
+	if digest.Complete {
+		return true, r.recordComplete(now, digest)
+	}
+	terminal, err := r.wake(now, schedule, digest)
+	if err != nil {
+		return true, err
+	}
+	if terminal {
+		return true, nil
+	}
+	final, err := ReadState(r.slug)
+	if err != nil {
+		return true, err
+	}
+	if err := r.events.nextCheck(now, final.NextCheckAt, time.Duration(final.DelaySeconds)*time.Second); err != nil {
+		return true, recordFailure(r.slug, now, err)
+	}
+	if err := Prune(r.slug, MaxRetainedDigests, digest.Fingerprint); err != nil {
+		return true, errors.Join(err, r.events.failure(now, err.Error()))
+	}
+	return false, nil
+}
+
+// schedule is what one observation decided about the watcher's cadence.
+type schedule struct {
+	// delay is the interval before the next scheduled check.
+	delay time.Duration
+	// consumedChecks is the count this observation would restore the watcher to
+	// if its wake never reached the owner, so an undelivered wake spends no
+	// backoff step.
+	consumedChecks int
+}
+
+// recordObservation folds one observation into the runtime record and returns
+// what it decided about the cadence. The backoff restarts whenever the pull
+// request changed under the watcher: a new head SHA, or a different set of
+// actionable items — including attention appearing or clearing entirely. A
+// pending check that is still pending changes neither, so it never resets.
+func (r *checkRunner) recordObservation(
+	now time.Time, digest Digest, immediate bool,
+) (State, schedule, error) {
+	var next schedule
 	state, err := UpdateState(r.slug, func(state State) (State, error) {
-		digest = BuildDigest(r.slug, r.options.Mode, observation, state, now)
-		if !baseline {
+		next.consumedChecks = state.ScheduledChecks
+		switch {
+		case immediate:
+		case state.HeadSHA != digest.HeadSHA, state.CurrentFingerprint != digest.Fingerprint:
+			state.ScheduledChecks = 0
+			next.consumedChecks = 0
+		default:
 			state.ScheduledChecks++
 		}
-		// A new head means the pull request changed under the watcher, so the
-		// backoff restarts at the fast cadence.
-		if state.HeadSHA != "" && state.HeadSHA != digest.HeadSHA {
-			state.ScheduledChecks = 0
-		}
-		delay = CadenceFor(state.ScheduledChecks + 1)
-		state.Baselined = true
+		delay := CadenceFor(state.ScheduledChecks + 1)
+		next.delay = delay
 		state.Status = StatusRunning
 		state.LastCheckAt = now.Format(time.RFC3339)
 		state.NextCheckAt = now.Add(delay).Format(time.RFC3339)
@@ -284,64 +355,78 @@ func (r *checkRunner) run(ctx context.Context, baseline bool) (bool, error) {
 		state.UpdatedAt = now.Format(time.RFC3339)
 		return state, nil
 	})
+	return state, next, err
+}
+
+// wake hands actionable attention to the exact owner session and reports
+// whether the watcher reached a terminal state. Immediately before prompting it
+// re-reads the runtime record under the state lock, so a wake is never
+// delivered for an observation that is no longer current.
+func (r *checkRunner) wake(now time.Time, observed schedule, digest Digest) (bool, error) {
+	if len(digest.Items) == 0 {
+		return false, nil
+	}
+	current, err := ReadStateLocked(r.slug)
 	if err != nil {
-		return true, err
+		return false, err
 	}
-	if digest.Fingerprint != "" {
-		if err := WriteDigest(digest); err != nil {
-			return true, errors.Join(err, r.events.failure(now, err.Error()))
+	if !wakeStillCurrent(current, digest) {
+		return false, r.events.wakeSkipped(now, r.owner, digest.Fingerprint)
+	}
+	outcome := WakeOutcome{Kind: WakeSuppressed, Owner: r.owner}
+	if !current.WakesSuppressed {
+		outcome = Wake(r.options.Client, r.owner, r.slug, digest.Fingerprint)
+	}
+	// An owner that was not there to take the attention must not consume a
+	// backoff step: the pull request did not get quieter, the delivery failed.
+	hold := holdsFastCadence(outcome.Kind)
+	updated, err := UpdateState(r.slug, func(next State) (State, error) {
+		next.LastWakeAt = now.Format(time.RFC3339)
+		next.LastWakeStatus = string(outcome.Kind)
+		next.LastWakeFingerprint = digest.Fingerprint
+		next.AttentionPending = !outcome.Delivered()
+		next.Warning = outcome.Error
+		if outcome.Kind == WakeUncertain {
+			next.WakesSuppressed = true
 		}
+		if hold {
+			next.ScheduledChecks = observed.consumedChecks
+			next.DelaySeconds = int64(FastCadence / time.Second)
+			next.NextCheckAt = now.Add(FastCadence).Format(time.RFC3339)
+		}
+		return next, nil
+	})
+	if err != nil {
+		return false, err
 	}
-	label := "baseline"
-	if !baseline {
-		label = fmt.Sprintf("check n=%d", state.ScheduledChecks)
+	if err := r.events.wake(now, r.slug, outcome, digest.Fingerprint); err != nil {
+		return false, err
 	}
-	if err := r.events.observation(now, label, digest, delay); err != nil {
-		return true, recordFailure(r.slug, now, err)
-	}
-	if digest.Complete {
-		return true, r.recordComplete(now, digest)
-	}
-	if err := r.wake(now, state, digest, baseline); err != nil {
-		return true, err
-	}
-	if err := r.events.nextCheck(now, state.NextCheckAt, delay); err != nil {
-		return true, recordFailure(r.slug, now, err)
-	}
-	if err := Prune(r.slug, MaxRetainedDigests, MaxRetainedAcknowledgements, digest.Fingerprint); err != nil {
-		return true, errors.Join(err, r.events.failure(now, err.Error()))
+	if outcome.Delivered() && digest.PR.State == "CLOSED" {
+		return true, r.recordClosed(now, updated, digest)
 	}
 	return false, nil
 }
 
-// wake hands actionable attention to the exact owner session, unless this is
-// the first-ever baseline or a previous uncertain delivery suppressed wakes.
-func (r *checkRunner) wake(now time.Time, state State, digest Digest, baseline bool) error {
-	if len(digest.Items) == 0 {
-		return nil
+// wakeStillCurrent reports whether the digest a wake was built from is still
+// the watcher's current attention. A watcher that stopped, completed, or moved
+// on to another observation has nothing to hand over.
+func wakeStillCurrent(state State, digest Digest) bool {
+	return state.Status == StatusRunning &&
+		state.AttentionPending &&
+		state.CurrentFingerprint == digest.Fingerprint
+}
+
+// holdsFastCadence reports whether an undelivered wake should hold the fast
+// cadence instead of consuming a backoff step. A missing, duplicated, busy, or
+// failed owner may be there on the next check; a suppressed or uncertain
+// delivery needs an operator and a restart, so it backs off normally.
+func holdsFastCadence(kind WakeKind) bool {
+	switch kind {
+	case WakeOwnerMissing, WakeOwnerDuplicated, WakeOwnerBusy, WakeFailed:
+		return true
 	}
-	if baseline {
-		return r.events.baselineHeld(now, r.owner)
-	}
-	outcome := WakeOutcome{Kind: WakeSuppressed, Owner: r.owner}
-	if !state.WakesSuppressed {
-		outcome = Wake(r.options.Client, r.owner, r.slug, digest.Fingerprint)
-	}
-	if _, err := UpdateState(r.slug, func(state State) (State, error) {
-		state.LastWakeAt = now.Format(time.RFC3339)
-		state.LastWakeStatus = string(outcome.Kind)
-		state.LastWakeFingerprint = digest.Fingerprint
-		state.AttentionPending = !outcome.Delivered()
-		state.Warning = outcome.Error
-		if outcome.Kind == WakeUncertain {
-			state.WakesSuppressed = true
-		}
-		state.UpdatedAt = now.Format(time.RFC3339)
-		return state, nil
-	}); err != nil {
-		return err
-	}
-	return r.events.wake(now, r.slug, outcome, digest.Fingerprint)
+	return false
 }
 
 func (r *checkRunner) recordComplete(now time.Time, digest Digest) error {
@@ -356,6 +441,24 @@ func (r *checkRunner) recordComplete(now time.Time, digest Digest) error {
 		return err
 	}
 	return r.events.complete(now, r.slug, digest.PR.Number)
+}
+
+// recordClosed ends a watch on a pull request that was closed without merging,
+// once its owner has actually been handed the escalation. The watcher cannot
+// act on a closed pull request, and leaving one running would be a process that
+// never finishes.
+func (r *checkRunner) recordClosed(now time.Time, state State, digest Digest) error {
+	if _, err := UpdateState(r.slug, func(next State) (State, error) {
+		next.Status = StatusComplete
+		next.StopReason = "pull request closed without merging; escalation delivered to " + state.OwnerSlug
+		next.NextCheckAt = ""
+		next.AttentionPending = false
+		next.UpdatedAt = now.Format(time.RFC3339)
+		return next, nil
+	}); err != nil {
+		return err
+	}
+	return r.events.closed(now, r.slug, digest.PR.Number, r.owner)
 }
 
 // recordObservationError treats a GitHub failure as an error, never as a quiet

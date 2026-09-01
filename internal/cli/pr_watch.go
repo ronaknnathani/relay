@@ -52,12 +52,6 @@ type prWatchStatusOutput struct {
 	Warning    string         `json:"warning,omitempty"`
 }
 
-type prWatchAcknowledgeOutput struct {
-	Project         string                  `json:"project"`
-	Acknowledgement prwatch.Acknowledgement `json:"acknowledgement"`
-	State           prwatch.State           `json:"state"`
-}
-
 // newCmdPR groups the project-scoped pull request commands.
 func newCmdPR() *cobra.Command {
 	command := &cobra.Command{
@@ -80,7 +74,6 @@ func newCmdPRWatch() *cobra.Command {
 		newCmdPRWatchStop(),
 		newCmdPRWatchTick(),
 		newCmdPRWatchDigest(),
-		newCmdPRWatchAcknowledge(),
 	)
 	return command
 }
@@ -499,39 +492,4 @@ func renderPRWatchDigest(out io.Writer, digest prwatch.Digest) {
 		fmt.Fprintln(out, line)
 	}
 	fmt.Fprintln(out, "Run with --json for the full record, including comment bodies.")
-}
-
-func newCmdPRWatchAcknowledge() *cobra.Command {
-	var jsonOutput bool
-	var fingerprint string
-	var outcome string
-	command := &cobra.Command{
-		Use:   "acknowledge <project-slug> --fingerprint <fingerprint> --outcome <outcome>",
-		Short: "Record that every item in a watcher digest was covered",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(command *cobra.Command, args []string) error {
-			parsed, err := prwatch.ParseOutcome(outcome)
-			if err != nil {
-				return err
-			}
-			ack, state, err := prwatch.Acknowledge(args[0], fingerprint, parsed, prWatchNow())
-			if err != nil {
-				return err
-			}
-			result := prWatchAcknowledgeOutput{Project: args[0], Acknowledgement: ack, State: state}
-			if jsonOutput {
-				return writeProgramJSON(command.OutOrStdout(), result)
-			}
-			fmt.Fprintf(command.OutOrStdout(),
-				"Acknowledged %s as %s; next check at %s\n",
-				ack.Fingerprint, ack.Outcome, state.NextCheckAt)
-			return nil
-		},
-	}
-	command.Flags().StringVar(&fingerprint, "fingerprint", "", "digest fingerprint (64 lowercase hex characters)")
-	command.Flags().StringVar(&outcome, "outcome", "", "handled, escalated, or obsolete")
-	command.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
-	_ = command.MarkFlagRequired("fingerprint")
-	_ = command.MarkFlagRequired("outcome")
-	return command
 }

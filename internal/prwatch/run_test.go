@@ -78,6 +78,16 @@ func (w *signalWriter) awaitLine(t *testing.T, want string) string {
 
 func newWatchHarness(t *testing.T, mode Mode, owner string, observation Observation) *watchHarness {
 	t.Helper()
+	return newWatchHarnessWithClient(t, mode, owner, observation, nil)
+}
+
+// newWatchHarnessWithClient starts a watcher whose Herdr double is configured
+// before the watcher's first observation runs, which is the only way to observe
+// an undelivered wake on the very first check.
+func newWatchHarnessWithClient(
+	t *testing.T, mode Mode, owner string, observation Observation, configure func(*fakeOwnerClient),
+) *watchHarness {
+	t.Helper()
 	withRuntimeHome(t)
 	harness := &watchHarness{
 		t:           t,
@@ -91,6 +101,9 @@ func newWatchHarness(t *testing.T, mode Mode, owner string, observation Observat
 			liveAgent("relay:"+ownerOrProject(owner, "demo"), "pane-owner", herdr.StatusIdle),
 		}},
 		done: make(chan error, 1),
+	}
+	if configure != nil {
+		configure(harness.client)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	harness.cancel = cancel
@@ -245,13 +258,13 @@ func TestCadenceRunsFifteenThirtyThenSixtyMinuteChecks(t *testing.T) {
 	start := harness.clock()
 
 	harness.out.awaitLine(t, "next check at=")
-	baseline := harness.state()
-	if baseline.ScheduledChecks != 0 {
-		t.Fatalf("baseline scheduled checks = %d, want 0: the baseline is not a scheduled check",
-			baseline.ScheduledChecks)
+	immediate := harness.state()
+	if immediate.ScheduledChecks != 0 {
+		t.Fatalf("scheduled checks after the start observation = %d, want 0: it is not a scheduled check",
+			immediate.ScheduledChecks)
 	}
-	if want := start.Add(FastCadence).Format(time.RFC3339); baseline.NextCheckAt != want {
-		t.Fatalf("next check after baseline = %q, want %q", baseline.NextCheckAt, want)
+	if want := start.Add(FastCadence).Format(time.RFC3339); immediate.NextCheckAt != want {
+		t.Fatalf("next check after the start observation = %q, want %q", immediate.NextCheckAt, want)
 	}
 
 	// The interval before each scheduled check: 15 minutes for checks 1-4, 30
@@ -341,9 +354,9 @@ func TestPendingCheckTransitionAloneDoesNotResetTheCadence(t *testing.T) {
 	}
 }
 
-func TestExternalAcknowledgementResetsTheRunningWatcher(t *testing.T) {
+func TestClearedAttentionResetsTheCadence(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
-	harness.out.awaitLine(t, "baseline attention recorded")
+	harness.out.awaitLine(t, "owner wake delivered")
 	harness.out.awaitLine(t, "next check at=")
 	for i := 0; i < 4; i++ {
 		harness.runScheduledCheck()
@@ -353,53 +366,72 @@ func TestExternalAcknowledgementResetsTheRunningWatcher(t *testing.T) {
 		t.Fatalf("state = %+v, want four scheduled checks with actionable attention", state)
 	}
 
-	acknowledgedAt := harness.clock().Add(time.Minute)
-	if _, _, err := Acknowledge(harness.slug, state.CurrentFingerprint, OutcomeHandled, acknowledgedAt); err != nil {
-		t.Fatalf("Acknowledge: %v", err)
+	// The reviewer's comment was answered on the pull request, so the next
+	// observation carries no actionable item at all. An emptied fingerprint is
+	// still a change, and a changed pull request restarts the fast cadence.
+	harness.setObservation(quietObservation(), nil)
+	cleared := harness.runScheduledCheck()
+	if cleared.ScheduledChecks != 0 || cleared.CurrentFingerprint != "" {
+		t.Fatalf("state = %+v, want the cadence reset by cleared attention", cleared)
 	}
-	after := harness.state()
-	if after.ScheduledChecks != 0 {
-		t.Fatalf("scheduled checks = %d, want 0 after the acknowledgement", after.ScheduledChecks)
+	if cleared.DelaySeconds != int64(FastCadence/time.Second) {
+		t.Errorf("cadence = %ds, want 15m after attention cleared", cleared.DelaySeconds)
 	}
-	if want := acknowledgedAt.Add(FastCadence).Format(time.RFC3339); after.NextCheckAt != want {
-		t.Fatalf("next check = %q, want %q", after.NextCheckAt, want)
-	}
-
-	next := harness.runScheduledCheck()
-	if next.ScheduledChecks != 1 || next.DelaySeconds != int64(FastCadence/time.Second) {
-		t.Errorf("state = %+v, want the cadence restarted at 15m", next)
-	}
-	if next.CurrentFingerprint != "" || next.ActionableCount != 0 {
-		t.Errorf("state = %+v, want the acknowledged comment filtered out", next)
+	if cleared.AttentionPending {
+		t.Error("attention stayed pending after the pull request went quiet")
 	}
 }
 
-func TestFirstStartRecordsABaselineWithoutWakingAndARestartWakes(t *testing.T) {
+func TestFirstStartWakesImmediatelyForExistingAttention(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
-	harness.out.awaitLine(t, "baseline attention recorded")
-	if len(harness.client.prompts) != 0 {
-		t.Fatalf("baseline woke the owner with %v", harness.client.prompts)
+	line := harness.out.awaitLine(t, "owner wake delivered")
+	if !strings.Contains(line, "pane=pane-owner") {
+		t.Errorf("wake line = %q, want the exact owner pane", line)
 	}
-	baseline := harness.state()
-	if !baseline.Baselined || !baseline.AttentionPending || baseline.CurrentFingerprint == "" {
-		t.Fatalf("baseline state = %+v, want recorded pending attention", baseline)
+	if harness.client.promptCount() != 1 {
+		t.Fatalf("prompts = %v, want exactly one wake from the first observation", harness.client.prompts)
+	}
+	state := harness.state()
+	if !strings.Contains(harness.client.promptTexts()[0], state.CurrentFingerprint) {
+		t.Errorf("prompt = %q, want the current fingerprint", harness.client.promptTexts()[0])
+	}
+	if state.LastWakeStatus != string(WakeDelivered) || state.AttentionPending {
+		t.Errorf("state = %+v, want a delivered wake", state)
+	}
+	if state.ScheduledChecks != 0 {
+		t.Errorf("scheduled checks = %d, want 0: the first observation is not a scheduled check",
+			state.ScheduledChecks)
+	}
+}
+
+func TestRestartResetsTheScheduleAndWakesAgain(t *testing.T) {
+	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
+	harness.out.awaitLine(t, "owner wake delivered")
+	harness.out.awaitLine(t, "next check at=")
+	for i := 0; i < 5; i++ {
+		harness.runScheduledCheck()
+	}
+	before := harness.state()
+	if before.ScheduledChecks != 5 || before.DelaySeconds != int64(MediumCadence/time.Second) {
+		t.Fatalf("state = %+v, want the 30m backoff before the restart", before)
 	}
 	harness.stop()
 
 	restarted := newWatchHarnessReusingHome(t, harness)
-	line := restarted.out.awaitLine(t, "owner wake delivered")
-	if !strings.Contains(line, "pane=pane-owner") {
-		t.Errorf("wake line = %q, want the exact owner pane", line)
-	}
-	if len(restarted.client.prompts) != 1 {
-		t.Fatalf("prompts = %v, want exactly one wake", restarted.client.prompts)
-	}
-	if !strings.Contains(restarted.client.prompts[0], baseline.CurrentFingerprint) {
-		t.Errorf("prompt = %q, want the current fingerprint", restarted.client.prompts[0])
-	}
+	restarted.out.awaitLine(t, "owner wake delivered")
 	state := restarted.state()
-	if state.LastWakeStatus != string(WakeDelivered) || state.AttentionPending {
-		t.Errorf("state = %+v, want a delivered wake", state)
+	if state.ScheduledChecks != 0 {
+		t.Errorf("scheduled checks = %d, want 0 after a restart", state.ScheduledChecks)
+	}
+	if state.DelaySeconds != int64(FastCadence/time.Second) {
+		t.Errorf("cadence = %ds, want 15m after a restart", state.DelaySeconds)
+	}
+	if state.CurrentFingerprint != before.CurrentFingerprint || state.HeadSHA != before.HeadSHA {
+		t.Errorf("state = %+v, want the observation identity preserved across the restart", state)
+	}
+	if restarted.client.promptCount() != 1 {
+		t.Errorf("prompts = %v, want the restart to wake for the attention that is still there",
+			restarted.client.prompts)
 	}
 }
 
@@ -448,8 +480,8 @@ func TestMergedPullRequestCompletesSilently(t *testing.T) {
 	harness.out.awaitLine(t, "pr watch complete")
 	harness.awaitExit()
 
-	if len(harness.client.prompts) != 0 {
-		t.Errorf("a merged pull request woke the owner with %v", harness.client.prompts)
+	if harness.client.promptCount() != 0 {
+		t.Errorf("a merged pull request woke the owner with %v", harness.client.promptTexts())
 	}
 	state := harness.state()
 	if state.Status != StatusComplete || state.AttentionPending {
@@ -465,7 +497,7 @@ func TestMergedStackFrontWakesTheOrchestrator(t *testing.T) {
 	merged.PR.State = "MERGED"
 	harness := newWatchHarness(t, ModeStack, "stack-run", merged)
 
-	harness.out.awaitLine(t, "baseline attention recorded")
+	harness.out.awaitLine(t, "owner wake delivered")
 	state := harness.state()
 	if state.Status == StatusComplete {
 		t.Fatal("stack front watcher completed instead of staying up to retarget")
@@ -483,21 +515,18 @@ func TestMergedStackFrontWakesTheOrchestrator(t *testing.T) {
 }
 
 func TestUncertainDeliverySuppressesFurtherWakes(t *testing.T) {
-	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
-	harness.client.promptErr = errors.New("staged: " + herdr.ErrPromptDeliveryUncertain.Error())
-	harness.client.promptErr = wrapUncertain()
-	harness.out.awaitLine(t, "baseline attention recorded")
+	harness := newWatchHarnessWithClient(t, ModeStandalone, "", actionableObservation(),
+		func(client *fakeOwnerClient) { client.promptErr = wrapUncertain() })
 
-	harness.runScheduledCheck()
 	harness.err.awaitLine(t, "owner wake uncertain")
 	if !harness.state().WakesSuppressed {
 		t.Fatal("uncertain delivery did not suppress further wakes")
 	}
 
-	prompts := len(harness.client.prompts)
+	prompts := harness.client.promptCount()
 	harness.runScheduledCheck()
-	if len(harness.client.prompts) != prompts {
-		t.Errorf("prompts = %d, want no wake while suppressed", len(harness.client.prompts))
+	if harness.client.promptCount() != prompts {
+		t.Errorf("prompts = %d, want no wake while suppressed", harness.client.promptCount())
 	}
 	harness.err.awaitLine(t, "owner wake suppressed")
 }
@@ -506,18 +535,62 @@ func wrapUncertain() error {
 	return errors.Join(herdr.ErrPromptDeliveryUncertain, errors.New("prompt may be staged"))
 }
 
-func TestBusyOwnerLeavesAttentionPending(t *testing.T) {
-	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
-	harness.client.agents = []herdr.Agent{liveAgent("relay:demo", "pane-owner", herdr.StatusWorking)}
-	harness.out.awaitLine(t, "baseline attention recorded")
-
-	harness.runScheduledCheck()
+func TestBusyOwnerHoldsTheFastCadenceUntilAWakeIsDelivered(t *testing.T) {
+	harness := newWatchHarnessWithClient(t, ModeStandalone, "", actionableObservation(),
+		func(client *fakeOwnerClient) {
+			client.agents = []herdr.Agent{liveAgent("relay:demo", "pane-owner", herdr.StatusWorking)}
+		})
 	harness.err.awaitLine(t, "owner wake owner-busy")
 	if !harness.state().AttentionPending {
 		t.Error("attention stopped being pending after a busy owner")
 	}
-	if len(harness.client.prompts) != 0 {
-		t.Errorf("a busy owner was prompted with %v", harness.client.prompts)
+	if harness.client.promptCount() != 0 {
+		t.Errorf("a busy owner was prompted with %v", harness.client.promptTexts())
+	}
+	harness.out.awaitLine(t, "next check at=")
+
+	// A busy owner never took the attention, so no scheduled check may be
+	// spent: the watcher stays at the fast cadence however long it lasts.
+	for i := 0; i < 6; i++ {
+		harness.setNow(harness.clock().Add(FastCadence))
+		harness.tick()
+		harness.err.awaitLine(t, "owner wake owner-busy")
+		harness.out.awaitLine(t, "next check at=")
+		state := harness.state()
+		if state.ScheduledChecks != 0 {
+			t.Fatalf("scheduled checks = %d after busy wake %d, want 0", state.ScheduledChecks, i+1)
+		}
+		if state.DelaySeconds != int64(FastCadence/time.Second) {
+			t.Fatalf("cadence = %ds after busy wake %d, want 15m", state.DelaySeconds, i+1)
+		}
+	}
+
+	// Once the owner is free, the delivered wake lets the backoff progress.
+	harness.client.setAgents([]herdr.Agent{liveAgent("relay:demo", "pane-owner", herdr.StatusIdle)})
+	state := harness.runScheduledCheck()
+	if state.ScheduledChecks != 1 || state.DelaySeconds != int64(FastCadence/time.Second) {
+		t.Errorf("state = %+v, want the first scheduled check consumed after delivery", state)
+	}
+}
+
+func TestMissingOwnerHoldsTheFastCadence(t *testing.T) {
+	harness := newWatchHarnessWithClient(t, ModeStandalone, "", actionableObservation(),
+		func(client *fakeOwnerClient) { client.agents = nil })
+	harness.err.awaitLine(t, "owner wake owner-missing")
+	harness.out.awaitLine(t, "next check at=")
+
+	for i := 0; i < 5; i++ {
+		harness.setNow(harness.clock().Add(FastCadence))
+		harness.tick()
+		harness.err.awaitLine(t, "owner wake owner-missing")
+		harness.out.awaitLine(t, "next check at=")
+	}
+	state := harness.state()
+	if state.ScheduledChecks != 0 || state.DelaySeconds != int64(FastCadence/time.Second) {
+		t.Errorf("state = %+v, want the fast cadence held for a missing owner", state)
+	}
+	if !state.AttentionPending {
+		t.Error("attention stopped being pending with no owner to hand it to")
 	}
 }
 
@@ -594,8 +667,6 @@ func TestWatcherEventsCarryNoPullRequestContent(t *testing.T) {
 	observation := actionableObservation()
 	observation.PR.Title = "Add the secret widget"
 	harness := newWatchHarness(t, ModeStandalone, "", observation)
-	harness.out.awaitLine(t, "baseline attention recorded")
-	harness.runScheduledCheck()
 	harness.out.awaitLine(t, "owner wake delivered")
 
 	events := harness.out.String() + harness.err.String()

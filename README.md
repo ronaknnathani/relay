@@ -25,9 +25,9 @@ with a confidence gate), `validate` (the repo's quality gates, goal-backward), `
 **Workflow skills** compose them. `deliver-pr` is a resume-first router that drives one scoped change
 through the foundation pipeline, one phase per sub-agent, to an open PR, then hands that PR to the
 watcher. `relay pr watch` is the deterministic runtime that observes one project's PR on a 15/30/60
-minute backoff, records an immutable digest of what needs attention, and wakes that project's exact
-live session. Each wake is one `pr-monitor` run: it reads the digest, delegates the real failures,
-review comments, and conflicts to `pr-fix`, acknowledges what it covered, and exits.
+minute backoff, records a digest of what needs attention, and wakes that project's exact live session.
+Each wake is one `pr-monitor` run: it reads the digest, delegates the real failures, review comments,
+and conflicts to `pr-fix`, re-observes the PR to see what is actually resolved, and exits.
 
 **Orchestration** is the third layer. The `stack-ship` skill turns a goal into an interface-first tree
 of small PRs, builds each with `deliver-pr`, watches the front PR with a stack-mode watcher that wakes

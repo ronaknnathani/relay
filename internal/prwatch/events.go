@@ -36,7 +36,7 @@ func (l eventLog) started(at time.Time, slug string, mode Mode, owner string, pr
 	))
 }
 
-// observation prints one completed observation. label is "baseline" for the
+// observation prints one completed observation. label is "start" for the
 // immediate observation a watcher runs at start and "check n=<count>" for a
 // scheduled one.
 func (l eventLog) observation(at time.Time, label string, digest Digest, delay time.Duration) error {
@@ -53,10 +53,13 @@ func (l eventLog) nextCheck(at time.Time, nextCheckAt string, delay time.Duratio
 	))
 }
 
-// baselineHeld prints that a first-ever observation found actionable state and
-// deliberately did not wake anyone.
-func (l eventLog) baselineHeld(at time.Time, owner string) error {
-	return l.write(l.out, at, "baseline attention recorded without waking owner="+owner)
+// wakeSkipped prints that a wake was abandoned because the observation it was
+// built from stopped being the watcher's current attention.
+func (l eventLog) wakeSkipped(at time.Time, owner, fingerprint string) error {
+	return l.write(l.out, at, fmt.Sprintf(
+		"owner wake skipped owner=%s fp=%s reason=observation-superseded",
+		owner, shortFingerprint(fingerprint),
+	))
 }
 
 // wake prints one owner wake decision. Only a delivered wake handed the
@@ -85,6 +88,15 @@ func (l eventLog) wake(at time.Time, slug string, outcome WakeOutcome, fingerpri
 func (l eventLog) complete(at time.Time, slug string, prNumber int) error {
 	return l.write(l.out, at, fmt.Sprintf(
 		"pr watch complete project=%s pr=#%d reason=merged", slug, prNumber,
+	))
+}
+
+// closed prints that a watch ended because the pull request was closed without
+// merging and its owner was handed the escalation.
+func (l eventLog) closed(at time.Time, slug string, prNumber int, owner string) error {
+	return l.write(l.out, at, fmt.Sprintf(
+		"pr watch complete project=%s pr=#%d reason=closed-unmerged escalated-to=%s",
+		slug, prNumber, owner,
 	))
 }
 

@@ -55,31 +55,6 @@ const (
 	StatusFailed   Status = "failed"
 )
 
-// Outcome is how a woken owner handled one acknowledged digest.
-type Outcome string
-
-// Acknowledgement outcomes. Every outcome means every item in the digest was
-// covered; it does not mean the pull request is green.
-const (
-	// OutcomeHandled means the work the digest named was carried out.
-	OutcomeHandled Outcome = "handled"
-	// OutcomeEscalated means the work was durably escalated to the author.
-	OutcomeEscalated Outcome = "escalated"
-	// OutcomeObsolete means the digest no longer describes the pull request.
-	OutcomeObsolete Outcome = "obsolete"
-)
-
-// ParseOutcome validates one acknowledgement outcome.
-func ParseOutcome(value string) (Outcome, error) {
-	switch Outcome(value) {
-	case OutcomeHandled, OutcomeEscalated, OutcomeObsolete:
-		return Outcome(value), nil
-	}
-	return "", fmt.Errorf(
-		"invalid acknowledgement outcome %q: want handled, escalated, or obsolete", value,
-	)
-}
-
 // Actionable reason codes. They are stable, payload-free, and safe to print.
 const (
 	ReasonFailingCheck      = "failing-check"
@@ -118,8 +93,8 @@ const (
 )
 
 // Item is one deterministically actionable observation. Key carries the exact
-// source identity the fingerprint and acknowledgement watermarks use, so newer
-// activity on an already-acknowledged source is never hidden.
+// source identity the fingerprint uses, so newer activity on a source the agent
+// already answered is never hidden behind older activity.
 type Item struct {
 	Reason string `json:"reason"`
 	Source string `json:"source"`
@@ -163,8 +138,10 @@ type PullRequest struct {
 	Repo             string `json:"repo,omitempty"`
 }
 
-// Digest is one immutable observation record. It is the only place bodies are
-// kept, and it is written mode 0600.
+// Digest is the record of the newest observation that produced one fingerprint.
+// It is the only place bodies are kept, and it is written mode 0600. Its item
+// set is fixed by its fingerprint; every other field is refreshed on every
+// observation so a reader never acts on stale pull request truth.
 type Digest struct {
 	Schema      string      `json:"schema"`
 	Version     int         `json:"version"`
@@ -181,56 +158,38 @@ type Digest struct {
 	Complete bool `json:"complete"`
 }
 
-// Acknowledgement is one immutable record that a woken owner covered every
-// item in a digest.
-type Acknowledgement struct {
-	Schema         string   `json:"schema"`
-	Version        int      `json:"version"`
-	Project        string   `json:"project"`
-	Fingerprint    string   `json:"fingerprint"`
-	Outcome        Outcome  `json:"outcome"`
-	AcknowledgedAt string   `json:"acknowledged_at"`
-	HeadSHA        string   `json:"head_sha,omitempty"`
-	Keys           []string `json:"keys"`
-}
-
-// MaxAcknowledgedKeys bounds the acknowledgement watermark carried in state, so
-// a long-lived watcher cannot grow its runtime record without limit.
-const MaxAcknowledgedKeys = 500
-
 // State is the watcher runtime record stored outside project directories.
 type State struct {
 	Schema  string `json:"schema"`
 	Version int    `json:"version"`
 	// Revision increases on every state write, so a running watcher can see
-	// that an external acknowledgement changed its schedule.
-	Revision                int      `json:"revision"`
-	Project                 string   `json:"project"`
-	Mode                    Mode     `json:"mode"`
-	OwnerSlug               string   `json:"owner_slug"`
-	PID                     int      `json:"pid"`
-	RelayVersion            string   `json:"relay_version"`
-	Status                  Status   `json:"status"`
-	StartedAt               string   `json:"started_at"`
-	Baselined               bool     `json:"baselined"`
-	ScheduledChecks         int      `json:"scheduled_checks"`
-	LastCheckAt             string   `json:"last_check_at"`
-	NextCheckAt             string   `json:"next_check_at"`
-	DelaySeconds            int64    `json:"delay_seconds"`
-	PRNumber                int      `json:"pr_number"`
-	PRURL                   string   `json:"pr_url,omitempty"`
-	PRState                 string   `json:"pr_state,omitempty"`
-	HeadSHA                 string   `json:"head_sha,omitempty"`
-	CurrentFingerprint      string   `json:"current_fingerprint"`
-	ActionableCount         int      `json:"actionable_count"`
-	AttentionPending        bool     `json:"attention_pending"`
-	AcknowledgedFingerprint string   `json:"acknowledged_fingerprint,omitempty"`
-	AcknowledgedOutcome     Outcome  `json:"acknowledged_outcome,omitempty"`
-	AcknowledgedAt          string   `json:"acknowledged_at,omitempty"`
-	AcknowledgedKeys        []string `json:"acknowledged_keys"`
-	LastWakeAt              string   `json:"last_wake_at,omitempty"`
-	LastWakeStatus          string   `json:"last_wake_status,omitempty"`
-	LastWakeFingerprint     string   `json:"last_wake_fingerprint,omitempty"`
+	// that another process changed its schedule.
+	Revision  int    `json:"revision"`
+	Project   string `json:"project"`
+	Mode      Mode   `json:"mode"`
+	OwnerSlug string `json:"owner_slug"`
+	PID       int    `json:"pid"`
+	// TabID and PaneID name the Herdr tab and pane hosting the watcher, so
+	// stopping one closes the exact pane it started instead of guessing at one.
+	TabID               string `json:"tab_id,omitempty"`
+	PaneID              string `json:"pane_id,omitempty"`
+	RelayVersion        string `json:"relay_version"`
+	Status              Status `json:"status"`
+	StartedAt           string `json:"started_at"`
+	ScheduledChecks     int    `json:"scheduled_checks"`
+	LastCheckAt         string `json:"last_check_at"`
+	NextCheckAt         string `json:"next_check_at"`
+	DelaySeconds        int64  `json:"delay_seconds"`
+	PRNumber            int    `json:"pr_number"`
+	PRURL               string `json:"pr_url,omitempty"`
+	PRState             string `json:"pr_state,omitempty"`
+	HeadSHA             string `json:"head_sha,omitempty"`
+	CurrentFingerprint  string `json:"current_fingerprint"`
+	ActionableCount     int    `json:"actionable_count"`
+	AttentionPending    bool   `json:"attention_pending"`
+	LastWakeAt          string `json:"last_wake_at,omitempty"`
+	LastWakeStatus      string `json:"last_wake_status,omitempty"`
+	LastWakeFingerprint string `json:"last_wake_fingerprint,omitempty"`
 	// WakesSuppressed records an uncertain prompt delivery. Automatic wakes stay
 	// suppressed until the watcher is restarted, because a retry can duplicate
 	// text in the owner's composer.
@@ -240,30 +199,6 @@ type State struct {
 	Warning           string `json:"warning,omitempty"`
 	StopReason        string `json:"stop_reason,omitempty"`
 	UpdatedAt         string `json:"updated_at"`
-}
-
-// Acknowledged reports whether key is inside the state's acknowledgement
-// watermark.
-func (s State) Acknowledged(key string) bool {
-	return slices.Contains(s.AcknowledgedKeys, key)
-}
-
-// WithAcknowledgedKeys returns the state with keys merged into its watermark,
-// newest last and bounded by MaxAcknowledgedKeys.
-func (s State) WithAcknowledgedKeys(keys []string) State {
-	merged := make([]string, 0, len(s.AcknowledgedKeys)+len(keys))
-	merged = append(merged, s.AcknowledgedKeys...)
-	for _, key := range keys {
-		if key == "" || slices.Contains(merged, key) {
-			continue
-		}
-		merged = append(merged, key)
-	}
-	if len(merged) > MaxAcknowledgedKeys {
-		merged = merged[len(merged)-MaxAcknowledgedKeys:]
-	}
-	s.AcknowledgedKeys = merged
-	return s
 }
 
 // Cadence delays. Scheduled checks 1-4 run every 15 minutes, 5-6 every 30, and

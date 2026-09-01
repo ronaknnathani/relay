@@ -285,12 +285,12 @@ func TestPRWatchStatusReportsACompletedWatcher(t *testing.T) {
 	}
 }
 
-func TestPRWatchStatusOfAnAcknowledgementOnlyRecordStaysNotRunning(t *testing.T) {
+func TestPRWatchStatusOfARecordWithoutALifecycleStaysNotRunning(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	installPRWatchFakes(t, &fakeHerdrClient{})
 	prWatchIsRunning = func(string) (bool, error) { return false, nil }
-	// An acknowledgement recorded before any watcher ran writes state with no
-	// lifecycle status; status must still read as not-running.
+	// A record written before any watcher process ran carries no lifecycle
+	// status; status must still read as not-running.
 	prWatchReadState = func(slug string) (prwatch.State, error) {
 		return prwatch.State{Project: slug, NextCheckAt: "2026-03-01T09:00:00Z"}, nil
 	}
@@ -337,7 +337,7 @@ func TestPRWatchStopSignalsTheRecordedProcess(t *testing.T) {
 	}
 }
 
-func TestPRWatchTickAndDigestAndAcknowledgeWorkWithoutHerdr(t *testing.T) {
+func TestPRWatchTickAndDigestWorkWithoutHerdr(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	installPRWatchFakes(t, &fakeHerdrClient{})
@@ -394,43 +394,36 @@ func TestPRWatchTickAndDigestAndAcknowledgeWorkWithoutHerdr(t *testing.T) {
 	if !strings.Contains(text, "new-comment comment 1") {
 		t.Errorf("digest text = %q, want the item summary", text)
 	}
-
-	out, err = runPRCommand(t, "watch", "acknowledge", "demo",
-		"--fingerprint", digest.Fingerprint, "--outcome", "handled", "--json")
-	if err != nil {
-		t.Fatalf("acknowledge: %v", err)
-	}
-	var acknowledged prWatchAcknowledgeOutput
-	if err := json.Unmarshal([]byte(out), &acknowledged); err != nil {
-		t.Fatalf("decode %q: %v", out, err)
-	}
-	if acknowledged.Acknowledgement.Outcome != prwatch.OutcomeHandled {
-		t.Fatalf("acknowledgement = %+v", acknowledged.Acknowledgement)
-	}
-	if acknowledged.State.ScheduledChecks != 0 || acknowledged.State.NextCheckAt == "" {
-		t.Errorf("state = %+v, want the schedule reset", acknowledged.State)
-	}
-
-	if _, err := runPRCommand(t, "watch", "acknowledge", "demo",
-		"--fingerprint", digest.Fingerprint, "--outcome", "escalated"); err == nil {
-		t.Error("a conflicting outcome was accepted")
-	}
 }
 
-func TestPRWatchRejectsInvalidFingerprintsAndOutcomes(t *testing.T) {
+func TestPRWatchRejectsInvalidFingerprints(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	installPRWatchFakes(t, &fakeHerdrClient{})
 
 	if _, err := runPRCommand(t, "watch", "digest", "demo", "--fingerprint", "../escape"); err == nil {
 		t.Error("digest accepted a traversing fingerprint")
 	}
-	if _, err := runPRCommand(t, "watch", "acknowledge", "demo",
-		"--fingerprint", strings.Repeat("a", 64), "--outcome", "done"); err == nil {
-		t.Error("acknowledge accepted an unknown outcome")
+	if _, err := runPRCommand(t, "watch", "digest", "demo",
+		"--fingerprint", strings.Repeat("a", 64)); err == nil {
+		t.Error("digest accepted a fingerprint with no record")
 	}
-	if _, err := runPRCommand(t, "watch", "acknowledge", "demo",
-		"--fingerprint", strings.Repeat("a", 64), "--outcome", "handled"); err == nil {
-		t.Error("acknowledge accepted a fingerprint with no digest")
+}
+
+// The acknowledgement subsystem is gone: a watcher never asserts locally that
+// attention was handled, so there is no command that could claim it.
+func TestPRWatchHasNoAcknowledgeCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	installPRWatchFakes(t, &fakeHerdrClient{})
+	out, err := runPRCommand(t, "watch", "--help")
+	if err != nil {
+		t.Fatalf("watch help: %v", err)
+	}
+	if strings.Contains(out, "acknowledge") {
+		t.Errorf("`relay pr watch --help` still offers acknowledge:\n%s", out)
+	}
+	out, _ = runPRCommand(t, "watch", "acknowledge", "demo")
+	if !strings.Contains(out, "Available Commands:") || strings.Contains(out, "acknowledge ") {
+		t.Errorf("`relay pr watch acknowledge` did not fall back to usage:\n%s", out)
 	}
 }
 
@@ -474,9 +467,12 @@ func TestPRWatchIsRegisteredOnTheRootCommand(t *testing.T) {
 	}
 	want := map[string]bool{
 		"start": true, "run": true, "status": true, "stop": true,
-		"tick": true, "digest": true, "acknowledge": true,
+		"tick": true, "digest": true,
 	}
 	for _, command := range watch.Commands() {
+		if command.Name() == "acknowledge" {
+			t.Error("`relay pr watch acknowledge` is still registered")
+		}
 		delete(want, command.Name())
 		if command.Name() == "run" && !command.Hidden {
 			t.Error("`relay pr watch run` is not hidden")

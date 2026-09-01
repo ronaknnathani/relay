@@ -2,7 +2,7 @@
 
 Observation of the front PR is owned by the **`relay pr watch`** runtime, and interpreting one of its
 digests is owned by the **`pr-monitor`** skill (triage → delegate remediation to `pr-fix` → re-arm
-auto-merge → acknowledge → exit). This file covers only what the **stack** adds.
+auto-merge → re-observe → exit). This file covers only what the **stack** adds.
 
 > Throughout, `master` denotes the repository's **default branch**; substitute the real default
 > (`main`, etc.) in the commands below. `pr-monitor` arms auto-merge only on a default-branch PR — the
@@ -35,8 +35,7 @@ that commit from `master`), so `<merged-parent-tip>` below stays valid. Do not r
 auto-retargeting. Once it merges:
 
 ```bash
-relay pr watch acknowledge <front-project-slug> --fingerprint <fp> --outcome handled
-relay pr watch stop <front-project-slug>
+relay pr watch stop <front-project-slug>          # also closes the watcher's Herdr tab
 git fetch origin
 git rebase --onto origin/master <merged-parent-tip> <next-branch>
 git push --force-with-lease origin <next-branch>
@@ -47,6 +46,10 @@ relay pr watch start <next-project-slug> --mode stack --owner <stack-orchestrato
 
 Then verify every other descendant still targets its intended parent feature branch (not `master`),
 and let the new front watcher wake you once auto-merge can be armed on the `master`-based PR.
+
+Stopping the old watcher is **your** job and it is not optional. A merged front PR stays actionable in
+stack mode — the watcher has no local record of "handled", so it re-observes the same merge and wakes
+you again until you stop it.
 
 ## Cascade (after any content change to a PR with descendants)
 

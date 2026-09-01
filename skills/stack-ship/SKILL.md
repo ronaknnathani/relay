@@ -113,13 +113,14 @@ relay pr watch start <front-project-slug> --mode stack --owner <stack-orchestrat
 
 The watcher observes deterministically and wakes you when the front PR needs attention; you then run
 the **`pr-monitor`** skill once for that digest (it triages, delegates remediation to `pr-fix`,
-re-arms auto-merge, and acknowledges). Exactly one watcher per front PR, and never a watcher on a
+re-arms auto-merge, and re-observes). Exactly one watcher per front PR, and never a watcher on a
 non-front PR — it cannot merge yet, so no wake would be actionable.
 
 You add only the two **stack-specific** parts `pr-monitor` deliberately leaves out:
-- **Front-advance:** when the front PR merges, stop that watcher, explicitly rebase/retarget the next
-  PR onto `master`, verify descendant base refs did not collapse, then start a watcher for the new
-  front project with the same `--mode stack --owner` flags.
+- **Front-advance:** when the front PR merges, stop that watcher with
+  `relay pr watch stop <front-project-slug>` — which also closes its watcher tab — then explicitly
+  rebase/retarget the next PR onto `master`, verify descendant base refs did not collapse, and start a
+  watcher for the new front project with the same `--mode stack --owner` flags.
 - **Cascade:** after any content change to a PR that has descendants, rebase each descendant
   (`git rebase --onto <new-tip> <old-tip> <descendant>`), build+test, force-push, and verify base refs.
 

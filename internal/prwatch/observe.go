@@ -94,9 +94,11 @@ func LoadTarget(slug string) (Target, error) {
 }
 
 // BuildDigest classifies one observation into the deterministically actionable
-// items a woken owner must handle. It is pure: the same observation, mode, and
-// acknowledgement watermark always produce the same digest and fingerprint.
-func BuildDigest(slug string, mode Mode, observation Observation, state State, now time.Time) Digest {
+// items a woken owner must handle. It is pure: the same observation and mode
+// always produce the same items and fingerprint. Nothing about a previous
+// observation is carried in, so an item disappears only when the current remote
+// truth no longer shows it.
+func BuildDigest(slug string, mode Mode, observation Observation, now time.Time) Digest {
 	digest := Digest{
 		Schema:     SchemaVersion,
 		Version:    1,
@@ -112,16 +114,12 @@ func BuildDigest(slug string, mode Mode, observation Observation, state State, n
 	digest.Waiting = waiting
 	digest.Complete = observation.PR.State == "MERGED" && mode != ModeStack
 
-	unacknowledged := make([]Item, 0, len(items))
-	for _, item := range items {
-		if state.Acknowledged(item.Key) {
-			continue
-		}
-		unacknowledged = append(unacknowledged, item)
+	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
+	if items == nil {
+		items = []Item{}
 	}
-	sort.Slice(unacknowledged, func(i, j int) bool { return unacknowledged[i].Key < unacknowledged[j].Key })
-	digest.Items = unacknowledged
-	digest.Fingerprint = Fingerprint(unacknowledged)
+	digest.Items = items
+	digest.Fingerprint = Fingerprint(items)
 	return digest
 }
 

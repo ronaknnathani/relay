@@ -22,12 +22,9 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				`relay pr watch digest "$SLUG" --fingerprint "$FP" --json`,
 				`relay pr watch status "$SLUG" --json`,
 				`relay pr watch tick "$SLUG" --json`,
-				`relay pr watch acknowledge "$SLUG" --fingerprint "$FP" --outcome handled`,
-				"--outcome escalated",
-				"--outcome obsolete",
+				"There is **no acknowledgement**",
 				"This skill has **no loop**",
 				"do not re-derive it with your own `gh` sweep",
-				"**do not acknowledge**",
 				"delegated mode",
 				"One digest, one run, one exit",
 			},
@@ -35,6 +32,8 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"/loop", "/every", "nextTickAfter", "native loop", "CronCreate", "ScheduleWakeup",
 				"gh api \"repos/$OWNER/$REPO/issues/$N/comments\"",
 				"continuous monitoring you can't provide",
+				"relay pr watch acknowledge", "--outcome handled", "--outcome escalated",
+				"--outcome obsolete",
 			},
 		},
 		{
@@ -49,7 +48,7 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"`check_run_id`",
 				"`thread_id`",
 			},
-			forbidden: []string{"relay pr watch acknowledge", "relay pr watch start"},
+			forbidden: []string{"relay pr watch acknowledge", "relay pr watch start", "--outcome"},
 		},
 		{
 			path: filepath.Join("skills", "deliver-pr", "SKILL.md"),
@@ -68,8 +67,9 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 			required: []string{
 				"relay pr watch start <front-project-slug> --mode stack --owner <stack-orchestrator-slug>",
 				"never a watcher on a\nnon-front PR",
-				"stop that watcher",
+				"relay pr watch stop <front-project-slug>",
 			},
+			forbidden: []string{"relay pr watch acknowledge"},
 		},
 		{
 			path: filepath.Join("skills", "stack-ship", "references", "monitor-loop.md"),
@@ -80,7 +80,9 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"`--owner` is required in stack mode",
 				"A `deliver-pr` sub-agent must not start one either",
 			},
-			forbidden: []string{"native-loop", "fire-and-forget native loop"},
+			forbidden: []string{
+				"native-loop", "fire-and-forget native loop", "relay pr watch acknowledge",
+			},
 		},
 	} {
 		t.Run(test.path, func(t *testing.T) {
