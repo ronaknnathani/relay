@@ -108,23 +108,52 @@ backs off to an hourly check while the owner watches it never merge.
 
 ## Telling an agent reply from a human one
 
-Every automated Relay reply opens with the exact marker `<!-- relay-agent-reply -->` on a line of its
-own, then the visible `🤖 <agent> on behalf of <author>` disclosure. The marker is the only signal the
-watcher uses. An emoji, a phrase, or an author login can all be typed by a human quoting or joking
-about a bot, and mistaking one of those for an agent reply silences live review feedback; quoting an
-earlier agent reply indents the marker behind `> `, so it is still human activity.
+Every automated Relay reply opens with an exact marker on a line of its own, then the visible
+`🤖 <agent> on behalf of <author>` disclosure:
 
-Each source is reconciled on its own, and only against replies on that same source:
+```
+<!-- relay-agent-reply answers=comment:200 -->
+```
 
-| Source | Answered by |
-|---|---|
-| conversation comment | a later marked agent comment in the conversation |
-| review body | a later marked agent review |
-| inline comment | a later marked agent reply chained onto that comment's thread |
-| review thread | a later marked agent reply in that thread, or the thread being resolved |
+The marker is the only signal the watcher uses. An emoji, a phrase, or an author login can all be
+typed by a human quoting or joking about a bot, and mistaking one of those for an agent reply silences
+live review feedback; quoting an earlier agent reply indents the marker behind `> `, so it is still
+human activity.
 
-A reply posted anywhere else answers nothing. Reconciling sources together let one reply mark several
-independent pieces of feedback as handled, which silently dropped review comments nobody addressed.
+**The marker names the exact activity it answers, and answers nothing else.** Every actionable item
+carries the token a reply must copy in its `answers` field, so an agent never derives one:
+
+| Source | Item `answers` token | Answered by |
+|---|---|---|
+| conversation comment | `comment:<comment-id>` | a later marked agent comment in the conversation naming that id |
+| review body | `review:<review-id>` | a later marked agent review naming that id |
+| inline comment | `inline-comment:<comment-id>` | a later marked agent inline reply naming that id |
+| review thread | `review-thread:<thread-id>:<comment-id>` | a later marked agent reply in that thread naming that comment |
+
+A reply posted anywhere else answers nothing, because each source is reconciled only against replies
+on that same source. A reply *is* an answer when it is no older than the activity it names, so a human
+edit that moves an activity past the reply makes it feedback again, and a brand-new comment, review,
+reply, or thread reply is a different id that nothing has answered yet.
+
+Anchoring on an id rather than on a timestamp is the whole point. A stream-wide "latest agent reply"
+time hid real feedback: the watcher saw comment A at 10:15, a reviewer wrote comment B at 10:19 that no
+digest had ever carried, and the agent's 10:20 answer to A made B look answered — permanently, because
+nothing about a later observation would ever bring it back.
+
+A thread's token names the exact comment the digest reported rather than the thread alone, for the same
+reason: a reply that arrived beside it is a different item the watcher must still be able to surface.
+
+### The bare marker
+
+`<!-- relay-agent-reply -->`, the marker Relay wrote before it named what it answered, is still
+recognized as an agent reply — such a reply is never actionable itself. It *answers* exactly one
+thing: the inline comment GitHub itself chained it to through `in_reply_to_id`. That id is GitHub's,
+not the agent's, so it cannot silently cover a sibling comment the reply never saw.
+
+There is no equivalent for a conversation comment, a review body, or a thread reply. Nothing there
+ties a bare reply to a single activity, so accepting one would hide whatever else was written before
+it. A bare reply on those sources answers nothing and the item keeps waking the owner until an
+anchored reply lands — noisy, and the safe direction to be wrong in.
 
 ## Terminal states
 

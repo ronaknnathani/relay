@@ -14,8 +14,8 @@ Suggestion). Run independent investigations as sub-agents when available; otherw
 ## Two modes — check your input first
 
 **Delegated mode — a caller supplied a watcher worklist.** `pr-monitor` hands you items taken from a
-`relay pr watch` digest: each carries `reason`, `source`, `id`, `updatedAt`, `body`, `thread_id`,
-`path`, `line`, and for checks the `check_name` and `check_run_id`. That worklist is **complete and
+`relay pr watch` digest: each carries `reason`, `source`, `id`, `answers`, `updatedAt`, `body`,
+`thread_id`, `path`, `line`, and for checks the `check_name` and `check_run_id`. That worklist is **complete and
 authoritative**:
 
 - **Skip step 1's broad assessment.** Do not re-run the PR/comment/thread/check sweep and do not build
@@ -56,7 +56,7 @@ a `<THREAD_ID>` comes from a delegated item's `thread_id`, or from the GraphQL `
 Every reply you post to a pull request starts with these two lines, then a blank line, then the reply:
 
 ```
-<!-- relay-agent-reply -->
+<!-- relay-agent-reply answers=<item answers token> -->
 🤖 <agent> on behalf of <author>
 ```
 
@@ -65,14 +65,30 @@ runtime an agent wrote a reply. A reply without it is read as fresh human feedba
 owner again forever; the emoji line alone is not enough, because a human can type an emoji. The
 disclosure line is the human-visible half of the same promise: never write as if you were the author.
 
+**The marker must name the exact item it answers — copy the item's `answers` field verbatim.** Every
+digest item carries one, and the watcher matches replies by that id, never by time. A marker that
+names nothing (`<!-- relay-agent-reply answers= -->` or the bare marker) answers nothing on a
+conversation, a review, or a thread, so the item keeps waking the owner. A marker that names the
+wrong id answers the wrong thing — and never the one in front of you.
+
+This is not bookkeeping. A reviewer can write a second comment between the watcher's last look and
+your reply, and the watcher has never shown it to anybody: a reply anchored to the id you were given
+leaves that comment actionable, while an unanchored one buries it.
+
 **Reply on the same source you are answering.** The watcher reconciles each source independently, so
 an answer posted somewhere else does not answer anything:
 
-| Item | Reply with |
-|---|---|
-| `new-comment` | `gh pr comment` — the pull request conversation |
-| `new-review` | `gh pr review --comment` — a review, not a conversation comment |
-| `new-inline-comment` / `unresolved-thread` | the inline replies endpoint on that comment or thread |
+| Item | Reply with | Marker |
+|---|---|---|
+| `new-comment` | `gh pr comment` — the pull request conversation | `answers=comment:200` |
+| `new-review` | `gh pr review --comment` — a review, not a conversation comment | `answers=review:100` |
+| `new-inline-comment` | the inline replies endpoint on that comment | `answers=inline-comment:300` |
+| `unresolved-thread` | the inline replies endpoint on that thread | `answers=review-thread:<thread-id>:<comment-id>` |
+| `changes-requested` | `gh pr review --comment` on the review that requested them | `answers=review:100` |
+
+The ids in that column are examples; the item's own `answers` token is the truth. A thread's token
+names the exact comment the digest reported, because a new reply arriving beside it is a different
+item the watcher must still be able to surface.
 
 ## Process
 
@@ -117,7 +133,7 @@ an answer posted somewhere else does not answer anything:
    - **Author decision** (changes intended behavior, API shape, or scope; two-plus reasonable answers):
      do NOT guess. Reply asking for input, FLAG it to the author, and leave the thread open.
    - **When unsure which it is, treat it as a decision** and surface it.
-   - Every reply carries the exact `<!-- relay-agent-reply -->` marker and the visible
+   - Every reply carries the marker naming that item's `answers` token and the visible
      `🤖 <agent> on behalf of <author>` disclosure, and goes on the same source it answers.
 
 4. **Merge conflicts — research both intents, never abort.** Rebase/merge onto the base. For each
@@ -141,8 +157,9 @@ an answer posted somewhere else does not answer anything:
 - Editing a failing test instead of the code it caught — a red test means behavior changed.
 - Guessing an author-decision comment instead of replying and flagging it.
 - A reply that reads as the human author's own words, with no automated-agent disclosure.
-- A reply missing the exact `<!-- relay-agent-reply -->` marker, or posted on a different source than
-  the one it answers — either way the watcher will keep waking the owner about it.
+- A reply missing the marker, naming no `answers` token, naming an id you invented instead of the
+  item's own, or posted on a different source than the one it answers — every one of those either
+  keeps waking the owner or answers something nobody asked about.
 - Running `git rebase --abort` / `git merge --abort` instead of resolving the conflict.
 - Resolving a conflict by keeping one side without understanding why the other side exists.
 - Assuming `npm`/`make`/etc. instead of the command the repo's own config actually uses.
@@ -158,7 +175,7 @@ an answer posted somewhere else does not answer anything:
 - [ ] Direct mode captured the remote PR context locally before edits and refreshed it after each push.
 - [ ] No failure was silenced (no skipped/deleted test, no lint-suppression, no loosened assertion).
 - [ ] Every review comment is fixed+resolved, or replied+flagged as an author decision left open.
-- [ ] Every agent reply carries the exact `<!-- relay-agent-reply -->` marker and the visible disclosure, and was posted on the same source it answers.
+- [ ] Every agent reply carries the marker with that item's exact `answers` token and the visible disclosure, and was posted on the same source it answers.
 - [ ] All conflicts resolved forward (no abort), both intents researched and preserved, validation re-run after.
 - [ ] After any rebase, confirmed my branch's commits survived (still in `git log`; net diff vs base still carries my changes).
 - [ ] Findings reported with the shared severity vocabulary (Critical / Important / Suggestion).

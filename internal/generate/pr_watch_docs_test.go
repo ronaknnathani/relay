@@ -27,8 +27,9 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"do not re-derive it with your own `gh` sweep",
 				"delegated mode",
 				"One digest, one run, one exit",
-				"<!-- relay-agent-reply -->",
+				"<!-- relay-agent-reply answers=<item answers token> -->",
 				"🤖 <agent> on behalf of <author>",
+				"`answers`",
 			},
 			forbidden: []string{
 				"/loop", "/every", "nextTickAfter", "native loop", "CronCreate", "ScheduleWakeup",
@@ -36,6 +37,9 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"continuous monitoring you can't provide",
 				"relay pr watch acknowledge", "--outcome handled", "--outcome escalated",
 				"--outcome obsolete",
+				// The bare marker answers nothing on a conversation, a review,
+				// or a thread, so no skill may teach it.
+				"<!-- relay-agent-reply -->",
 			},
 		},
 		{
@@ -49,12 +53,15 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"Return a structured result, one entry per supplied item",
 				"`check_run_id`",
 				"`thread_id`",
-				"<!-- relay-agent-reply -->",
+				"<!-- relay-agent-reply answers=<item answers token> -->",
 				"🤖 <agent> on behalf of <author>",
 				"Reply on the same source you are answering",
+				"answers=comment:200",
+				"copy the item's `answers` field verbatim",
 			},
 			forbidden: []string{
 				"relay pr watch acknowledge", "relay pr watch start", "--outcome", "`acknowledge`",
+				"<!-- relay-agent-reply -->",
 			},
 		},
 		{

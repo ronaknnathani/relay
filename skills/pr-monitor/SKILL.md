@@ -48,7 +48,8 @@ actionable items, there is nothing to do — say so and stop.
 The digest is deterministic and complete; do not re-derive it with your own `gh` sweep. It carries the
 pull request state, draft flag, base and head refs and SHAs, `mergeStateStatus`, `mergeable`,
 `reviewDecision`, whether auto-merge is armed, every check with its status, conclusion, and run id, and
-every actionable item with its `source`, `id`, `updatedAt`, `body`, thread id, file, and line.
+every actionable item with its `source`, `id`, `answers` token, `updatedAt`, `body`, thread id, file,
+and line.
 
 Each item carries a `reason`:
 
@@ -82,10 +83,15 @@ else is real.
 ### 2. Delegate the real work to `pr-fix` — one writer, one call
 
 Hand `pr-fix` **one** scoped worklist as a sub-agent: the real check failures with their names and run
-ids, the comment, review, and thread items **with the bodies, ids, thread ids, files, and lines the
-digest already carries**, and any merge conflict. Tell it that it is running in **delegated mode**: the
-worklist is complete, it must not re-fetch the broad pull request context and must not loop, and it
-must return a structured per-item result.
+ids, the comment, review, and thread items **with the bodies, ids, `answers` tokens, thread ids, files,
+and lines the digest already carries**, and any merge conflict. Tell it that it is running in
+**delegated mode**: the worklist is complete, it must not re-fetch the broad pull request context and
+must not loop, and it must return a structured per-item result.
+
+Pass each item's `answers` token through verbatim and require every reply to carry it in its marker.
+That token is how the watcher knows which single piece of feedback was answered; without it, a reply
+either answers nothing or — worse, if the watcher went back to matching on time — buries a comment
+written after the observation you are acting on and shown to nobody.
 
 Never run two writers on one branch: exactly one `pr-fix` call per run, and never hand it an infra
 flake.
@@ -144,9 +150,10 @@ that project's Relay identity; if it refuses, say so and keep using this skill b
 - **Approval is the only merge path.** Never self-approve, never `gh pr merge` to merge now, never
   dismiss a review to unblock. Auto-merge fires on a genuine human code-owner approval.
 - **Never impersonate, and always mark.** Every automated reply — yours or `pr-fix`'s — opens with the
-  exact hidden marker `<!-- relay-agent-reply -->` on its own line, then the visible
-  `🤖 <agent> on behalf of <author>` disclosure. The marker is the only thing that tells the watcher an
-  agent replied; a reply without it is read as new human feedback forever. Reply on the **same source**
+  exact hidden marker `<!-- relay-agent-reply answers=<item answers token> -->` on its own
+  line, then the visible `🤖 <agent> on behalf of <author>` disclosure. The marker is the only thing
+  that tells the watcher an agent replied, and the token is the only thing that tells it *what* was
+  answered; a reply without either is read as new human feedback forever. Reply on the **same source**
   you are answering: a conversation comment with `gh pr comment`, a review body with
   `gh pr review --comment`, an inline comment or thread with the inline replies endpoint.
 - **Never silence a failure** (enforced inside `pr-fix`).
@@ -159,6 +166,7 @@ that project's Relay identity; if it refuses, say so and keep using this skill b
 - Reporting work as done on `pr-fix`'s word instead of on the re-observation.
 - Handing `pr-fix` an infra flake, or rerunning a check it is already fixing.
 - Two sub-agents pushing the same branch in one run.
+- Letting a reply go out without the item's exact `answers` token, or with an id you made up.
 - Scheduling a follow-up tick, recording a next-tick time, or starting a loop.
 - Arming auto-merge on a pull request that is not based on the default branch.
 
@@ -166,7 +174,7 @@ that project's Relay identity; if it refuses, say so and keep using this skill b
 
 - [ ] Read exactly one digest — by fingerprint from the wake, or from a fresh `tick`.
 - [ ] Every `failing-check` was classified flake vs real before anything was delegated or rerun.
-- [ ] Real failures, comments, threads, and conflicts went to a single delegated `pr-fix` call carrying their bodies and ids.
+- [ ] Real failures, comments, threads, and conflicts went to a single delegated `pr-fix` call carrying their bodies, ids, and `answers` tokens.
 - [ ] Flake reruns, the stale rebase, and auto-merge re-arming happened here, after `pr-fix` returned.
 - [ ] One `relay pr watch tick` ran and every claim of "resolved" is backed by an item it no longer reports.
 - [ ] The outcome was reported and the run exited without scheduling anything.
