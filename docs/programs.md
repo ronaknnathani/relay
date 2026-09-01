@@ -812,11 +812,11 @@ The program moves to `~/.relay/programs/archived/`.
 
 ## Existing limitations in V1.1
 
-- No always-running controller or daemon.
-- No automatic GitHub comment, review, CI, approval, or merge polling. Pull request lifecycle state is
-  read on demand for recorded pull requests only.
+- No always-running program controller or daemon.
+- The program tick performs no GitHub comment, review, CI, approval, or merge polling of its own. It
+  reads pull request lifecycle state on demand for recorded pull requests only; per-project pull
+  request observation belongs to the `relay pr watch` runtime.
 - No managed program or managed child session without Herdr.
-- No automatic managed `pr-monitor` wakeups.
 - No worker-to-worker direct messaging or agent meetings.
 - No Beads or Dolt integration.
 - No scheduled or standing QA agent.
@@ -835,12 +835,11 @@ optionally wrap it in a background process. The controller will:
 
 - Wake work-item owners without depending on conversational session continuity.
 - Add branch/process leases.
-- Detect changed GitHub state and invoke one bounded managed `pr-monitor` tick.
-- Acknowledge GitHub watermarks only after successful worker coverage.
 - Recover after crashes without creating two branch writers.
 
-Standalone `pr-monitor` keeps its native loop. Managed programs use controller-owned tick scheduling;
-exactly one scheduler owns each pull request.
+Per-project pull request attention already works this way: `relay pr watch --mode managed` observes a
+worker's pull request, wakes that exact worker pane, and acknowledges its GitHub watermarks only after
+the worker covered the digest. Exactly one watcher owns each pull request.
 
 ### V3: explicit QA missions
 

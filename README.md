@@ -74,7 +74,8 @@ read and update (so they never hand-edit JSON) — and the **`relay generate`** 
 the agent-neutral skill source into per-agent packages.
 
 See [Relay Programs](docs/programs.md) for the V1 architecture, deferred roadmap, and complete usage
-guide.
+guide, and [Relay PR Watch](docs/pr-watch.md) for the pull request watcher's commands, cadence, owner
+routing, and runtime layout.
 
 ## Install
 
