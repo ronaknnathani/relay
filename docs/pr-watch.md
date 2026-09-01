@@ -23,6 +23,12 @@ labelled `relay-pr-watch:<project-slug>` and the watcher wakes a live pane. `sta
 `tick` performs a fresh observation and records its digest without touching the watcher's schedule, so
 it is safe to run beside a running watcher.
 
+Every observation is read-only and complete. Conversation comments, review bodies, and inline comments
+are read through `gh api --paginate`; review threads and the newest commit's check contexts through
+paginated GraphQL connections. A check list that GitHub still reports another page for is an
+observation error, never a shorter list quietly accepted — a truncated check list is
+indistinguishable from a green pull request.
+
 ## Owner routing
 
 | Mode | Who is woken |

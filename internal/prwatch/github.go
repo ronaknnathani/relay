@@ -41,6 +41,10 @@ const (
 	// not fetched.
 	reviewThreadCommentPage = 100
 	reviewThreadPage        = 50
+	// checkContextPage is the GraphQL page size for a commit's check contexts.
+	// It is the API maximum, so a pull request with a normal number of checks
+	// costs exactly one request.
+	checkContextPage = 100
 )
 
 // NewCLIRunner returns a Runner backed by the installed gh binary. Each command
@@ -162,12 +166,17 @@ func (c *Client) Observe(ctx context.Context, number int) (Observation, error) {
 	if !found {
 		return Observation{}, fmt.Errorf("parse GitHub repository %q: want owner/name", repo)
 	}
-	pr, checks, err := c.pullRequest(ctx, number)
+	pr, err := c.pullRequest(ctx, number)
 	if err != nil {
 		return Observation{}, err
 	}
 	pr.Repo = repo
 	pr.DefaultBranch = defaultBranch
+
+	checks, err := c.checks(ctx, owner, name, number)
+	if err != nil {
+		return Observation{}, err
+	}
 
 	comments, err := c.restActivities(
 		ctx, fmt.Sprintf("repos/%s/%s/issues/%d/comments", owner, name, number),
@@ -221,11 +230,15 @@ func (c *Client) repo(ctx context.Context) (string, string, error) {
 	return response.NameWithOwner, response.DefaultBranchRef.Name, nil
 }
 
+// pullRequestFields deliberately excludes statusCheckRollup. `gh pr view`
+// returns only the first page of a commit's check contexts with no way to see
+// that more exist, so a pull request with many required checks silently loses
+// the rest — including failing ones. Checks are read through their own
+// paginated connection instead.
 const pullRequestFields = "number,url,title,state,isDraft,baseRefName,baseRefOid," +
-	"headRefName,headRefOid,mergeStateStatus,mergeable,reviewDecision,autoMergeRequest," +
-	"author,statusCheckRollup"
+	"headRefName,headRefOid,mergeStateStatus,mergeable,reviewDecision,autoMergeRequest,author"
 
-func (c *Client) pullRequest(ctx context.Context, number int) (PullRequest, []Check, error) {
+func (c *Client) pullRequest(ctx context.Context, number int) (PullRequest, error) {
 	var response struct {
 		Number           int    `json:"number"`
 		URL              string `json:"url"`
@@ -246,22 +259,13 @@ func (c *Client) pullRequest(ctx context.Context, number int) (PullRequest, []Ch
 			Login string `json:"login"`
 			IsBot bool   `json:"is_bot"`
 		} `json:"author"`
-		StatusCheckRollup []struct {
-			Name       string `json:"name"`
-			Context    string `json:"context"`
-			Status     string `json:"status"`
-			State      string `json:"state"`
-			Conclusion string `json:"conclusion"`
-			DetailsURL string `json:"detailsUrl"`
-			TargetURL  string `json:"targetUrl"`
-		} `json:"statusCheckRollup"`
 	}
 	output, err := c.run(ctx, "pr", "view", strconv.Itoa(number), "--json", pullRequestFields)
 	if err != nil {
-		return PullRequest{}, nil, err
+		return PullRequest{}, err
 	}
 	if err := json.Unmarshal(output, &response); err != nil {
-		return PullRequest{}, nil, fmt.Errorf("parse gh pr view JSON for pull request %d: %w", number, err)
+		return PullRequest{}, fmt.Errorf("parse gh pr view JSON for pull request %d: %w", number, err)
 	}
 	pr := PullRequest{
 		Number:           response.Number,
@@ -279,18 +283,119 @@ func (c *Client) pullRequest(ctx context.Context, number int) (PullRequest, []Ch
 		AutoMerge:        response.AutoMergeRequest != nil,
 		Author:           response.Author.Login,
 	}
-	checks := make([]Check, 0, len(response.StatusCheckRollup))
-	for _, raw := range response.StatusCheckRollup {
-		check := Check{
-			Name:       firstNonEmpty(raw.Name, raw.Context),
-			Status:     strings.ToUpper(firstNonEmpty(raw.Status, raw.State)),
-			Conclusion: strings.ToUpper(firstNonEmpty(raw.Conclusion, raw.State)),
-			DetailsURL: firstNonEmpty(raw.DetailsURL, raw.TargetURL),
-		}
-		check.RunID = actionsRunID(check.DetailsURL)
-		checks = append(checks, check)
+	return pr, nil
+}
+
+// checkQuery reads every check context on the pull request's newest commit
+// through its own connection, so `gh api graphql --paginate` follows the cursor
+// until GitHub reports no further page.
+const checkQuery = `query($owner:String!,$repo:String!,$number:Int!,$endCursor:String){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      statusCheckRollup: commits(last:1){
+        nodes{
+          commit{
+            oid
+            statusCheckRollup{
+              contexts(first:%d, after:$endCursor){
+                pageInfo{hasNextPage endCursor}
+                nodes{
+                  __typename
+                  ... on CheckRun{name status conclusion detailsUrl}
+                  ... on StatusContext{context state targetUrl}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+// checkPageResponse is one page of the check-context GraphQL query.
+type checkPageResponse struct {
+	Data struct {
+		Repository struct {
+			PullRequest struct {
+				StatusCheckRollup struct {
+					Nodes []struct {
+						Commit struct {
+							OID               string `json:"oid"`
+							StatusCheckRollup *struct {
+								Contexts struct {
+									PageInfo struct {
+										HasNextPage bool   `json:"hasNextPage"`
+										EndCursor   string `json:"endCursor"`
+									} `json:"pageInfo"`
+									Nodes []struct {
+										TypeName   string `json:"__typename"`
+										Name       string `json:"name"`
+										Context    string `json:"context"`
+										Status     string `json:"status"`
+										State      string `json:"state"`
+										Conclusion string `json:"conclusion"`
+										DetailsURL string `json:"detailsUrl"`
+										TargetURL  string `json:"targetUrl"`
+									} `json:"nodes"`
+								} `json:"contexts"`
+							} `json:"statusCheckRollup"`
+						} `json:"commit"`
+					} `json:"nodes"`
+				} `json:"statusCheckRollup"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	} `json:"data"`
+}
+
+func (c *Client) checks(ctx context.Context, owner, repo string, number int) ([]Check, error) {
+	query := fmt.Sprintf(checkQuery, checkContextPage)
+	output, err := c.run(
+		ctx, "api", "graphql", "--paginate",
+		"-F", "owner="+owner,
+		"-F", "repo="+repo,
+		"-F", "number="+strconv.Itoa(number),
+		"-f", "query="+query,
+	)
+	if err != nil {
+		return nil, err
 	}
-	return pr, checks, nil
+	pages, err := decodeJSONStream[checkPageResponse](output)
+	if err != nil {
+		return nil, fmt.Errorf("parse gh api graphql checks JSON: %w", err)
+	}
+	var checks []Check
+	truncated := false
+	for _, page := range pages {
+		for _, node := range page.Data.Repository.PullRequest.StatusCheckRollup.Nodes {
+			rollup := node.Commit.StatusCheckRollup
+			if rollup == nil {
+				continue
+			}
+			truncated = rollup.Contexts.PageInfo.HasNextPage
+			for _, context := range rollup.Contexts.Nodes {
+				check := Check{
+					Name:       firstNonEmpty(context.Name, context.Context),
+					Status:     strings.ToUpper(firstNonEmpty(context.Status, context.State)),
+					Conclusion: strings.ToUpper(firstNonEmpty(context.Conclusion, context.State)),
+					DetailsURL: firstNonEmpty(context.DetailsURL, context.TargetURL),
+				}
+				check.RunID = actionsRunID(check.DetailsURL)
+				checks = append(checks, check)
+			}
+		}
+	}
+	// The last page still promising another one means pagination stopped early.
+	// A short check list is indistinguishable from a green pull request, so this
+	// is an observation error rather than a quieter answer.
+	if truncated {
+		return nil, fmt.Errorf(
+			"gh api graphql returned a truncated check list for pull request %d: "+
+				"%d contexts read and GitHub still reports another page",
+			number, len(checks),
+		)
+	}
+	return checks, nil
 }
 
 var actionsRunPattern = regexp.MustCompile(`/actions/runs/(\d+)`)

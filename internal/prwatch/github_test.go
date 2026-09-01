@@ -3,6 +3,7 @@ package prwatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -50,7 +51,12 @@ func fakeKey(args []string) string {
 	case len(args) >= 2 && args[0] == "pr" && args[1] == "view":
 		return "pr view"
 	case len(args) >= 2 && args[0] == "api" && args[1] == "graphql":
-		return "graphql"
+		for _, arg := range args {
+			if strings.Contains(arg, "statusCheckRollup") {
+				return "graphql checks"
+			}
+		}
+		return "graphql reviewThreads"
 	case len(args) >= 2 && args[0] == "api":
 		return "api " + args[1]
 	}
@@ -81,16 +87,25 @@ const prViewFixture = `{
   "mergeable": "MERGEABLE",
   "reviewDecision": "CHANGES_REQUESTED",
   "autoMergeRequest": null,
-  "author": {"login": "author-human", "is_bot": false},
-  "statusCheckRollup": [
-    {"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"FAILURE",
-     "detailsUrl":"https://github.com/acme/widgets/actions/runs/987654/job/12"},
-    {"__typename":"CheckRun","name":"lint","status":"IN_PROGRESS","conclusion":"",
-     "detailsUrl":"https://github.com/acme/widgets/actions/runs/987655/job/13"},
-    {"__typename":"StatusContext","context":"legacy/ci","state":"SUCCESS",
-     "targetUrl":"https://ci.example.com/build/1"}
-  ]
+  "author": {"login": "author-human", "is_bot": false}
 }`
+
+// Two concatenated GraphQL pages of check contexts, exactly as
+// `gh api graphql --paginate` emits them.
+const checksFixture = `{"data":{"repository":{"pullRequest":{"statusCheckRollup":{"nodes":[{"commit":{
+  "statusCheckRollup":{"contexts":{
+    "pageInfo":{"hasNextPage":true,"endCursor":"c1"},
+    "nodes":[
+      {"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"FAILURE",
+       "detailsUrl":"https://github.com/acme/widgets/actions/runs/987654/job/12"},
+      {"__typename":"CheckRun","name":"lint","status":"IN_PROGRESS","conclusion":"",
+       "detailsUrl":"https://github.com/acme/widgets/actions/runs/987655/job/13"}]}}}}]}}}}}
+{"data":{"repository":{"pullRequest":{"statusCheckRollup":{"nodes":[{"commit":{
+  "statusCheckRollup":{"contexts":{
+    "pageInfo":{"hasNextPage":false,"endCursor":"c2"},
+    "nodes":[
+      {"__typename":"StatusContext","context":"legacy/ci","state":"SUCCESS",
+       "targetUrl":"https://ci.example.com/build/1"}]}}}}]}}}}}`
 
 // Two concatenated pages, exactly as `gh api --paginate` emits them.
 const issueCommentsFixture = `[
@@ -142,7 +157,8 @@ func fullFixtureGH() *fakeGH {
 	gh.responses["api repos/acme/widgets/issues/42/comments"] = issueCommentsFixture
 	gh.responses["api repos/acme/widgets/pulls/42/reviews"] = reviewsFixture
 	gh.responses["api repos/acme/widgets/pulls/42/comments"] = inlineCommentsFixture
-	gh.responses["graphql"] = reviewThreadsFixture
+	gh.responses["graphql reviewThreads"] = reviewThreadsFixture
+	gh.responses["graphql checks"] = checksFixture
 	return gh
 }
 
@@ -278,5 +294,81 @@ func TestIsBotIdentity(t *testing.T) {
 		if got := isBotIdentity(test.login, test.accountType); got != test.want {
 			t.Errorf("isBotIdentity(%q, %q) = %t, want %t", test.login, test.accountType, got, test.want)
 		}
+	}
+}
+
+// checkPage renders one GraphQL page of check contexts.
+func checkPage(names []string, hasNextPage bool, cursor string) string {
+	nodes := make([]string, 0, len(names))
+	for _, name := range names {
+		nodes = append(nodes, fmt.Sprintf(
+			`{"__typename":"CheckRun","name":%q,"status":"COMPLETED","conclusion":"SUCCESS",`+
+				`"detailsUrl":"https://github.com/acme/widgets/actions/runs/1/job/1"}`, name))
+	}
+	return fmt.Sprintf(
+		`{"data":{"repository":{"pullRequest":{"statusCheckRollup":{"nodes":[{"commit":{`+
+			`"statusCheckRollup":{"contexts":{"pageInfo":{"hasNextPage":%t,"endCursor":%q},`+
+			`"nodes":[%s]}}}}]}}}}}`,
+		hasNextPage, cursor, strings.Join(nodes, ","))
+}
+
+// A pull request with more required checks than one GraphQL page holds must be
+// observed completely: a truncated list silently hides failing checks, and the
+// watcher would report a red pull request as quiet.
+func TestObserveReadsEveryPageOfChecks(t *testing.T) {
+	first := make([]string, 100)
+	for i := range first {
+		first[i] = fmt.Sprintf("check-%03d", i)
+	}
+	second := []string{"check-100", "check-101", "check-102"}
+
+	gh := fullFixtureGH()
+	gh.responses["graphql checks"] = checkPage(first, true, "cursor-1") + "\n" +
+		checkPage(second, false, "cursor-2")
+
+	observation, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if len(observation.Checks) != len(first)+len(second) {
+		t.Fatalf("checks = %d, want %d across both pages",
+			len(observation.Checks), len(first)+len(second))
+	}
+	if observation.Checks[0].Name != "check-000" ||
+		observation.Checks[len(observation.Checks)-1].Name != "check-102" {
+		t.Errorf("checks = %+v ... %+v, want both pages in order",
+			observation.Checks[0], observation.Checks[len(observation.Checks)-1])
+	}
+	if !strings.Contains(strings.Join(gh.calls, " "), "graphql checks") {
+		t.Errorf("gh calls = %v, want the paginated check query", gh.calls)
+	}
+}
+
+// A last page that still reports another page means pagination stopped early.
+// That is an observation error, never a shorter list quietly accepted.
+func TestObserveRejectsATruncatedCheckList(t *testing.T) {
+	gh := fullFixtureGH()
+	gh.responses["graphql checks"] = checkPage([]string{"build"}, true, "cursor-1")
+
+	_, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+	if err == nil {
+		t.Fatal("Observe = nil error, want a truncated check list reported")
+	}
+	if !strings.Contains(err.Error(), "truncated") {
+		t.Errorf("error %q does not name the truncation", err)
+	}
+}
+
+func TestObserveAcceptsAPullRequestWithNoChecks(t *testing.T) {
+	gh := fullFixtureGH()
+	gh.responses["graphql checks"] =
+		`{"data":{"repository":{"pullRequest":{"statusCheckRollup":{"nodes":[{"commit":{}}]}}}}}`
+
+	observation, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if len(observation.Checks) != 0 {
+		t.Errorf("checks = %+v, want none", observation.Checks)
 	}
 }
