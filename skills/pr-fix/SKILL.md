@@ -1,6 +1,6 @@
 ---
 name: pr-fix
-description: Bring a PR to mergeable — fix CI failures, address review comments, and resolve merge conflicts, looping until checks are green and every comment is handled. Use after opening a PR when CI is red, reviewers have left comments, or the branch conflicts with its base.
+description: Bring a PR to mergeable — fix CI failures, address review comments, and resolve merge conflicts. Runs either from a supplied watcher worklist (delegated mode, one pass) or from its own assessment (direct mode, looping until clear). Use after opening a PR when CI is red, reviewers have left comments, or the branch conflicts with its base.
 ---
 
 # PR Fix
@@ -10,6 +10,29 @@ replied-and-flagged, and no merge conflicts with the base. Work the three
 fronts — CI, comments, conflicts — and loop until all are clear. Fix root causes, never silence
 failures or guess an author's intent. Use `review`'s shared severity vocabulary (Critical / Important /
 Suggestion). Run independent investigations as sub-agents when available; otherwise do them inline.
+
+## Two modes — check your input first
+
+**Delegated mode — a caller supplied a watcher worklist.** `pr-monitor` hands you items taken from a
+`relay pr watch` digest: each carries `reason`, `source`, `id`, `updatedAt`, `body`, `thread_id`,
+`path`, `line`, and for checks the `check_name` and `check_run_id`. That worklist is **complete and
+authoritative**:
+
+- **Skip step 1's broad assessment.** Do not re-run the PR/comment/thread/check sweep and do not build
+  a full context bundle — the watcher already observed all of it. Bind `REPO` and `PR` and go straight
+  to the work.
+- Fetch only what the specific item needs: the failed run's log for a `check_run_id`, `git log`/`git
+  blame` for a conflicting hunk, the file under an inline comment.
+- **Fix once, then return** — no reassessment loop. The watcher re-observes after your push, and the
+  next attention event carries whatever is left.
+- **Return a structured result, one entry per supplied item:** the item id, what you did, `fixed`,
+  `replied`, `escalated`, or `failed`, and the reason when it is not `fixed`. Report pushed commits and
+  the new head SHA.
+- **Never** run `relay pr watch tick`, `acknowledge`, or `status`, and never schedule anything. The
+  caller owns the watcher record.
+
+**Direct mode — no worklist was supplied.** Assess the PR yourself and loop until clear, exactly as
+described below. This is the manual path and it is unchanged.
 
 ## Quick commands
 
@@ -22,12 +45,14 @@ Suggestion). Run independent investigations as sub-agents when available; otherw
 | Reply to a comment | `gh api "repos/$REPO/pulls/comments/<ID>/replies" -f body="..."` |
 | Resolve a thread (after fixing) | `gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -F t=<THREAD_ID>` |
 
-`<RUN_ID>` comes from `gh pr checks` / `statusCheckRollup`; a `<THREAD_ID>` comes from the GraphQL
-`reviewThreads` query. `gh` has no native thread-resolve — resolving requires the GraphQL mutation above.
+`<RUN_ID>` comes from a delegated item's `check_run_id`, or from `gh pr checks` / `statusCheckRollup`;
+a `<THREAD_ID>` comes from a delegated item's `thread_id`, or from the GraphQL `reviewThreads` query.
+`gh` has no native thread-resolve — resolving requires the GraphQL mutation above.
 
 ## Process
 
-1. **Assess.** `REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)`,
+1. **Assess.** *(Direct mode only — delegated mode skips this entirely and uses the supplied
+   worklist.)* `REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)`,
    `PR=$(gh pr view --json number --jq .number)`. Pull check status, the comment list, and `mergeable`.
    Triage into the three fronts below. Detect the repo's OWN build/test/lint commands from its
    `Makefile`, `package.json` scripts, or CI config (`.github/workflows/*`) — never assume a toolchain.
@@ -77,9 +102,11 @@ Suggestion). Run independent investigations as sub-agents when available; otherw
    still in `git log` and the net diff against the base still contains your intended changes; a
    resolve-forward can silently drop a hunk even when validation passes.
 
-5. **Loop until clear.** Commit and push fixes, then re-assess (step 1). Repeat until CI is green and
-   every comment is addressed — fixed+resolved, or replied+flagged. Surface the flagged decisions to
-   the caller as the remaining blockers.
+5. **Loop until clear.** *(Direct mode only.)* Commit and push fixes, then re-assess (step 1). Repeat
+   until CI is green and every comment is addressed — fixed+resolved, or replied+flagged. Surface the
+   flagged decisions to the caller as the remaining blockers. **In delegated mode, stop after one
+   pass** and return the per-item result instead; the watcher re-observes and the caller decides what
+   happens next.
 
 ## Red flags
 
@@ -92,12 +119,15 @@ Suggestion). Run independent investigations as sub-agents when available; otherw
 - Resolving a conflict by keeping one side without understanding why the other side exists.
 - Assuming `npm`/`make`/etc. instead of the command the repo's own config actually uses.
 - Fixing from transient terminal output instead of a local PR context bundle that can be re-read and
-  refreshed.
+  refreshed. *(Direct mode; in delegated mode the supplied worklist is that record.)*
+- Re-fetching the whole PR context, or looping, when a delegated worklist was supplied.
+- Touching the watcher record — `relay pr watch tick`, `acknowledge`, or `status` belong to the caller.
 
 ## Verification checklist
 
-- [ ] `gh pr checks` is fully green; each fix reproduced a local red loop and has a red-before/green-after regression test.
-- [ ] Remote PR context was captured locally before edits and refreshed after each push.
+- [ ] In delegated mode: every supplied item has a returned outcome, no broad re-fetch or reassessment loop ran, and the watcher record was left untouched.
+- [ ] In direct mode: `gh pr checks` is fully green; each fix reproduced a local red loop and has a red-before/green-after regression test.
+- [ ] Direct mode captured the remote PR context locally before edits and refreshed it after each push.
 - [ ] No failure was silenced (no skipped/deleted test, no lint-suppression, no loosened assertion).
 - [ ] Every review comment is fixed+resolved, or replied+flagged as an author decision left open.
 - [ ] Every agent reply discloses it is automated and does not impersonate the author.

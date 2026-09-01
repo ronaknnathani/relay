@@ -21,9 +21,9 @@ decision — route it back so the fix is implemented as stated and confirmed.
 ## 3. Detection must be complete — PR-level feedback, inline threads, AND new replies
 Detection completeness — PR conversation comments, PR-level review bodies, inline threads, AND new
 replies on already-answered threads, keyed by source + `id + updatedAt` (not "top-level & unreplied") —
-is owned by `pr-monitor`'s detect step; the orchestrator never re-implements it. The orchestrator's
-only residual duty is the cross-PR funnel in #2: every surfaced human comment lands as a tracked
-pending decision, none silently lost.
+is owned by the `relay pr watch` runtime, whose digest `pr-monitor` reads; neither the orchestrator nor
+`pr-monitor` re-implements it. The orchestrator's only residual duty is the cross-PR funnel in #2:
+every surfaced human comment lands as a tracked pending decision, none silently lost.
 
 ## 4. Inspect before any destructive action
 Never delete, dismiss, overwrite, or force-replace something you did not create — a review, a
@@ -41,7 +41,7 @@ only.
   targeting another feature branch — that collapses the stack).
 - Auto-merge fires on a **genuine human code-owner approval**. The agent never approves, never
   `gh pr merge` to merge-now, never dismisses a changes-requested review to unblock itself.
-- **Re-verify and re-arm auto-merge every tick** — it can turn OFF after force-pushes and after a
+- **Re-verify and re-arm auto-merge on every attention event** — it can turn OFF after force-pushes and after a
   CHANGES_REQUESTED→APPROVED transition. When a **merge queue** owns the strategy,
   `gh pr merge --auto --squash` is rejected; use `gh pr merge --auto` (no method flag). "Already
   queued to merge" means it's armed and the queue owns it — that's success, not an error.
@@ -86,11 +86,11 @@ instead of improvising.
 
 ## 14. Preserve native harness quality; fallback honestly
 Detect and record runtime capabilities in `state.json`. Set `/goal` to the user's requested outcome
-in every harness. If `/loop` or an approved scheduler exists, use it; never downgrade a native
-harness to a fallback because another runtime lacks that primitive. If neither exists, use
-**monitor-tick mode** automatically on normal resume/invocation of an active stack: run one tick,
-write `nextTickAfter`, report the outcome, and stop. Do not require the author to type a special mode
-prompt, and do not claim continuous monitoring unless a real approved loop/scheduler is running.
+in every harness; never downgrade a native harness to a fallback because another runtime lacks that
+primitive. Front-PR coverage never depends on a harness primitive: `relay pr watch` observes the front
+PR on its own backoff and wakes this session, and each wake is one `pr-monitor` run. On resume, make
+sure exactly one watcher is running for the current front project and handle any digest it already
+recorded, without requiring the author to type a special mode prompt.
 
 ## Subagent prompt hygiene (orchestrator responsibility)
 Every delegated prompt must: (a) name the exact worktree/branch and forbid touching others;

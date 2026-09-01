@@ -23,12 +23,16 @@ with a confidence gate), `validate` (the repo's quality gates, goal-backward), `
 `open-pr` (commit → PR in your conventions), `pr-fix` (CI, comments, conflicts).
 
 **Workflow skills** compose them. `deliver-pr` is a resume-first router that drives one scoped change
-through the foundation pipeline, one phase per sub-agent, to an open PR. `pr-monitor` watches one open
-PR to merged, delegating real failures, review comments, and conflicts to `pr-fix`.
+through the foundation pipeline, one phase per sub-agent, to an open PR, then hands that PR to the
+watcher. `relay pr watch` is the deterministic runtime that observes one project's PR on a 15/30/60
+minute backoff, records an immutable digest of what needs attention, and wakes that project's exact
+live session. Each wake is one `pr-monitor` run: it reads the digest, delegates the real failures,
+review comments, and conflicts to `pr-fix`, acknowledges what it covered, and exits.
 
 **Orchestration** is the third layer. The `stack-ship` skill turns a goal into an interface-first tree
-of small PRs, builds each with `deliver-pr`, monitors the front PR with `pr-monitor`, and advances the
-stack in order — stopping when every PR is merged and never merging without human approval.
+of small PRs, builds each with `deliver-pr`, watches the front PR with a stack-mode watcher that wakes
+the orchestrator, and advances the stack in order — stopping when every PR is merged and never merging
+without human approval.
 
 **Programs** add a governance layer above projects. A re-enterable tech lead session turns a CEO-approved
 goal and architecture into dependency-aware senior-engineer assignments. Each assignment runs as a

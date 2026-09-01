@@ -21,18 +21,18 @@ The [guardrails](references/guardrails.md) are non-negotiable — **read them be
 You (orchestrator) turn a goal into an **acceptance-criteria list** and a **stacked PR plan**
 (`api → utils → stitch`, smallest single-intent PRs). You spawn a **`deliver-pr` sub-agent** per PR to
 run the full single-PR pipeline and open the PR. You drive whichever PR currently sits on `master` (the
-front of the stack) to merged with the **`pr-monitor`** skill — a native `/loop` when available, else
-one tick per resume — and add only the stack-specific front-advance and cascade. You never write code,
-never post in your own voice, never
+front of the stack) to merged by pointing the **`relay pr watch`** runtime at it with yourself as the
+owner and running **`pr-monitor`** once for each digest it wakes you with, and you add only the
+stack-specific front-advance and cascade. You never write code, never post in your own voice, never
 approve, never make author-owned design decisions, and never install unreviewed tooling — you route
 work and surface questions. You stop when every acceptance criterion is met and every PR is merged.
 
 ## When to use / not use
 
 - **Use** for a multi-PR feature with a clear goal and a discoverable current→desired delta.
-- **Use again / resume** for an active stacked delivery run. If a native loop is unavailable, the
-  skill automatically reconstructs state and runs one monitor tick for the current front PR — the
-  author should not have to type a special "monitor-tick mode" prompt.
+- **Use again / resume** for an active stacked delivery run. On resume, reconstruct state, make sure
+  exactly one watcher is running for the current front project, and handle any digest it already
+  recorded — the author should not have to type a special "monitor-tick mode" prompt.
 - **Don't use** for a single small change (just do it), or when the goal/delta is too vague to write
   acceptance criteria — first run `brainstorming` / ask the author to sharpen the goal.
 
@@ -69,9 +69,10 @@ work and surface questions. You stop when every acceptance criterion is met and 
    `/goal <the user's requested outcome>` using the original task, not instructions to run the
    stack-ship workflow. Relay project artifacts and `relay state` remain the durable source of truth
    for executing and resuming the workflow. Never replace this native goal with the file-only
-   fallback. Detect recurring-run capabilities once and record them in `state.json`. If `/loop` or an
-   approved scheduler exists, use it. Otherwise use monitor-tick mode automatically on resume and be
-   honest that coverage is tick-based, not continuous.
+   fallback. Detect recurring-run capabilities once and record them in `state.json`. Front-PR coverage
+   does not depend on them: `relay pr watch` observes the front PR and wakes you, so a `/loop` or an
+   approved scheduler is only ever a convenience for your own orchestration, never the thing that
+   watches the PR.
 
 ## Workflow
 
@@ -103,14 +104,22 @@ worktrees); pipeline dependent ones (the API surface must land before consumers 
 pending-decisions table + the author and pause that PR only.
 
 ### Phase 2 — Monitor the front PR  →  [references/monitor-loop.md](references/monitor-loop.md)
-The PR currently based on `master` (the front of the stack) is driven to merged by the **`pr-monitor`**
-skill — it owns the tick routine (detect → delegate remediation to `pr-fix` → reconcile → re-arm
-auto-merge → stop at merge), in native-loop mode or one tick per resume. Run exactly one `pr-monitor`
-against the front PR at a time; never monitor a non-front PR as a merge candidate (it can't merge yet).
+The PR currently based on `master` (the front of the stack) is watched by the **`relay pr watch`**
+runtime, started by *you* for the front project and pointed at *your* session:
+
+```bash
+relay pr watch start <front-project-slug> --mode stack --owner <stack-orchestrator-slug>
+```
+
+The watcher observes deterministically and wakes you when the front PR needs attention; you then run
+the **`pr-monitor`** skill once for that digest (it triages, delegates remediation to `pr-fix`,
+re-arms auto-merge, and acknowledges). Exactly one watcher per front PR, and never a watcher on a
+non-front PR — it cannot merge yet, so no wake would be actionable.
 
 You add only the two **stack-specific** parts `pr-monitor` deliberately leaves out:
-- **Front-advance:** when the front PR merges, explicitly rebase/retarget the next PR onto `master`,
-  verify descendant base refs did not collapse, then point `pr-monitor` at the new front PR.
+- **Front-advance:** when the front PR merges, stop that watcher, explicitly rebase/retarget the next
+  PR onto `master`, verify descendant base refs did not collapse, then start a watcher for the new
+  front project with the same `--mode stack --owner` flags.
 - **Cascade:** after any content change to a PR that has descendants, rebase each descendant
   (`git rebase --onto <new-tip> <old-tip> <descendant>`), build+test, force-push, and verify base refs.
 
@@ -120,7 +129,8 @@ Author decisions that `pr-fix` surfaces are routed to the pending-decisions tabl
 ### Phase 3 — Converge & stop
 When **all acceptance criteria in `goal.md` are checked** and **all PRs are merged**, run a final
 verification subagent to confirm the delta is closed, then **STOP**: write `progress.md` →
-"goal delivered — STOPPED", tear down the native loop or mark monitor-tick mode stopped, and report.
+"goal delivered — STOPPED", stop any watcher you started (`relay pr watch stop <project>`), tear down
+the native loop if you used one, and report.
 **Do not start the next design slice** or invent scope — newly discovered work goes to
 `follow-ups.md`, not into this run.
 

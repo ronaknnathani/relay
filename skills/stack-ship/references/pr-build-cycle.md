@@ -39,6 +39,9 @@ from touching any other worktree. Serialize all writes to a given branch (guardr
 `deliver-pr` ends at an open PR. For the stack:
 
 - The PR's **base** is its parent branch (or `master` if it is the front PR).
+- A `deliver-pr` sub-agent does **not** start a PR watcher here: the surrounding pane is the
+  orchestrator's, so its owner validation fails by design. You start the watcher for the front project
+  yourself — see [monitor-loop.md](monitor-loop.md).
 - Arm auto-merge **only** when the base is `master` — never on a PR based on another feature branch
   (that collapses the stack). `pr-monitor` enforces this; see [guardrails.md](guardrails.md) #6.
 - Commit messages: `type(scope): imperative` + the author's co-author trailer; the PR body is prose

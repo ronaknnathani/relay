@@ -83,13 +83,9 @@ func TestCopilotPackageInvariants(t *testing.T) {
 
 	prMonitor := readFile(t, filepath.Join(out, "skills", "pr-monitor", "SKILL.md"))
 	for _, snippet := range []string{
-		"/every",
-		"~10–15 min cadence",
-		"Keep exactly **one**",
-		"healthy loop per PR; restart it if it dies; record the loop id in the run's state",
-		"only done — when the PR is **merged**",
-		"each resume/invocation runs exactly **one** tick",
-		"records `nextTickAfter`",
+		`relay pr watch digest "$SLUG" --fingerprint "$FP" --json`,
+		`relay pr watch tick "$SLUG" --json`,
+		"One digest, one run, one exit",
 	} {
 		if !strings.Contains(prMonitor, snippet) {
 			t.Errorf("pr-monitor is missing %q", snippet)

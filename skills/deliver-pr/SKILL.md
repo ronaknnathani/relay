@@ -140,11 +140,40 @@ Every sub-agent prompt: name the worktree/branch, give it the task + the one ups
 a structured digest back (not prose, not file contents), and tell it to surface a blocking question
 rather than guess. Keep yourself blind to file dumps — you route on digests and `relay state`.
 
+## After the PR is open — hand it to the watcher
+
+`deliver-pr` still **ends at an open PR**. The watcher is a follow-on service, not another phase: it
+observes the PR and wakes this project's session when it needs attention, so nobody has to poll.
+
+Once `open-pr` succeeded and the PR is recorded (`relay state pr`), start or adopt it:
+
+```bash
+relay pr watch start "$SLUG"                  # standalone project
+relay pr watch start "$SLUG" --mode managed   # managed program worker (owner is this worker, never the tech lead)
+```
+
+`start` requires Herdr and adopts an already-running watcher, so running it twice is safe. It wakes
+**one exact live session** — the pane whose Relay title names this project, which is this session.
+
+**A watcher-start failure must never fail the delivery.** The PR is open and recorded; that is the
+phase's outcome. Report the exact failure as an actionable warning and say that `/pr-monitor` can be
+run manually instead — it works with no watcher and no Herdr, via `relay pr watch tick <slug> --json`.
+
+Two cases where you deliberately do **not** start one:
+
+- **A standalone run with no Herdr pane.** It cannot host a watcher. Say so and point at the manual
+  `/pr-monitor` fallback. Nothing else about the standalone path changes.
+- **Running as a `stack-ship` sub-agent.** The surrounding pane belongs to the stack orchestrator, not
+  to this project, so a watcher started here would wake nobody. `start` fails its owner validation;
+  treat that as a skip with a warning and let the orchestrator start the front watcher itself with
+  `--mode stack --owner <stack-slug>`.
+
 ## Done
 
 When `relay state next "$SLUG"` is empty, run a final check that the PR is open and its acceptance
-criteria are met, then **stop**. Report the PR URL (recorded via `relay state pr`). Newly discovered
-out-of-scope work goes to follow-ups, not into this run — do not expand scope or start the next change.
+criteria are met, then **stop**. Report the PR URL (recorded via `relay state pr`) and whether a
+watcher is running for it. Newly discovered out-of-scope work goes to follow-ups, not into this run —
+do not expand scope or start the next change.
 
 ## Red flags
 
@@ -158,7 +187,9 @@ out-of-scope work goes to follow-ups, not into this run — do not expand scope 
 - Sending duplicate `pr-open` requests instead of checking the unread worker outbox.
 - Acknowledging an open-PR grant before the PR is successfully opened and recorded.
 - Assuming a fresh start instead of resuming from `relay state next`.
-- Merging, or watching CI — that is `pr-monitor`/`stack-ship`, not `deliver-pr`.
+- Failing the delivery because `relay pr watch start` failed — the open, recorded PR is the outcome.
+- Starting a watcher from inside a `stack-ship` sub-agent, where it would wake nobody.
+- Merging, or watching CI yourself — that is the watcher plus `pr-monitor`/`stack-ship`, not `deliver-pr`.
 
 ## Verification checklist
 
@@ -170,4 +201,5 @@ out-of-scope work goes to follow-ups, not into this run — do not expand scope 
 - [ ] `plan` got author sign-off when the design was ambiguous.
 - [ ] `review` ran and every Critical/Important finding was addressed before `validate`.
 - [ ] `validate` passed on the repo's own gates before `open-pr`.
+- [ ] After `open-pr`, `relay pr watch start` ran once (or was skipped with a stated reason), and any failure was reported as a warning rather than failing the delivery.
 - [ ] Ended at an open PR with its URL recorded; stopped without expanding scope or merging.

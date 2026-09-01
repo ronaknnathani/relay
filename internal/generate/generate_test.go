@@ -83,8 +83,9 @@ func TestGeneratedRecurringCommands(t *testing.T) {
 		{name: "claude", generate: generateClaude, want: "/loop", forbidden: "/every"},
 		{name: "codex", generate: generateCodex, want: "/loop", forbidden: "/every"},
 	}
+	// pr-monitor is deliberately absent: it no longer runs a recurring loop, so
+	// it names no recurring command for the generator to translate.
 	files := []string{
-		filepath.Join("skills", "pr-monitor", "SKILL.md"),
 		filepath.Join("skills", "stack-ship", "references", "state-files.md"),
 	}
 

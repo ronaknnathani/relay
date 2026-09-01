@@ -1,117 +1,156 @@
 ---
 name: pr-monitor
-description: Monitor one open PR until it is merged — each tick detect CI failures, review comments, staleness, and conflicts, delegate the fixing to pr-fix, re-arm auto-merge, and stop at merge. Use after open-pr to drive a PR to merged with near-zero steering, via a native loop when one exists or one bounded tick per resume otherwise.
+description: Handle one pull request attention event end to end — read the watcher digest, triage it, delegate the fixing to pr-fix, acknowledge the digest, and exit. Use when the PR watcher wakes you, or run it manually for a one-shot check of an open PR.
 ---
 
 # PR Monitor
 
-Watch one open PR and drive it to merged with near-zero steering. Each tick: detect what is blocking,
-delegate the fixing to `pr-fix`, reconcile the merge state, and stop when it merges. You are a
-**router** — detection and remediation run in sub-agents that return digests; you read digests and own
-the run's state. You never write code or post in your own voice, never approve, and never merge.
+Handle **one** pull request attention event, then stop. You are a **router**: the `relay pr watch`
+runtime does the observing, you interpret its digest, delegate the fixing to `pr-fix`, record what you
+covered, and exit. You never write code, never post in your own voice, never approve, and never merge.
 
-## Completion promise (the stop gate)
+This skill has **no loop**. It does not schedule, does not recur, and does not own a next-tick time.
+The watcher owns cadence; one run of this skill owns one digest.
 
-This run is done — and only done — when the PR is **merged**. Keep ticking until then. State the
-done-string only when it is unequivocally true: *all review threads resolved or surfaced, CI green,
-approved, and merged.* A vague "looks good" is not done.
+## Where the work comes from
 
-## Run mode — native loop, or one tick per resume
+**Woken by the watcher.** The prompt names the project and a fingerprint:
+`Run pr-monitor once for project <slug> using watcher fingerprint <fp>.` Bind them to `$SLUG` and
+`$FP`, then read the immutable digest that fingerprint names:
 
-- **Native loop:** if `/loop` or an approved scheduler (`CronCreate` / `ScheduleWakeup`) exists, run
-  the tick routine on a ~10–15 min cadence (matched to how fast PR state changes). Keep exactly **one**
-  healthy loop per PR; restart it if it dies; record the loop id in the run's state.
-- **Tick fallback:** if no native loop exists, each resume/invocation runs exactly **one** tick,
-  records `nextTickAfter`, reports a digest, and stops. Don't claim continuous monitoring you can't
-  provide.
+```bash
+relay pr watch digest "$SLUG" --fingerprint "$FP" --json
+relay pr watch status "$SLUG" --json     # current fingerprint, cadence, last wake, suppression
+```
 
-## The tick (delegated, idempotent — a tick that finds nothing does nothing)
+**Invoked manually, or with no Herdr.** Observe first, then act on what that observation recorded:
 
-### 1. Detect — scout sub-agent → a digest (writes nothing, decides nothing)
+```bash
+relay pr watch tick "$SLUG" --json       # fresh read-only observation; records an immutable digest
+```
 
-Gather for the PR, every `gh` call wrapped in a 3–4× retry (sleep 3):
+`tick` works with no watcher running and never changes the watcher's schedule. If it returns no
+actionable items, there is nothing to do — say so and stop.
 
-- `state, mergeStateStatus, reviewDecision, base, head, autoMergeRequest`, and failing checks.
-- **All PR-visible feedback, paginated** — conversation comments, PR-level review bodies/summaries, and
-  inline diff comments, plus GraphQL review-thread resolution state (`reviewThreads { isResolved }`,
-  paging beyond the first 100 threads/comments on large PRs):
+## What the digest already decided
 
-  ```bash
-  gh api "repos/$OWNER/$REPO/issues/$N/comments" --paginate   # PR conversation comments
-  gh api "repos/$OWNER/$REPO/pulls/$N/reviews"   --paginate   # PR-level review bodies (not on code)
-  gh api "repos/$OWNER/$REPO/pulls/$N/comments"  --paginate   # inline diff comments
-  ```
+The digest is deterministic and complete; do not re-derive it with your own `gh` sweep. It carries the
+pull request state, draft flag, base and head refs and SHAs, `mergeStateStatus`, `mergeable`,
+`reviewDecision`, whether auto-merge is armed, every check with its status, conclusion, and run id, and
+every actionable item with its `source`, `id`, `updatedAt`, `body`, thread id, file, and line.
 
-  Build the **needs-response set**: any comment, review body, or thread whose *latest* activity is from
-  a human and is newer than the agent's last reply for that source — keyed by source + `id + updatedAt`.
-  **Include new replies on already-answered threads** (the most common miss). PR-level review bodies
-  are comments on the PR, not on code — don't miss them.
-- **CI:** failing required checks; mark each as an **infra flake** (dependency-download / TLS timeout /
-  registry 5xx / sandbox limit) or a real failure.
-- **Staleness:** a freshness check tripping, or the PR meaningfully behind its base.
-- **Mergeability:** `DIRTY`/conflict vs `CLEAN`/`BLOCKED`.
+Each item carries a `reason`:
 
-Digest: `{state, mergeable, autoMerge, approvals, failingChecks[], flakes[], needsResponse[{source,
-id, threadId, file?, line?, author, body, updatedAt, classification}], stale, conflict}` — carry each
-item's `body` (and a `classification` hint) so the remediator need not re-fetch it.
+| Reason | What it means | Who acts |
+|---|---|---|
+| `failing-check` | a check concluded failure, error, timeout, action-required, or startup-failure | you classify flake vs real; real → `pr-fix` |
+| `changes-requested` | the review decision is CHANGES_REQUESTED | `pr-fix` |
+| `new-comment` / `new-review` / `new-inline-comment` | human activity the agent has not answered | `pr-fix` |
+| `unresolved-thread` | an unresolved thread, or a new human reply after the agent answered | `pr-fix` |
+| `merge-conflict` | the branch conflicts with its base | `pr-fix` |
+| `stale-base` | the branch is behind its base | you rebase |
+| `auto-merge-not-armed` | approved, green, clean, based on the default branch, not armed | you arm it |
+| `closed-unmerged` | the pull request was closed without merging | escalate to the author |
+| `stack-front-merged` | the stack's front pull request merged | the stack orchestrator retargets |
 
-### 2. Remediate — delegate to `pr-fix` (serialized, one writer per branch)
+Fetch more only for the specific item you are acting on — a failed run's log, a file's history. Never
+re-page the whole comment history; the watcher already did, and its digest is the record.
 
-Hand the **real** problems to `pr-fix` as a sub-agent — it owns the fixing: real CI failures (reproduce
-→ root-cause → regression test, never silenced), review comments (it classifies obvious gap-fix vs
-author decision and replies/resolves or flags to the author), and merge **conflicts** (resolve forward,
-never abort). Pass it the needs-response items with their `body` and any `classification` hint so it
-need not re-fetch.
+## The run
 
-Two items `pr-fix` does **not** own — `pr-monitor` handles them directly, since they fix nothing in the
-code:
-- an **infra-flaked** check → `gh run rerun <id> --failed` (never cancel a queued run);
-- a **clean-but-stale** PR (a freshness check tripping, or the branch behind its base, *without* a
-  conflict) → rebase onto the fresh base so a new head re-triggers the checks, then force-push with
-  `--force-with-lease`. If the rebase surfaces a conflict, it is no longer staleness — route it to
-  `pr-fix`'s conflict handling.
+### 1. Triage
 
-Never run two writers on the same branch at once, and never hand `pr-fix` an infra flake (only real
-failures). After any push, the next tick re-checks — don't assume the fix stuck.
+Split the items into what you own and what `pr-fix` owns.
 
-### 3. Reconcile merge state
+**You classify each `failing-check` as an infra flake or a real failure.** An infra flake is a
+dependency download, TLS timeout, registry 5xx, or sandbox limit — inspect the failed run
+(`gh run view <run-id> --log-failed`, using the run id the digest carries) before deciding. Everything
+else is real.
 
-- **Approved + clean + green** → re-verify and **re-arm auto-merge**. It silently turns off after a
-  force-push and after a CHANGES_REQUESTED→APPROVED transition, so re-arm every tick; "already queued"
-  means it is armed. Arm auto-merge **only on a PR based on the default branch**.
-- **Merged** → record it, tear down the loop, and stop.
+### 2. Delegate the real work to `pr-fix` — one writer, one call
 
-### 4. Update state & report
+Hand `pr-fix` **one** scoped worklist as a sub-agent: the real check failures with their names and run
+ids, the comment, review, and thread items **with the bodies, ids, thread ids, files, and lines the
+digest already carries**, and any merge conflict. Tell it that it is running in **delegated mode**: the
+worklist is complete, it must not re-fetch the broad pull request context and must not loop, and it
+must return a structured per-item result.
 
-Record outcomes in the run's state (`relay state log` / `relay state pr` under a relay project, or the
-run's state files otherwise). In native-loop mode, surface a one-screen digest only when something
-material happened; in tick mode, always report the tick outcome plus `nextTickAfter`, then stop.
+Never run two writers on one branch: exactly one `pr-fix` call per run, and never hand it an infra
+flake.
+
+### 3. Do the agent-side actions the digest names
+
+These change no code, so they are yours — run them after `pr-fix` returns, so pushes stay serialized:
+
+- **a `failing-check` you classified as a flake** → `gh run rerun <run-id> --failed` (never cancel a
+  queued run).
+- **`stale-base`** → rebase onto the fresh base so a new head re-triggers the checks, then force-push
+  with `--force-with-lease`. If the rebase surfaces a conflict it is no longer staleness — leave it for
+  `pr-fix` on the next attention event.
+- **`auto-merge-not-armed`** → re-arm auto-merge. It silently turns off after a force-push and after a
+  CHANGES_REQUESTED→APPROVED transition. Arm it **only** on a pull request based on the default branch;
+  "already queued" means it is armed.
+- **`closed-unmerged`** → do not reopen it; surface it to the author as a durable escalation.
+- **`stack-front-merged`** → report it to the stack orchestrator; the front-advance is its job.
+
+### 4. Acknowledge — only once every item is covered
+
+Acknowledging means every item in the digest was handled or durably escalated. It does **not** mean the
+pull request is green.
+
+```bash
+relay pr watch acknowledge "$SLUG" --fingerprint "$FP" --outcome handled     # the work was done
+relay pr watch acknowledge "$SLUG" --fingerprint "$FP" --outcome escalated   # durably raised to the author
+relay pr watch acknowledge "$SLUG" --fingerprint "$FP" --outcome obsolete    # the digest no longer describes the PR
+```
+
+If `pr-fix` failed or came back partial, **do not acknowledge**. Leave the digest unacknowledged, say
+what remains, and let the next scheduled check bring it back. Acknowledging resets the watcher to its
+15-minute cadence; the same outcome twice is a no-op, and a different outcome for the same fingerprint
+is refused.
+
+### 5. Re-observe once, report, exit
+
+```bash
+relay pr watch tick "$SLUG" --json
+```
+
+Report a one-screen digest: what the attention was, what was delegated, what you did yourself, the
+acknowledgement outcome, and the post-fix state. Then **stop**. Do not wait, do not schedule, do not
+start another cycle.
+
+## Under a project workflow
+
+Record the outcome with `relay state log <slug> "<one-line digest>"` when the project has Relay state.
+If no watcher is running and this project should be watched, start it once with
+`relay pr watch start <slug>` from a Herdr pane. Never start a second watcher for a project — `start`
+adopts the running one.
 
 ## Guardrails (non-negotiable)
 
+- **No loop.** One digest, one run, one exit. Never claim continuous monitoring.
 - **Approval is the only merge path.** Never self-approve, never `gh pr merge` to merge now, never
   dismiss a review to unblock. Auto-merge fires on a genuine human code-owner approval.
-- **Never impersonate.** Every agent reply is prefixed `🤖 <agent> on behalf of <author>`.
+- **Never impersonate.** Every agent reply is prefixed `🤖 <agent> on behalf of <author>` — that
+  disclosure is also how the watcher tells an agent reply from a human one.
 - **Never silence a failure** (enforced inside `pr-fix`).
-- **One writer per branch** — serialize all pushes to a given branch.
-- **Idempotent & resumable** — track addressed comment ids + `updatedAt`; a re-run is a no-op on
-  already-handled work. Never rely on "I remember I did X" — read the state.
-- **Stop at merge.** Don't start new work; discovered out-of-scope work goes to follow-ups.
+- **One writer per branch** — serialize every push.
+- **Never acknowledge unfinished work**, and never acknowledge a fingerprint you did not read.
 
 ## Red flags
 
-- Approving or `gh pr merge`-ing yourself instead of letting human approval drive auto-merge.
-- Re-fixing a comment already handled (not keying the needs-response set on `id + updatedAt`).
-- Missing PR-level review bodies or new replies on resolved threads.
-- Claiming continuous monitoring while in tick mode.
-- Two sub-agents pushing the same branch in one tick.
-- Letting auto-merge stay off after a force-push (must re-arm every tick).
+- Running a broad `gh` comment/check sweep instead of reading the digest the watcher already recorded.
+- Acknowledging after a failed or partial `pr-fix`.
+- Handing `pr-fix` an infra flake, or rerunning a check it is already fixing.
+- Two sub-agents pushing the same branch in one run.
+- Scheduling a follow-up tick, recording a next-tick time, or starting a loop.
+- Arming auto-merge on a pull request that is not based on the default branch.
 
 ## Verification checklist
 
-- [ ] Exactly one loop (native mode) or one tick recorded with `nextTickAfter` (tick mode).
-- [ ] Detection covered conversation comments, PR-level review bodies, inline threads, and new replies.
-- [ ] Real failures, comments, and conflicts were delegated to `pr-fix`; infra flakes and clean-but-stale rebases were handled directly (not handed to `pr-fix`).
-- [ ] Auto-merge re-armed when approved+clean+green; armed only on a default-branch-based PR.
-- [ ] No self-approval, no manual merge, no impersonated reply.
-- [ ] Stopped only when the PR is merged; the done-string was true.
+- [ ] Read exactly one digest — by fingerprint from the wake, or from a fresh `tick`.
+- [ ] Every `failing-check` was classified flake vs real before anything was delegated or rerun.
+- [ ] Real failures, comments, threads, and conflicts went to a single delegated `pr-fix` call carrying their bodies and ids.
+- [ ] Flake reruns, the stale rebase, and auto-merge re-arming happened here, after `pr-fix` returned.
+- [ ] The digest was acknowledged only once every item was handled or durably escalated.
+- [ ] One `relay pr watch tick` ran, the outcome was reported, and the run exited without scheduling anything.
