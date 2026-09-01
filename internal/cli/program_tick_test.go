@@ -229,7 +229,7 @@ func TestProgramTickUsesInjectedGitHubLifecycleForReconciliationAndCapacity(t *t
 	if err := p.DispatchItem(closed.ID, "closed-child"); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.GrantOpenPR(closed.ID, "cto", nil); err != nil {
+	if err := p.GrantOpenPR(closed.ID, "tl", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := program.Create(p); err != nil {
