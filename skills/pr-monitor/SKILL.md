@@ -24,7 +24,7 @@ The watcher owns cadence; one run of this skill owns one digest.
 
 **Woken by the watcher.** The prompt names the project and a fingerprint:
 `Run pr-monitor once for project <slug> using watcher fingerprint <fp>.` Bind them to `$SLUG` and
-`$FP`, then read the immutable digest that fingerprint names:
+`$FP`, then read the digest that fingerprint names:
 
 ```bash
 relay pr watch digest "$SLUG" --fingerprint "$FP" --json
@@ -37,7 +37,7 @@ carries are the newest the watcher saw for that fingerprint — never a stale sn
 **Invoked manually, or with no Herdr.** Observe first, then act on what that observation recorded:
 
 ```bash
-relay pr watch tick "$SLUG" --json       # fresh read-only observation; records an immutable digest
+relay pr watch tick "$SLUG" --json       # fresh read-only observation; records its digest
 ```
 
 `tick` works with no watcher running and never changes the watcher's schedule. If it returns no
@@ -54,7 +54,7 @@ Each item carries a `reason`:
 
 | Reason | What it means | Who acts |
 |---|---|---|
-| `failing-check` | a check concluded failure, error, timeout, action-required, or startup-failure | you classify flake vs real; real → `pr-fix` |
+| `failing-check` | a check concluded failure, error, timeout, action-required, startup-failure, cancelled, or stale | you classify flake vs real; real → `pr-fix`. A cancelled or stale check reported no result at all — rerun it |
 | `changes-requested` | the review decision is CHANGES_REQUESTED | `pr-fix` |
 | `new-comment` / `new-review` / `new-inline-comment` | human activity the agent has not answered | `pr-fix` |
 | `unresolved-thread` | an unresolved thread, or a new human reply after the agent answered | `pr-fix` |
@@ -134,7 +134,8 @@ owns the front-advance and must stop the old watcher with `relay pr watch stop <
 Record the outcome with `relay state log <slug> "<one-line digest>"` when the project has Relay state.
 If no watcher is running and this project should be watched, start it once with
 `relay pr watch start <slug>` from a Herdr pane. Never start a second watcher for a project — `start`
-adopts the running one.
+adopts the running one. It refuses outright, creating nothing, unless exactly one live session carries
+that project's Relay identity; if it refuses, say so and keep using this skill by hand.
 
 ## Guardrails (non-negotiable)
 

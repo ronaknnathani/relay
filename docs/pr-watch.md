@@ -11,7 +11,7 @@ a thread, arms auto-merge, approves, or merges. Every mutation belongs to the wo
 ```bash
 relay pr watch start <project-slug> [--mode standalone|managed|stack] [--owner <session-slug>] [--json]
 relay pr watch status <project-slug> [--json]
-relay pr watch stop <project-slug>
+relay pr watch stop <project-slug> [--json]
 relay pr watch tick <project-slug> [--json]
 relay pr watch digest <project-slug> --fingerprint <64-hex> [--json]
 ```
@@ -80,9 +80,31 @@ automatic wakes until the watcher is restarted, because retrying can duplicate t
 
 Actionable: failing checks (the watcher never judges flake versus real), a `CHANGES_REQUESTED` review
 decision, human conversation, review, inline, and thread activity the agent has not answered,
-unresolved threads and new replies on answered ones, merge conflicts, a branch behind its base, an
-approved green clean default-base pull request whose auto-merge is not armed, a pull request closed
-without merging, and — in stack mode only — a merged front pull request.
+unresolved threads and new replies on answered ones, merge conflicts, a branch behind its base, a
+merge GitHub is blocking for a reason nothing else in the digest explains, an approved green clean
+default-base pull request whose auto-merge is not armed, a pull request closed without merging, and —
+in stack mode only — a merged front pull request.
+
+Not actionable: pending or queued checks alone, an untouched review-required state, and a draft alone.
+
+Nothing about a previous observation is carried into a new one. There is no acknowledgement, no
+watermark, and no local claim that attention was handled: an item stops being reported only when the
+current remote truth no longer shows it.
+
+### Failing checks
+
+A check is failing when its conclusion is failure, error, timed-out, action-required,
+startup-failure, **cancelled**, or **stale**. A required check that ends cancelled or stale never
+reports a result, so the pull request silently cannot merge and only a rerun clears it. Neutral and
+skipped are deliberately not failures — GitHub counts both as satisfying a required check.
+
+### A merge GitHub is blocking
+
+`BLOCKED` is reported as the waiting code `merge-blocked` when a failing check, a pending check, a
+draft, a review-required or changes-requested decision, a conflict, or a stale base already explains
+it. When none of those do, it becomes the actionable `blocked` item: otherwise an approved, green,
+unconflicted pull request that GitHub simply refuses to merge looks perfectly quiet, and the watcher
+backs off to an hourly check while the owner watches it never merge.
 
 ## Telling an agent reply from a human one
 
@@ -104,8 +126,6 @@ Each source is reconciled on its own, and only against replies on that same sour
 A reply posted anywhere else answers nothing. Reconciling sources together let one reply mark several
 independent pieces of feedback as handled, which silently dropped review comments nobody addressed.
 
-Not actionable: pending or queued checks alone, an untouched review-required state, and a draft alone.
-
 ## Terminal states
 
 | Outcome | What the watcher does |
@@ -123,10 +143,6 @@ with flushing its final output, and the pane is the only log it has.
 closes the exact Herdr tab recorded in `watch.json` — including for a watcher that already finished on
 its own. It never guesses at a tab, and when Herdr is unavailable it says which tab is still open and
 the exact `herdr tab close <id>` that closes it rather than claiming a cleanup it did not perform.
-
-Nothing about a previous observation is carried into a new one. There is no acknowledgement, no
-watermark, and no local claim that attention was handled: an item stops being reported only when the
-current remote truth no longer shows it.
 
 ## Runtime layout
 
