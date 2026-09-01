@@ -87,7 +87,8 @@ func TestFindLiveProjectOwnerMatchesExactIdentities(t *testing.T) {
 		t.Errorf("missing owner = %v, want ErrNoLiveProjectOwner", err)
 	}
 
-	duplicated := append(agents, liveAgent("relay:foo", "pane-duplicate", herdr.StatusIdle))
+	duplicated := append(append([]herdr.Agent{}, agents...),
+		liveAgent("relay:foo", "pane-duplicate", herdr.StatusIdle))
 	_, err = herdr.FindLiveProjectOwner(duplicated, "foo")
 	var duplicate *herdr.DuplicateProjectOwnerError
 	if !errors.As(err, &duplicate) {

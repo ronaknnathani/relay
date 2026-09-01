@@ -319,9 +319,9 @@ func TestPRWatchStopSignalsTheRecordedProcess(t *testing.T) {
 	prWatchReadState = func(slug string) (prwatch.State, error) {
 		return prwatch.State{Project: slug, PID: 4242, Status: prwatch.StatusRunning}, nil
 	}
-	var signalled []int
+	var signaled []int
 	prWatchSignal = func(pid int, _ os.Signal) error {
-		signalled = append(signalled, pid)
+		signaled = append(signaled, pid)
 		return nil
 	}
 
@@ -329,8 +329,8 @@ func TestPRWatchStopSignalsTheRecordedProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if len(signalled) != 1 || signalled[0] != 4242 {
-		t.Fatalf("signalled = %v, want the recorded pid", signalled)
+	if len(signaled) != 1 || signaled[0] != 4242 {
+		t.Fatalf("signaled = %v, want the recorded pid", signaled)
 	}
 	if !strings.Contains(out, "PR watcher stopped for demo") {
 		t.Errorf("stop output = %q", out)
