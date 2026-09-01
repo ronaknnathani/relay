@@ -312,8 +312,10 @@ func runPRWatchStatus(out io.Writer, slug string, jsonOutput bool) error {
 		result.StopReason = state.StopReason
 		result.Warning = state.Warning
 		// A watcher that is no longer holding the lock still explains why it
-		// finished, so complete, stopped, and failed outcomes stay visible.
-		if !running && state.Status != prwatch.StatusRunning {
+		// finished, so complete, stopped, and failed outcomes stay visible. A
+		// record written by an acknowledgement alone carries no status, and
+		// stays "not-running".
+		if !running && state.Status != "" && state.Status != prwatch.StatusRunning {
 			result.Status = string(state.Status)
 		}
 		if state.RelayVersion != "" && state.RelayVersion != version {

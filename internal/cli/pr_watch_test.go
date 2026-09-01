@@ -285,6 +285,29 @@ func TestPRWatchStatusReportsACompletedWatcher(t *testing.T) {
 	}
 }
 
+func TestPRWatchStatusOfAnAcknowledgementOnlyRecordStaysNotRunning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	installPRWatchFakes(t, &fakeHerdrClient{})
+	prWatchIsRunning = func(string) (bool, error) { return false, nil }
+	// An acknowledgement recorded before any watcher ran writes state with no
+	// lifecycle status; status must still read as not-running.
+	prWatchReadState = func(slug string) (prwatch.State, error) {
+		return prwatch.State{Project: slug, NextCheckAt: "2026-03-01T09:00:00Z"}, nil
+	}
+
+	out, err := runPRCommand(t, "watch", "status", "demo", "--json")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	var got prWatchStatusOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if got.Status != "not-running" {
+		t.Errorf("status = %q, want not-running", got.Status)
+	}
+}
+
 func TestPRWatchStopSignalsTheRecordedProcess(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	installPRWatchFakes(t, &fakeHerdrClient{})
