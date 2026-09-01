@@ -28,10 +28,10 @@ const AgentReplyMarker = "<!-- relay-agent-reply -->"
 // watcher never decides whether a failure is an infrastructure flake or a real
 // one; that judgment belongs to the woken owner.
 //
-// CANCELLED and STALE are here because a required check that ends either way
-// never reports a result, so the pull request cannot merge until somebody
-// reruns it — a silent stall is exactly what a watcher exists to catch.
-// NEUTRAL and SKIPPED are deliberately absent: GitHub counts both as
+// GitHub's canceled and stale conclusions are here because a required check
+// that ends either way never reports a result, so the pull request cannot merge
+// until somebody reruns it — a silent stall is exactly what a watcher exists to
+// catch. NEUTRAL and SKIPPED are deliberately absent: GitHub counts both as
 // satisfying a required check, so neither blocks a merge.
 var failingConclusions = map[string]bool{
 	"FAILURE":         true,
@@ -39,7 +39,7 @@ var failingConclusions = map[string]bool{
 	"TIMED_OUT":       true,
 	"ACTION_REQUIRED": true,
 	"STARTUP_FAILURE": true,
-	"CANCELLED":       true,
+	"CANCELLED":       true, //nolint:misspell // GitHub check conclusion value.
 	"STALE":           true,
 }
 

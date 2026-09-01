@@ -54,7 +54,7 @@ Each item carries a `reason`:
 
 | Reason | What it means | Who acts |
 |---|---|---|
-| `failing-check` | a check concluded failure, error, timeout, action-required, startup-failure, cancelled, or stale | you classify flake vs real; real → `pr-fix`. A cancelled or stale check reported no result at all — rerun it |
+| `failing-check` | a check concluded failure, error, timeout, action-required, startup-failure, canceled, or stale | you classify flake vs real; real → `pr-fix`. A canceled or stale check reported no result at all — rerun it |
 | `changes-requested` | the review decision is CHANGES_REQUESTED | `pr-fix` |
 | `new-comment` / `new-review` / `new-inline-comment` | human activity the agent has not answered | `pr-fix` |
 | `unresolved-thread` | an unresolved thread, or a new human reply after the agent answered | `pr-fix` |

@@ -561,9 +561,9 @@ func TestCancelledAndStaleChecksAreActionableAndNeutralIsNot(t *testing.T) {
 		{conclusion: "TIMED_OUT", actionable: true},
 		{conclusion: "ACTION_REQUIRED", actionable: true},
 		{conclusion: "STARTUP_FAILURE", actionable: true},
-		// A cancelled or stale required check never reports a result, so the
+		// A canceled or stale required check never reports a result, so the
 		// pull request cannot merge until somebody reruns it.
-		{conclusion: "CANCELLED", actionable: true},
+		{conclusion: "CANCELLED", actionable: true}, //nolint:misspell // GitHub check conclusion value.
 		{conclusion: "STALE", actionable: true},
 		// GitHub treats neutral and skipped as satisfying a required check, so
 		// neither blocks a merge and neither is the watcher's business.

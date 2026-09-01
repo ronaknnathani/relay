@@ -94,9 +94,9 @@ current remote truth no longer shows it.
 ### Failing checks
 
 A check is failing when its conclusion is failure, error, timed-out, action-required,
-startup-failure, **cancelled**, or **stale**. A required check that ends cancelled or stale never
-reports a result, so the pull request silently cannot merge and only a rerun clears it. Neutral and
-skipped are deliberately not failures — GitHub counts both as satisfying a required check.
+startup-failure, **canceled**, or **stale**. A required check that ends either way never reports a
+result, so the pull request silently cannot merge and only a rerun clears it. Neutral and skipped are
+deliberately not failures — GitHub counts both as satisfying a required check.
 
 ### A merge GitHub is blocking
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -342,5 +343,42 @@ func TestLockIsASingleton(t *testing.T) {
 	}
 	if !running {
 		t.Error("IsRunning = false while the watcher lock is held")
+	}
+}
+
+// The runtime directory is exactly four things. Nothing records that attention
+// was handled, so there is nowhere for such a record to live.
+func TestRuntimeDirectoryHoldsNoAcknowledgementRecords(t *testing.T) {
+	withRuntimeHome(t)
+	digest := testDigest(t, "demo", []Item{{Key: "comment:1:t0"}})
+	if err := WriteDigest(digest); err != nil {
+		t.Fatalf("WriteDigest: %v", err)
+	}
+	if _, err := UpdateState("demo", func(state State) (State, error) {
+		state.Status = StatusRunning
+		state.CurrentFingerprint = digest.Fingerprint
+		return state, nil
+	}); err != nil {
+		t.Fatalf("UpdateState: %v", err)
+	}
+	if _, err := ReadStateLocked("demo"); err != nil {
+		t.Fatalf("ReadStateLocked: %v", err)
+	}
+	if err := Prune("demo", MaxRetainedDigests, digest.Fingerprint); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+
+	entries, err := os.ReadDir(RuntimeDir("demo"))
+	if err != nil {
+		t.Fatalf("read runtime dir: %v", err)
+	}
+	got := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		got = append(got, entry.Name())
+	}
+	sort.Strings(got)
+	want := []string{"digests", "state.lock", "watch.json"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("runtime directory = %v, want %v", got, want)
 	}
 }

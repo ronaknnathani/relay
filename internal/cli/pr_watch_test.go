@@ -439,7 +439,7 @@ func TestPRWatchStopClosesTheTabOfAFinishedWatcher(t *testing.T) {
 		}, nil
 	}
 	prWatchSignal = func(int, os.Signal) error {
-		t.Fatal("stop signalled a watcher that was not running")
+		t.Fatal("stop signaled a watcher that was not running")
 		return nil
 	}
 
