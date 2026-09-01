@@ -79,3 +79,56 @@ func TestProgramDocsDescribeLiveTLDoorbells(t *testing.T) {
 		})
 	}
 }
+
+// The patrol pane is where the CEO watches the patrol work, and a wake is an
+// instruction to run the next governance action rather than a status ping. Both
+// have to be documented where the tech lead and the operator will look.
+func TestProgramDocsDescribeVisiblePatrolEventsAndWakeFollowThrough(t *testing.T) {
+	root := repoRoot(t)
+	for _, test := range []struct {
+		path      string
+		required  []string
+		forbidden []string
+	}{
+		{
+			path: filepath.Join("skills", "tl", "SKILL.md"),
+			required: []string{
+				"relay-patrol:$PROGRAM",
+				"program tick",
+				"dispatch",
+				"start or adopt",
+			},
+			forbidden: []string{"patrol log file", "log_path"},
+		},
+		{
+			path: filepath.Join("docs", "programs.md"),
+			required: []string{
+				"patrol started program=",
+				"tick reasons=",
+				"TL wake delivered",
+				"next tick at=",
+				"stderr",
+				"never written to a file",
+			},
+			forbidden: []string{"patrol log file", "log_path"},
+		},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(root, test.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(data)
+			for _, want := range test.required {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s is missing %q", test.path, want)
+				}
+			}
+			for _, forbidden := range test.forbidden {
+				if strings.Contains(body, forbidden) {
+					t.Errorf("%s documents a patrol log file: %q", test.path, forbidden)
+				}
+			}
+		})
+	}
+}

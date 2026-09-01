@@ -255,6 +255,36 @@ is reported as degraded instead of claiming the patrol is running. Writes use an
 file plus rename. Archiving a program stops its patrol cleanly while leaving runtime history under
 `~/.relay/run/`.
 
+#### Visible patrol events
+
+`relay program patrol run` prints one line per high-level event to its own stdout and stderr, so the
+`relay-patrol:<program>` Herdr pane shows what the patrol is doing. Patrol events are
+never written to a file: the pane is the log, and `patrol.json` remains the durable state.
+
+```text
+2026-09-01T04:45:00Z patrol started program=auth-platform
+2026-09-01T04:45:00Z tick reasons=ready-item:w2,unread-worker-outbox:w1 cadence=15m
+2026-09-01T04:45:01Z TL wake delivered program=auth-platform pane=w2:pC status=idle
+2026-09-01T04:45:01Z next tick at=2026-09-01T05:00:01Z cadence=15m
+2026-09-01T05:10:00Z patrol stopped program=auth-platform reason=context canceled
+```
+
+Only a due tick prints; the internal 30-second wall-clock wakeup is silent. Outcomes that leave
+attention undelivered go to stderr with the command that shows the recorded detail, as do
+observation, Herdr, and runtime-state failures:
+
+```text
+2026-09-01T05:00:01Z warning: TL wake busy program=auth-platform pane=pC status=working; attention remains pending, see `relay program patrol status auth-platform`
+2026-09-01T05:00:01Z error: patrol observation failed: build patrol snapshot for program "auth-platform": ...; retrying in 15m
+```
+
+Events carry timestamps, the program slug, safe enums, pane IDs, and reason codes only. Reason text,
+prompt text, mailbox bodies, snapshots, repository content, terminal frames, the attention
+fingerprint, and agent session ids are never printed; a reason code whose detail is derived from
+warning text prints as its family alone (`project-warning`). The full detail stays in `patrol.json`
+and `relay program patrol status`. Because a patrol whose events cannot be written is unobservable,
+an output failure stops the patrol and is recorded in runtime state.
+
 Every tick builds the same read-only program view used by the UI and directly reads linked project,
 mailbox, contract, git, and Herdr observations. It never calls program reconciliation commands,
 writes worker mail, acknowledges messages, creates notification markers, grants PR capacity,
@@ -305,6 +335,12 @@ The attention fingerprint includes sorted unread worker-outbox message ids, not 
 a second question on the same item wakes the live tech lead immediately. The tech lead then
 reconstructs durable
 state and performs the needed governance work in the existing CEO-facing conversation.
+
+Merge progression needs no separate trigger. Every snapshot overlays authoritative GitHub pull
+request state and reconciles it in memory, so a merged child pull request makes its dependent item
+ready—and raises `ready-item:<id>` attention—without anyone having run `relay program tick` first.
+The patrol stays read-only: it wakes the same live tech lead, which then runs `program tick`,
+dispatches the ready item, and starts or adopts its worker.
 
 Manage it with:
 

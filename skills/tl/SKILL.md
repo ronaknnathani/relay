@@ -43,6 +43,17 @@ When durable state needs attention, patrol submits a payload-free doorbell to th
 without changing the user's focused pane. Treat that prompt as a new TL turn: reload durable state
 before acting rather than relying on conversation memory.
 
+A wake is an instruction to act, not a status ping. On every wake, run `relay program tick`, follow
+its next action, dispatch the ready item, and start or adopt its worker (step 5). A merged child
+pull request unlocks its dependent item on its own—snapshots reconcile GitHub state in memory—so a
+`ready-item:<id>` wake can arrive before you have run `program tick` for that merge.
+
+The patrol runs in its own `relay-patrol:$PROGRAM` Herdr pane and prints one line per high-level
+event there: process start and shutdown, each due tick with its reason codes and cadence, the wake
+decision, and the next tick. Degraded outcomes and failures go to that pane's stderr. Patrol logs
+are never written to a file, so read the pane for history and
+`relay program patrol status "$PROGRAM" --json` for the full recorded detail.
+
 ```bash
 relay program message list "$PROGRAM" --json
 relay program status "$PROGRAM" --json
