@@ -72,30 +72,3 @@ func TestNormalizeIdentityLeavesFreeTextAndNamesUnchanged(t *testing.T) {
 		}
 	}
 }
-
-func TestIsAutomatedPredicates(t *testing.T) {
-	if !role.IsAutomated("tl-automated:3f2504e0") {
-		t.Error("IsAutomated(canonical automated) = false, want true")
-	}
-	if !role.IsAutomated("cto-automated:3f2504e0") {
-		t.Error("IsAutomated(legacy automated) = false, want true")
-	}
-	if role.IsAutomated("tl") || role.IsAutomated("ceo") || role.IsAutomated("tl-automated:") {
-		t.Error("IsAutomated matched a value that does not name a bounded automated turn")
-	}
-}
-
-func TestIsCanonicalRejectsLegacyIdentities(t *testing.T) {
-	canonical := []string{"tl", "tl-automated:3f2504e0", "ceo", "worker", "rnathani"}
-	for _, value := range canonical {
-		if !role.IsCanonical(value) {
-			t.Errorf("IsCanonical(%q) = false, want true", value)
-		}
-	}
-	legacy := []string{"cto", "cto-automated:3f2504e0"}
-	for _, value := range legacy {
-		if role.IsCanonical(value) {
-			t.Errorf("IsCanonical(%q) = true, want false", value)
-		}
-	}
-}

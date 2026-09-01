@@ -26,10 +26,7 @@ const (
 // normalizes when it would have been a valid automated identity.
 const automatedSession = `[a-z0-9]{1,32}`
 
-var (
-	canonicalAutomated = regexp.MustCompile(`^` + AutomatedTLPrefix + automatedSession + `$`)
-	legacyAutomated    = regexp.MustCompile(`^` + LegacyAutomatedCTOPrefix + automatedSession + `$`)
-)
+var legacyAutomated = regexp.MustCompile(`^` + LegacyAutomatedCTOPrefix + automatedSession + `$`)
 
 // NormalizeIdentity maps a retired identity onto its canonical equivalent.
 // Only an exact legacy identity is rewritten: any other value—a username, an
@@ -44,16 +41,4 @@ func NormalizeIdentity(value string) string {
 	default:
 		return value
 	}
-}
-
-// IsAutomated reports whether value names a bounded automated tech-lead turn
-// in either the canonical or the retired form.
-func IsAutomated(value string) bool {
-	return canonicalAutomated.MatchString(value) || legacyAutomated.MatchString(value)
-}
-
-// IsCanonical reports whether value is free of retired identities. It is the
-// guard new durable writes use so a legacy identity can never be persisted.
-func IsCanonical(value string) bool {
-	return value != LegacyCTO && !legacyAutomated.MatchString(value)
 }
