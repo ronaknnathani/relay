@@ -647,3 +647,20 @@ func withMergeState(pr PullRequest, status string) PullRequest {
 	pr.MergeStateStatus = status
 	return pr
 }
+
+// GitHub always timestamps activity, but an observation that somehow lacks one
+// cannot be ordered against a reply. Keeping it actionable is the only safe
+// answer: hiding feedback the watcher cannot reason about is how review
+// comments get lost.
+func TestActivityWithNoTimestampIsNeverTreatedAsAnswered(t *testing.T) {
+	pr := openPR()
+	undated := human("1", "reviewer", "please rename this", "")
+	digest := BuildDigest("demo", ModeStandalone, Observation{
+		PR:       pr,
+		Comments: []Activity{undated, agentReply("2", pr.Author, "renamed", "2026-01-02T00:00:00Z")},
+	}, observedAt)
+	assertReasons(t, digest, ReasonNewComment)
+	if digest.Items[0].ID != "1" {
+		t.Errorf("item = %+v, want the undated comment kept actionable", digest.Items[0])
+	}
+}

@@ -495,8 +495,11 @@ func latestAgentReply(activities []Activity) string {
 // answeredBy reports whether an agent reply at replyAt answers human activity
 // at activityAt. Equal timestamps count: GitHub reports seconds, and a reply
 // written in the same second as the comment it answers is still an answer.
+// Activity GitHub gave no timestamp at all is never treated as answered — a
+// watcher that cannot order two events keeps the feedback rather than hiding
+// it.
 func answeredBy(replyAt, activityAt string) bool {
-	if replyAt == "" {
+	if replyAt == "" || activityAt == "" {
 		return false
 	}
 	return !newerThan(activityAt, replyAt)
