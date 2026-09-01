@@ -96,10 +96,6 @@ func (l eventLog) wake(at time.Time, slug string, outcome turnOutcome) error {
 	))
 }
 
-func (l eventLog) warning(at time.Time, message string) error {
-	return l.write(l.err, at, "warning: "+message)
-}
-
 func (l eventLog) failure(at time.Time, message string) error {
 	return l.write(l.err, at, "error: "+message)
 }
