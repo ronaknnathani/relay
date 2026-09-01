@@ -27,6 +27,7 @@ type watchHarness struct {
 	client      *fakeOwnerClient
 	done        chan error
 	cancel      context.CancelFunc
+	stopOnce    sync.Once
 }
 
 // signalWriter records output and signals whenever a completed observation
@@ -108,6 +109,7 @@ func newWatchHarness(t *testing.T, mode Mode, owner string, observation Observat
 		PID:     4242,
 	}
 	go func() { harness.done <- Run(ctx, harness.slug, options) }()
+	t.Cleanup(harness.stop)
 	return harness
 }
 
@@ -169,17 +171,39 @@ func (h *watchHarness) state() State {
 	return state
 }
 
+// stop cancels the watcher and waits for it to return. Every harness registers
+// it as a cleanup so a watcher goroutine can never outlive the test that set
+// HOME, which would write runtime records into the developer's real ~/.relay.
 func (h *watchHarness) stop() {
 	h.t.Helper()
-	h.cancel()
-	select {
-	case err := <-h.done:
-		if err != nil {
-			h.t.Fatalf("Run: %v", err)
+	h.stopOnce.Do(func() {
+		h.cancel()
+		select {
+		case err := <-h.done:
+			if err != nil {
+				h.t.Errorf("Run: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			h.t.Error("watcher did not stop")
 		}
-	case <-time.After(5 * time.Second):
-		h.t.Fatal("watcher did not stop")
-	}
+	})
+}
+
+// awaitExit waits for a watcher that stops on its own and marks the harness
+// stopped, so the registered cleanup does not wait for a second exit.
+func (h *watchHarness) awaitExit() {
+	h.t.Helper()
+	h.stopOnce.Do(func() {
+		select {
+		case err := <-h.done:
+			if err != nil {
+				h.t.Errorf("Run: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			h.t.Error("watcher did not stop on its own")
+		}
+		h.cancel()
+	})
 }
 
 type manualTicker struct {
@@ -218,7 +242,6 @@ func (h *watchHarness) runScheduledCheck() State {
 
 func TestCadenceRunsFifteenThirtyThenSixtyMinuteChecks(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
-	defer harness.stop()
 	start := harness.clock()
 
 	harness.out.awaitLine(t, "next check at=")
@@ -253,7 +276,6 @@ func TestCadenceRunsFifteenThirtyThenSixtyMinuteChecks(t *testing.T) {
 
 func TestInternalTickBeforeTheScheduledCheckIsSilent(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
-	defer harness.stop()
 	harness.out.awaitLine(t, "next check at=")
 
 	before := harness.out.String()
@@ -275,7 +297,6 @@ func TestInternalTickBeforeTheScheduledCheckIsSilent(t *testing.T) {
 
 func TestNewHeadResetsTheCadence(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
-	defer harness.stop()
 	harness.out.awaitLine(t, "next check at=")
 	for i := 0; i < 5; i++ {
 		harness.runScheduledCheck()
@@ -302,7 +323,6 @@ func TestNewHeadResetsTheCadence(t *testing.T) {
 
 func TestPendingCheckTransitionAloneDoesNotResetTheCadence(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
-	defer harness.stop()
 	harness.out.awaitLine(t, "next check at=")
 	for i := 0; i < 5; i++ {
 		harness.runScheduledCheck()
@@ -323,7 +343,6 @@ func TestPendingCheckTransitionAloneDoesNotResetTheCadence(t *testing.T) {
 
 func TestExternalAcknowledgementResetsTheRunningWatcher(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
-	defer harness.stop()
 	harness.out.awaitLine(t, "baseline attention recorded")
 	harness.out.awaitLine(t, "next check at=")
 	for i := 0; i < 4; i++ {
@@ -368,7 +387,6 @@ func TestFirstStartRecordsABaselineWithoutWakingAndARestartWakes(t *testing.T) {
 	harness.stop()
 
 	restarted := newWatchHarnessReusingHome(t, harness)
-	defer restarted.stop()
 	line := restarted.out.awaitLine(t, "owner wake delivered")
 	if !strings.Contains(line, "pane=pane-owner") {
 		t.Errorf("wake line = %q, want the exact owner pane", line)
@@ -418,6 +436,7 @@ func newWatchHarnessReusingHome(t *testing.T, previous *watchHarness) *watchHarn
 		PID:     4243,
 	}
 	go func() { harness.done <- Run(ctx, harness.slug, options) }()
+	t.Cleanup(harness.stop)
 	return harness
 }
 
@@ -427,15 +446,7 @@ func TestMergedPullRequestCompletesSilently(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", merged)
 
 	harness.out.awaitLine(t, "pr watch complete")
-	select {
-	case err := <-harness.done:
-		if err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("watcher did not stop after the pull request merged")
-	}
-	harness.cancel()
+	harness.awaitExit()
 
 	if len(harness.client.prompts) != 0 {
 		t.Errorf("a merged pull request woke the owner with %v", harness.client.prompts)
@@ -453,7 +464,6 @@ func TestMergedStackFrontWakesTheOrchestrator(t *testing.T) {
 	merged := quietObservation()
 	merged.PR.State = "MERGED"
 	harness := newWatchHarness(t, ModeStack, "stack-run", merged)
-	defer harness.stop()
 
 	harness.out.awaitLine(t, "baseline attention recorded")
 	state := harness.state()
@@ -474,7 +484,6 @@ func TestMergedStackFrontWakesTheOrchestrator(t *testing.T) {
 
 func TestUncertainDeliverySuppressesFurtherWakes(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
-	defer harness.stop()
 	harness.client.promptErr = errors.New("staged: " + herdr.ErrPromptDeliveryUncertain.Error())
 	harness.client.promptErr = wrapUncertain()
 	harness.out.awaitLine(t, "baseline attention recorded")
@@ -499,7 +508,6 @@ func wrapUncertain() error {
 
 func TestBusyOwnerLeavesAttentionPending(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
-	defer harness.stop()
 	harness.client.agents = []herdr.Agent{liveAgent("relay:demo", "pane-owner", herdr.StatusWorking)}
 	harness.out.awaitLine(t, "baseline attention recorded")
 
@@ -586,7 +594,6 @@ func TestWatcherEventsCarryNoPullRequestContent(t *testing.T) {
 	observation := actionableObservation()
 	observation.PR.Title = "Add the secret widget"
 	harness := newWatchHarness(t, ModeStandalone, "", observation)
-	defer harness.stop()
 	harness.out.awaitLine(t, "baseline attention recorded")
 	harness.runScheduledCheck()
 	harness.out.awaitLine(t, "owner wake delivered")
@@ -655,7 +662,6 @@ func TestTickReportsObservationFailures(t *testing.T) {
 
 func TestRunRefusesASecondWatcher(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
-	defer harness.stop()
 	harness.out.awaitLine(t, "next check at=")
 
 	err := Run(context.Background(), harness.slug, Options{
