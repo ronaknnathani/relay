@@ -898,3 +898,65 @@ func TestAWakeIsAbandonedWhenTheObservationIsNoLongerCurrent(t *testing.T) {
 		t.Errorf("watcher events did not record the skipped wake:\n%s", out.String())
 	}
 }
+
+// changesRequestedObservation is a pull request one reviewer has asked for
+// changes on, which GitHub keeps reporting until that reviewer looks again.
+func changesRequestedObservation() Observation {
+	pr := openPR()
+	pr.ReviewDecision = "CHANGES_REQUESTED"
+	review := human("10", "reviewer", "please split this", "2026-01-03T10:00:00Z")
+	review.State = "CHANGES_REQUESTED"
+	return Observation{PR: pr, Reviews: []Activity{review}}
+}
+
+// The writer loop this closes: the watcher woke the owner for the same
+// CHANGES_REQUESTED decision on every check, pr-fix rewrote and pushed the same
+// answer every time, and nothing about a pushed head made GitHub's decision
+// change. A pull request whose review was answered wakes nobody until a human
+// moves.
+func TestAnAnsweredChangesRequestedReviewStopsWakingTheOwner(t *testing.T) {
+	harness := newWatchHarness(t, ModeStandalone, "", changesRequestedObservation())
+	harness.out.awaitLine(t, "owner wake delivered")
+	harness.out.awaitLine(t, "next check at=")
+	if harness.client.promptCount() != 1 {
+		t.Fatalf("prompts = %v, want one wake for the changes-requested review",
+			harness.client.promptTexts())
+	}
+
+	// pr-fix answered that exact review and pushed the fix.
+	answered := changesRequestedObservation()
+	answered.PR.HeadSHA = "head333"
+	reply := agentReply("review:10", "11", answered.PR.Author, "split into two commits",
+		"2026-01-03T10:20:00Z")
+	reply.State = "COMMENTED"
+	answered.Reviews = append(answered.Reviews, reply)
+	harness.setObservation(answered, nil)
+
+	state := harness.runScheduledCheck()
+	if state.ActionableCount != 0 || state.AttentionPending || state.CurrentFingerprint != "" {
+		t.Fatalf("state = %+v, want no attention while the reviewer has not looked again", state)
+	}
+	// Two more checks on the same answered pull request: still nobody's turn.
+	harness.runScheduledCheck()
+	harness.runScheduledCheck()
+	if harness.client.promptCount() != 1 {
+		t.Fatalf("prompts = %v, want no further wake for an answered review",
+			harness.client.promptTexts())
+	}
+
+	// The reviewer comes back with another review.
+	rereviewed := answered
+	second := human("12", "reviewer", "still not split", "2026-01-04T09:00:00Z")
+	second.State = "CHANGES_REQUESTED"
+	rereviewed.Reviews = append(append([]Activity{}, answered.Reviews...), second)
+	harness.setObservation(rereviewed, nil)
+
+	harness.runScheduledCheck()
+	if harness.client.promptCount() != 2 {
+		t.Errorf("prompts = %v, want exactly one wake for the new review",
+			harness.client.promptTexts())
+	}
+	if got := harness.state().ActionableCount; got != 2 {
+		t.Errorf("actionable = %d, want the new review and the changes it requested", got)
+	}
+}

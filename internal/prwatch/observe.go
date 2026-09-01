@@ -207,7 +207,9 @@ func classify(mode Mode, observation Observation) ([]Item, []string) {
 	if pending {
 		waiting = append(waiting, WaitingChecksPending)
 	}
-	items = append(items, classifyReviewDecision(pr, observation.Reviews)...)
+	changes, changesWaiting := classifyReviewDecision(pr, observation.Reviews)
+	items = append(items, changes...)
+	waiting = append(waiting, changesWaiting...)
 	items = append(items, classifyConversation(observation)...)
 	items = append(items, classifyThreads(observation.Threads)...)
 	merge := classifyMergeState(pr, len(failing) > 0, pending)
@@ -284,25 +286,49 @@ func classifyChecks(pr PullRequest, checks []Check) ([]Item, bool) {
 	return items, pending
 }
 
-func classifyReviewDecision(pr PullRequest, reviews []Activity) []Item {
+// classifyReviewDecision reports a CHANGES_REQUESTED review decision against
+// the exact review that requested the changes.
+//
+// GitHub holds that decision until the same reviewer submits another review, so
+// reporting the decision itself as actionable woke the owner — and started
+// another writer — on every check, forever, for work already delivered. Once an
+// anchored Relay review answers that exact review, the decision is reported as
+// waiting instead: honestly still blocked, and nobody's turn but the reviewer's.
+//
+// Only current remote evidence takes it off waiting: a newer review, a human
+// edit of that review, or a decision GitHub no longer reports as
+// CHANGES_REQUESTED. Pushing a new head is not evidence — the reviewer has not
+// looked at it yet.
+func classifyReviewDecision(pr PullRequest, reviews []Activity) ([]Item, []string) {
 	if pr.ReviewDecision != "CHANGES_REQUESTED" {
-		return nil
+		return nil, nil
 	}
-	item := Item{
-		Reason: ReasonChangesRequested,
-		Source: SourceReview,
-		ID:     strconv.Itoa(pr.Number),
-		Key:    fmt.Sprintf("changes-requested:%d:%s", pr.Number, pr.HeadSHA),
+	latest, found := latestReviewWithState(reviews, "CHANGES_REQUESTED")
+	if !found {
+		// GitHub reports the decision but not the review behind it, so there is
+		// no identity to answer and nothing to reconcile against.
+		return []Item{{
+			Reason: ReasonChangesRequested,
+			Source: SourceReview,
+			ID:     strconv.Itoa(pr.Number),
+			Key:    fmt.Sprintf("changes-requested:%d:%s", pr.Number, pr.HeadSHA),
+		}}, nil
 	}
-	if latest, found := latestReviewWithState(reviews, "CHANGES_REQUESTED"); found {
-		item.ID = latest.ID
-		item.Key = fmt.Sprintf("changes-requested:%s:%s", latest.ID, latest.UpdatedAt)
-		item.Body = latest.Body
-		item.Author = latest.Author.Login
-		item.UpdatedAt = latest.UpdatedAt
-		item.URL = latest.URL
+	ref := AnswerRef(SourceReview, latest.ID)
+	if answeredBy(answeredRefs(reviews)[ref], latest.UpdatedAt) {
+		return nil, []string{WaitingChangesRequestedAnswered}
 	}
-	return []Item{item}
+	return []Item{{
+		Reason:    ReasonChangesRequested,
+		Source:    SourceReview,
+		ID:        latest.ID,
+		Key:       fmt.Sprintf("changes-requested:%s:%s", latest.ID, latest.UpdatedAt),
+		Answers:   ref,
+		Body:      latest.Body,
+		Author:    latest.Author.Login,
+		UpdatedAt: latest.UpdatedAt,
+		URL:       latest.URL,
+	}}, nil
 }
 
 // classifyConversation reports human conversation comments and review bodies
@@ -623,7 +649,7 @@ func latestActivity(activities []Activity) (Activity, bool) {
 func latestReviewWithState(reviews []Activity, state string) (Activity, bool) {
 	matching := make([]Activity, 0, len(reviews))
 	for _, review := range reviews {
-		if review.State == state {
+		if review.State == state && isHuman(review) {
 			matching = append(matching, review)
 		}
 	}

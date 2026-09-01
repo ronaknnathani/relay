@@ -95,9 +95,130 @@ func TestChangesRequestedIsActionableWithTheReviewBody(t *testing.T) {
 
 	assertReasons(t, digest, ReasonChangesRequested, ReasonNewReview)
 	for _, item := range digest.Items {
-		if item.Reason == ReasonChangesRequested && item.Body != "please split this" {
-			t.Errorf("changes-requested item = %+v, want the review body", item)
+		if item.Reason != ReasonChangesRequested {
+			continue
 		}
+		if item.Body != "please split this" || item.ID != "10" {
+			t.Errorf("changes-requested item = %+v, want the review body and id", item)
+		}
+		if item.Answers != "review:10" {
+			t.Errorf("changes-requested item = %+v, want the review's marker reference", item)
+		}
+	}
+}
+
+// A CHANGES_REQUESTED decision stands until the reviewer looks again, so
+// reporting the decision itself kept waking the owner — and starting another
+// writer — on a pull request whose answer was already posted and pushed.
+func TestAnAnsweredChangesRequestedReviewWaitsForTheRereview(t *testing.T) {
+	pr := openPR()
+	pr.ReviewDecision = "CHANGES_REQUESTED"
+	review := human("10", "reviewer", "please split this", "2026-01-03T10:00:00Z")
+	review.State = "CHANGES_REQUESTED"
+	answer := agentReply("review:10", "11", pr.Author, "split into two commits",
+		"2026-01-03T10:20:00Z")
+	answer.State = "COMMENTED"
+	answered := Observation{PR: pr, Reviews: []Activity{review, answer}}
+
+	digest := BuildDigest("demo", ModeStandalone, answered, observedAt)
+	if len(digest.Items) != 0 {
+		t.Fatalf("digest items = %+v, want none once the review was answered", digest.Items)
+	}
+	if !containsString(digest.Waiting, WaitingChangesRequestedAnswered) {
+		t.Fatalf("waiting = %v, want %q", digest.Waiting, WaitingChangesRequestedAnswered)
+	}
+	if !containsString(digest.Waiting, WaitingBlocked) {
+		t.Errorf("waiting = %v, want the blocked merge still reported", digest.Waiting)
+	}
+
+	// pr-fix pushed the fix. A new head is not the reviewer looking again.
+	pushed := answered
+	pushed.PR.HeadSHA = "head333"
+	if got := BuildDigest("demo", ModeStandalone, pushed, observedAt); len(got.Items) != 0 {
+		t.Fatalf("digest items = %+v, want none after the fix was pushed", got.Items)
+	}
+
+	// The reviewer edits the same review: it is past the answer again.
+	edited := answered
+	editedReview := review
+	editedReview.UpdatedAt = "2026-01-03T11:00:00Z"
+	edited.Reviews = []Activity{editedReview, answer}
+	reopened := BuildDigest("demo", ModeStandalone, edited, observedAt)
+	assertReasons(t, reopened, ReasonChangesRequested, ReasonNewReview)
+
+	// The reviewer submits another one: a different id nothing has answered.
+	rereviewed := answered
+	second := human("12", "reviewer", "still not split", "2026-01-04T09:00:00Z")
+	second.State = "CHANGES_REQUESTED"
+	rereviewed.Reviews = []Activity{review, answer, second}
+	again := BuildDigest("demo", ModeStandalone, rereviewed, observedAt)
+	assertReasons(t, again, ReasonChangesRequested, ReasonNewReview)
+	for _, item := range again.Items {
+		if item.ID != "12" {
+			t.Errorf("item = %+v, want only the new review actionable", item)
+		}
+	}
+	if containsString(again.Waiting, WaitingChangesRequestedAnswered) {
+		t.Errorf("waiting = %v, want the answered code gone once a new review landed", again.Waiting)
+	}
+}
+
+// An answer posted anywhere but on that review answers nothing, and neither
+// does one that names a different review.
+func TestOnlyAnAnchoredReviewAnswersTheChangesRequestedReview(t *testing.T) {
+	pr := openPR()
+	pr.ReviewDecision = "CHANGES_REQUESTED"
+	review := human("10", "reviewer", "please split this", "2026-01-03T10:00:00Z")
+	review.State = "CHANGES_REQUESTED"
+
+	for name, observation := range map[string]Observation{
+		"answered in the conversation instead": {
+			PR:      pr,
+			Reviews: []Activity{review},
+			Comments: []Activity{
+				agentReply("review:10", "11", pr.Author, "split it", "2026-01-03T10:20:00Z"),
+			},
+		},
+		"a review answering another review": {
+			PR: pr,
+			Reviews: []Activity{review, agentReply("review:9", "11", pr.Author, "split it",
+				"2026-01-03T10:20:00Z")},
+		},
+		"a bare marker on a review": {
+			PR: pr,
+			Reviews: []Activity{review, legacyAgentReply("11", pr.Author, "split it",
+				"2026-01-03T10:20:00Z")},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			digest := BuildDigest("demo", ModeStandalone, observation, observedAt)
+			if !hasItemReason(digest, ReasonChangesRequested) {
+				t.Fatalf("digest items = %+v, want the changes-requested review still actionable",
+					digest.Items)
+			}
+			if containsString(digest.Waiting, WaitingChangesRequestedAnswered) {
+				t.Errorf("waiting = %v, want no claim that the review was answered", digest.Waiting)
+			}
+		})
+	}
+}
+
+// An agent can never request changes on its own pull request, so a marked
+// review is never the review to answer.
+func TestAMarkedReviewIsNotTheChangesRequestedReview(t *testing.T) {
+	pr := openPR()
+	pr.ReviewDecision = "CHANGES_REQUESTED"
+	human10 := human("10", "reviewer", "please split this", "2026-01-03T10:00:00Z")
+	human10.State = "CHANGES_REQUESTED"
+	marked := agentReply("review:10", "11", pr.Author, "split it", "2026-01-03T10:20:00Z")
+	marked.State = "CHANGES_REQUESTED"
+
+	digest := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr, Reviews: []Activity{human10, marked},
+	}, observedAt)
+	if len(digest.Items) != 0 {
+		t.Fatalf("digest items = %+v, want the human review recognized as the answered one",
+			digest.Items)
 	}
 }
 
@@ -324,6 +445,15 @@ func TestNewHeadRefreshesCheckAndConflictKeys(t *testing.T) {
 func hasItemID(digest Digest, id string) bool {
 	for _, item := range digest.Items {
 		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func hasItemReason(digest Digest, reason string) bool {
+	for _, item := range digest.Items {
+		if item.Reason == reason {
 			return true
 		}
 	}

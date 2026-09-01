@@ -79,17 +79,32 @@ automatic wakes until the watcher is restarted, because retrying can duplicate t
 ## What counts as actionable
 
 Actionable: failing checks (the watcher never judges flake versus real), a `CHANGES_REQUESTED` review
-decision, human conversation, review, inline, and thread activity the agent has not answered,
-unresolved threads and new replies on answered ones, merge conflicts, a branch behind its base, a
-merge GitHub is blocking for a reason nothing else in the digest explains, an approved green clean
-default-base pull request whose auto-merge is not armed, a pull request closed without merging, and —
-in stack mode only — a merged front pull request.
+decision nobody has answered, human conversation, review, inline, and thread activity the agent has
+not answered, unresolved threads, merge conflicts, a branch behind its base, a merge GitHub is
+blocking for a reason nothing else in the digest explains, an approved green clean default-base pull
+request whose auto-merge is not armed, a pull request closed without merging, and — in stack mode
+only — a merged front pull request.
 
-Not actionable: pending or queued checks alone, an untouched review-required state, and a draft alone.
+Not actionable: pending or queued checks alone, an untouched review-required state, a draft alone, a
+changes-requested review an anchored reply already answered, and a resolved thread.
 
 Nothing about a previous observation is carried into a new one. There is no acknowledgement, no
 watermark, and no local claim that attention was handled: an item stops being reported only when the
 current remote truth no longer shows it.
+
+### A changes-requested review that was answered
+
+GitHub keeps reporting `CHANGES_REQUESTED` until the same reviewer submits another review, so a
+decision reported as actionable on its own woke the owner — and started another writer — on every
+check forever, rewriting an answer that was already posted and pushed. The decision is reported
+against the exact review that requested the changes, and once an anchored Relay review answers that
+exact review it becomes the waiting code `changes-requested-awaiting-rereview`: still blocked, still
+honest, and nobody's turn but the reviewer's.
+
+Only current remote evidence makes it actionable again — a new review, a human edit of that review,
+or a decision GitHub no longer reports as `CHANGES_REQUESTED`. Pushing a new head is not evidence: it
+restarts the fast cadence, because the pull request changed, but it wakes nobody, because the
+reviewer has not looked at it yet.
 
 ### Failing checks
 

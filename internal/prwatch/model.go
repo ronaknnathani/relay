@@ -85,6 +85,12 @@ const (
 	// WaitingBlocked reports a merge GitHub is holding for a reason the digest
 	// already names, so a blocked pull request never looks unexplained twice.
 	WaitingBlocked = "merge-blocked"
+	// WaitingChangesRequestedAnswered reports a CHANGES_REQUESTED decision an
+	// anchored Relay reply already answered on the exact review that requested
+	// the changes. The pull request is still blocked and says so, but the next
+	// move is the reviewer's: waking a writer again would rewrite work that is
+	// already delivered and waiting to be looked at.
+	WaitingChangesRequestedAnswered = "changes-requested-awaiting-rereview"
 )
 
 // Item sources name where one actionable item was observed.
