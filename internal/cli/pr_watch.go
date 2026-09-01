@@ -17,16 +17,18 @@ import (
 const prWatchStartTimeout = 10 * time.Second
 
 var (
-	prWatchIsRunning      = prwatch.IsRunning
-	prWatchReadState      = prwatch.ReadState
-	prWatchRunLoop        = prwatch.Run
-	prWatchTickOnce       = prwatch.Tick
-	prWatchLocate         = prwatch.LoadTarget
-	prWatchRequireOwner   = prwatch.RequireLiveOwner
-	prWatchRequireManaged = prwatch.RequireManagedProject
-	prWatchNow            = time.Now
-	prWatchSleep          = time.Sleep
-	prWatchSignal         = func(pid int, signal os.Signal) error {
+	prWatchIsRunning       = prwatch.IsRunning
+	prWatchReadState       = prwatch.ReadState
+	prWatchReadStateLocked = prwatch.ReadStateLocked
+	prWatchUpdateState     = prwatch.UpdateState
+	prWatchRunLoop         = prwatch.Run
+	prWatchTickOnce        = prwatch.Tick
+	prWatchLocate          = prwatch.LoadTarget
+	prWatchRequireOwner    = prwatch.RequireLiveOwner
+	prWatchRequireManaged  = prwatch.RequireManagedProject
+	prWatchNow             = time.Now
+	prWatchSleep           = time.Sleep
+	prWatchSignal          = func(pid int, signal os.Signal) error {
 		process, err := os.FindProcess(pid)
 		if err != nil {
 			return fmt.Errorf("find pr watch process %d: %w", pid, err)
@@ -437,7 +439,7 @@ func runPRWatchStop(out io.Writer, slug string, jsonOutput bool) error {
 		}
 		result.Stopped = true
 	}
-	result.Closed, result.Warning = closePRWatchTab(state)
+	result.Closed, result.Warning = stopPRWatchTab(slug, state)
 	if jsonOutput {
 		return writeProgramJSON(out, result)
 	}
@@ -464,6 +466,95 @@ func awaitPRWatchExit(slug string) error {
 	}
 }
 
+// stopPRWatchTab closes the exact tab or pane the stopped watcher recorded and
+// then clears it from the runtime record.
+//
+// The record is re-read under the state lock first, after the watcher process
+// has actually stopped, and the close only happens if it still names the same
+// watcher instance — same pid, same start, same tab and pane. Herdr reuses tab
+// and pane ids, so a watcher somebody restarted while this stop was running
+// would otherwise have its brand-new pane closed out from under it by an id
+// that no longer means what it meant.
+//
+// Clearing the ids is what makes a second stop a no-op instead of a second
+// close of an id that now belongs to somebody else. A close that did not
+// happen keeps the ids, so the tab can still be found and closed later.
+func stopPRWatchTab(slug string, state prwatch.State) (bool, string) {
+	if state.TabID == "" && state.PaneID == "" {
+		return false, ""
+	}
+	current, err := prWatchReadStateLocked(slug)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Sprintf(
+			"the watcher process stopped, but its runtime record could not be re-read (%v), so its "+
+				"%s was left open; close it with `herdr %s`",
+			err, prWatchTabLabel(state), herdrCloseCommand(state),
+		)
+	}
+	if !samePRWatchInstance(state, current) {
+		return false, replacedPRWatchWarning(slug, state, current)
+	}
+	closed, warning := closePRWatchTab(state)
+	if !closed {
+		return closed, warning
+	}
+	if err := clearPRWatchTab(slug, state); err != nil {
+		return true, appendPatrolWarning(warning, fmt.Sprintf(
+			"the watcher's %s was closed, but the runtime record still names it: %v",
+			prWatchTabLabel(state), err,
+		))
+	}
+	return true, warning
+}
+
+// samePRWatchInstance reports whether a runtime record still names the exact
+// watcher instance a stop set out to clean up. A pid can be recycled and a tab
+// id can be reused, so identity is all of them together plus the moment that
+// watcher started.
+func samePRWatchInstance(before, current prwatch.State) bool {
+	return before.PID == current.PID &&
+		before.StartedAt == current.StartedAt &&
+		before.TabID == current.TabID &&
+		before.PaneID == current.PaneID
+}
+
+func replacedPRWatchWarning(slug string, before, current prwatch.State) string {
+	if current.PID == 0 && current.StartedAt == "" {
+		return fmt.Sprintf(
+			"the watcher runtime record for %s disappeared while it was being stopped, so its %s "+
+				"was not closed; close it with `herdr %s`",
+			slug, prWatchTabLabel(before), herdrCloseCommand(before),
+		)
+	}
+	return fmt.Sprintf(
+		"a different watcher for %s is recorded now (pid %d started %s, was pid %d started %s), so "+
+			"its %s was not closed — closing a reused id would take down the pane that is running "+
+			"now; run `relay pr watch stop %s` again to stop and clean up the current watcher",
+		slug, current.PID, current.StartedAt, before.PID, before.StartedAt,
+		prWatchTabLabel(current), slug,
+	)
+}
+
+// clearPRWatchTab blanks the closed tab and pane under the state lock, leaving
+// every other field — including why the watcher stopped — exactly as it was.
+// The identity is checked again inside the lock, so a watcher that started in
+// the meantime never has its own tab erased from the record.
+func clearPRWatchTab(slug string, closed prwatch.State) error {
+	_, err := prWatchUpdateState(slug, func(state prwatch.State) (prwatch.State, error) {
+		if !samePRWatchInstance(closed, state) {
+			return state, fmt.Errorf(
+				"the runtime record now names pid %d started %s, not the watcher that was stopped",
+				state.PID, state.StartedAt,
+			)
+		}
+		state.TabID = ""
+		state.PaneID = ""
+		state.UpdatedAt = prWatchNow().UTC().Format(time.RFC3339)
+		return state, nil
+	})
+	return err
+}
+
 // closePRWatchTab closes the exact Herdr tab or pane the watcher recorded. It
 // never guesses at one, and it never claims a close it did not make: with no
 // recorded target or no Herdr, it returns the warning that names what is left.
@@ -471,10 +562,7 @@ func closePRWatchTab(state prwatch.State) (bool, string) {
 	if state.TabID == "" && state.PaneID == "" {
 		return false, ""
 	}
-	target := "tab " + state.TabID
-	if state.TabID == "" {
-		target = "pane " + state.PaneID
-	}
+	target := prWatchTabLabel(state)
 	if !herdrAvailable() {
 		return false, fmt.Sprintf(
 			"Herdr is not available here, so the watcher's %s is still open; close it with "+
@@ -496,6 +584,13 @@ func closePRWatchTab(state prwatch.State) (bool, string) {
 		)
 	}
 	return true, ""
+}
+
+func prWatchTabLabel(state prwatch.State) string {
+	if state.TabID == "" {
+		return "pane " + state.PaneID
+	}
+	return "tab " + state.TabID
 }
 
 func herdrCloseCommand(state prwatch.State) string {

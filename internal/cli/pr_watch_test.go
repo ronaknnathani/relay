@@ -39,6 +39,8 @@ func installPRWatchFakes(t *testing.T, client *fakeHerdrClient) {
 		available    func() bool
 		running      func(string) (bool, error)
 		read         func(string) (prwatch.State, error)
+		readLocked   func(string) (prwatch.State, error)
+		update       func(string, func(prwatch.State) (prwatch.State, error)) (prwatch.State, error)
 		run          func(context.Context, string, prwatch.Options) error
 		tick         func(context.Context, string, prwatch.Options) (prwatch.Digest, error)
 		locate       func(string) (prwatch.Target, error)
@@ -49,8 +51,18 @@ func installPRWatchFakes(t *testing.T, client *fakeHerdrClient) {
 		signal       func(int, os.Signal) error
 	}{
 		newHerdrClient, newPatrolHerdrClient, herdrAvailable, prWatchIsRunning, prWatchReadState,
+		prWatchReadStateLocked, prWatchUpdateState,
 		prWatchRunLoop, prWatchTickOnce, prWatchLocate, prWatchRequireOwner, prWatchRequireManaged,
 		prWatchNow, prWatchSleep, prWatchSignal,
+	}
+	// The runtime record is one record: reading it under the lock reads the
+	// same double, and updating it applies the mutation to it.
+	prWatchReadStateLocked = func(slug string) (prwatch.State, error) { return prWatchReadState(slug) }
+	prWatchUpdateState = func(
+		slug string, mutate func(prwatch.State) (prwatch.State, error),
+	) (prwatch.State, error) {
+		current, _ := prWatchReadState(slug)
+		return mutate(current)
 	}
 	newHerdrClient = func() herdrRuntimeClient { return client }
 	newPatrolHerdrClient = func(context.Context) herdrRuntimeClient { return client }
@@ -67,6 +79,8 @@ func installPRWatchFakes(t *testing.T, client *fakeHerdrClient) {
 		herdrAvailable = previous.available
 		prWatchIsRunning = previous.running
 		prWatchReadState = previous.read
+		prWatchReadStateLocked = previous.readLocked
+		prWatchUpdateState = previous.update
 		prWatchRunLoop = previous.run
 		prWatchTickOnce = previous.tick
 		prWatchLocate = previous.locate
@@ -635,5 +649,199 @@ func TestPRWatchIsRegisteredOnTheRootCommand(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Errorf("`relay pr watch` is missing %v", want)
+	}
+}
+
+// seedPRWatchState writes a real watcher runtime record and points the stop
+// path at the real store, so these tests exercise the state lock, the atomic
+// write, and the revision the way `stop` actually does.
+func seedPRWatchState(t *testing.T, slug string, mutate func(*prwatch.State)) prwatch.State {
+	t.Helper()
+	prWatchReadState = prwatch.ReadState
+	prWatchReadStateLocked = prwatch.ReadStateLocked
+	prWatchUpdateState = prwatch.UpdateState
+	state, err := prwatch.UpdateState(slug, func(state prwatch.State) (prwatch.State, error) {
+		state.PID = 4242
+		state.Status = prwatch.StatusRunning
+		state.StartedAt = "2026-03-01T08:00:00Z"
+		state.TabID = "tab-1"
+		state.PaneID = "pane-1"
+		state.OwnerSlug = slug
+		state.Mode = prwatch.ModeStandalone
+		mutate(&state)
+		return state, nil
+	})
+	if err != nil {
+		t.Fatalf("seed watcher state: %v", err)
+	}
+	return state
+}
+
+func readPRWatchState(t *testing.T, slug string) prwatch.State {
+	t.Helper()
+	state, err := prwatch.ReadState(slug)
+	if err != nil {
+		t.Fatalf("ReadState: %v", err)
+	}
+	return state
+}
+
+// stopRunOnce makes IsRunning report a watcher that stops after the first call,
+// which is what signalling and awaiting its exit looks like.
+func stopRunOnce() {
+	calls := 0
+	prWatchIsRunning = func(string) (bool, error) {
+		calls++
+		return calls == 1, nil
+	}
+}
+
+// A tab id that stays in the record after its tab is gone is a lie the next
+// stop acts on, and Herdr reuses ids.
+func TestPRWatchStopClearsTheTabItClosed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	client := &fakeHerdrClient{}
+	installPRWatchFakes(t, client)
+	seeded := seedPRWatchState(t, "demo", func(state *prwatch.State) {
+		state.StopReason = ""
+		state.LastWakeStatus = "delivered"
+	})
+	stopRunOnce()
+	prWatchSignal = func(int, os.Signal) error { return nil }
+
+	if _, err := runPRCommand(t, "watch", "stop", "demo"); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if want := []string{"tab-1"}; !reflect.DeepEqual(client.closedTabs, want) {
+		t.Fatalf("closed tabs = %v, want %v", client.closedTabs, want)
+	}
+	cleared := readPRWatchState(t, "demo")
+	if cleared.TabID != "" || cleared.PaneID != "" {
+		t.Errorf("state = %+v, want the closed tab and pane cleared", cleared)
+	}
+	if cleared.Revision <= seeded.Revision {
+		t.Errorf("revision = %d, want it past the seeded %d", cleared.Revision, seeded.Revision)
+	}
+	if cleared.PID != seeded.PID || cleared.LastWakeStatus != "delivered" ||
+		cleared.OwnerSlug != seeded.OwnerSlug {
+		t.Errorf("state = %+v, want everything but the tab and pane preserved", cleared)
+	}
+}
+
+// A watcher that finished on its own still has its tab closed and cleared, and
+// stopping it again closes nothing and claims nothing.
+func TestPRWatchStopIsIdempotent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	client := &fakeHerdrClient{}
+	installPRWatchFakes(t, client)
+	seedPRWatchState(t, "demo", func(state *prwatch.State) {
+		state.Status = prwatch.StatusComplete
+		state.StopReason = "pull request merged"
+	})
+	prWatchIsRunning = func(string) (bool, error) { return false, nil }
+	prWatchSignal = func(int, os.Signal) error {
+		t.Fatal("stop signaled a watcher that was not running")
+		return nil
+	}
+
+	first, err := runPRCommand(t, "watch", "stop", "demo")
+	if err != nil {
+		t.Fatalf("first stop: %v", err)
+	}
+	if !strings.Contains(first, "Closed watcher tab tab-1") {
+		t.Fatalf("first stop = %q, want the tab cleanup reported", first)
+	}
+	if got := readPRWatchState(t, "demo"); got.StopReason != "pull request merged" ||
+		got.Status != prwatch.StatusComplete {
+		t.Errorf("state = %+v, want why the watcher stopped preserved", got)
+	}
+
+	out, err := runPRCommand(t, "watch", "stop", "demo", "--json")
+	if err != nil {
+		t.Fatalf("second stop: %v", err)
+	}
+	var second prWatchStopOutput
+	if err := json.Unmarshal([]byte(out), &second); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if second.Closed || second.TabID != "" || second.PaneID != "" || second.Warning != "" {
+		t.Errorf("second stop = %+v, want no second close and no claim about a tab", second)
+	}
+	if want := []string{"tab-1"}; !reflect.DeepEqual(client.closedTabs, want) {
+		t.Errorf("closed tabs = %v, want the tab closed exactly once", client.closedTabs)
+	}
+}
+
+// A close that failed leaves the ids in the record, because the tab is still
+// there and the next stop is how it gets cleaned up.
+func TestPRWatchStopKeepsTheTabItCouldNotClose(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	client := &fakeHerdrClient{closeErr: fmt.Errorf("herdr: tab is busy")}
+	installPRWatchFakes(t, client)
+	seedPRWatchState(t, "demo", func(*prwatch.State) {})
+	stopRunOnce()
+	prWatchSignal = func(int, os.Signal) error { return nil }
+
+	out, err := runPRCommand(t, "watch", "stop", "demo", "--json")
+	if err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	var got prWatchStopOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if got.Closed || !strings.Contains(got.Warning, "herdr tab close tab-1") {
+		t.Fatalf("stop = %+v, want the failed close reported with the command that finishes it", got)
+	}
+	kept := readPRWatchState(t, "demo")
+	if kept.TabID != "tab-1" || kept.PaneID != "pane-1" {
+		t.Errorf("state = %+v, want the ids kept for the tab that is still open", kept)
+	}
+}
+
+// Herdr reuses tab and pane ids. A watcher somebody restarted between the
+// signal and the close must not have its brand-new pane closed by an id that no
+// longer means what it meant.
+func TestPRWatchStopSkipsAReplacedWatcher(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	client := &fakeHerdrClient{}
+	installPRWatchFakes(t, client)
+	seedPRWatchState(t, "demo", func(*prwatch.State) {})
+	stopRunOnce()
+	prWatchSignal = func(int, os.Signal) error {
+		// The operator restarted the watcher, which took the same tab id back.
+		if _, err := prwatch.UpdateState("demo", func(state prwatch.State) (prwatch.State, error) {
+			state.PID = 5150
+			state.StartedAt = "2026-03-01T09:30:00Z"
+			state.Status = prwatch.StatusRunning
+			return state, nil
+		}); err != nil {
+			t.Fatalf("restart the watcher: %v", err)
+		}
+		return nil
+	}
+
+	out, err := runPRCommand(t, "watch", "stop", "demo", "--json")
+	if err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	var got prWatchStopOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if got.Closed {
+		t.Fatalf("stop = %+v, want no close of a reused tab id", got)
+	}
+	if len(client.closedTabs) != 0 || len(client.closedPanes) != 0 {
+		t.Fatalf("closed = %v/%v, want nothing closed", client.closedTabs, client.closedPanes)
+	}
+	for _, want := range []string{"pid 5150", "relay pr watch stop demo"} {
+		if !strings.Contains(got.Warning, want) {
+			t.Errorf("warning = %q, want it to name %q", got.Warning, want)
+		}
+	}
+	live := readPRWatchState(t, "demo")
+	if live.TabID != "tab-1" || live.PaneID != "pane-1" || live.PID != 5150 {
+		t.Errorf("state = %+v, want the running watcher's own tab left alone", live)
 	}
 }

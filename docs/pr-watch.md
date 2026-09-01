@@ -210,6 +210,18 @@ closes the exact Herdr tab recorded in `watch.json` — including for a watcher 
 its own. It never guesses at a tab, and when Herdr is unavailable it says which tab is still open and
 the exact `herdr tab close <id>` that closes it rather than claiming a cleanup it did not perform.
 
+Before closing anything it re-reads the runtime record under the state lock, after the watcher process
+has actually stopped, and closes only if the record still names the same watcher instance — same pid,
+same start time, same tab and pane. Herdr reuses tab and pane ids, so a watcher somebody restarted
+while the stop was running would otherwise have its brand-new pane closed by an id that no longer
+means what it meant; instead the stop closes nothing and says which watcher is running now and to run
+the stop again.
+
+A successful close then blanks the tab and pane in the record under the same lock, leaving why the
+watcher stopped exactly as it was. That is what makes a second stop a no-op: nothing left to close,
+nothing claimed. A close that failed keeps the ids, because the tab is still there and the next stop
+is how it gets cleaned up.
+
 ## Runtime layout
 
 ```
