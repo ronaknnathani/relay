@@ -53,7 +53,9 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"🤖 <agent> on behalf of <author>",
 				"Reply on the same source you are answering",
 			},
-			forbidden: []string{"relay pr watch acknowledge", "relay pr watch start", "--outcome"},
+			forbidden: []string{
+				"relay pr watch acknowledge", "relay pr watch start", "--outcome", "`acknowledge`",
+			},
 		},
 		{
 			path: filepath.Join("skills", "deliver-pr", "SKILL.md"),

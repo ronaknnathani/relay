@@ -28,8 +28,8 @@ authoritative**:
 - **Return a structured result, one entry per supplied item:** the item id, what you did, `fixed`,
   `replied`, `escalated`, or `failed`, and the reason when it is not `fixed`. Report pushed commits and
   the new head SHA.
-- **Never** run `relay pr watch tick`, `acknowledge`, or `status`, and never schedule anything. The
-  caller owns the watcher record.
+- **Never** run `relay pr watch tick` or `status`, and never schedule anything. The caller owns the
+  watcher record.
 
 **Direct mode — no worklist was supplied.** Assess the PR yourself and loop until clear, exactly as
 described below. This is the manual path and it is unchanged.
@@ -149,7 +149,7 @@ an answer posted somewhere else does not answer anything:
 - Fixing from transient terminal output instead of a local PR context bundle that can be re-read and
   refreshed. *(Direct mode; in delegated mode the supplied worklist is that record.)*
 - Re-fetching the whole PR context, or looping, when a delegated worklist was supplied.
-- Touching the watcher record — `relay pr watch tick`, `acknowledge`, or `status` belong to the caller.
+- Touching the watcher record — `relay pr watch tick` and `status` belong to the caller.
 
 ## Verification checklist
 
