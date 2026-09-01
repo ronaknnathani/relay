@@ -277,7 +277,7 @@ func TestBotCommentsAreNotActionable(t *testing.T) {
 	}
 }
 
-func TestUnresolvedThreadsAndNewRepliesAreActionable(t *testing.T) {
+func TestUnresolvedThreadsAreActionableAndResolvedOnesAreNot(t *testing.T) {
 	pr := openPR()
 	unresolved := ReviewThread{
 		ID: "THREAD_1", Path: "main.go", Line: 12, CommentsTotal: 1,
@@ -298,15 +298,83 @@ func TestUnresolvedThreadsAndNewRepliesAreActionable(t *testing.T) {
 		t.Errorf("item = %+v, want the unresolved thread", digest.Items[0])
 	}
 
-	reopened := answeredResolved
-	reopened.Comments = append(append([]Activity{}, answeredResolved.Comments...),
-		human("23", "reviewer", "not quite", "2026-01-04T00:00:00Z"))
-	withReply := BuildDigest("demo", ModeStandalone, Observation{
+	// Resolution is the human's own current answer about whether a
+	// conversation is finished, so nothing inside a resolved thread makes it
+	// actionable. A reviewer who is not finished leaves it unresolved.
+	for name, thread := range map[string]ReviewThread{
+		"resolved with no agent reply at all": {
+			ID: "THREAD_3", IsResolved: true, Path: "main.go", Line: 12, CommentsTotal: 1,
+			Comments: []Activity{human("30", "reviewer", "rename this", "2026-01-03T00:00:00Z")},
+		},
+		"resolved with a human speaking last": {
+			ID: "THREAD_4", IsResolved: true, Path: "main.go", Line: 12, CommentsTotal: 3,
+			Comments: []Activity{
+				human("40", "reviewer", "rename this", "2026-01-01T00:00:00Z"),
+				agentReply("review-thread:THREAD_4:40", "41", pr.Author, "renamed",
+					"2026-01-02T00:00:00Z"),
+				human("42", "reviewer", "thanks, resolving", "2026-01-04T00:00:00Z"),
+			},
+		},
+		"resolved between two people with no agent in it": {
+			ID: "THREAD_5", IsResolved: true, Path: "main.go", Line: 12, CommentsTotal: 2,
+			Comments: []Activity{
+				human("50", "reviewer", "why is this here?", "2026-01-01T00:00:00Z"),
+				human("51", "other-reviewer", "history, see #12", "2026-01-02T00:00:00Z"),
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resolved := BuildDigest("demo", ModeStandalone, Observation{
+				PR: pr, Threads: []ReviewThread{thread},
+			}, observedAt)
+			if len(resolved.Items) != 0 {
+				t.Fatalf("digest items = %+v, want none for a resolved thread", resolved.Items)
+			}
+		})
+	}
+}
+
+// Resolving a thread the digest was already reporting is how that item stops
+// being reported: the current remote truth no longer shows it.
+func TestResolvingAReportedThreadClearsIt(t *testing.T) {
+	pr := openPR()
+	thread := ReviewThread{
+		ID: "THREAD_1", Path: "main.go", Line: 12, CommentsTotal: 1,
+		Comments: []Activity{human("20", "reviewer", "rename this", "2026-01-03T00:00:00Z")},
+	}
+	before := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr, Threads: []ReviewThread{thread},
+	}, observedAt)
+	assertReasons(t, before, ReasonUnresolvedThread)
+
+	thread.IsResolved = true
+	after := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr, Threads: []ReviewThread{thread},
+	}, observedAt)
+	if len(after.Items) != 0 || after.Fingerprint != "" {
+		t.Fatalf("digest = %+v, want the resolved thread to clear the attention", after)
+	}
+}
+
+// A thread that reopens is unresolved again, and comes back with everything in
+// it that no agent reply names.
+func TestAReopenedThreadIsActionableAgain(t *testing.T) {
+	pr := openPR()
+	reopened := ReviewThread{
+		ID: "THREAD_2", Path: "go.mod", Line: 3, CommentsTotal: 3,
+		Comments: []Activity{
+			human("21", "reviewer", "bump this", "2026-01-01T00:00:00Z"),
+			agentReply("review-thread:THREAD_2:21", "22", pr.Author, "bumped", "2026-01-02T00:00:00Z"),
+			human("23", "reviewer", "not quite", "2026-01-04T00:00:00Z"),
+		},
+	}
+	digest := BuildDigest("demo", ModeStandalone, Observation{
 		PR: pr, Threads: []ReviewThread{reopened},
 	}, observedAt)
-	assertReasons(t, withReply, ReasonUnresolvedThread)
-	if withReply.Items[0].ID != "THREAD_2" || !withReply.Items[0].ThreadResolved {
-		t.Errorf("item = %+v, want the new reply on the resolved thread", withReply.Items[0])
+	assertReasons(t, digest, ReasonUnresolvedThread)
+	item := digest.Items[0]
+	if item.ID != "THREAD_2" || item.Body != "not quite" {
+		t.Errorf("item = %+v, want the new reply on the reopened thread", item)
 	}
 }
 

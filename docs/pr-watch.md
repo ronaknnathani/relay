@@ -92,6 +92,17 @@ Nothing about a previous observation is carried into a new one. There is no ackn
 watermark, and no local claim that attention was handled: an item stops being reported only when the
 current remote truth no longer shows it.
 
+### Review threads
+
+An unresolved thread is actionable while it holds human activity no anchored agent reply names. A
+**resolved** thread never is, whatever it contains — an agent reply, no agent reply, or a human
+speaking last. Resolution is GitHub's own current truth and the one signal a human controls directly:
+somebody decided that conversation is finished. A reviewer who is not finished, or who comes back to
+it, leaves the thread unresolved, and the thread comes back with them.
+
+Reporting a resolved thread as an unresolved one sent the owner to argue with a settled conversation,
+which is what a thread two reviewers resolved between themselves did on every single check.
+
 ### A changes-requested review that was answered
 
 GitHub keeps reporting `CHANGES_REQUESTED` until the same reviewer submits another review, so a

@@ -127,7 +127,6 @@ type Item struct {
 	Path            string `json:"path,omitempty"`
 	Line            int    `json:"line,omitempty"`
 	ThreadID        string `json:"thread_id,omitempty"`
-	ThreadResolved  bool   `json:"thread_resolved,omitempty"`
 	CommentsTotal   int    `json:"comments_total,omitempty"`
 	CheckName       string `json:"check_name,omitempty"`
 	CheckRunID      string `json:"check_run_id,omitempty"`

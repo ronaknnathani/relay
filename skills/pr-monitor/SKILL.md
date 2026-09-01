@@ -58,7 +58,7 @@ Each item carries a `reason`:
 | `failing-check` | a check concluded failure, error, timeout, action-required, startup-failure, canceled, or stale | you classify flake vs real; real → `pr-fix`. A canceled or stale check reported no result at all — rerun it |
 | `changes-requested` | a CHANGES_REQUESTED review nobody has answered yet | `pr-fix` — answer that exact review; once answered the watcher reports `changes-requested-awaiting-rereview` and waits for the reviewer |
 | `new-comment` / `new-review` / `new-inline-comment` | human activity the agent has not answered | `pr-fix` |
-| `unresolved-thread` | an unresolved thread, or a new human reply after the agent answered | `pr-fix` |
+| `unresolved-thread` | an unresolved thread still holding human activity no reply of yours names | `pr-fix` — a resolved thread is never reported, so resolving one is how it clears |
 | `merge-conflict` | the branch conflicts with its base | `pr-fix` |
 | `blocked` | GitHub will not merge it and nothing else in the digest explains why | you investigate branch protection and required checks, then escalate |
 | `stale-base` | the branch is behind its base | you rebase |

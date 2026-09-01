@@ -425,15 +425,27 @@ func classifyThreadlessInline(observation Observation) []Item {
 	return items
 }
 
-// classifyThreads reports every review thread that still holds human activity
-// no agent reply names.
+// classifyThreads reports every unresolved review thread that still holds human
+// activity no agent reply names.
 //
-// A thread is reported against its newest unanswered human comment, so a reply
-// that answers one comment never answers a second one posted beside it, and a
-// new human reply moves the item's identity and wakes the owner again.
+// A resolved thread is never reported, whatever it contains. Resolution is
+// GitHub's own current truth and the one signal a human controls directly:
+// somebody decided that conversation is finished, and a reviewer who did not
+// mean it — or who came back to it — leaves it unresolved, which brings the
+// thread back with them. Reporting a resolved thread as unresolved sent the
+// owner to argue with a settled conversation, and a thread a human resolved
+// without any agent reply did exactly that on every check.
+//
+// An unresolved thread is reported against its newest unanswered human comment,
+// so a reply that answers one comment never answers a second one posted beside
+// it, and a new human reply moves the item's identity and wakes the owner
+// again.
 func classifyThreads(threads []ReviewThread) []Item {
 	var items []Item
 	for _, thread := range threads {
+		if thread.IsResolved {
+			continue
+		}
 		answered := answeredRefs(thread.Comments)
 		latest, found := latestUnanswered(thread.Comments, func(comment Activity) bool {
 			return answeredBy(answered[threadAnswerRef(thread.ID, comment.ID)], comment.UpdatedAt) ||
@@ -443,20 +455,19 @@ func classifyThreads(threads []ReviewThread) []Item {
 			continue
 		}
 		items = append(items, Item{
-			Reason:         ReasonUnresolvedThread,
-			Source:         SourceReviewThread,
-			ID:             thread.ID,
-			Key:            fmt.Sprintf("thread:%s:%s:%s", thread.ID, latest.ID, latest.UpdatedAt),
-			Answers:        threadAnswerRef(thread.ID, latest.ID),
-			Body:           latest.Body,
-			Author:         latest.Author.Login,
-			UpdatedAt:      latest.UpdatedAt,
-			URL:            latest.URL,
-			Path:           firstNonEmpty(latest.Path, thread.Path),
-			Line:           firstPositive(latest.Line, thread.Line),
-			ThreadID:       thread.ID,
-			ThreadResolved: thread.IsResolved,
-			CommentsTotal:  thread.CommentsTotal,
+			Reason:        ReasonUnresolvedThread,
+			Source:        SourceReviewThread,
+			ID:            thread.ID,
+			Key:           fmt.Sprintf("thread:%s:%s:%s", thread.ID, latest.ID, latest.UpdatedAt),
+			Answers:       threadAnswerRef(thread.ID, latest.ID),
+			Body:          latest.Body,
+			Author:        latest.Author.Login,
+			UpdatedAt:     latest.UpdatedAt,
+			URL:           latest.URL,
+			Path:          firstNonEmpty(latest.Path, thread.Path),
+			Line:          firstPositive(latest.Line, thread.Line),
+			ThreadID:      thread.ID,
+			CommentsTotal: thread.CommentsTotal,
 		})
 	}
 	return items
