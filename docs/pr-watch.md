@@ -38,8 +38,21 @@ indistinguishable from a green pull request.
 | `stack` | the stack orchestrator named by `--owner`, and only from the current front project |
 
 The owner is the single live Herdr agent whose terminal title is the project's Relay identity. A
-near-miss slug never matches, and duplicate claims refuse to resolve rather than guessing. The prompt
-is payload-free apart from the identifiers the owner needs:
+near-miss slug never matches, and duplicate claims refuse to resolve rather than guessing.
+
+`start` proves that owner exists **before it creates the watcher tab**. Zero live owners or two of
+them fails the command, and no tab and no process are created: a watcher whose owner does not exist
+observes a pull request forever and hands its work to nobody, and that is not discovered until an
+owner wake is finally attempted hours later in a pane nobody is reading. This is also why a
+`deliver-pr` sub-agent inside a stack run cannot start one — the surrounding pane belongs to the
+orchestrator, so nothing is titled for the child project.
+
+`--mode managed` proves more, because managed mode claims this project is one program's work item and
+its owner is that item's worker. Before creating anything it checks that the project has a readable
+`assignment.md`, records a program and a work item, and that the work item exists and names this exact
+project back.
+
+The prompt is payload-free apart from the identifiers the owner needs:
 
 ```
 Run pr-monitor once for project <slug> using watcher fingerprint <fingerprint>.
@@ -102,8 +115,14 @@ Not actionable: pending or queued checks alone, an untouched review-required sta
 | merged stack front | wakes the orchestrator every check until the orchestrator runs `relay pr watch stop`, because only it knows the front-advance is done |
 | three consecutive observation failures | fails visibly rather than running blind |
 
-A watcher that reached a terminal state releases its lock and its process exits; `relay pr watch stop`
-closes the Herdr tab it was running in.
+A watcher that reached a terminal state releases its lock and its process exits, and prints the
+`relay pr watch stop` command that closes its tab. It never closes its own tab: doing so would race
+with flushing its final output, and the pane is the only log it has.
+
+`relay pr watch stop` signals the exact recorded pid, waits for the watcher to release its lock, then
+closes the exact Herdr tab recorded in `watch.json` — including for a watcher that already finished on
+its own. It never guesses at a tab, and when Herdr is unavailable it says which tab is still open and
+the exact `herdr tab close <id>` that closes it rather than claiming a cleanup it did not perform.
 
 Nothing about a previous observation is carried into a new one. There is no acknowledgement, no
 watermark, and no local claim that attention was handled: an item stops being reported only when the

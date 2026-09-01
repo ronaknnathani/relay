@@ -174,6 +174,30 @@ func (c *Client) CreateTab(workspaceID, cwd, label string) (Tab, error) {
 	return Tab{ID: response.Result.Tab.ID, RootPaneID: response.Result.RootPane.ID}, nil
 }
 
+// CloseTab closes one Herdr tab. Relay closes only tabs it created and
+// recorded, never one it inferred.
+func (c *Client) CloseTab(tabID string) error {
+	if strings.TrimSpace(tabID) == "" {
+		return errors.New("close Herdr tab: no tab was named")
+	}
+	if err := c.runOptionalJSON("tab", "close", tabID); err != nil {
+		return fmt.Errorf("close Herdr tab %q: %w", tabID, err)
+	}
+	return nil
+}
+
+// ClosePane closes one Herdr pane. It is the fallback for a recorded pane whose
+// tab is not known, so cleanup still names an exact target.
+func (c *Client) ClosePane(paneID string) error {
+	if strings.TrimSpace(paneID) == "" {
+		return errors.New("close Herdr pane: no pane was named")
+	}
+	if err := c.runOptionalJSON("pane", "close", paneID); err != nil {
+		return fmt.Errorf("close Herdr pane %q: %w", paneID, err)
+	}
+	return nil
+}
+
 // Agents lists live agents recognized by Herdr.
 func (c *Client) Agents() ([]Agent, error) {
 	var response struct {

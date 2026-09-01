@@ -32,6 +32,9 @@ type fakeHerdrClient struct {
 	notifications   []fakeNotification
 	notificationErr error
 	tab             herdr.Tab
+	closedTabs      []string
+	closedPanes     []string
+	closeErr        error
 }
 
 type fakeNotification struct {
@@ -78,6 +81,16 @@ func (f *fakeHerdrClient) Agents() ([]herdr.Agent, error) {
 func (f *fakeHerdrClient) CreateTab(workspace, cwd, label string) (herdr.Tab, error) {
 	f.created = append(f.created, fakeCreatedTab{workspace: workspace, cwd: cwd, label: label})
 	return f.tab, nil
+}
+
+func (f *fakeHerdrClient) CloseTab(tabID string) error {
+	f.closedTabs = append(f.closedTabs, tabID)
+	return f.closeErr
+}
+
+func (f *fakeHerdrClient) ClosePane(paneID string) error {
+	f.closedPanes = append(f.closedPanes, paneID)
+	return f.closeErr
 }
 
 func (f *fakeHerdrClient) RunPane(pane, command string) error {
@@ -1032,6 +1045,10 @@ type lockstepHerdrClient struct {
 }
 
 func (c *lockstepHerdrClient) asFake() *fakeHerdrClient { return &fakeHerdrClient{} }
+
+func (c *lockstepHerdrClient) CloseTab(string) error { return nil }
+
+func (c *lockstepHerdrClient) ClosePane(string) error { return nil }
 
 func (c *lockstepHerdrClient) Agents() ([]herdr.Agent, error) {
 	c.mu.Lock()

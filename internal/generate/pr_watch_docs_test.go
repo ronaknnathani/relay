@@ -64,6 +64,7 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"must never fail the delivery",
 				"adopts an already-running watcher",
 				"`stack-ship` sub-agent",
+				"refuses before it creates anything",
 			},
 			forbidden: []string{"relay pr watch acknowledge"},
 		},

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -41,12 +42,15 @@ func installPRWatchFakes(t *testing.T, client *fakeHerdrClient) {
 		run          func(context.Context, string, prwatch.Options) error
 		tick         func(context.Context, string, prwatch.Options) (prwatch.Digest, error)
 		locate       func(string) (prwatch.Target, error)
+		owner        func([]herdr.Agent, prwatch.Mode, string, string) (herdr.Agent, error)
+		managed      func(string) error
 		now          func() time.Time
 		sleep        func(time.Duration)
 		signal       func(int, os.Signal) error
 	}{
 		newHerdrClient, newPatrolHerdrClient, herdrAvailable, prWatchIsRunning, prWatchReadState,
-		prWatchRunLoop, prWatchTickOnce, prWatchLocate, prWatchNow, prWatchSleep, prWatchSignal,
+		prWatchRunLoop, prWatchTickOnce, prWatchLocate, prWatchRequireOwner, prWatchRequireManaged,
+		prWatchNow, prWatchSleep, prWatchSignal,
 	}
 	newHerdrClient = func() herdrRuntimeClient { return client }
 	newPatrolHerdrClient = func(context.Context) herdrRuntimeClient { return client }
@@ -66,6 +70,8 @@ func installPRWatchFakes(t *testing.T, client *fakeHerdrClient) {
 		prWatchRunLoop = previous.run
 		prWatchTickOnce = previous.tick
 		prWatchLocate = previous.locate
+		prWatchRequireOwner = previous.owner
+		prWatchRequireManaged = previous.managed
 		prWatchNow = previous.now
 		prWatchSleep = previous.sleep
 		prWatchSignal = previous.signal
@@ -76,7 +82,10 @@ func TestPRWatchStartCreatesAWatcherTabAndRunsTheHiddenProcess(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("HERDR_ENV", "1")
 	t.Setenv("HERDR_WORKSPACE_ID", "workspace-1")
-	client := &fakeHerdrClient{tab: herdr.Tab{ID: "tab-1", RootPaneID: "pane-1"}}
+	client := &fakeHerdrClient{
+		tab:            herdr.Tab{ID: "tab-1", RootPaneID: "pane-1"},
+		agentResponses: [][]herdr.Agent{{{TerminalTitle: "relay:demo", PaneID: "pane-owner"}}},
+	}
 	installPRWatchFakes(t, client)
 	calls := 0
 	prWatchIsRunning = func(string) (bool, error) {
@@ -107,9 +116,77 @@ func TestPRWatchStartCreatesAWatcherTabAndRunsTheHiddenProcess(t *testing.T) {
 		t.Fatalf("created tabs = %#v, want %#v", client.created, want)
 	}
 	if want := []fakePaneCommand{{
-		pane: "pane-1", command: "relay pr watch run 'demo' --mode 'standalone' --owner 'demo'",
+		pane: "pane-1",
+		command: "relay pr watch run 'demo' --mode 'standalone' --owner 'demo' " +
+			"--tab 'tab-1' --pane 'pane-1'",
 	}}; !reflect.DeepEqual(client.runPane, want) {
 		t.Fatalf("pane commands = %#v, want %#v", client.runPane, want)
+	}
+	if got.OwnerPane != "pane-owner" || got.TabID != "tab-1" {
+		t.Errorf("start output = %+v, want the validated owner pane and the watcher tab", got)
+	}
+}
+
+// A watcher with no owner observes a pull request forever and hands its work to
+// nobody. Refusing before CreateTab is what keeps that process from existing —
+// this is exactly the shape of a `deliver-pr` sub-agent inside a stack run,
+// whose surrounding pane belongs to the orchestrator, not to the child project.
+func TestPRWatchStartRefusesWithoutExactlyOneLiveOwner(t *testing.T) {
+	for name, agents := range map[string][]herdr.Agent{
+		"no live owner": {{TerminalTitle: "relay:stack-run", PaneID: "pane-stack"}},
+		"duplicate owners": {
+			{TerminalTitle: "relay:demo", PaneID: "pane-a"},
+			{TerminalTitle: "relay:demo", PaneID: "pane-b"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("HERDR_ENV", "1")
+			t.Setenv("HERDR_WORKSPACE_ID", "workspace-1")
+			client := &fakeHerdrClient{
+				tab:            herdr.Tab{ID: "tab-1", RootPaneID: "pane-1"},
+				agentResponses: [][]herdr.Agent{agents},
+			}
+			installPRWatchFakes(t, client)
+			prWatchIsRunning = func(string) (bool, error) { return false, nil }
+
+			_, err := runPRCommand(t, "watch", "start", "demo")
+			if err == nil {
+				t.Fatal("start created a watcher with no exact live owner")
+			}
+			if !strings.Contains(err.Error(), "cannot start a pr watcher") {
+				t.Errorf("start error = %v, want an owner validation failure", err)
+			}
+			if len(client.created) != 0 {
+				t.Fatalf("start created tabs before failing owner validation: %+v", client.created)
+			}
+			if len(client.runPane) != 0 {
+				t.Fatalf("start ran a watcher process anyway: %+v", client.runPane)
+			}
+		})
+	}
+}
+
+func TestPRWatchStartValidatesManagedInvariantsBeforeCreatingATab(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "workspace-1")
+	client := &fakeHerdrClient{
+		tab:            herdr.Tab{ID: "tab-1", RootPaneID: "pane-1"},
+		agentResponses: [][]herdr.Agent{{{TerminalTitle: "relay:demo", PaneID: "pane-owner"}}},
+	}
+	installPRWatchFakes(t, client)
+	prWatchIsRunning = func(string) (bool, error) { return false, nil }
+	prWatchRequireManaged = func(slug string) error {
+		return fmt.Errorf("project %q is not a managed project", slug)
+	}
+
+	_, err := runPRCommand(t, "watch", "start", "demo", "--mode", "managed")
+	if err == nil || !strings.Contains(err.Error(), "not a managed project") {
+		t.Fatalf("managed start = %v, want the managed invariant enforced", err)
+	}
+	if len(client.created) != 0 {
+		t.Fatalf("managed start created tabs before validating: %+v", client.created)
 	}
 }
 
@@ -308,16 +385,20 @@ func TestPRWatchStatusOfARecordWithoutALifecycleStaysNotRunning(t *testing.T) {
 	}
 }
 
-func TestPRWatchStopSignalsTheRecordedProcess(t *testing.T) {
+func TestPRWatchStopSignalsTheRecordedProcessAndClosesItsTab(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	installPRWatchFakes(t, &fakeHerdrClient{})
+	client := &fakeHerdrClient{}
+	installPRWatchFakes(t, client)
 	calls := 0
 	prWatchIsRunning = func(string) (bool, error) {
 		calls++
 		return calls == 1, nil
 	}
 	prWatchReadState = func(slug string) (prwatch.State, error) {
-		return prwatch.State{Project: slug, PID: 4242, Status: prwatch.StatusRunning}, nil
+		return prwatch.State{
+			Project: slug, PID: 4242, Status: prwatch.StatusRunning,
+			TabID: "tab-1", PaneID: "pane-1",
+		}, nil
 	}
 	var signaled []int
 	prWatchSignal = func(pid int, _ os.Signal) error {
@@ -332,8 +413,82 @@ func TestPRWatchStopSignalsTheRecordedProcess(t *testing.T) {
 	if len(signaled) != 1 || signaled[0] != 4242 {
 		t.Fatalf("signaled = %v, want the recorded pid", signaled)
 	}
-	if !strings.Contains(out, "PR watcher stopped for demo") {
-		t.Errorf("stop output = %q", out)
+	if want := []string{"tab-1"}; !reflect.DeepEqual(client.closedTabs, want) {
+		t.Errorf("closed tabs = %v, want the exact recorded tab %v", client.closedTabs, want)
+	}
+	if len(client.closedPanes) != 0 {
+		t.Errorf("stop closed panes as well as the tab: %v", client.closedPanes)
+	}
+	for _, want := range []string{"PR watcher stopped for demo", "Closed watcher tab tab-1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stop output %q is missing %q", out, want)
+		}
+	}
+}
+
+// A watcher that finished on its own leaves its tab behind, so stopping it is
+// still how the tab is cleaned up.
+func TestPRWatchStopClosesTheTabOfAFinishedWatcher(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	client := &fakeHerdrClient{}
+	installPRWatchFakes(t, client)
+	prWatchIsRunning = func(string) (bool, error) { return false, nil }
+	prWatchReadState = func(slug string) (prwatch.State, error) {
+		return prwatch.State{
+			Project: slug, Status: prwatch.StatusComplete, TabID: "tab-9", PaneID: "pane-9",
+		}, nil
+	}
+	prWatchSignal = func(int, os.Signal) error {
+		t.Fatal("stop signalled a watcher that was not running")
+		return nil
+	}
+
+	out, err := runPRCommand(t, "watch", "stop", "demo")
+	if err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if want := []string{"tab-9"}; !reflect.DeepEqual(client.closedTabs, want) {
+		t.Errorf("closed tabs = %v, want %v", client.closedTabs, want)
+	}
+	if !strings.Contains(out, "Closed watcher tab tab-9") {
+		t.Errorf("stop output = %q, want the tab cleanup reported", out)
+	}
+}
+
+// Stopping from outside Herdr must not claim a cleanup it could not perform.
+func TestPRWatchStopWithoutHerdrNamesTheTabItCouldNotClose(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	client := &fakeHerdrClient{}
+	installPRWatchFakes(t, client)
+	herdrAvailable = func() bool { return false }
+	calls := 0
+	prWatchIsRunning = func(string) (bool, error) {
+		calls++
+		return calls == 1, nil
+	}
+	prWatchReadState = func(slug string) (prwatch.State, error) {
+		return prwatch.State{
+			Project: slug, PID: 4242, Status: prwatch.StatusRunning, TabID: "tab-5",
+		}, nil
+	}
+	prWatchSignal = func(int, os.Signal) error { return nil }
+
+	out, err := runPRCommand(t, "watch", "stop", "demo", "--json")
+	if err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	var got prWatchStopOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if !got.Stopped || got.Closed {
+		t.Fatalf("stop output = %+v, want a stopped process and no claimed close", got)
+	}
+	if !strings.Contains(got.Warning, "herdr tab close tab-5") {
+		t.Errorf("warning = %q, want the exact command that closes the tab", got.Warning)
+	}
+	if len(client.closedTabs) != 0 {
+		t.Errorf("stop closed tabs with no Herdr: %v", client.closedTabs)
 	}
 }
 

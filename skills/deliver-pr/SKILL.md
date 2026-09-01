@@ -155,6 +155,12 @@ relay pr watch start "$SLUG" --mode managed   # managed program worker (owner is
 `start` requires Herdr and adopts an already-running watcher, so running it twice is safe. It wakes
 **one exact live session** — the pane whose Relay title names this project, which is this session.
 
+`start` **refuses before it creates anything** unless exactly one live session carries that identity:
+zero owners or two owners means a watcher would either hand its work to nobody or not know whom to
+wake, so no tab and no process are created. `--mode managed` additionally verifies this project really
+is a program work item — a readable `assignment.md`, and a program work item that names this project
+back — before creating anything.
+
 **A watcher-start failure must never fail the delivery.** The PR is open and recorded; that is the
 phase's outcome. Report the exact failure as an actionable warning and say that `/pr-monitor` can be
 run manually instead — it works with no watcher and no Herdr, via `relay pr watch tick <slug> --json`.
@@ -164,8 +170,9 @@ Two cases where you deliberately do **not** start one:
 - **A standalone run with no Herdr pane.** It cannot host a watcher. Say so and point at the manual
   `/pr-monitor` fallback. Nothing else about the standalone path changes.
 - **Running as a `stack-ship` sub-agent.** The surrounding pane belongs to the stack orchestrator, not
-  to this project, so a watcher started here would wake nobody. `start` fails its owner validation;
-  treat that as a skip with a warning and let the orchestrator start the front watcher itself with
+  to this project, so no live session is titled for this project and a watcher started here would wake
+  nobody. `start` refuses before creating a tab, so no orphan watcher can exist; treat that refusal as
+  a skip with a warning and let the orchestrator start the front watcher itself with
   `--mode stack --owner <stack-slug>`.
 
 ## Done

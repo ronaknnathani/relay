@@ -480,3 +480,44 @@ func TestClientCommandTimeoutCancelsHungTerminalControl(t *testing.T) {
 		t.Fatalf("terminal control timeout error = %v", err)
 	}
 }
+
+func TestCloseTabAndClosePaneTargetExactIdentifiers(t *testing.T) {
+	var calls [][]string
+	client := NewClientWithRunner(func(args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		return nil, nil
+	})
+	if err := client.CloseTab("tab-1"); err != nil {
+		t.Fatalf("CloseTab: %v", err)
+	}
+	if err := client.ClosePane("pane-1"); err != nil {
+		t.Fatalf("ClosePane: %v", err)
+	}
+	want := [][]string{{"tab", "close", "tab-1"}, {"pane", "close", "pane-1"}}
+	if !reflect.DeepEqual(calls, want) {
+		t.Errorf("herdr calls = %v, want %v", calls, want)
+	}
+}
+
+func TestCloseRefusesAnUnnamedTarget(t *testing.T) {
+	client := NewClientWithRunner(func(args ...string) ([]byte, error) {
+		t.Fatalf("herdr was invoked with %v for an unnamed target", args)
+		return nil, nil
+	})
+	if err := client.CloseTab("  "); err == nil {
+		t.Error("CloseTab accepted an empty tab id")
+	}
+	if err := client.ClosePane(""); err == nil {
+		t.Error("ClosePane accepted an empty pane id")
+	}
+}
+
+func TestCloseTabReportsAHerdrFailure(t *testing.T) {
+	client := NewClientWithRunner(func(...string) ([]byte, error) {
+		return []byte("tab not found"), errors.New("exit status 1")
+	})
+	err := client.CloseTab("tab-1")
+	if err == nil || !strings.Contains(err.Error(), "tab not found") {
+		t.Errorf("CloseTab = %v, want the Herdr failure surfaced", err)
+	}
+}

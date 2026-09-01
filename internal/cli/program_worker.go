@@ -30,6 +30,8 @@ const (
 type herdrRuntimeClient interface {
 	Agents() ([]herdr.Agent, error)
 	CreateTab(workspaceID, cwd, label string) (herdr.Tab, error)
+	CloseTab(tabID string) error
+	ClosePane(paneID string) error
 	RunPane(paneID, command string) error
 	RenameAgent(target, name string) error
 	PromptAgent(target, text string) error

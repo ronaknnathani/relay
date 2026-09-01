@@ -17,14 +17,16 @@ import (
 const prWatchStartTimeout = 10 * time.Second
 
 var (
-	prWatchIsRunning = prwatch.IsRunning
-	prWatchReadState = prwatch.ReadState
-	prWatchRunLoop   = prwatch.Run
-	prWatchTickOnce  = prwatch.Tick
-	prWatchLocate    = prwatch.LoadTarget
-	prWatchNow       = time.Now
-	prWatchSleep     = time.Sleep
-	prWatchSignal    = func(pid int, signal os.Signal) error {
+	prWatchIsRunning      = prwatch.IsRunning
+	prWatchReadState      = prwatch.ReadState
+	prWatchRunLoop        = prwatch.Run
+	prWatchTickOnce       = prwatch.Tick
+	prWatchLocate         = prwatch.LoadTarget
+	prWatchRequireOwner   = prwatch.RequireLiveOwner
+	prWatchRequireManaged = prwatch.RequireManagedProject
+	prWatchNow            = time.Now
+	prWatchSleep          = time.Sleep
+	prWatchSignal         = func(pid int, signal os.Signal) error {
 		process, err := os.FindProcess(pid)
 		if err != nil {
 			return fmt.Errorf("find pr watch process %d: %w", pid, err)
@@ -34,12 +36,23 @@ var (
 )
 
 type prWatchStartOutput struct {
-	Project string         `json:"project"`
-	Running bool           `json:"running"`
-	Adopted bool           `json:"adopted"`
-	Warning string         `json:"warning,omitempty"`
-	State   prwatch.State  `json:"state"`
-	Target  prwatch.Target `json:"-"`
+	Project   string         `json:"project"`
+	Running   bool           `json:"running"`
+	Adopted   bool           `json:"adopted"`
+	OwnerPane string         `json:"owner_pane,omitempty"`
+	TabID     string         `json:"tab_id,omitempty"`
+	Warning   string         `json:"warning,omitempty"`
+	State     prwatch.State  `json:"state"`
+	Target    prwatch.Target `json:"-"`
+}
+
+type prWatchStopOutput struct {
+	Project string `json:"project"`
+	Stopped bool   `json:"stopped"`
+	TabID   string `json:"tab_id,omitempty"`
+	PaneID  string `json:"pane_id,omitempty"`
+	Closed  bool   `json:"closed"`
+	Warning string `json:"warning,omitempty"`
 }
 
 type prWatchStatusOutput struct {
@@ -147,14 +160,27 @@ func runPRWatchStart(out io.Writer, slug string, flags *prWatchModeFlags, jsonOu
 	if err != nil {
 		return err
 	}
+	// Everything that could make this watcher pointless is checked before a tab
+	// exists, so a refused start never leaves an orphan process observing a
+	// pull request on behalf of nobody.
+	if mode == prwatch.ModeManaged {
+		if err := prWatchRequireManaged(slug); err != nil {
+			return err
+		}
+	}
+	ownerAgent, err := prWatchRequireOwner(readiness.Agents, mode, slug, owner)
+	if err != nil {
+		return err
+	}
 	client := newHerdrClient()
 	tab, err := client.CreateTab(readiness.WorkspaceID, target.Dir, "relay-pr-watch:"+slug)
 	if err != nil {
 		return err
 	}
 	runCommand := fmt.Sprintf(
-		"relay pr watch run %s --mode %s --owner %s",
+		"relay pr watch run %s --mode %s --owner %s --tab %s --pane %s",
 		shellQuote(slug), shellQuote(string(mode)), shellQuote(owner),
+		shellQuote(tab.ID), shellQuote(tab.RootPaneID),
 	)
 	if err := client.RunPane(tab.RootPaneID, runCommand); err != nil {
 		return err
@@ -175,6 +201,7 @@ func runPRWatchStart(out io.Writer, slug string, flags *prWatchModeFlags, jsonOu
 				if state.Status == prwatch.StatusRunning {
 					return renderPRWatchStart(out, prWatchStartOutput{
 						Project: slug, Running: true, State: state,
+						OwnerPane: ownerAgent.PaneID, TabID: tab.ID,
 					}, jsonOutput)
 				}
 			case !errors.Is(stateErr, os.ErrNotExist):
@@ -233,6 +260,7 @@ func renderPRWatchStart(out io.Writer, result prWatchStartOutput, jsonOutput boo
 
 func newCmdPRWatchRun() *cobra.Command {
 	flags := &prWatchModeFlags{}
+	var tabID, paneID string
 	command := &cobra.Command{
 		Use:    "run <project-slug>",
 		Short:  "Run a project PR watcher in the foreground",
@@ -253,6 +281,8 @@ func newCmdPRWatchRun() *cobra.Command {
 				Mode:         mode,
 				Owner:        owner,
 				Client:       newPatrolHerdrClient(ctx),
+				TabID:        tabID,
+				PaneID:       paneID,
 				RelayVersion: version,
 				// The watcher pane is the watcher's log: routine events go to
 				// this process's stdout and undelivered attention to its
@@ -267,10 +297,19 @@ func newCmdPRWatchRun() *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(command.OutOrStdout(), "PR watch %s for %s\n", state.Status, slug)
+			// The watcher must not close its own tab: doing so races with
+			// flushing this final line, and the pane is the only log there is.
+			// Cleanup belongs to whoever stops it.
+			if state.Status != prwatch.StatusRunning {
+				fmt.Fprintf(command.OutOrStdout(),
+					"Run `relay pr watch stop %s` to close this watcher tab\n", slug)
+			}
 			return nil
 		},
 	}
 	flags.bind(command)
+	command.Flags().StringVar(&tabID, "tab", "", "Herdr tab hosting this watcher, recorded for cleanup")
+	command.Flags().StringVar(&paneID, "pane", "", "Herdr pane hosting this watcher, recorded for cleanup")
 	return command
 }
 
@@ -360,35 +399,55 @@ func prWatchFingerprintLabel(fingerprint string) string {
 }
 
 func newCmdPRWatchStop() *cobra.Command {
-	return &cobra.Command{
+	var jsonOutput bool
+	command := &cobra.Command{
 		Use:   "stop <project-slug>",
-		Short: "Stop a running project PR watcher",
+		Short: "Stop a running project PR watcher and close its Herdr tab",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			return runPRWatchStop(command.OutOrStdout(), args[0])
+			return runPRWatchStop(command.OutOrStdout(), args[0], jsonOutput)
 		},
 	}
+	command.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
+	return command
 }
 
-func runPRWatchStop(out io.Writer, slug string) error {
+// runPRWatchStop signals the exact recorded process, waits for it to release
+// the watcher lock, then closes the exact recorded tab. A watcher that already
+// finished on its own still leaves its tab behind, so cleanup runs either way.
+func runPRWatchStop(out io.Writer, slug string, jsonOutput bool) error {
 	running, err := prWatchIsRunning(slug)
 	if err != nil {
 		return err
 	}
-	if !running {
-		fmt.Fprintf(out, "PR watcher for %s is not running\n", slug)
-		return nil
+	state, stateErr := prWatchReadState(slug)
+	if stateErr != nil && (running || !errors.Is(stateErr, os.ErrNotExist)) {
+		return stateErr
 	}
-	state, err := prWatchReadState(slug)
-	if err != nil {
-		return err
+	result := prWatchStopOutput{
+		Project: slug, Stopped: !running, TabID: state.TabID, PaneID: state.PaneID,
 	}
-	if state.PID <= 0 {
-		return fmt.Errorf("pr watch for project %q has invalid pid %d", slug, state.PID)
+	if running {
+		if state.PID <= 0 {
+			return fmt.Errorf("pr watch for project %q has invalid pid %d", slug, state.PID)
+		}
+		if err := prWatchSignal(state.PID, syscall.SIGTERM); err != nil {
+			return fmt.Errorf("stop pr watch for project %q: %w", slug, err)
+		}
+		if err := awaitPRWatchExit(slug); err != nil {
+			return err
+		}
+		result.Stopped = true
 	}
-	if err := prWatchSignal(state.PID, syscall.SIGTERM); err != nil {
-		return fmt.Errorf("stop pr watch for project %q: %w", slug, err)
+	result.Closed, result.Warning = closePRWatchTab(state)
+	if jsonOutput {
+		return writeProgramJSON(out, result)
 	}
+	renderPRWatchStop(out, result, running)
+	return nil
+}
+
+func awaitPRWatchExit(slug string) error {
 	deadline := prWatchNow().Add(prWatchStartTimeout)
 	for {
 		running, err := prWatchIsRunning(slug)
@@ -396,7 +455,6 @@ func runPRWatchStop(out io.Writer, slug string) error {
 			return err
 		}
 		if !running {
-			fmt.Fprintf(out, "PR watcher stopped for %s\n", slug)
 			return nil
 		}
 		if !prWatchNow().Before(deadline) {
@@ -406,6 +464,69 @@ func runPRWatchStop(out io.Writer, slug string) error {
 		}
 		prWatchSleep(patrolPollInterval)
 	}
+}
+
+// closePRWatchTab closes the exact Herdr tab or pane the watcher recorded. It
+// never guesses at one, and it never claims a close it did not make: with no
+// recorded target or no Herdr, it returns the warning that names what is left.
+func closePRWatchTab(state prwatch.State) (bool, string) {
+	if state.TabID == "" && state.PaneID == "" {
+		return false, ""
+	}
+	target := "tab " + state.TabID
+	if state.TabID == "" {
+		target = "pane " + state.PaneID
+	}
+	if !herdrAvailable() {
+		return false, fmt.Sprintf(
+			"Herdr is not available here, so the watcher's %s is still open; close it with "+
+				"`herdr %s` from the workspace that hosts it",
+			target, herdrCloseCommand(state),
+		)
+	}
+	client := newHerdrClient()
+	var err error
+	if state.TabID != "" {
+		err = client.CloseTab(state.TabID)
+	} else {
+		err = client.ClosePane(state.PaneID)
+	}
+	if err != nil {
+		return false, fmt.Sprintf(
+			"the watcher process stopped, but its %s is still open: %v; close it with `herdr %s`",
+			target, err, herdrCloseCommand(state),
+		)
+	}
+	return true, ""
+}
+
+func herdrCloseCommand(state prwatch.State) string {
+	if state.TabID != "" {
+		return "tab close " + state.TabID
+	}
+	return "pane close " + state.PaneID
+}
+
+func renderPRWatchStop(out io.Writer, result prWatchStopOutput, wasRunning bool) {
+	switch {
+	case wasRunning:
+		fmt.Fprintf(out, "PR watcher stopped for %s\n", result.Project)
+	default:
+		fmt.Fprintf(out, "PR watcher for %s is not running\n", result.Project)
+	}
+	if result.Closed {
+		fmt.Fprintf(out, "Closed watcher %s\n", strings.TrimSpace(herdrCloseTarget(result)))
+	}
+	if result.Warning != "" {
+		fmt.Fprintf(out, "Warning: %s\n", result.Warning)
+	}
+}
+
+func herdrCloseTarget(result prWatchStopOutput) string {
+	if result.TabID != "" {
+		return "tab " + result.TabID
+	}
+	return "pane " + result.PaneID
 }
 
 func newCmdPRWatchTick() *cobra.Command {
