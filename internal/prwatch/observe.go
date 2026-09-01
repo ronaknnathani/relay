@@ -23,7 +23,7 @@ import (
 // Requiring the marker to start its line means quoting an earlier agent reply —
 // which markdown renders as "> <!-- relay-agent-reply -->" — is still human
 // activity.
-const AgentReplyMarker = "<!-- relay-agent-reply -->"
+const AgentReplyMarker = agentReplyMarkerPrefix + " " + agentReplyMarkerEnd
 
 // The anchored marker every automated Relay reply carries on a line of its own,
 // immediately before its visible "🤖 <agent> on behalf of <author>" disclosure:

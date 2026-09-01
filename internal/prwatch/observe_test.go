@@ -1058,3 +1058,14 @@ func TestActivityWithNoTimestampIsNeverTreatedAsAnswered(t *testing.T) {
 		t.Errorf("item = %+v, want the undated comment kept actionable", digest.Items[0])
 	}
 }
+
+// The legacy token and the anchored one are the same marker with nothing to
+// answer, so the parser cannot drift from the constant that names it.
+func TestTheLegacyMarkerIsTheBareAnchoredMarker(t *testing.T) {
+	if AgentReplyMarker != "<!-- relay-agent-reply -->" {
+		t.Fatalf("AgentReplyMarker = %q, want the token Relay has always written", AgentReplyMarker)
+	}
+	if got := AgentReplyMarkerFor("comment:200"); got != "<!-- relay-agent-reply answers=comment:200 -->" {
+		t.Errorf("AgentReplyMarkerFor = %q", got)
+	}
+}
