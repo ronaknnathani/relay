@@ -130,7 +130,7 @@ func TestHumanCommentIsActionableUntilTheAgentReplies(t *testing.T) {
 
 	answered := observation
 	answered.Comments = append(append([]Activity{}, observation.Comments...),
-		human("2", pr.Author, "🤖 copilot on behalf of author-human: renamed", "2026-01-02T00:00:00Z"))
+		agentReply("2", pr.Author, "renamed", "2026-01-02T00:00:00Z"))
 	if got := BuildDigest("demo", ModeStandalone, answered, observedAt); len(got.Items) != 0 {
 		t.Fatalf("digest items = %+v, want none once the agent replied", got.Items)
 	}
@@ -166,7 +166,7 @@ func TestUnresolvedThreadsAndNewRepliesAreActionable(t *testing.T) {
 		ID: "THREAD_2", IsResolved: true, Path: "go.mod", Line: 3, CommentsTotal: 2,
 		Comments: []Activity{
 			human("21", "reviewer", "bump this", "2026-01-01T00:00:00Z"),
-			human("22", pr.Author, "🤖 copilot on behalf of author-human: bumped", "2026-01-02T00:00:00Z"),
+			agentReply("22", pr.Author, "bumped", "2026-01-02T00:00:00Z"),
 		},
 	}
 	digest := BuildDigest("demo", ModeStandalone, Observation{
@@ -321,6 +321,15 @@ func TestNewHeadRefreshesCheckAndConflictKeys(t *testing.T) {
 	}
 }
 
+func hasItemID(digest Digest, id string) bool {
+	for _, item := range digest.Items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -385,5 +394,159 @@ func TestLoadTargetWithoutAPullRequestNamesTheRecordingCommand(t *testing.T) {
 	_, err := LoadTarget("demo")
 	if err == nil || !strings.Contains(err.Error(), "relay state pr demo") {
 		t.Fatalf("LoadTarget = %v, want an error naming the recording command", err)
+	}
+}
+
+// agentReply builds the exact shape every automated Relay pull request reply
+// carries: the hidden machine marker, then the visible disclosure.
+func agentReply(id, login, body, updated string) Activity {
+	return human(id, login,
+		AgentReplyMarker+"\n🤖 copilot on behalf of author-human\n\n"+body, updated)
+}
+
+func TestOnlyTheExactMarkerClassifiesAnAgentReply(t *testing.T) {
+	pr := openPR()
+	question := human("1", "reviewer", "please rename this", "2026-01-01T00:00:00Z")
+
+	// A human who types the robot emoji, or quotes the marker inside a
+	// blockquote, has not answered anything.
+	for name, reply := range map[string]Activity{
+		"emoji only": human("2", "reviewer",
+			"🤖 nice bot, but this is still wrong", "2026-01-02T00:00:00Z"),
+		"quoted marker": human("2", "reviewer",
+			"> "+AgentReplyMarker+"\n> earlier reply\n\nstill wrong", "2026-01-02T00:00:00Z"),
+		"emoji disclosure without the marker": human("2", pr.Author,
+			"🤖 copilot on behalf of author-human: renamed", "2026-01-02T00:00:00Z"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			digest := BuildDigest("demo", ModeStandalone, Observation{
+				PR: pr, Comments: []Activity{question, reply},
+			}, observedAt)
+			if !hasItemID(digest, "1") {
+				t.Fatalf("digest items = %+v, want the original review comment still actionable",
+					digest.Items)
+			}
+		})
+	}
+
+	answered := BuildDigest("demo", ModeStandalone, Observation{
+		PR:       pr,
+		Comments: []Activity{question, agentReply("2", pr.Author, "renamed", "2026-01-02T00:00:00Z")},
+	}, observedAt)
+	if len(answered.Items) != 0 {
+		t.Fatalf("digest items = %+v, want none once the marked agent reply landed", answered.Items)
+	}
+}
+
+func TestANewHumanReplyAfterTheMarkerReactivatesTheSource(t *testing.T) {
+	pr := openPR()
+	digest := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr,
+		Comments: []Activity{
+			human("1", "reviewer", "please rename this", "2026-01-01T00:00:00Z"),
+			agentReply("2", pr.Author, "renamed", "2026-01-02T00:00:00Z"),
+			human("3", "reviewer", "still wrong", "2026-01-03T00:00:00Z"),
+		},
+	}, observedAt)
+	assertReasons(t, digest, ReasonNewComment)
+	if digest.Items[0].ID != "3" {
+		t.Errorf("item = %+v, want the newest human reply", digest.Items[0])
+	}
+}
+
+// An agent reply posted at the same second as the human activity it answers
+// still counts: GitHub timestamps are second-resolution.
+func TestAnAgentReplyAtTheSameInstantAnswersTheSource(t *testing.T) {
+	pr := openPR()
+	digest := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr,
+		Comments: []Activity{
+			human("1", "reviewer", "please rename this", "2026-01-01T00:00:00Z"),
+			agentReply("2", pr.Author, "renamed", "2026-01-01T00:00:00Z"),
+		},
+	}, observedAt)
+	if len(digest.Items) != 0 {
+		t.Fatalf("digest items = %+v, want none for a same-second agent reply", digest.Items)
+	}
+}
+
+// The exact regression a single global "answered at" timestamp caused: one
+// agent reply on one inline thread marked the whole pull request answered, and
+// a review body and a second inline thread left at the same moment vanished
+// from every later digest. Every source is reconciled on its own.
+func TestAnAgentReplyOnOneSourceDoesNotAnswerAnother(t *testing.T) {
+	pr := openPR()
+	review := human("100", "reviewer", "this needs a design note", "2026-01-01T10:00:00Z")
+	review.State = "COMMENTED"
+	conversation := human("200", "reviewer", "and please update the README", "2026-01-01T10:00:00Z")
+	firstInline := human("300", "reviewer", "rename this", "2026-01-01T10:00:00Z")
+	firstInline.Path, firstInline.Line = "main.go", 12
+	secondInline := human("301", "reviewer", "and this one too", "2026-01-01T10:00:00Z")
+	secondInline.Path, secondInline.Line = "store.go", 40
+
+	// Twenty minutes later the agent replies to exactly one inline comment.
+	answer := agentReply("302", pr.Author, "renamed", "2026-01-01T10:20:00Z")
+	answer.Path, answer.Line = "main.go", 12
+	answer.InReplyTo = "300"
+
+	digest := BuildDigest("demo", ModeStandalone, Observation{
+		PR:             pr,
+		Reviews:        []Activity{review},
+		Comments:       []Activity{conversation},
+		InlineComments: []Activity{firstInline, secondInline, answer},
+	}, observedAt)
+
+	assertReasons(t, digest, ReasonNewReview, ReasonNewComment, ReasonNewInlineComment)
+	for _, item := range digest.Items {
+		if item.Source == SourceInlineComment && item.ID != "301" {
+			t.Errorf("inline item = %+v, want only the unanswered inline comment", item)
+		}
+	}
+}
+
+func TestAnAgentReplyAnswersOnlyItsOwnInlineThread(t *testing.T) {
+	pr := openPR()
+	first := human("300", "reviewer", "rename this", "2026-01-01T10:00:00Z")
+	first.Path, first.Line = "main.go", 12
+	answer := agentReply("302", pr.Author, "renamed", "2026-01-01T10:20:00Z")
+	answer.Path, answer.Line = "main.go", 12
+	answer.InReplyTo = "300"
+
+	digest := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr, InlineComments: []Activity{first, answer},
+	}, observedAt)
+	if len(digest.Items) != 0 {
+		t.Fatalf("digest items = %+v, want none once the inline thread was answered", digest.Items)
+	}
+
+	// A reply chained onto the same root answers the root too.
+	chained := agentReply("303", pr.Author, "and again", "2026-01-01T10:30:00Z")
+	chained.InReplyTo = "302"
+	followUp := human("304", "reviewer", "still wrong", "2026-01-01T10:40:00Z")
+	followUp.InReplyTo = "300"
+	followUp.Path, followUp.Line = "main.go", 12
+	reopened := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr, InlineComments: []Activity{first, answer, chained, followUp},
+	}, observedAt)
+	assertReasons(t, reopened, ReasonNewInlineComment)
+	if reopened.Items[0].ID != "304" {
+		t.Errorf("item = %+v, want the newest human reply on the thread", reopened.Items[0])
+	}
+}
+
+func TestAnAgentReviewAnswersOnlyReviewBodies(t *testing.T) {
+	pr := openPR()
+	review := human("100", "reviewer", "this needs a design note", "2026-01-01T10:00:00Z")
+	review.State = "COMMENTED"
+	conversation := human("200", "reviewer", "and please update the README", "2026-01-01T10:00:00Z")
+	answeringReview := agentReply("101", pr.Author, "added the design note", "2026-01-01T10:20:00Z")
+	answeringReview.State = "COMMENTED"
+
+	digest := BuildDigest("demo", ModeStandalone, Observation{
+		PR: pr, Reviews: []Activity{review, answeringReview}, Comments: []Activity{conversation},
+	}, observedAt)
+	assertReasons(t, digest, ReasonNewComment)
+	if digest.Items[0].ID != "200" {
+		t.Errorf("item = %+v, want the still-unanswered conversation comment", digest.Items[0])
 	}
 }

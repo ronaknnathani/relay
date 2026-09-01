@@ -109,6 +109,9 @@ type Activity struct {
 	URL       string `json:"url,omitempty"`
 	Path      string `json:"path,omitempty"`
 	Line      int    `json:"line,omitempty"`
+	// InReplyTo is the inline comment this one replies to, which chains an
+	// inline comment onto the thread it belongs to.
+	InReplyTo string `json:"in_reply_to,omitempty"`
 	// State carries a review's decision (APPROVED, CHANGES_REQUESTED, ...) and
 	// is empty for plain comments.
 	State string `json:"state,omitempty"`
@@ -319,6 +322,7 @@ type restActivity struct {
 	Path        string `json:"path"`
 	Line        int    `json:"line"`
 	StartLine   int    `json:"start_line"`
+	InReplyToID int64  `json:"in_reply_to_id"`
 }
 
 func (c *Client) restActivities(ctx context.Context, path string) ([]Activity, error) {
@@ -342,6 +346,7 @@ func (c *Client) restActivities(ctx context.Context, path string) ([]Activity, e
 				URL:       entry.HTMLURL,
 				Path:      entry.Path,
 				Line:      firstPositive(entry.Line, entry.StartLine),
+				InReplyTo: optionalID(entry.InReplyToID),
 				State:     strings.ToUpper(entry.State),
 			})
 		}
@@ -504,6 +509,15 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// optionalID renders an identifier GitHub omits as an empty string rather than
+// as the literal zero, so an absent parent is never mistaken for comment 0.
+func optionalID(id int64) string {
+	if id == 0 {
+		return ""
+	}
+	return strconv.FormatInt(id, 10)
 }
 
 func firstPositive(values ...int) int {

@@ -65,6 +65,26 @@ unresolved threads and new replies on answered ones, merge conflicts, a branch b
 approved green clean default-base pull request whose auto-merge is not armed, a pull request closed
 without merging, and — in stack mode only — a merged front pull request.
 
+## Telling an agent reply from a human one
+
+Every automated Relay reply opens with the exact marker `<!-- relay-agent-reply -->` on a line of its
+own, then the visible `🤖 <agent> on behalf of <author>` disclosure. The marker is the only signal the
+watcher uses. An emoji, a phrase, or an author login can all be typed by a human quoting or joking
+about a bot, and mistaking one of those for an agent reply silences live review feedback; quoting an
+earlier agent reply indents the marker behind `> `, so it is still human activity.
+
+Each source is reconciled on its own, and only against replies on that same source:
+
+| Source | Answered by |
+|---|---|
+| conversation comment | a later marked agent comment in the conversation |
+| review body | a later marked agent review |
+| inline comment | a later marked agent reply chained onto that comment's thread |
+| review thread | a later marked agent reply in that thread, or the thread being resolved |
+
+A reply posted anywhere else answers nothing. Reconciling sources together let one reply mark several
+independent pieces of feedback as handled, which silently dropped review comments nobody addressed.
+
 Not actionable: pending or queued checks alone, an untouched review-required state, and a draft alone.
 A merged pull request completes a standalone or managed watch silently, with no owner wake.
 

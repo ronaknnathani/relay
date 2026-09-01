@@ -141,8 +141,12 @@ adopts the running one.
 - **No local "handled" claim.** The remote pull request is the only record of what is resolved.
 - **Approval is the only merge path.** Never self-approve, never `gh pr merge` to merge now, never
   dismiss a review to unblock. Auto-merge fires on a genuine human code-owner approval.
-- **Never impersonate.** Every agent reply is prefixed `🤖 <agent> on behalf of <author>` — that
-  disclosure is also how the watcher tells an agent reply from a human one.
+- **Never impersonate, and always mark.** Every automated reply — yours or `pr-fix`'s — opens with the
+  exact hidden marker `<!-- relay-agent-reply -->` on its own line, then the visible
+  `🤖 <agent> on behalf of <author>` disclosure. The marker is the only thing that tells the watcher an
+  agent replied; a reply without it is read as new human feedback forever. Reply on the **same source**
+  you are answering: a conversation comment with `gh pr comment`, a review body with
+  `gh pr review --comment`, an inline comment or thread with the inline replies endpoint.
 - **Never silence a failure** (enforced inside `pr-fix`).
 - **One writer per branch** — serialize every push.
 - **Never report an item as resolved** unless the re-observation stopped showing it.

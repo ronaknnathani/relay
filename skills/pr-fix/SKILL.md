@@ -42,12 +42,37 @@ described below. This is the manual path and it is unchanged.
 | CI checks | `gh pr checks` |
 | Failed run logs | `gh run view <RUN_ID> --log-failed` |
 | Inline review comments | `gh api "repos/$REPO/pulls/$PR/comments" --jq '.[] \| {id,user:.user.login,path,line,body}'` |
-| Reply to a comment | `gh api "repos/$REPO/pulls/comments/<ID>/replies" -f body="..."` |
+| Reply to an inline comment | `gh api "repos/$REPO/pulls/comments/<ID>/replies" -f body="$BODY"` |
+| Reply to a conversation comment | `gh pr comment "$PR" --body "$BODY"` |
+| Reply to a review body | `gh pr review "$PR" --comment --body "$BODY"` |
 | Resolve a thread (after fixing) | `gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -F t=<THREAD_ID>` |
 
 `<RUN_ID>` comes from a delegated item's `check_run_id`, or from `gh pr checks` / `statusCheckRollup`;
 a `<THREAD_ID>` comes from a delegated item's `thread_id`, or from the GraphQL `reviewThreads` query.
 `gh` has no native thread-resolve — resolving requires the GraphQL mutation above.
+
+## Every automated reply — exact marker, visible disclosure, same source
+
+Every reply you post to a pull request starts with these two lines, then a blank line, then the reply:
+
+```
+<!-- relay-agent-reply -->
+🤖 <agent> on behalf of <author>
+```
+
+The HTML comment is invisible on GitHub and is the **only** thing that tells the `relay pr watch`
+runtime an agent wrote a reply. A reply without it is read as fresh human feedback and will wake the
+owner again forever; the emoji line alone is not enough, because a human can type an emoji. The
+disclosure line is the human-visible half of the same promise: never write as if you were the author.
+
+**Reply on the same source you are answering.** The watcher reconciles each source independently, so
+an answer posted somewhere else does not answer anything:
+
+| Item | Reply with |
+|---|---|
+| `new-comment` | `gh pr comment` — the pull request conversation |
+| `new-review` | `gh pr review --comment` — a review, not a conversation comment |
+| `new-inline-comment` / `unresolved-thread` | the inline replies endpoint on that comment or thread |
 
 ## Process
 
@@ -92,7 +117,8 @@ a `<THREAD_ID>` comes from a delegated item's `thread_id`, or from the GraphQL `
    - **Author decision** (changes intended behavior, API shape, or scope; two-plus reasonable answers):
      do NOT guess. Reply asking for input, FLAG it to the author, and leave the thread open.
    - **When unsure which it is, treat it as a decision** and surface it.
-   - Every reply must disclose it is automated and must not impersonate the author.
+   - Every reply carries the exact `<!-- relay-agent-reply -->` marker and the visible
+     `🤖 <agent> on behalf of <author>` disclosure, and goes on the same source it answers.
 
 4. **Merge conflicts — research both intents, never abort.** Rebase/merge onto the base. For each
    conflict, research the intent behind BOTH sides before resolving — read the commit messages and the
@@ -115,6 +141,8 @@ a `<THREAD_ID>` comes from a delegated item's `thread_id`, or from the GraphQL `
 - Editing a failing test instead of the code it caught — a red test means behavior changed.
 - Guessing an author-decision comment instead of replying and flagging it.
 - A reply that reads as the human author's own words, with no automated-agent disclosure.
+- A reply missing the exact `<!-- relay-agent-reply -->` marker, or posted on a different source than
+  the one it answers — either way the watcher will keep waking the owner about it.
 - Running `git rebase --abort` / `git merge --abort` instead of resolving the conflict.
 - Resolving a conflict by keeping one side without understanding why the other side exists.
 - Assuming `npm`/`make`/etc. instead of the command the repo's own config actually uses.
@@ -130,7 +158,7 @@ a `<THREAD_ID>` comes from a delegated item's `thread_id`, or from the GraphQL `
 - [ ] Direct mode captured the remote PR context locally before edits and refreshed it after each push.
 - [ ] No failure was silenced (no skipped/deleted test, no lint-suppression, no loosened assertion).
 - [ ] Every review comment is fixed+resolved, or replied+flagged as an author decision left open.
-- [ ] Every agent reply discloses it is automated and does not impersonate the author.
+- [ ] Every agent reply carries the exact `<!-- relay-agent-reply -->` marker and the visible disclosure, and was posted on the same source it answers.
 - [ ] All conflicts resolved forward (no abort), both intents researched and preserved, validation re-run after.
 - [ ] After any rebase, confirmed my branch's commits survived (still in `git log`; net diff vs base still carries my changes).
 - [ ] Findings reported with the shared severity vocabulary (Critical / Important / Suggestion).

@@ -27,6 +27,8 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"do not re-derive it with your own `gh` sweep",
 				"delegated mode",
 				"One digest, one run, one exit",
+				"<!-- relay-agent-reply -->",
+				"🤖 <agent> on behalf of <author>",
 			},
 			forbidden: []string{
 				"/loop", "/every", "nextTickAfter", "native loop", "CronCreate", "ScheduleWakeup",
@@ -47,6 +49,9 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"Return a structured result, one entry per supplied item",
 				"`check_run_id`",
 				"`thread_id`",
+				"<!-- relay-agent-reply -->",
+				"🤖 <agent> on behalf of <author>",
+				"Reply on the same source you are answering",
 			},
 			forbidden: []string{"relay pr watch acknowledge", "relay pr watch start", "--outcome"},
 		},
