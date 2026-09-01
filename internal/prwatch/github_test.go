@@ -372,3 +372,180 @@ func TestObserveAcceptsAPullRequestWithNoChecks(t *testing.T) {
 		t.Errorf("checks = %+v, want none", observation.Checks)
 	}
 }
+
+// threadPage renders one GraphQL page of review threads.
+func threadPage(ids []string, hasNextPage bool, cursor string) string {
+	nodes := make([]string, 0, len(ids))
+	for _, id := range ids {
+		nodes = append(nodes, fmt.Sprintf(
+			`{"id":%q,"isResolved":false,"isOutdated":false,"path":"main.go","line":12,`+
+				`"comments":{"totalCount":1,"nodes":[{"databaseId":20,"body":"rename this",`+
+				`"createdAt":"2026-01-03T00:00:00Z","updatedAt":"2026-01-03T00:00:00Z",`+
+				`"url":"https://github.com/acme/widgets/pull/42#discussion_r20","path":"main.go",`+
+				`"line":12,"author":{"login":"reviewer","__typename":"User"}}]}}`, id))
+	}
+	return fmt.Sprintf(
+		`{"data":{"repository":{"pullRequest":{"reviewThreads":{`+
+			`"pageInfo":{"hasNextPage":%t,"endCursor":%q},"nodes":[%s]}}}}}`,
+		hasNextPage, cursor, strings.Join(nodes, ","))
+}
+
+// A pull request with more review threads than one GraphQL page holds must be
+// observed completely. A dropped thread is an unanswered reviewer the watcher
+// reports as a quiet pull request.
+func TestObserveReadsEveryPageOfReviewThreads(t *testing.T) {
+	first := make([]string, 50)
+	for i := range first {
+		first[i] = fmt.Sprintf("THREAD_%03d", i)
+	}
+	second := []string{"THREAD_050", "THREAD_051"}
+
+	gh := fullFixtureGH()
+	gh.responses["graphql reviewThreads"] = threadPage(first, true, "cursor-1") + "\n" +
+		threadPage(second, false, "cursor-2")
+
+	observation, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if len(observation.Threads) != len(first)+len(second) {
+		t.Fatalf("threads = %d, want %d across both pages",
+			len(observation.Threads), len(first)+len(second))
+	}
+	for i, want := range append(append([]string{}, first...), second...) {
+		if observation.Threads[i].ID != want {
+			t.Fatalf("thread %d = %q, want %q: every returned thread is preserved in order",
+				i, observation.Threads[i].ID, want)
+		}
+	}
+	if got := observation.Threads[0]; len(got.Comments) != 1 || got.Comments[0].ID != "20" {
+		t.Errorf("thread = %+v, want its comments preserved", got)
+	}
+}
+
+// A last page that still reports another page means pagination stopped early.
+func TestObserveRejectsATruncatedReviewThreadList(t *testing.T) {
+	gh := fullFixtureGH()
+	gh.responses["graphql reviewThreads"] = threadPage([]string{"THREAD_1"}, false, "cursor-1") +
+		"\n" + threadPage([]string{"THREAD_2"}, true, "cursor-2")
+
+	_, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+	if err == nil {
+		t.Fatal("Observe = nil error, want a truncated review thread list reported")
+	}
+	if !strings.Contains(err.Error(), "truncated review thread list") {
+		t.Errorf("error %q does not name the truncation", err)
+	}
+}
+
+func TestObserveAcceptsAnEmptyReviewThreadPage(t *testing.T) {
+	gh := fullFixtureGH()
+	gh.responses["graphql reviewThreads"] = threadPage(nil, false, "")
+
+	observation, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if len(observation.Threads) != 0 {
+		t.Errorf("threads = %+v, want none", observation.Threads)
+	}
+}
+
+// GitHub answers a partially failed GraphQL query with an `errors` list and a
+// zero exit code, so a thread or a check it declined to return would otherwise
+// look like one that does not exist.
+func TestObserveRejectsAPartialGraphQLAnswer(t *testing.T) {
+	for name, test := range map[string]struct {
+		key      string
+		response string
+	}{
+		"review threads": {
+			key: "graphql reviewThreads",
+			response: `{"data":{"repository":{"pullRequest":{"reviewThreads":` +
+				`{"pageInfo":{"hasNextPage":false,"endCursor":"c1"},"nodes":[]}}}},` +
+				`"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`,
+		},
+		"checks": {
+			key: "graphql checks",
+			response: `{"data":{"repository":{"pullRequest":{"statusCheckRollup":{"nodes":[]}}}},` +
+				`"errors":[{"type":"FORBIDDEN","message":"Resource not accessible"}]}`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gh := fullFixtureGH()
+			gh.responses[test.key] = test.response
+
+			_, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+			if err == nil {
+				t.Fatal("Observe = nil error, want the partial GraphQL answer reported")
+			}
+			if !strings.Contains(err.Error(), "error(s)") {
+				t.Errorf("error %q does not name the GraphQL errors", err)
+			}
+		})
+	}
+}
+
+// REST collections carry no cursor and no total, so their completeness rests
+// entirely on `gh api --paginate`: it follows the Link header until GitHub
+// stops sending one, and it exits nonzero the moment a page fails. These pin
+// that contract — every page it emits is kept, a failing page fails the whole
+// observation, and a stream that does not decode cleanly is an error rather
+// than a short list.
+func TestRestPaginationKeepsEveryPageItIsGiven(t *testing.T) {
+	gh := fullFixtureGH()
+	gh.responses["api repos/acme/widgets/issues/42/comments"] = `[
+  {"id": 1, "user": {"login": "reviewer", "type": "User"}, "body": "one",
+   "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
+]
+[
+  {"id": 2, "user": {"login": "reviewer", "type": "User"}, "body": "two",
+   "created_at": "2026-01-02T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z"}
+]
+[]
+[
+  {"id": 3, "user": {"login": "reviewer", "type": "User"}, "body": "three",
+   "created_at": "2026-01-03T00:00:00Z", "updated_at": "2026-01-03T00:00:00Z"}
+]`
+
+	observation, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	want := []string{"1", "2", "3"}
+	if len(observation.Comments) != len(want) {
+		t.Fatalf("comments = %+v, want every page including the empty one", observation.Comments)
+	}
+	for i, id := range want {
+		if observation.Comments[i].ID != id {
+			t.Errorf("comment %d = %q, want %q in page order", i, observation.Comments[i].ID, id)
+		}
+	}
+}
+
+func TestRestPaginationFailureFailsTheObservation(t *testing.T) {
+	gh := fullFixtureGH()
+	failing := "api repos/acme/widgets/pulls/42/comments"
+	delete(gh.responses, failing)
+	gh.failures[failing] = errors.New("HTTP 422 on page 3")
+
+	if _, err := fixtureClient(t, gh).Observe(context.Background(), 42); err == nil ||
+		!strings.Contains(err.Error(), "HTTP 422 on page 3") {
+		t.Fatalf("Observe = %v, want the failed page surfaced", err)
+	}
+}
+
+func TestRestPaginationRejectsATruncatedStream(t *testing.T) {
+	gh := fullFixtureGH()
+	gh.responses["api repos/acme/widgets/issues/42/comments"] = `[
+  {"id": 1, "user": {"login": "reviewer", "type": "User"}, "body": "one",
+   "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
+]
+[
+  {"id": 2, "user": {"login": "reviewer", "type`
+
+	if _, err := fixtureClient(t, gh).Observe(context.Background(), 42); err == nil ||
+		!strings.Contains(err.Error(), "parse gh api") {
+		t.Fatalf("Observe = %v, want a truncated page stream reported", err)
+	}
+}

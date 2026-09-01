@@ -25,9 +25,20 @@ it is safe to run beside a running watcher.
 
 Every observation is read-only and complete. Conversation comments, review bodies, and inline comments
 are read through `gh api --paginate`; review threads and the newest commit's check contexts through
-paginated GraphQL connections. A check list that GitHub still reports another page for is an
-observation error, never a shorter list quietly accepted — a truncated check list is
-indistinguishable from a green pull request.
+paginated GraphQL connections.
+
+A GraphQL list whose final page still reports `hasNextPage` is an observation error, never a shorter
+list quietly accepted: a truncated check list is indistinguishable from a green pull request, and a
+truncated thread list from one whose reviewers are all answered. A response carrying a GraphQL
+`errors` list fails the same way — GitHub answers a partially failed query with a zero exit code, so
+a thread it declined to return would otherwise look like a thread that does not exist.
+
+REST collections carry no cursor and no total, so their completeness rests on `gh api --paginate`
+itself: it follows the Link header's `rel="next"` until GitHub stops sending one and exits nonzero the
+moment a page fails, so a zero exit means every page was read. There is nothing in the payload to
+verify afterwards and nothing worth inventing — a guessed "full page" heuristic breaks exactly where
+GitHub's page size is not what it was guessed to be. What the watcher does enforce is that a failed
+command and a page stream that does not decode cleanly are both observation errors.
 
 ## Owner routing
 

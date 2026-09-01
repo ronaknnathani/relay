@@ -313,8 +313,35 @@ const checkQuery = `query($owner:String!,$repo:String!,$number:Int!,$endCursor:S
   }
 }`
 
+// graphQLErrors is the error list a GraphQL response carries when GitHub
+// answers only part of a query. `gh` exits zero for those, so nothing else
+// notices them: a review thread or a check GitHub declined to return would
+// simply be absent, and an absent one is indistinguishable from a quiet pull
+// request. Every response is inspected for them.
+type graphQLErrors struct {
+	Errors []struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+func (e graphQLErrors) err(query string) error {
+	if len(e.Errors) == 0 {
+		return nil
+	}
+	messages := make([]string, 0, len(e.Errors))
+	for _, entry := range e.Errors {
+		messages = append(messages, firstNonEmpty(strings.TrimSpace(entry.Message), entry.Type, "unknown error"))
+	}
+	return fmt.Errorf(
+		"gh api graphql answered the %s query with %d error(s): %s",
+		query, len(e.Errors), strings.Join(messages, "; "),
+	)
+}
+
 // checkPageResponse is one page of the check-context GraphQL query.
 type checkPageResponse struct {
+	graphQLErrors
 	Data struct {
 		Repository struct {
 			PullRequest struct {
@@ -367,6 +394,9 @@ func (c *Client) checks(ctx context.Context, owner, repo string, number int) ([]
 	var checks []Check
 	truncated := false
 	for _, page := range pages {
+		if err := page.err("check context"); err != nil {
+			return nil, err
+		}
 		for _, node := range page.Data.Repository.PullRequest.StatusCheckRollup.Nodes {
 			rollup := node.Commit.StatusCheckRollup
 			if rollup == nil {
@@ -430,6 +460,17 @@ type restActivity struct {
 	InReplyToID int64  `json:"in_reply_to_id"`
 }
 
+// restActivities reads every page of one REST collection.
+//
+// Completeness here rests on `gh api --paginate`, which follows the Link
+// header's `rel="next"` until GitHub stops sending one and exits nonzero the
+// moment any page fails — so a zero exit means every page was read. Unlike a
+// GraphQL connection, the payload carries no cursor and no total to check
+// afterwards, so there is nothing to verify and nothing worth inventing: a
+// hand-rolled "looks like a full page" heuristic would fail exactly where
+// GitHub's page size is not what it was guessed to be. What is enforced is that
+// a failed command and a stream that does not decode cleanly are both
+// observation errors, never a short list quietly accepted.
 func (c *Client) restActivities(ctx context.Context, path string) ([]Activity, error) {
 	output, err := c.run(ctx, "api", path, "--paginate")
 	if err != nil {
@@ -481,10 +522,15 @@ const reviewThreadQuery = `query($owner:String!,$repo:String!,$number:Int!,$endC
 
 // reviewThreadPageResponse is one page of the review-thread GraphQL query.
 type reviewThreadPageResponse struct {
+	graphQLErrors
 	Data struct {
 		Repository struct {
 			PullRequest struct {
 				ReviewThreads struct {
+					PageInfo struct {
+						HasNextPage bool   `json:"hasNextPage"`
+						EndCursor   string `json:"endCursor"`
+					} `json:"pageInfo"`
 					Nodes []struct {
 						ID         string `json:"id"`
 						IsResolved bool   `json:"isResolved"`
@@ -531,8 +577,14 @@ func (c *Client) reviewThreads(ctx context.Context, owner, repo string, number i
 		return nil, fmt.Errorf("parse gh api graphql review threads JSON: %w", err)
 	}
 	var threads []ReviewThread
+	truncated := false
 	for _, page := range pages {
-		for _, node := range page.Data.Repository.PullRequest.ReviewThreads.Nodes {
+		if err := page.err("review thread"); err != nil {
+			return nil, err
+		}
+		reviewThreads := page.Data.Repository.PullRequest.ReviewThreads
+		truncated = reviewThreads.PageInfo.HasNextPage
+		for _, node := range reviewThreads.Nodes {
 			thread := ReviewThread{
 				ID:            node.ID,
 				IsResolved:    node.IsResolved,
@@ -556,6 +608,17 @@ func (c *Client) reviewThreads(ctx context.Context, owner, repo string, number i
 			}
 			threads = append(threads, thread)
 		}
+	}
+	// The last page still promising another one means pagination stopped early.
+	// A short thread list is indistinguishable from a pull request whose review
+	// conversations are all answered, so this is an observation error rather
+	// than a quieter answer.
+	if truncated {
+		return nil, fmt.Errorf(
+			"gh api graphql returned a truncated review thread list for pull request %d: "+
+				"%d threads read and GitHub still reports another page",
+			number, len(threads),
+		)
 	}
 	return threads, nil
 }
