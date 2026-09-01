@@ -57,14 +57,17 @@ const (
 
 // Actionable reason codes. They are stable, payload-free, and safe to print.
 const (
-	ReasonFailingCheck      = "failing-check"
-	ReasonChangesRequested  = "changes-requested"
-	ReasonNewComment        = "new-comment"
-	ReasonNewReview         = "new-review"
-	ReasonNewInlineComment  = "new-inline-comment"
-	ReasonUnresolvedThread  = "unresolved-thread"
-	ReasonMergeConflict     = "merge-conflict"
-	ReasonStale             = "stale-base"
+	ReasonFailingCheck     = "failing-check"
+	ReasonChangesRequested = "changes-requested"
+	ReasonNewComment       = "new-comment"
+	ReasonNewReview        = "new-review"
+	ReasonNewInlineComment = "new-inline-comment"
+	ReasonUnresolvedThread = "unresolved-thread"
+	ReasonMergeConflict    = "merge-conflict"
+	ReasonStale            = "stale-base"
+	// ReasonBlocked names a pull request GitHub refuses to merge for a reason
+	// nothing else in the digest accounts for.
+	ReasonBlocked           = "blocked"
 	ReasonAutoMergeNotArmed = "auto-merge-not-armed"
 	ReasonClosedUnmerged    = "closed-unmerged"
 	ReasonStackFrontMerged  = "stack-front-merged"
@@ -79,6 +82,9 @@ const (
 	WaitingDraft          = "draft"
 	WaitingAutoMergeArmed = "auto-merge-armed"
 	WaitingMerged         = "merged"
+	// WaitingBlocked reports a merge GitHub is holding for a reason the digest
+	// already names, so a blocked pull request never looks unexplained twice.
+	WaitingBlocked = "merge-blocked"
 )
 
 // Item sources name where one actionable item was observed.

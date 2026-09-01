@@ -550,3 +550,100 @@ func TestAnAgentReviewAnswersOnlyReviewBodies(t *testing.T) {
 		t.Errorf("item = %+v, want the still-unanswered conversation comment", digest.Items[0])
 	}
 }
+
+func TestCancelledAndStaleChecksAreActionableAndNeutralIsNot(t *testing.T) {
+	for _, test := range []struct {
+		conclusion string
+		actionable bool
+	}{
+		{conclusion: "FAILURE", actionable: true},
+		{conclusion: "ERROR", actionable: true},
+		{conclusion: "TIMED_OUT", actionable: true},
+		{conclusion: "ACTION_REQUIRED", actionable: true},
+		{conclusion: "STARTUP_FAILURE", actionable: true},
+		// A cancelled or stale required check never reports a result, so the
+		// pull request cannot merge until somebody reruns it.
+		{conclusion: "CANCELLED", actionable: true},
+		{conclusion: "STALE", actionable: true},
+		// GitHub treats neutral and skipped as satisfying a required check, so
+		// neither blocks a merge and neither is the watcher's business.
+		{conclusion: "NEUTRAL"},
+		{conclusion: "SKIPPED"},
+		{conclusion: "SUCCESS"},
+	} {
+		t.Run(test.conclusion, func(t *testing.T) {
+			digest := BuildDigest("demo", ModeStandalone, Observation{
+				PR:     openPR(),
+				Checks: []Check{{Name: "build", Status: "COMPLETED", Conclusion: test.conclusion}},
+			}, observedAt)
+			if test.actionable {
+				assertReasons(t, digest, ReasonFailingCheck)
+				return
+			}
+			if len(digest.Items) != 0 {
+				t.Fatalf("digest items = %+v, want none for a %s check", digest.Items, test.conclusion)
+			}
+		})
+	}
+}
+
+func TestBlockedWithNothingExplainingItIsActionable(t *testing.T) {
+	blocked := openPR()
+	blocked.ReviewDecision = "APPROVED"
+	green := []Check{{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"}}
+
+	// Approved, green, no conflict, not a draft — and GitHub still will not
+	// merge it. Nothing else in the digest says why, so the block itself is the
+	// thing the owner has to look at.
+	digest := BuildDigest("demo", ModeStandalone, Observation{PR: blocked, Checks: green}, observedAt)
+	assertReasons(t, digest, ReasonBlocked)
+	item := digest.Items[0]
+	if item.Key != "blocked:head222" || item.Source != SourceMerge {
+		t.Errorf("blocked item = %+v, want a head-scoped merge item", item)
+	}
+
+	for name, observation := range map[string]Observation{
+		"a failing check explains it": {
+			PR:     blocked,
+			Checks: []Check{{Name: "build", Status: "COMPLETED", Conclusion: "FAILURE"}},
+		},
+		"a pending check explains it": {
+			PR:     blocked,
+			Checks: []Check{{Name: "build", Status: "IN_PROGRESS"}},
+		},
+		"review required explains it":     {PR: openPR(), Checks: green},
+		"changes requested explains it":   {PR: withReviewDecision(blocked, "CHANGES_REQUESTED"), Checks: green},
+		"a draft explains it":             {PR: withDraft(blocked), Checks: green},
+		"a merge conflict explains it":    {PR: withMergeState(blocked, "DIRTY"), Checks: green},
+		"a clean merge state is no block": {PR: withMergeState(blocked, "CLEAN"), Checks: green},
+	} {
+		t.Run(name, func(t *testing.T) {
+			digest := BuildDigest("demo", ModeStandalone, observation, observedAt)
+			for _, item := range digest.Items {
+				if item.Reason == ReasonBlocked {
+					t.Fatalf("digest items = %+v, want no unexplained block", digest.Items)
+				}
+			}
+		})
+	}
+
+	explained := BuildDigest("demo", ModeStandalone, Observation{PR: openPR(), Checks: green}, observedAt)
+	if !containsString(explained.Waiting, WaitingBlocked) {
+		t.Errorf("waiting = %v, want an explained block reported as waiting", explained.Waiting)
+	}
+}
+
+func withReviewDecision(pr PullRequest, decision string) PullRequest {
+	pr.ReviewDecision = decision
+	return pr
+}
+
+func withDraft(pr PullRequest) PullRequest {
+	pr.Draft = true
+	return pr
+}
+
+func withMergeState(pr PullRequest, status string) PullRequest {
+	pr.MergeStateStatus = status
+	return pr
+}

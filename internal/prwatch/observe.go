@@ -27,12 +27,20 @@ const AgentReplyMarker = "<!-- relay-agent-reply -->"
 // failingConclusions are the check conclusions that always need attention. A
 // watcher never decides whether a failure is an infrastructure flake or a real
 // one; that judgment belongs to the woken owner.
+//
+// CANCELLED and STALE are here because a required check that ends either way
+// never reports a result, so the pull request cannot merge until somebody
+// reruns it — a silent stall is exactly what a watcher exists to catch.
+// NEUTRAL and SKIPPED are deliberately absent: GitHub counts both as
+// satisfying a required check, so neither blocks a merge.
 var failingConclusions = map[string]bool{
 	"FAILURE":         true,
 	"ERROR":           true,
 	"TIMED_OUT":       true,
 	"ACTION_REQUIRED": true,
 	"STARTUP_FAILURE": true,
+	"CANCELLED":       true,
+	"STALE":           true,
 }
 
 // pendingStatuses are the check statuses that are deliberately not actionable.
@@ -164,8 +172,21 @@ func classify(mode Mode, observation Observation) ([]Item, []string) {
 	items = append(items, classifyReviewDecision(pr, observation.Reviews)...)
 	items = append(items, classifyConversation(observation)...)
 	items = append(items, classifyThreads(observation.Threads)...)
-	items = append(items, classifyMergeState(pr, len(failing) > 0, pending)...)
+	merge := classifyMergeState(pr, len(failing) > 0, pending)
+	items = append(items, merge...)
 
+	if pr.MergeStateStatus == "BLOCKED" {
+		if blockExplained(pr, len(failing) > 0, pending, merge) {
+			waiting = append(waiting, WaitingBlocked)
+		} else {
+			items = append(items, Item{
+				Reason: ReasonBlocked,
+				Source: SourceMerge,
+				ID:     strconv.Itoa(pr.Number),
+				Key:    fmt.Sprintf("blocked:%s", pr.HeadSHA),
+			})
+		}
+	}
 	if pr.Draft {
 		waiting = append(waiting, WaitingDraft)
 	}
@@ -176,6 +197,27 @@ func classify(mode Mode, observation Observation) ([]Item, []string) {
 		waiting = append(waiting, WaitingAutoMergeArmed)
 	}
 	return items, waiting
+}
+
+// blockExplained reports whether something else the digest already names
+// accounts for GitHub refusing to merge. A block nothing explains — approved,
+// green, unconflicted, not a draft, and still unmergeable — is invisible
+// otherwise: the owner sees a healthy pull request that never merges, and the
+// watcher would keep reporting it as quiet forever.
+func blockExplained(pr PullRequest, failingChecks, pendingChecks bool, mergeItems []Item) bool {
+	if failingChecks || pendingChecks || pr.Draft {
+		return true
+	}
+	switch pr.ReviewDecision {
+	case "REVIEW_REQUIRED", "CHANGES_REQUESTED":
+		return true
+	}
+	for _, item := range mergeItems {
+		if item.Reason == ReasonMergeConflict || item.Reason == ReasonStale {
+			return true
+		}
+	}
+	return false
 }
 
 func classifyChecks(pr PullRequest, checks []Check) ([]Item, bool) {

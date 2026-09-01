@@ -59,6 +59,7 @@ Each item carries a `reason`:
 | `new-comment` / `new-review` / `new-inline-comment` | human activity the agent has not answered | `pr-fix` |
 | `unresolved-thread` | an unresolved thread, or a new human reply after the agent answered | `pr-fix` |
 | `merge-conflict` | the branch conflicts with its base | `pr-fix` |
+| `blocked` | GitHub will not merge it and nothing else in the digest explains why | you investigate branch protection and required checks, then escalate |
 | `stale-base` | the branch is behind its base | you rebase |
 | `auto-merge-not-armed` | approved, green, clean, based on the default branch, not armed | you arm it |
 | `closed-unmerged` | the pull request was closed without merging | escalate to the author |
