@@ -72,10 +72,10 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 			}
 			agents, agentsErr := listAgents(options.Agents)
 			if agentsErr != nil {
-				state.CTOPresent = false
+				state.TLPresent = false
 				notificationWarning = agentsErr.Error()
 			} else {
-				notificationWarning = requestCTOTurn(
+				notificationWarning = requestTLTurn(
 					ctx, &state, observation, agents, options.Turns, options.Notifier, tickNow,
 				)
 			}

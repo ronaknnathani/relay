@@ -9,7 +9,7 @@ import (
 	"github.com/ronaknnathani/relay/internal/herdr"
 )
 
-// rearmInterval rings the live CTO again for unchanged attention without
+// rearmInterval rings the live tech lead again for unchanged attention without
 // turning every patrol observation into a prompt.
 const rearmInterval = 2 * time.Hour
 
@@ -17,10 +17,10 @@ const rearmInterval = 2 * time.Hour
 // failures. Suppression clears when attention changes or the patrol restarts.
 const turnFailureLimit = 3
 
-// TurnStatus is the outcome of one live CTO doorbell attempt.
+// TurnStatus is the outcome of one live tech lead doorbell attempt.
 type TurnStatus string
 
-// Live CTO doorbell outcomes.
+// Live tech lead doorbell outcomes.
 const (
 	TurnSucceeded TurnStatus = "succeeded"
 	TurnFailed    TurnStatus = "failed"
@@ -29,7 +29,7 @@ const (
 	TurnUncertain TurnStatus = "uncertain"
 )
 
-// TurnRequest describes the live CTO doorbell the patrol wants delivered.
+// TurnRequest describes the live tech lead doorbell the patrol wants delivered.
 type TurnRequest struct {
 	ProgramSlug string
 	PaneID      string
@@ -37,7 +37,7 @@ type TurnRequest struct {
 	Reasons     []Reason
 }
 
-// TurnResult summarizes one live CTO doorbell attempt.
+// TurnResult summarizes one live tech lead doorbell attempt.
 type TurnResult struct {
 	Status    TurnStatus
 	SessionID string
@@ -48,7 +48,7 @@ type TurnResult struct {
 	Error     string
 }
 
-// TurnRunner delivers one prompt to the existing CEO-facing CTO session.
+// TurnRunner delivers one prompt to the existing CEO-facing tech lead session.
 type TurnRunner interface {
 	RunTurn(ctx context.Context, request TurnRequest) (TurnResult, error)
 }
@@ -59,10 +59,10 @@ type Notifier interface {
 	ShowNotification(title, body string) error
 }
 
-// requestCTOTurn rings the live CTO at most once for the current attention. It
-// returns a warning string instead of an error because a delivery
+// requestTLTurn rings the live tech lead at most once for the current
+// attention. It returns a warning string instead of an error because a delivery
 // problem must degrade the patrol, never stop it.
-func requestCTOTurn(
+func requestTLTurn(
 	ctx context.Context,
 	state *State,
 	observation Observation,
@@ -71,11 +71,11 @@ func requestCTOTurn(
 	notifier Notifier,
 	now time.Time,
 ) string {
-	cto, ctoErr := herdr.FindLiveCTO(agents, observation.ProgramSlug)
-	// CTO presence means exactly one identified owner. Zero owners and two
+	tl, tlErr := herdr.FindLiveTL(agents, observation.ProgramSlug)
+	// Tech lead presence means exactly one identified owner. Zero owners and two
 	// rival owners are both reported as absent, because neither state gives the
-	// patrol a CTO it may act beside.
-	state.CTOPresent = ctoErr == nil
+	// patrol a tech lead it may act beside.
+	state.TLPresent = tlErr == nil
 	if observation.AttentionFingerprint == "" {
 		state.AttentionFingerprint = ""
 		state.LastNotifiedAt = ""
@@ -85,23 +85,24 @@ func requestCTOTurn(
 	}
 	if state.DoorbellSuppressed {
 		return fmt.Sprintf(
-			"live CTO doorbells for program %q are suppressed after an unconfirmed delivery; "+
-				"inspect and clear the CTO composer, then restart the patrol",
+			"live tech lead doorbells for program %q are suppressed after an unconfirmed delivery; "+
+				"inspect and clear the tech lead composer, then restart the patrol",
 			observation.ProgramSlug,
 		)
 	}
-	if ctoErr != nil {
-		if errors.Is(ctoErr, herdr.ErrNoLiveCTO) {
+	if tlErr != nil {
+		if errors.Is(tlErr, herdr.ErrNoLiveTL) {
 			return ""
 		}
-		// Ambiguous CTO ownership is not a silent skip: the CEO has to close the
-		// duplicate pane before automation can safely act on this program.
+		// Ambiguous tech lead ownership is not a silent skip: the CEO has to
+		// close the duplicate pane before automation can safely act on this
+		// program.
 		return fmt.Sprintf(
-			"skipped the live CTO doorbell for program %q: %s",
-			observation.ProgramSlug, ctoErr,
+			"skipped the live tech lead doorbell for program %q: %s",
+			observation.ProgramSlug, tlErr,
 		)
 	}
-	switch cto.Status {
+	switch tl.Status {
 	case herdr.StatusIdle, herdr.StatusDone:
 	default:
 		return ""
@@ -119,21 +120,21 @@ func requestCTOTurn(
 	}
 	if state.TurnFailures >= turnFailureLimit {
 		return fmt.Sprintf(
-			"live CTO doorbells for program %q are suppressed after %d consecutive failures (%s); "+
+			"live tech lead doorbells for program %q are suppressed after %d consecutive failures (%s); "+
 				"they resume when attention changes or after `relay program patrol stop`/`start`",
 			observation.ProgramSlug, state.TurnFailures, lastTurnDetail(state),
 		)
 	}
 	if runner == nil {
 		return fmt.Sprintf(
-			"ring the live CTO for program %q: no doorbell runner is configured",
+			"ring the live tech lead for program %q: no doorbell runner is configured",
 			observation.ProgramSlug,
 		)
 	}
 
 	result, err := runner.RunTurn(ctx, TurnRequest{
 		ProgramSlug: observation.ProgramSlug,
-		PaneID:      cto.PaneID,
+		PaneID:      tl.PaneID,
 		Fingerprint: observation.AttentionFingerprint,
 		Reasons:     nonNilReasons(observation.Reasons),
 	})
@@ -157,19 +158,20 @@ func requestCTOTurn(
 	case TurnUncertain:
 		state.DoorbellSuppressed = true
 		return fmt.Sprintf(
-			"live CTO doorbell for program %q was not confirmed: %s; "+
-				"automatic retries are suppressed until the CTO composer is inspected and the patrol is restarted",
+			"live tech lead doorbell for program %q was not confirmed: %s; "+
+				"automatic retries are suppressed until the tech lead composer is inspected "+
+				"and the patrol is restarted",
 			observation.ProgramSlug, turnError(result),
 		)
 	case TurnSkipped:
 		return fmt.Sprintf(
-			"live CTO doorbell for program %q was skipped: %s",
+			"live tech lead doorbell for program %q was skipped: %s",
 			observation.ProgramSlug, skipReason(result),
 		)
 	default:
 		state.TurnFailures++
 		warning := fmt.Sprintf(
-			"live CTO doorbell for program %q %s: %s",
+			"live tech lead doorbell for program %q %s: %s",
 			observation.ProgramSlug, result.Status, turnError(result),
 		)
 		if state.TurnFailures >= turnFailureLimit {
@@ -215,7 +217,7 @@ func notify(notifier Notifier, slug string, result TurnResult) {
 	if notifier == nil {
 		return
 	}
-	body := fmt.Sprintf("Live CTO doorbell for %s %s.", slug, result.Status)
+	body := fmt.Sprintf("Live tech lead doorbell for %s %s.", slug, result.Status)
 	if detail := turnError(result); detail != "" && result.Status != TurnSucceeded {
 		body += " " + detail
 	}

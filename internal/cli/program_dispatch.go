@@ -327,22 +327,22 @@ For every issue, deviation, review request, or pre-PR request, send durable mail
 
 - PR capacity gate before open-pr:
   `+"`relay program can-open-pr %s %s`"+`
-- Question for the CTO:
+- Question for the tech lead:
   `+"`relay program message send %s %s --kind question --body \"<describe the issue and requested decision>\"`"+`
 - Contract, scope, dependency, or risk conflict:
   `+"`relay program message send %s %s --kind conflict --body \"<describe the conflict, impact, and requested decision>\"`"+`
-- Plan needing CTO or CEO review:
+- Plan needing tech lead or CEO review:
   `+"`relay program message send %s %s --kind plan --body \"<describe the plan and requested review>\"`"+`
 - Before requesting an open-PR grant, inspect your unread outbox:
   `+"`relay program message outbox %s %s --json`"+`
   Do not send another pr-open request while one is unread.
 - If no unread pr-open request exists, send exactly one and stop:
   `+"`relay program message send %s %s --kind pr-open --body \"<request an open-PR capacity grant>\"`"+`
-- On resume, proceed only after the inbox contains the CTO's grant-approved instruction. Keep that
+- On resume, proceed only after the inbox contains the tech lead's grant-approved instruction. Keep that
   instruction unread, run the recorded can-open-pr command, then run open-pr. If open-pr fails, leave
   the instruction unread; acknowledge the grant inbox message only after open-pr succeeds and the PR
   is recorded.
-- A CTO-worker conflict is escalated to the CEO for resolution. Do not continue the affected work while it is unresolved.
+- A tech lead-worker conflict is escalated to the CEO for resolution. Do not continue the affected work while it is unresolved.
 `,
 		p.Slug, p.Title, item.ID, item.Title, item.Priority, dependencies, contractLines.String(),
 		p.Slug, item.ID,

@@ -176,9 +176,9 @@ func TestProgramPatrolRunUsesPatrolHerdrClientAndLiveDoorbell(t *testing.T) {
 		if slug != p.Slug || options.Agents != client || options.Notifier != client {
 			t.Fatalf("available Herdr options = %+v", options)
 		}
-		runner, ok := options.Turns.(liveCTOTurnRunner)
+		runner, ok := options.Turns.(liveTLTurnRunner)
 		if !ok || runner.client != client {
-			t.Fatalf("patrol turn runner = %#v, want live CTO runner using the Herdr client", options.Turns)
+			t.Fatalf("patrol turn runner = %#v, want live tech lead runner using the Herdr client", options.Turns)
 		}
 		return nil
 	}
@@ -344,7 +344,7 @@ func TestProgramPatrolStatusRecoversFromCorruptState(t *testing.T) {
 	}
 }
 
-func TestProgramPatrolStatusShowsDegradedCTODoorbell(t *testing.T) {
+func TestProgramPatrolStatusShowsDegradedTLDoorbell(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	client := &fakeHerdrClient{}
 	installPatrolFakes(t, client)
@@ -353,7 +353,7 @@ func TestProgramPatrolStatusShowsDegradedCTODoorbell(t *testing.T) {
 		return patrol.State{
 			Schema: patrol.SchemaVersion, Version: 1, ProgramSlug: slug,
 			Status: patrol.StatusRunning, Reasons: []patrol.Reason{},
-			CTOPresent: false, Warning: "Herdr doorbell unavailable",
+			TLPresent: false, Warning: "Herdr doorbell unavailable",
 		}, nil
 	}
 
@@ -362,7 +362,7 @@ func TestProgramPatrolStatusShowsDegradedCTODoorbell(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out, "Patrol: running") ||
-		!strings.Contains(out, "CTO present: false") ||
+		!strings.Contains(out, "TL present: false") ||
 		!strings.Contains(out, "Warning: Herdr doorbell unavailable") {
 		t.Fatalf("degraded status output = %q", out)
 	}
@@ -380,7 +380,7 @@ func TestProgramPatrolStatusWarnsForAgentWithoutNamedSessions(t *testing.T) {
 	patrolReadState = func(slug string) (patrol.State, error) {
 		return patrol.State{
 			Schema: patrol.SchemaVersion, Version: 1, ProgramSlug: slug,
-			Status: patrol.StatusRunning, Reasons: []patrol.Reason{}, CTOPresent: true,
+			Status: patrol.StatusRunning, Reasons: []patrol.Reason{}, TLPresent: true,
 		}, nil
 	}
 
@@ -392,7 +392,7 @@ func TestProgramPatrolStatusWarnsForAgentWithoutNamedSessions(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &status); err != nil {
 		t.Fatal(err)
 	}
-	if status.State == nil || status.State.CTOPresent ||
+	if status.State == nil || status.State.TLPresent ||
 		!strings.Contains(status.Warning, "codex") ||
 		!strings.Contains(status.Warning, "named sessions") {
 		t.Fatalf("unsupported agent status = %+v", status)
@@ -512,8 +512,8 @@ func TestProgramPatrolSupportsNamedClaudeSessionsWithoutHeadlessTurns(t *testing
 		}, nil
 	}
 	patrolRunLoop = func(_ context.Context, _ string, options patrol.Options) error {
-		if _, ok := options.Turns.(liveCTOTurnRunner); !ok {
-			t.Fatalf("Claude patrol runner = %#v, want live CTO doorbell", options.Turns)
+		if _, ok := options.Turns.(liveTLTurnRunner); !ok {
+			t.Fatalf("Claude patrol runner = %#v, want live tech lead doorbell", options.Turns)
 		}
 		return nil
 	}
@@ -536,7 +536,7 @@ func TestProgramPatrolStatusReportsLiveDoorbellMetadata(t *testing.T) {
 	patrolReadState = func(slug string) (patrol.State, error) {
 		return patrol.State{
 			Schema: patrol.SchemaVersion, Version: 1, ProgramSlug: slug,
-			Status: patrol.StatusRunning, Reasons: []patrol.Reason{}, CTOPresent: true,
+			Status: patrol.StatusRunning, Reasons: []patrol.Reason{}, TLPresent: true,
 			LastTurnStatus: "failed", LastTurnSessionID: "session-1",
 			LastTurnLogPath:   "/home/u/.relay/run/adaptive/turns/20260827T101530Z-session-1.log",
 			LastTurnStartedAt: "2026-08-27T10:15:30Z", LastTurnEndedAt: "2026-08-27T10:17:00Z",
@@ -549,10 +549,10 @@ func TestProgramPatrolStatusReportsLiveDoorbellMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"Last CTO wake: failed at 2026-08-27T10:17:00Z (session session-1)",
+		"Last TL wake: failed at 2026-08-27T10:17:00Z (session session-1)",
 		"Legacy turn log: /home/u/.relay/run/adaptive/turns/20260827T101530Z-session-1.log",
-		"CTO wake error: exit status 2",
-		"Consecutive CTO wake failures: 2",
+		"TL wake error: exit status 2",
+		"Consecutive TL wake failures: 2",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("patrol status output is missing %q:\n%s", want, out)

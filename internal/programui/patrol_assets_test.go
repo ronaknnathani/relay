@@ -17,8 +17,8 @@ func TestProgramUIShowsPatrolCadenceAndDiagnostics(t *testing.T) {
 		`dom.patrolStatus = byID("patrol-status")`,
 		`const patrol = snapshotOf().patrol || {}`,
 		`formatPatrolCadence(count(patrol.delay_seconds))`,
-		`patrol.cto_present ? "CTO present" : "CTO unavailable"`,
-		`patrol.doorbell_suppressed ? "CTO wakes suppressed" : ""`,
+		`patrol.tl_present ? "TL present" : "TL unavailable"`,
+		`patrol.doorbell_suppressed ? "TL wakes suppressed" : ""`,
 		`text(patrol.warning)`,
 		`["Patrol", patrolReasons()]`,
 		`function patrolReasons()`,
@@ -29,16 +29,16 @@ func TestProgramUIShowsPatrolCadenceAndDiagnostics(t *testing.T) {
 	})
 }
 
-// The UI reports the live CTO wake result while remaining compatible with
-// older patrol state that still contains a bounded-turn log path.
-func TestProgramUIShowsLiveCTOWakeMetadata(t *testing.T) {
+// The UI reports the live tech lead wake result while remaining compatible
+// with older patrol state that still contains a bounded-turn log path.
+func TestProgramUIShowsLiveTLWakeMetadata(t *testing.T) {
 	index := readAsset(t, "assets/index.html")
 	requireContains(t, "index.html", index, []string{`id="patrol-turn"`})
 	script := readAsset(t, "assets/app.js")
 	requireContains(t, "app.js", script, []string{
 		`dom.patrolTurn = byID("patrol-turn")`,
 		`function patrolTurnNote(turn)`,
-		"`last CTO wake ${humanize(status)}`",
+		"`last TL wake ${humanize(status)}`",
 		"`log ${turn.log_path}`",
 		"`last turn error: ${turn.error}`",
 	})

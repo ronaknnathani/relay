@@ -214,6 +214,11 @@ func patrolDTO(slug, agentName string, snapshot *Snapshot) PatrolDTO {
 		addSourceWarning(snapshot, &snapshot.SourceHealth.Patrol, fmt.Sprintf("read patrol state %s: %v", path, err))
 		return result
 	}
+	// The inline decoder mirrors patrol.State's own compatibility rule. It
+	// cannot reuse the type because patrol depends on programview, so decoding
+	// here keeps the read-only view free of a package cycle. Pointer fields
+	// distinguish an absent flag from an explicit false: the canonical
+	// `tl_present` wins whenever both are present.
 	var state struct {
 		ProgramSlug        string            `json:"program_slug"`
 		Status             string            `json:"status"`
@@ -221,7 +226,8 @@ func patrolDTO(slug, agentName string, snapshot *Snapshot) PatrolDTO {
 		LastTickAt         string            `json:"last_tick_at"`
 		NextTickAt         string            `json:"next_tick_at"`
 		Reasons            []PatrolReasonDTO `json:"reasons"`
-		CTOPresent         bool              `json:"cto_present"`
+		TLPresent          *bool             `json:"tl_present"`
+		CTOPresent         *bool             `json:"cto_present"`
 		DoorbellSuppressed bool              `json:"doorbell_suppressed"`
 		LastTurnStatus     string            `json:"last_turn_status"`
 		LastTurnSessionID  string            `json:"last_turn_session_id"`
@@ -260,7 +266,7 @@ func patrolDTO(slug, agentName string, snapshot *Snapshot) PatrolDTO {
 		Status: status, Running: running,
 		DelaySeconds: state.DelaySeconds, LastTickAt: state.LastTickAt,
 		NextTickAt: state.NextTickAt, Reasons: reasons,
-		CTOPresent:         running && state.CTOPresent && capabilityWarning == "",
+		TLPresent:          running && firstBool(state.TLPresent, state.CTOPresent) && capabilityWarning == "",
 		DoorbellSuppressed: state.DoorbellSuppressed, Error: state.Error,
 		Turn: PatrolTurnDTO{
 			Status:    state.LastTurnStatus,
@@ -278,16 +284,28 @@ func patrolDTO(slug, agentName string, snapshot *Snapshot) PatrolDTO {
 func patrolAgentWarning(name string) string {
 	a, err := agent.Get(name)
 	if err != nil {
-		return fmt.Sprintf("patrol cannot validate CTO identity for agent %q: %v", name, err)
+		return fmt.Sprintf("patrol cannot validate tech lead identity for agent %q: %v", name, err)
 	}
 	capabilities := a.Capabilities()
 	if !capabilities.NamedSessions {
 		return fmt.Sprintf(
-			"patrol cannot notify the CTO for agent %s because its launch adapter cannot carry named sessions",
+			"patrol cannot notify the tech lead for agent %s because its launch adapter cannot carry named sessions",
 			a.Name(),
 		)
 	}
 	return ""
+}
+
+// firstBool resolves the canonical presence flag ahead of the retired one, so
+// a patrol record that somehow carries both is read the same way patrol reads
+// it.
+func firstBool(values ...*bool) bool {
+	for _, value := range values {
+		if value != nil {
+			return *value
+		}
+	}
+	return false
 }
 
 func nonEmptyStrings(values ...string) []string {

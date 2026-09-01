@@ -212,7 +212,7 @@ func TestRunKeepsTickingWhenHerdrBecomesUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.ConsecutiveErrors != 0 || state.Error != "" || state.CTOPresent {
+	if state.ConsecutiveErrors != 0 || state.Error != "" || state.TLPresent {
 		t.Fatalf("degraded Herdr became fatal patrol state: %+v", state)
 	}
 	cancel()
@@ -268,7 +268,7 @@ func TestRunWithoutHerdrKeepsTicking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.ConsecutiveErrors != 0 || state.Error != "" || state.Warning != "" || state.CTOPresent {
+	if state.ConsecutiveErrors != 0 || state.Error != "" || state.Warning != "" || state.TLPresent {
 		t.Fatalf("no-Herdr patrol state = %+v", state)
 	}
 	cancel()
@@ -304,7 +304,7 @@ func TestRunKeepsTickingWhenBoundedTurnsFail(t *testing.T) {
 	}
 	agents := patrolAgentListerFunc(func() ([]herdr.Agent, error) {
 		return []herdr.Agent{{
-			PaneID: "cto", TerminalTitle: "relay:program:doorbell-degraded",
+			PaneID: "tl", TerminalTitle: "relay:program:doorbell-degraded",
 			Status: herdr.StatusIdle,
 		}}, nil
 	})
@@ -339,7 +339,7 @@ func TestRunKeepsTickingWhenBoundedTurnsFail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.ConsecutiveErrors != 0 || state.Error != "" || state.Warning == "" || !state.CTOPresent {
+	if state.ConsecutiveErrors != 0 || state.Error != "" || state.Warning == "" || !state.TLPresent {
 		t.Fatalf("failed bounded turn patrol state = %+v", state)
 	}
 	if state.AttentionFingerprint != "" || state.LastTurnStatus != string(TurnFailed) {
@@ -386,7 +386,7 @@ func TestRunClearsNotificationStateOnDrainBeforeHerdrFailure(t *testing.T) {
 			return nil, errors.New("herdr unavailable during drain")
 		}
 		return []herdr.Agent{{
-			PaneID: "cto", TerminalTitle: "relay:program:drain-recur",
+			PaneID: "tl", TerminalTitle: "relay:program:drain-recur",
 			Status: herdr.StatusIdle,
 		}}, nil
 	})

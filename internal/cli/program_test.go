@@ -94,7 +94,7 @@ func TestProgramNewCreatesFilesWithoutLaunch(t *testing.T) {
 	}
 }
 
-func TestProgramNewLaunchesCTO(t *testing.T) {
+func TestProgramNewLaunchesTL(t *testing.T) {
 	repo := newTestRepo(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -119,11 +119,11 @@ func TestProgramNewLaunchesCTO(t *testing.T) {
 	want := agent.LaunchOptions{
 		Worktree:   repoRoot,
 		ProjectDir: filepath.Join(home, ".relay", "programs", "active", "governance"),
-		SystemPrompt: "Active relay program: governance. Role: CTO. Run the cto skill only. Never invoke stack-ship; " +
+		SystemPrompt: "Active relay program: governance. Role: tech lead. Run the tl skill only. Never invoke stack-ship; " +
 			"decompose into program work items and dispatch each item through deliver-pr. " +
 			"Reconstruct governance state from the program directory before acting.",
 		SessionName:    "relay:program:governance",
-		Command:        "cto",
+		Command:        "tl",
 		CommandArgs:    "governance",
 		WorkflowGoal:   "Ship Relay governance",
 		PermissionMode: "allow-all",
@@ -133,7 +133,7 @@ func TestProgramNewLaunchesCTO(t *testing.T) {
 	}
 }
 
-func TestProgramResumeLaunchesFreshCTOReentry(t *testing.T) {
+func TestProgramResumeLaunchesFreshTLReentry(t *testing.T) {
 	repo := newTestRepo(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -178,11 +178,11 @@ func TestProgramResumeLaunchesFreshCTOReentry(t *testing.T) {
 	want := agent.LaunchOptions{
 		Worktree:   repoRoot,
 		ProjectDir: filepath.Join(home, ".relay", "programs", "active", "governance"),
-		SystemPrompt: "Active relay program: governance. Role: CTO. Run the cto skill only. Never invoke stack-ship; " +
+		SystemPrompt: "Active relay program: governance. Role: tech lead. Run the tl skill only. Never invoke stack-ship; " +
 			"decompose into program work items and dispatch each item through deliver-pr. " +
 			"Reconstruct governance state from the program directory before acting.",
 		SessionName:    "relay:program:governance",
-		Command:        "cto",
+		Command:        "tl",
 		CommandArgs:    "governance",
 		WorkflowGoal:   "Ship Relay governance",
 		PermissionMode: "allow-all",
@@ -199,9 +199,9 @@ func TestProgramResumeLaunchesFreshCTOReentry(t *testing.T) {
 	}
 }
 
-// One program has exactly one CEO-facing CTO. A second resume must send the CEO
-// to the live pane instead of launching a rival CTO beside it.
-func TestProgramResumeRefusesToLaunchASecondCTO(t *testing.T) {
+// One program has exactly one CEO-facing tech lead. A second resume must send
+// the CEO to the live pane instead of launching a rival tech lead beside it.
+func TestProgramResumeRefusesToLaunchASecondTL(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		agents []herdr.Agent
@@ -211,18 +211,18 @@ func TestProgramResumeRefusesToLaunchASecondCTO(t *testing.T) {
 			name: "one live owner",
 			agents: []herdr.Agent{
 				{PaneID: "near", TerminalTitle: "relay:program:governance-other"},
-				{PaneID: "cto-1", TerminalTitle: "relay:program:governance - GitHub Copilot"},
+				{PaneID: "tl-1", TerminalTitle: "relay:program:governance - GitHub Copilot"},
 			},
-			want: []string{`program "governance" already has a live CTO session in pane cto-1`,
-				"herdr agent focus cto-1"},
+			want: []string{`program "governance" already has a live tech lead session in pane tl-1`,
+				"herdr agent focus tl-1"},
 		},
 		{
 			name: "ambiguous owners",
 			agents: []herdr.Agent{
-				{PaneID: "cto-1", TerminalTitle: "relay:program:governance"},
-				{PaneID: "cto-2", TerminalTitle: "relay:program:governance - GitHub Copilot"},
+				{PaneID: "tl-1", TerminalTitle: "relay:program:governance"},
+				{PaneID: "tl-2", TerminalTitle: "relay:program:governance - GitHub Copilot"},
 			},
-			want: []string{"2 live CTO sessions (panes cto-1, cto-2)", "herdr agent focus <pane>"},
+			want: []string{"2 live tech lead sessions (panes tl-1, tl-2)", "herdr agent focus <pane>"},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -251,7 +251,7 @@ func TestProgramResumeRefusesToLaunchASecondCTO(t *testing.T) {
 
 			_, err = runProgramCommand(t, "resume", "governance")
 			if err == nil {
-				t.Fatal("program resume launched a second CTO")
+				t.Fatal("program resume launched a second tech lead")
 			}
 			for _, want := range test.want {
 				if !strings.Contains(err.Error(), want) {
@@ -725,7 +725,7 @@ func TestManagedProgramCommandsRequireHerdr(t *testing.T) {
 				t.Fatalf("program resume error = %v, want %q", err, tt.want)
 			}
 			if launched {
-				t.Fatal("managed program launched a CTO without Herdr")
+				t.Fatal("managed program launched a tech lead without Herdr")
 			}
 			if len(client.created) != 0 {
 				t.Fatalf("managed program created Herdr tabs: %#v", client.created)

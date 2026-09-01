@@ -43,7 +43,7 @@ func TestBuildReadsPatrolRuntimeWithoutTreatingMissingAsWarning(t *testing.T) {
   "next_tick_at": "2026-08-26T18:15:00Z",
   "delay_seconds": 900,
   "reasons": [{"code":"open-decision:d1","text":"Decision d1 is awaiting resolution."}],
-  "cto_present": true,
+  "tl_present": true,
   "error": ""
 }`
 	path := filepath.Join(runtimeDir, "patrol.json")
@@ -55,7 +55,7 @@ func TestBuildReadsPatrolRuntimeWithoutTreatingMissingAsWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Patrol.Status != "not-running" || got.Patrol.Running ||
-		got.Patrol.DelaySeconds != 900 || got.Patrol.CTOPresent ||
+		got.Patrol.DelaySeconds != 900 || got.Patrol.TLPresent ||
 		len(got.Patrol.Reasons) != 1 || got.Patrol.Reasons[0].Code != "open-decision:d1" {
 		t.Fatalf("stale patrol dto = %+v", got.Patrol)
 	}
@@ -106,7 +106,7 @@ func TestBuildReadsPatrolRuntimeWithoutTreatingMissingAsWarning(t *testing.T) {
 	}
 }
 
-func TestBuildWarnsWhenProgramAgentCannotExposeNamedCTO(t *testing.T) {
+func TestBuildWarnsWhenProgramAgentCannotExposeNamedTL(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p, err := program.New("codex-view", "Codex view", t.TempDir(), "codex", 1)
 	if err != nil {
@@ -123,7 +123,7 @@ func TestBuildWarnsWhenProgramAgentCannotExposeNamedCTO(t *testing.T) {
   "program_slug": "codex-view",
   "status": "running",
   "reasons": [],
-  "cto_present": true
+  "tl_present": true
 }`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestBuildWarnsWhenProgramAgentCannotExposeNamedCTO(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.Patrol.Running || got.Patrol.CTOPresent ||
+	if !got.Patrol.Running || got.Patrol.TLPresent ||
 		!strings.Contains(got.Patrol.Warning, "codex") ||
 		!strings.Contains(got.Patrol.Warning, "named sessions") ||
 		got.SourceHealth.Patrol.Status != "degraded" {

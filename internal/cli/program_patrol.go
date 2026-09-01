@@ -61,7 +61,7 @@ type programPatrolStatusOutput struct {
 func newCmdProgramPatrol() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "patrol",
-		Short: "Observe programs and wake the live CTO when attention is needed",
+		Short: "Observe programs and wake the live tech lead when attention is needed",
 	}
 	command.AddCommand(
 		newCmdProgramPatrolStart(),
@@ -206,7 +206,7 @@ func newCmdProgramPatrolRun() *cobra.Command {
 			options := patrol.Options{
 				RelayVersion: version,
 				Agents:       client,
-				Turns:        liveCTOTurnRunner{client: client},
+				Turns:        liveTLTurnRunner{client: client},
 				Notifier:     client,
 			}
 			if err := patrolRunLoop(ctx, args[0], options); err != nil {
@@ -231,38 +231,39 @@ func validateProgramPatrolAgent(p program.Program) error {
 	if !a.Capabilities().NamedSessions {
 		return fmt.Errorf(
 			"program %q uses %s, whose launch adapter cannot carry named sessions; "+
-				"patrol CTO discovery requires SessionName—use a program launched with copilot or claude",
+				"patrol tech lead discovery requires SessionName—use a program launched with copilot or claude",
 			p.Slug, a.Name(),
 		)
 	}
 	return nil
 }
 
-const liveCTODoorbell = "Check Relay program mail and patrol state."
+const liveTLDoorbell = "Check Relay program mail and patrol state."
 
-// liveCTOTurnRunner submits a payload-free doorbell to the exact existing CTO
-// pane. PromptAgent writes Enter through terminal control, so focus is stable.
-type liveCTOTurnRunner struct {
+// liveTLTurnRunner submits a payload-free doorbell to the exact existing tech
+// lead pane. PromptAgent writes Enter through terminal control, so focus is
+// stable.
+type liveTLTurnRunner struct {
 	client herdrRuntimeClient
 }
 
-func (r liveCTOTurnRunner) RunTurn(
+func (r liveTLTurnRunner) RunTurn(
 	_ context.Context,
 	request patrol.TurnRequest,
 ) (patrol.TurnResult, error) {
 	if r.client == nil {
 		return patrol.TurnResult{
 			Status: patrol.TurnFailed,
-			Error:  "live CTO doorbell has no Herdr client",
+			Error:  "live tech lead doorbell has no Herdr client",
 		}, nil
 	}
 	if request.PaneID == "" {
 		return patrol.TurnResult{
 			Status: patrol.TurnFailed,
-			Error:  "live CTO doorbell has no target pane",
+			Error:  "live tech lead doorbell has no target pane",
 		}, nil
 	}
-	if err := r.client.PromptAgent(request.PaneID, liveCTODoorbell); err != nil {
+	if err := r.client.PromptAgent(request.PaneID, liveTLDoorbell); err != nil {
 		status := patrol.TurnFailed
 		if errors.Is(err, herdr.ErrPromptDeliveryUncertain) {
 			status = patrol.TurnUncertain
@@ -321,7 +322,7 @@ func runProgramPatrolStatus(out io.Writer, slug string, jsonOutput bool) error {
 	if warning := programPatrolCapabilityWarning(slug); warning != "" {
 		result.Warning = appendPatrolWarning(result.Warning, warning)
 		if result.State != nil {
-			result.State.CTOPresent = false
+			result.State.TLPresent = false
 		}
 	}
 	if jsonOutput {
@@ -330,7 +331,7 @@ func runProgramPatrolStatus(out io.Writer, slug string, jsonOutput bool) error {
 	fmt.Fprintf(out, "Patrol: %s\n", result.Status)
 	if result.State != nil {
 		fmt.Fprintf(out, "Last tick: %s\nNext tick: %s\n", result.State.LastTickAt, result.State.NextTickAt)
-		fmt.Fprintf(out, "CTO present: %t\n", result.State.CTOPresent)
+		fmt.Fprintf(out, "TL present: %t\n", result.State.TLPresent)
 		renderProgramPatrolTurn(out, *result.State)
 	}
 	if result.Error != "" {
@@ -345,13 +346,13 @@ func runProgramPatrolStatus(out io.Writer, slug string, jsonOutput bool) error {
 	return nil
 }
 
-// renderProgramPatrolTurn reports the last live CTO wake. Legacy session and
-// log fields remain visible when reading state written by an older build.
+// renderProgramPatrolTurn reports the last live tech lead wake. Legacy session
+// and log fields remain visible when reading state written by an older build.
 func renderProgramPatrolTurn(out io.Writer, state patrol.State) {
 	if state.LastTurnStatus == "" {
 		return
 	}
-	fmt.Fprintf(out, "Last CTO wake: %s", state.LastTurnStatus)
+	fmt.Fprintf(out, "Last TL wake: %s", state.LastTurnStatus)
 	if state.LastTurnEndedAt != "" {
 		fmt.Fprintf(out, " at %s", state.LastTurnEndedAt)
 	}
@@ -363,13 +364,13 @@ func renderProgramPatrolTurn(out io.Writer, state patrol.State) {
 		fmt.Fprintf(out, "Legacy turn log: %s\n", state.LastTurnLogPath)
 	}
 	if state.LastTurnError != "" {
-		fmt.Fprintf(out, "CTO wake error: %s\n", state.LastTurnError)
+		fmt.Fprintf(out, "TL wake error: %s\n", state.LastTurnError)
 	}
 	if state.TurnFailures > 0 {
-		fmt.Fprintf(out, "Consecutive CTO wake failures: %d\n", state.TurnFailures)
+		fmt.Fprintf(out, "Consecutive TL wake failures: %d\n", state.TurnFailures)
 	}
 	if state.DoorbellSuppressed {
-		fmt.Fprintln(out, "Automatic CTO wakes suppressed until the CTO composer is inspected and patrol is restarted")
+		fmt.Fprintln(out, "Automatic TL wakes suppressed until the tech lead composer is inspected and patrol is restarted")
 	}
 }
 

@@ -35,9 +35,9 @@ func (r *recordingTurnRunner) RunTurn(_ context.Context, request TurnRequest) (T
 	return result, err
 }
 
-func idleCTO(slug string) []herdr.Agent {
+func idleTL(slug string) []herdr.Agent {
 	return []herdr.Agent{{
-		PaneID: "cto-" + slug, TerminalTitle: "relay:program:" + slug + " - GitHub Copilot",
+		PaneID: "tl-" + slug, TerminalTitle: "relay:program:" + slug + " - GitHub Copilot",
 		Status: herdr.StatusIdle,
 	}}
 }
@@ -56,14 +56,14 @@ func TestTurnArmsFingerprintOnlyAfterASuccessfulTurn(t *testing.T) {
 	state := State{ProgramSlug: "alpha", Reasons: []Reason{}}
 	runner := &recordingTurnRunner{}
 
-	if warning := requestCTOTurn(
-		context.Background(), &state, attention("alpha", "fp-1"), idleCTO("alpha"), runner, nil, now,
+	if warning := requestTLTurn(
+		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), runner, nil, now,
 	); warning != "" {
 		t.Fatalf("successful turn warned: %q", warning)
 	}
 	if len(runner.requests) != 1 ||
 		runner.requests[0].ProgramSlug != "alpha" ||
-		runner.requests[0].PaneID != "cto-alpha" ||
+		runner.requests[0].PaneID != "tl-alpha" ||
 		runner.requests[0].Fingerprint != "fp-1" {
 		t.Fatalf("turn requests = %+v", runner.requests)
 	}
@@ -71,13 +71,13 @@ func TestTurnArmsFingerprintOnlyAfterASuccessfulTurn(t *testing.T) {
 		state.LastNotifiedAt != now.Format(time.RFC3339) ||
 		state.LastTurnStatus != string(TurnSucceeded) ||
 		state.LastTurnSessionID != "" || state.LastTurnLogPath != "" ||
-		state.TurnFailures != 0 || !state.CTOPresent {
+		state.TurnFailures != 0 || !state.TLPresent {
 		t.Fatalf("state after success = %+v", state)
 	}
 
 	// Unchanged attention is not re-run before the two-hour rearm.
-	if warning := requestCTOTurn(
-		context.Background(), &state, attention("alpha", "fp-1"), idleCTO("alpha"), runner, nil,
+	if warning := requestTLTurn(
+		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), runner, nil,
 		now.Add(time.Hour),
 	); warning != "" {
 		t.Fatal(warning)
@@ -86,9 +86,9 @@ func TestTurnArmsFingerprintOnlyAfterASuccessfulTurn(t *testing.T) {
 		t.Fatalf("unchanged attention re-ran a turn: %d requests", len(runner.requests))
 	}
 
-	// The two-hour rearm rings the same live CTO for unchanged attention.
-	if warning := requestCTOTurn(
-		context.Background(), &state, attention("alpha", "fp-1"), idleCTO("alpha"), runner, nil,
+	// The two-hour rearm rings the same live tech lead for unchanged attention.
+	if warning := requestTLTurn(
+		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), runner, nil,
 		now.Add(2*time.Hour),
 	); warning != "" {
 		t.Fatal(warning)
@@ -116,8 +116,8 @@ func TestTurnLeavesFingerprintUnchangedOnFailureTimeoutAndSkip(t *testing.T) {
 			runner := &recordingTurnRunner{
 				results: []TurnResult{test.result}, errs: []error{test.err},
 			}
-			warning := requestCTOTurn(
-				context.Background(), &state, attention("alpha", "fp-1"), idleCTO("alpha"), runner, nil, now,
+			warning := requestTLTurn(
+				context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), runner, nil, now,
 			)
 			if warning == "" {
 				t.Fatal("unsuccessful turn produced no warning")
@@ -128,14 +128,14 @@ func TestTurnLeavesFingerprintUnchangedOnFailureTimeoutAndSkip(t *testing.T) {
 			if state.TurnFailures != test.fails {
 				t.Fatalf("turn failures = %d, want %d", state.TurnFailures, test.fails)
 			}
-			if !state.CTOPresent {
-				t.Fatal("a turn problem cleared CTO presence")
+			if !state.TLPresent {
+				t.Fatal("a turn problem cleared tech lead presence")
 			}
 
 			// The next tick retries because attention is still unarmed.
 			runner.results, runner.errs, runner.index = nil, nil, 0
-			if warning := requestCTOTurn(
-				context.Background(), &state, attention("alpha", "fp-1"), idleCTO("alpha"), runner, nil,
+			if warning := requestTLTurn(
+				context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), runner, nil,
 				now.Add(time.Minute),
 			); warning != "" {
 				t.Fatal(warning)
@@ -159,8 +159,8 @@ func TestTurnSuppressesAfterThreeConsecutiveFailuresUntilAttentionChanges(t *tes
 	}
 	for attempt := 1; attempt <= 3; attempt++ {
 		at := now.Add(time.Duration(attempt) * time.Minute)
-		if warning := requestCTOTurn(
-			context.Background(), &state, attention("alpha", "fp-1"), idleCTO("alpha"), failing, nil, at,
+		if warning := requestTLTurn(
+			context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), failing, nil, at,
 		); warning == "" {
 			t.Fatalf("attempt %d produced no warning", attempt)
 		}
@@ -171,8 +171,8 @@ func TestTurnSuppressesAfterThreeConsecutiveFailuresUntilAttentionChanges(t *tes
 
 	// A fourth tick must not attempt a turn at all.
 	suppressed := &recordingTurnRunner{}
-	warning := requestCTOTurn(
-		context.Background(), &state, attention("alpha", "fp-1"), idleCTO("alpha"), suppressed, nil,
+	warning := requestTLTurn(
+		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), suppressed, nil,
 		now.Add(10*time.Minute),
 	)
 	if len(suppressed.requests) != 0 {
@@ -186,8 +186,8 @@ func TestTurnSuppressesAfterThreeConsecutiveFailuresUntilAttentionChanges(t *tes
 
 	// Changed attention resets the failure budget and resumes live doorbells.
 	recovering := &recordingTurnRunner{}
-	if warning := requestCTOTurn(
-		context.Background(), &state, attention("alpha", "fp-2"), idleCTO("alpha"), recovering, nil,
+	if warning := requestTLTurn(
+		context.Background(), &state, attention("alpha", "fp-2"), idleTL("alpha"), recovering, nil,
 		now.Add(11*time.Minute),
 	); warning != "" {
 		t.Fatal(warning)
@@ -197,51 +197,51 @@ func TestTurnSuppressesAfterThreeConsecutiveFailuresUntilAttentionChanges(t *tes
 	}
 }
 
-func TestTurnGatesOnExactIdleOrDoneCTO(t *testing.T) {
+func TestTurnGatesOnExactIdleOrDoneTL(t *testing.T) {
 	now := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 	for _, status := range []herdr.Status{herdr.StatusIdle, herdr.StatusDone} {
 		state := State{ProgramSlug: "alpha", Reasons: []Reason{}}
 		runner := &recordingTurnRunner{}
-		agents := idleCTO("alpha")
+		agents := idleTL("alpha")
 		agents[0].Status = status
-		if warning := requestCTOTurn(
+		if warning := requestTLTurn(
 			context.Background(), &state, attention("alpha", "fp-1"), agents, runner, nil, now,
 		); warning != "" {
-			t.Fatalf("%s CTO warned: %q", status, warning)
+			t.Fatalf("%s tech lead warned: %q", status, warning)
 		}
 		if len(runner.requests) != 1 {
-			t.Fatalf("%s CTO ran %d turns, want 1", status, len(runner.requests))
+			t.Fatalf("%s tech lead ran %d turns, want 1", status, len(runner.requests))
 		}
 	}
 
 	for _, status := range []herdr.Status{herdr.StatusWorking, herdr.StatusBlocked, herdr.StatusUnknown} {
 		state := State{ProgramSlug: "alpha", Reasons: []Reason{}}
 		runner := &recordingTurnRunner{}
-		agents := idleCTO("alpha")
+		agents := idleTL("alpha")
 		agents[0].Status = status
-		if warning := requestCTOTurn(
+		if warning := requestTLTurn(
 			context.Background(), &state, attention("alpha", "fp-1"), agents, runner, nil, now,
 		); warning != "" {
-			t.Fatalf("%s CTO warned: %q", status, warning)
+			t.Fatalf("%s tech lead warned: %q", status, warning)
 		}
 		if len(runner.requests) != 0 {
-			t.Fatalf("%s CTO received a live doorbell", status)
+			t.Fatalf("%s tech lead received a live doorbell", status)
 		}
-		if !state.CTOPresent || state.AttentionFingerprint != "" {
-			t.Fatalf("%s CTO state = %+v", status, state)
+		if !state.TLPresent || state.AttentionFingerprint != "" {
+			t.Fatalf("%s tech lead state = %+v", status, state)
 		}
 	}
 
 	// Two programs in one repository must not be confused for each other.
 	state := State{ProgramSlug: "alpha", Reasons: []Reason{}}
 	runner := &recordingTurnRunner{}
-	if warning := requestCTOTurn(
-		context.Background(), &state, attention("alpha", "fp-1"), idleCTO("beta"), runner, nil, now,
+	if warning := requestTLTurn(
+		context.Background(), &state, attention("alpha", "fp-1"), idleTL("beta"), runner, nil, now,
 	); warning != "" {
 		t.Fatal(warning)
 	}
-	if len(runner.requests) != 0 || state.CTOPresent {
-		t.Fatalf("another program's CTO was used: requests %d state %+v", len(runner.requests), state)
+	if len(runner.requests) != 0 || state.TLPresent {
+		t.Fatalf("another program's tech lead was used: requests %d state %+v", len(runner.requests), state)
 	}
 }
 
@@ -255,8 +255,8 @@ func TestTurnClearsAttentionOnDrainAndResetsFailures(t *testing.T) {
 		TurnFailures:         3,
 	}
 	runner := &recordingTurnRunner{}
-	if warning := requestCTOTurn(
-		context.Background(), &state, Observation{ProgramSlug: "alpha"}, idleCTO("alpha"), runner, nil,
+	if warning := requestTLTurn(
+		context.Background(), &state, Observation{ProgramSlug: "alpha"}, idleTL("alpha"), runner, nil,
 		now.Add(time.Minute),
 	); warning != "" {
 		t.Fatal(warning)
@@ -265,12 +265,12 @@ func TestTurnClearsAttentionOnDrainAndResetsFailures(t *testing.T) {
 		t.Fatalf("drained state = %+v", state)
 	}
 	if len(runner.requests) != 0 {
-		t.Fatal("drained attention rang the CTO")
+		t.Fatal("drained attention rang the tech lead")
 	}
 
-	// Recurring attention rings the live CTO immediately.
-	if warning := requestCTOTurn(
-		context.Background(), &state, attention("alpha", "fp-1"), idleCTO("alpha"), runner, nil,
+	// Recurring attention rings the live tech lead immediately.
+	if warning := requestTLTurn(
+		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), runner, nil,
 		now.Add(2*time.Minute),
 	); warning != "" {
 		t.Fatal(warning)
@@ -282,8 +282,8 @@ func TestTurnClearsAttentionOnDrainAndResetsFailures(t *testing.T) {
 
 func TestTurnWarnsWhenNoRunnerIsConfigured(t *testing.T) {
 	state := State{ProgramSlug: "alpha", Reasons: []Reason{}}
-	warning := requestCTOTurn(
-		context.Background(), &state, attention("alpha", "fp-1"), idleCTO("alpha"), nil, nil,
+	warning := requestTLTurn(
+		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), nil, nil,
 		time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC),
 	)
 	if warning == "" {
@@ -310,8 +310,8 @@ func TestTurnNotificationIsBestEffort(t *testing.T) {
 	now := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 	state := State{ProgramSlug: "alpha", Reasons: []Reason{}}
 	notifier := &recordingNotifier{err: errors.New("no desktop session")}
-	if warning := requestCTOTurn(
-		context.Background(), &state, attention("alpha", "fp-1"), idleCTO("alpha"),
+	if warning := requestTLTurn(
+		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"),
 		&recordingTurnRunner{}, notifier, now,
 	); warning != "" {
 		t.Fatalf("failing notifier changed the outcome: %q", warning)
@@ -346,9 +346,9 @@ func TestPatrolDoesNotOwnHerdrInput(t *testing.T) {
 	}
 }
 
-// The patrol never resumes the live CTO through an agent CLI. It only rings
-// the already-running pane through its TurnRunner.
-func TestPatrolNeverResumesTheLiveCTOSession(t *testing.T) {
+// The patrol never resumes the live tech lead through an agent CLI. It only
+// rings the already-running pane through its TurnRunner.
+func TestPatrolNeverResumesTheLiveTLSession(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -378,7 +378,7 @@ func TestPatrolNeverResumesTheLiveCTOSession(t *testing.T) {
 
 // Two panes claiming one program is ambiguous ownership: the patrol must not
 // pick one and run a turn beside the other, and it must say why it stopped.
-func TestTurnSkipsAndWarnsWhenTwoLiveCTOsClaimTheProgram(t *testing.T) {
+func TestTurnSkipsAndWarnsWhenTwoLiveTLsClaimTheProgram(t *testing.T) {
 	now := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 	state := State{ProgramSlug: "alpha", Reasons: []Reason{}}
 	runner := &recordingTurnRunner{}
@@ -387,22 +387,22 @@ func TestTurnSkipsAndWarnsWhenTwoLiveCTOsClaimTheProgram(t *testing.T) {
 		{PaneID: "p2", TerminalTitle: "relay:program:alpha", Status: herdr.StatusWorking},
 	}
 
-	warning := requestCTOTurn(
+	warning := requestTLTurn(
 		context.Background(), &state, attention("alpha", "fp-1"), duplicates, runner, nil, now,
 	)
 	if len(runner.requests) != 0 {
-		t.Fatalf("a turn ran with duplicate CTOs: %+v", runner.requests)
+		t.Fatalf("a turn ran with duplicate tech leads: %+v", runner.requests)
 	}
 	for _, want := range []string{
-		`skipped the live CTO doorbell for program "alpha"`, "2 live CTO sessions", "p1", "p2",
+		`skipped the live tech lead doorbell for program "alpha"`, "2 live tech lead sessions", "p1", "p2",
 	} {
 		if !strings.Contains(warning, want) {
 			t.Errorf("warning %q is missing %q", warning, want)
 		}
 	}
 
-	if state.CTOPresent {
-		t.Error("CTOPresent = true, want false while ownership is ambiguous")
+	if state.TLPresent {
+		t.Error("TLPresent = true, want false while ownership is ambiguous")
 	}
 	if state.AttentionFingerprint != "" {
 		t.Errorf("attention fingerprint = %q, want unarmed", state.AttentionFingerprint)
@@ -416,8 +416,8 @@ func TestUncertainDoorbellSuppressesAllAutomaticRetriesUntilRestart(t *testing.T
 		Status: TurnUncertain,
 		Error:  "terminal-targeted Enter was sent, but no new turn was observed",
 	}}}
-	warning := requestCTOTurn(
-		context.Background(), &state, attention("alpha", "fp-1"), idleCTO("alpha"), uncertain, nil, now,
+	warning := requestTLTurn(
+		context.Background(), &state, attention("alpha", "fp-1"), idleTL("alpha"), uncertain, nil, now,
 	)
 	if warning == "" || !state.DoorbellSuppressed ||
 		state.LastTurnStatus != string(TurnUncertain) {
@@ -425,8 +425,8 @@ func TestUncertainDoorbellSuppressesAllAutomaticRetriesUntilRestart(t *testing.T
 	}
 
 	retry := &recordingTurnRunner{}
-	warning = requestCTOTurn(
-		context.Background(), &state, attention("alpha", "fp-2"), idleCTO("alpha"), retry, nil,
+	warning = requestTLTurn(
+		context.Background(), &state, attention("alpha", "fp-2"), idleTL("alpha"), retry, nil,
 		now.Add(3*time.Hour),
 	)
 	if len(retry.requests) != 0 {

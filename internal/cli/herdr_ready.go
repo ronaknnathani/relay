@@ -21,7 +21,7 @@ func requireHerdrRuntime(command string, topology bool) (herdr.Readiness, error)
 
 // requireManagedAgent verifies the agent has an approved Herdr integration that
 // carries Relay's session identity, which managed sessions depend on for owner
-// discovery and CTO doorbells.
+// discovery and tech lead doorbells.
 func requireManagedAgent(agentName, subject string) error {
 	a, err := agent.Get(agentName)
 	if err != nil {

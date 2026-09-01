@@ -28,7 +28,7 @@ type Options struct {
 	Ticker        TickerFactory
 	BuildSnapshot SnapshotBuilder
 	Agents        programview.AgentLister
-	// Turns rings the existing live CTO session when attention changes.
+	// Turns rings the existing live tech lead session when attention changes.
 	Turns TurnRunner
 	// Notifier optionally raises a best-effort desktop notification.
 	Notifier     Notifier
@@ -37,7 +37,7 @@ type Options struct {
 }
 
 // Tick returns one read-only diagnostic observation. It does not acquire the
-// patrol lock, write runtime state, or ring the live CTO.
+// patrol lock, write runtime state, or ring the live tech lead.
 func Tick(slug string, options Options) (Observation, error) {
 	if err := project.ValidateSlug(slug); err != nil {
 		return Observation{}, fmt.Errorf("patrol program slug: %w", err)

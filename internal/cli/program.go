@@ -106,7 +106,7 @@ func newCmdProgramNew() *cobra.Command {
 	var opts programNewOpts
 	cmd := &cobra.Command{
 		Use:   "new <goal>",
-		Short: "Create a governed program and launch its CTO",
+		Short: "Create a governed program and launch its tech lead",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.goal = strings.Join(args, " ")
@@ -117,7 +117,7 @@ func newCmdProgramNew() *cobra.Command {
 	cmd.Flags().StringVar(&opts.repo, "repo", "", "repository path (default current repository)")
 	cmd.Flags().StringVar(&opts.agent, "agent", "", "coding agent to launch (default from config)")
 	cmd.Flags().IntVar(&opts.maxOpenPRs, "max-open-prs", 3, "maximum concurrent linked child-project pull requests")
-	cmd.Flags().BoolVar(&opts.noLaunch, "no-launch", false, "create the program without launching the CTO")
+	cmd.Flags().BoolVar(&opts.noLaunch, "no-launch", false, "create the program without launching the tech lead")
 	return cmd
 }
 
@@ -176,7 +176,7 @@ func runProgramNew(out io.Writer, opts programNewOpts) error {
 		return nil
 	}
 
-	fmt.Fprintf(out, "Launching %s as CTO...\n", a.Name())
+	fmt.Fprintf(out, "Launching %s as tech lead...\n", a.Name())
 	return launchAgent(a, programLaunchOptions(p, programDir, cfg.PermissionModeFor(a.Name())))
 }
 
@@ -184,7 +184,7 @@ func newCmdProgramResume() *cobra.Command {
 	var agentName string
 	cmd := &cobra.Command{
 		Use:   "resume <slug>",
-		Short: "Launch a fresh CTO re-entry for an active program",
+		Short: "Launch a fresh tech lead re-entry for an active program",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runProgramResume(cmd.OutOrStdout(), args[0], agentName)
@@ -213,29 +213,30 @@ func runProgramResume(out io.Writer, slug, agentName string) error {
 	if err != nil {
 		return err
 	}
-	if err := guardLiveProgramCTO(p.Slug, readiness.Agents); err != nil {
+	if err := guardLiveProgramTL(p.Slug, readiness.Agents); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "Program: %s\n", p.Slug)
 	fmt.Fprintf(out, "State: %s\n", p.State)
 	fmt.Fprintf(out, "Open decisions: %d\n", len(p.OpenDecisions()))
-	fmt.Fprintf(out, "Launching %s as CTO...\n", a.Name())
+	fmt.Fprintf(out, "Launching %s as tech lead...\n", a.Name())
 	return launchAgent(a, programLaunchOptions(p, filepath.Dir(path), cfg.PermissionModeFor(a.Name())))
 }
 
-// guardLiveProgramCTO enforces the managed-program contract that one program
-// has exactly one CEO-facing CTO. A second resume focuses the live pane instead
-// of creating a rival CTO, mirroring the managed child-project owner guard.
-func guardLiveProgramCTO(slug string, agents []herdr.Agent) error {
-	owner, err := herdr.FindLiveCTO(agents, slug)
+// guardLiveProgramTL enforces the managed-program contract that one program
+// has exactly one CEO-facing tech lead. A second resume focuses the live pane
+// instead of creating a rival tech lead, mirroring the managed child-project
+// owner guard.
+func guardLiveProgramTL(slug string, agents []herdr.Agent) error {
+	owner, err := herdr.FindLiveTL(agents, slug)
 	if err != nil {
-		if errors.Is(err, herdr.ErrNoLiveCTO) {
+		if errors.Is(err, herdr.ErrNoLiveTL) {
 			return nil
 		}
 		return fmt.Errorf("resume program %q: %w", slug, err)
 	}
 	return fmt.Errorf(
-		"program %q already has a live CTO session in pane %s; focus it with: herdr agent focus %s",
+		"program %q already has a live tech lead session in pane %s; focus it with: herdr agent focus %s",
 		slug, owner.PaneID, owner.PaneID,
 	)
 }
@@ -618,7 +619,7 @@ func newCmdProgramContractPublish() *cobra.Command {
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Publishing an immutable version reshapes the plan and opens a CEO
-			// approval decision, so it stays an interactive CTO/CEO act. The
+			// approval decision, so it stays an interactive tech-lead/CEO act. The
 			// guard runs before the source file is read or anything is written.
 			if err := requirePlanShapingTurn("relay program contract publish"); err != nil {
 				return err
@@ -790,7 +791,7 @@ func newCmdProgramDecisionOpen() *cobra.Command {
 			decision, created, err := p.OpenDecision(program.Decision{
 				Kind: program.DecisionKind(kind),
 				// A bounded automated turn always signs as itself: it may raise a
-				// question for the CEO, never as the CEO, the CTO, or a worker.
+				// question for the CEO, never as the CEO, the tech lead, or a worker.
 				RaisedBy: program.RaisedBy(programActor(raisedBy)),
 				ItemID:   itemID,
 				Question: question,
@@ -1070,13 +1071,13 @@ func programLaunchOptions(p program.Program, programDir, permissionMode string) 
 		Worktree:   p.Repo,
 		ProjectDir: programDir,
 		SystemPrompt: fmt.Sprintf(
-			"Active relay program: %s. Role: CTO. Run the cto skill only. Never invoke stack-ship; "+
+			"Active relay program: %s. Role: tech lead. Run the tl skill only. Never invoke stack-ship; "+
 				"decompose into program work items and dispatch each item through deliver-pr. "+
 				"Reconstruct governance state from the program directory before acting.",
 			p.Slug,
 		),
 		SessionName:    "relay:program:" + p.Slug,
-		Command:        "cto",
+		Command:        role.TL,
 		CommandArgs:    p.Slug,
 		WorkflowGoal:   p.Title,
 		PermissionMode: permissionMode,

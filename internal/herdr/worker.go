@@ -27,33 +27,34 @@ func FindLiveWorker(agents []Agent, childSlug, repo, worktree string) (Agent, bo
 	return Agent{}, false
 }
 
-// ErrNoLiveCTO reports that no live Herdr agent carries a program's CTO
+// ErrNoLiveTL reports that no live Herdr agent carries a program's tech-lead
 // identity.
-var ErrNoLiveCTO = errors.New("no live CEO-facing CTO session")
+var ErrNoLiveTL = errors.New("no live CEO-facing tech lead session")
 
-// DuplicateCTOError reports that more than one live Herdr agent claims one
-// program's CTO identity. Ownership is ambiguous, so no caller may act.
-type DuplicateCTOError struct {
+// DuplicateTLError reports that more than one live Herdr agent claims one
+// program's tech-lead identity. Ownership is ambiguous, so no caller may act.
+type DuplicateTLError struct {
 	ProgramSlug string
 	PaneIDs     []string
 }
 
-func (e *DuplicateCTOError) Error() string {
+func (e *DuplicateTLError) Error() string {
 	return fmt.Sprintf(
-		"program %q has %d live CTO sessions (panes %s); exactly one CEO-facing CTO owns a program—"+
+		"program %q has %d live tech lead sessions (panes %s); exactly one CEO-facing tech lead owns a program—"+
 			"focus each pane with `herdr agent focus <pane>`, exit all but one, then retry",
 		e.ProgramSlug, len(e.PaneIDs), strings.Join(e.PaneIDs, ", "),
 	)
 }
 
-// FindLiveCTO returns the single live Herdr agent with the exact Relay program
-// identity. Zero matches return ErrNoLiveCTO and more than one return a
-// *DuplicateCTOError; a near-miss title such as "relay:program:<slug>-other"
+// FindLiveTL returns the single live Herdr agent with the exact Relay program
+// identity. Zero matches return ErrNoLiveTL and more than one return a
+// *DuplicateTLError; a near-miss title such as "relay:program:<slug>-other"
 // is never a match. Working-directory proximity is intentionally not an
-// ownership signal because multiple program CTOs can share one repository.
-func FindLiveCTO(agents []Agent, programSlug string) (Agent, error) {
+// ownership signal because multiple program tech leads can share one
+// repository.
+func FindLiveTL(agents []Agent, programSlug string) (Agent, error) {
 	if programSlug == "" {
-		return Agent{}, fmt.Errorf("%w: no program was named", ErrNoLiveCTO)
+		return Agent{}, fmt.Errorf("%w: no program was named", ErrNoLiveTL)
 	}
 	identity := "relay:program:" + programSlug
 	var matches []Agent
@@ -64,7 +65,7 @@ func FindLiveCTO(agents []Agent, programSlug string) (Agent, error) {
 	}
 	switch len(matches) {
 	case 0:
-		return Agent{}, fmt.Errorf("%w for program %q", ErrNoLiveCTO, programSlug)
+		return Agent{}, fmt.Errorf("%w for program %q", ErrNoLiveTL, programSlug)
 	case 1:
 		return matches[0], nil
 	}
@@ -72,7 +73,7 @@ func FindLiveCTO(agents []Agent, programSlug string) (Agent, error) {
 	for _, match := range matches {
 		panes = append(panes, match.PaneID)
 	}
-	return Agent{}, &DuplicateCTOError{ProgramSlug: programSlug, PaneIDs: panes}
+	return Agent{}, &DuplicateTLError{ProgramSlug: programSlug, PaneIDs: panes}
 }
 
 func matchesRelayTitle(title, identity string) bool {

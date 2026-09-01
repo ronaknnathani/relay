@@ -146,7 +146,7 @@ func TestProgramDispatchCreatesManagedChildWithoutLaunch(t *testing.T) {
 		"relay program message send governance " + item.ID + ` --kind pr-open --body "<request an open-PR capacity grant>"`,
 		"Do not send another pr-open request while one is unread",
 		"acknowledge the grant inbox message only after open-pr succeeds",
-		"clarify", "plan", "CTO", "CEO",
+		"clarify", "plan", "tech lead", "CEO",
 	} {
 		if !strings.Contains(string(assignment), want) {
 			t.Errorf("assignment missing %q:\n%s", want, assignment)

@@ -39,14 +39,14 @@ func (c *liveAcceptanceClock) Set(now time.Time) {
 	c.now = now
 }
 
-func TestPatrolWakesTheExistingCTOPaneWithoutStartingASession(t *testing.T) {
-	p, childDir := createLiveCTOFixture(t)
+func TestPatrolWakesTheExistingTLPaneWithoutStartingASession(t *testing.T) {
+	p, childDir := createLiveTLFixture(t)
 	cto := herdr.Agent{
-		PaneID: "cto-pane", TerminalTitle: "relay:program:" + p.Slug + " - GitHub Copilot",
+		PaneID: "tl-pane", TerminalTitle: "relay:program:" + p.Slug + " - GitHub Copilot",
 		Status: herdr.StatusIdle, NativeSessionID: "existing-session",
 	}
 	client := &fakeHerdrClient{agentResponses: [][]herdr.Agent{{cto}}}
-	sendLiveCTOMail(t, p.Slug, childDir, "m-1")
+	sendLiveTLMail(t, p.Slug, childDir, "m-1")
 
 	start := time.Date(2026, 8, 31, 13, 0, 0, 0, time.UTC)
 	clock := &liveAcceptanceClock{now: start}
@@ -58,7 +58,7 @@ func TestPatrolWakesTheExistingCTOPaneWithoutStartingASession(t *testing.T) {
 			Now:          clock.Now,
 			Ticker:       func(time.Duration) patrol.Ticker { return ticker },
 			Agents:       client,
-			Turns:        liveCTOTurnRunner{client: client},
+			Turns:        liveTLTurnRunner{client: client},
 			RelayVersion: "test",
 		})
 	}()
@@ -75,13 +75,13 @@ func TestPatrolWakesTheExistingCTOPaneWithoutStartingASession(t *testing.T) {
 		return state.LastTurnStatus == string(patrol.TurnSucceeded) &&
 			state.AttentionFingerprint != ""
 	})
-	if !state.CTOPresent || state.LastTurnSessionID != "" || state.LastTurnLogPath != "" {
+	if !state.TLPresent || state.LastTurnSessionID != "" || state.LastTurnLogPath != "" {
 		t.Fatalf("live doorbell state = %+v", state)
 	}
 	if len(client.prompted) != 1 || client.prompted[0] != (fakePrompt{
-		target: "cto-pane", text: liveCTODoorbell,
+		target: "tl-pane", text: liveTLDoorbell,
 	}) {
-		t.Fatalf("CTO prompts = %#v", client.prompted)
+		t.Fatalf("tech lead prompts = %#v", client.prompted)
 	}
 	if len(client.created) != 0 || len(client.runPane) != 0 || len(client.focused) != 0 {
 		t.Fatalf("patrol started or focused a session: created=%+v run=%+v focused=%+v",
@@ -99,16 +99,16 @@ func TestPatrolWakesTheExistingCTOPaneWithoutStartingASession(t *testing.T) {
 }
 
 func TestPatrolSuppressesRetriesAfterUnconfirmedLiveDoorbell(t *testing.T) {
-	p, childDir := createLiveCTOFixture(t)
+	p, childDir := createLiveTLFixture(t)
 	cto := herdr.Agent{
-		PaneID: "cto-pane", TerminalTitle: "relay:program:" + p.Slug,
+		PaneID: "tl-pane", TerminalTitle: "relay:program:" + p.Slug,
 		Status: herdr.StatusDone, NativeSessionID: "existing-session",
 	}
 	client := &fakeHerdrClient{
 		agentResponses: [][]herdr.Agent{{cto}},
 		promptErr:      herdr.ErrPromptDeliveryUncertain,
 	}
-	sendLiveCTOMail(t, p.Slug, childDir, "m-1")
+	sendLiveTLMail(t, p.Slug, childDir, "m-1")
 
 	start := time.Date(2026, 8, 31, 13, 0, 0, 0, time.UTC)
 	clock := &liveAcceptanceClock{now: start}
@@ -120,7 +120,7 @@ func TestPatrolSuppressesRetriesAfterUnconfirmedLiveDoorbell(t *testing.T) {
 			Now:          clock.Now,
 			Ticker:       func(time.Duration) patrol.Ticker { return ticker },
 			Agents:       client,
-			Turns:        liveCTOTurnRunner{client: client},
+			Turns:        liveTLTurnRunner{client: client},
 			RelayVersion: "test",
 		})
 	}()
@@ -133,7 +133,7 @@ func TestPatrolSuppressesRetriesAfterUnconfirmedLiveDoorbell(t *testing.T) {
 		return state.LastTurnStatus == string(patrol.TurnUncertain) &&
 			state.DoorbellSuppressed
 	})
-	sendLiveCTOMail(t, p.Slug, childDir, "m-2")
+	sendLiveTLMail(t, p.Slug, childDir, "m-2")
 	clock.Set(start.Add(31 * time.Minute))
 	ticker.channel <- clock.Now()
 	state := waitForLiveAcceptanceState(t, p.Slug, func(state patrol.State) bool {
@@ -147,13 +147,17 @@ func TestPatrolSuppressesRetriesAfterUnconfirmedLiveDoorbell(t *testing.T) {
 	}
 }
 
-func TestProgramCTOHeadlessTurnCommandIsUnavailable(t *testing.T) {
-	if _, err := runProgramCommand(t, "cto", "turn", "adaptive"); err == nil {
-		t.Fatal("the retired headless CTO turn command is still registered")
+// The retired headless turn command must stay unregistered under both its old
+// name and the canonical tech-lead one.
+func TestProgramTLHeadlessTurnCommandIsUnavailable(t *testing.T) {
+	for _, name := range []string{"cto", "tl"} {
+		if _, err := runProgramCommand(t, name, "turn", "adaptive"); err == nil {
+			t.Fatalf("the retired headless %q turn command is still registered", name)
+		}
 	}
 }
 
-func createLiveCTOFixture(t *testing.T) (program.Program, string) {
+func createLiveTLFixture(t *testing.T) (program.Program, string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	repo := t.TempDir()
@@ -199,7 +203,7 @@ func createLiveCTOFixture(t *testing.T) (program.Program, string) {
 	return p, childDir
 }
 
-func sendLiveCTOMail(t *testing.T, programSlug, childDir, id string) {
+func sendLiveTLMail(t *testing.T, programSlug, childDir, id string) {
 	t.Helper()
 	if _, err := mailbox.Send(childDir, mailbox.Outbox, mailbox.Message{
 		ID: id, Kind: mailbox.KindQuestion, Program: programSlug, Item: "w1",

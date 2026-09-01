@@ -1,4 +1,4 @@
-// Package patrol observes Relay programs and rings their live CTO sessions
+// Package patrol observes Relay programs and rings their live tech lead sessions
 // without mutating program, project, git, or mailbox state.
 package patrol
 
@@ -48,7 +48,7 @@ type State struct {
 	Reasons              []Reason `json:"reasons"`
 	AttentionFingerprint string   `json:"attention_fingerprint"`
 	LastNotifiedAt       string   `json:"last_notified_at"`
-	CTOPresent           bool     `json:"cto_present"`
+	TLPresent            bool     `json:"tl_present"`
 	LastTurnStatus       string   `json:"last_turn_status"`
 	LastTurnSessionID    string   `json:"last_turn_session_id"`
 	LastTurnLogPath      string   `json:"last_turn_log_path"`
@@ -63,6 +63,33 @@ type State struct {
 	Warning              string   `json:"warning"`
 	StopReason           string   `json:"stop_reason"`
 	UpdatedAt            string   `json:"updated_at"`
+}
+
+// UnmarshalJSON decodes a patrol record, accepting the retired `cto_present`
+// field written before the tech-lead rename so a patrol that is already running
+// keeps its presence signal across an upgrade. Pointer fields distinguish an
+// absent flag from an explicit false: when both are present the canonical
+// `tl_present` wins. Only `tl_present` is ever encoded.
+func (s *State) UnmarshalJSON(data []byte) error {
+	type stateAlias State
+	var raw struct {
+		stateAlias
+		TLPresent  *bool `json:"tl_present"`
+		CTOPresent *bool `json:"cto_present"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*s = State(raw.stateAlias)
+	switch {
+	case raw.TLPresent != nil:
+		s.TLPresent = *raw.TLPresent
+	case raw.CTOPresent != nil:
+		s.TLPresent = *raw.CTOPresent
+	default:
+		s.TLPresent = false
+	}
+	return nil
 }
 
 // RuntimeDir returns ~/.relay/run/<slug>.

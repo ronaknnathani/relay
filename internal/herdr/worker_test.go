@@ -89,7 +89,7 @@ func TestFindLiveWorkerMatchesExactTitleAndRepositoryOrWorktreeIdentity(t *testi
 	}
 }
 
-func TestFindLiveCTOMatchesOnlyExactProgramIdentity(t *testing.T) {
+func TestFindLiveTLMatchesOnlyExactProgramIdentity(t *testing.T) {
 	agents := []Agent{
 		{PaneID: "alpha", TerminalTitle: "relay:program:alpha - GitHub Copilot", CWD: "/same/repo"},
 		{PaneID: "beta", TerminalTitle: "relay:program:beta", CWD: "/same/repo"},
@@ -97,41 +97,41 @@ func TestFindLiveCTOMatchesOnlyExactProgramIdentity(t *testing.T) {
 		{PaneID: "near", TerminalTitle: "relay:program:alpha-other", CWD: "/same/repo"},
 	}
 
-	got, err := FindLiveCTO(agents, "alpha")
+	got, err := FindLiveTL(agents, "alpha")
 	if err != nil || got.PaneID != "alpha" {
-		t.Fatalf("FindLiveCTO(alpha) = %#v, %v", got, err)
+		t.Fatalf("FindLiveTL(alpha) = %#v, %v", got, err)
 	}
-	got, err = FindLiveCTO(agents, "beta")
+	got, err = FindLiveTL(agents, "beta")
 	if err != nil || got.PaneID != "beta" {
-		t.Fatalf("FindLiveCTO(beta) = %#v, %v", got, err)
+		t.Fatalf("FindLiveTL(beta) = %#v, %v", got, err)
 	}
-	if got, err := FindLiveCTO(agents, "missing"); !errors.Is(err, ErrNoLiveCTO) {
-		t.Fatalf("FindLiveCTO(missing) = %#v, %v, want ErrNoLiveCTO", got, err)
+	if got, err := FindLiveTL(agents, "missing"); !errors.Is(err, ErrNoLiveTL) {
+		t.Fatalf("FindLiveTL(missing) = %#v, %v, want ErrNoLiveTL", got, err)
 	}
-	if got, err := FindLiveCTO(nil, "alpha"); !errors.Is(err, ErrNoLiveCTO) {
-		t.Fatalf("FindLiveCTO(no agents) = %#v, %v, want ErrNoLiveCTO", got, err)
+	if got, err := FindLiveTL(nil, "alpha"); !errors.Is(err, ErrNoLiveTL) {
+		t.Fatalf("FindLiveTL(no agents) = %#v, %v, want ErrNoLiveTL", got, err)
 	}
-	if got, err := FindLiveCTO(agents, ""); !errors.Is(err, ErrNoLiveCTO) {
-		t.Fatalf("FindLiveCTO(no slug) = %#v, %v, want ErrNoLiveCTO", got, err)
+	if got, err := FindLiveTL(agents, ""); !errors.Is(err, ErrNoLiveTL) {
+		t.Fatalf("FindLiveTL(no slug) = %#v, %v, want ErrNoLiveTL", got, err)
 	}
 }
 
 // Two live panes claiming one program is an ambiguous ownership condition, not
-// a first-match win: acting on either one could collide with the other CTO.
-func TestFindLiveCTORejectsDuplicateOwners(t *testing.T) {
+// a first-match win: acting on either one could collide with the other tech lead.
+func TestFindLiveTLRejectsDuplicateOwners(t *testing.T) {
 	agents := []Agent{
 		{PaneID: "p1", TerminalTitle: "relay:program:alpha - GitHub Copilot", Status: StatusIdle},
 		{PaneID: "near", TerminalTitle: "relay:program:alpha-other", Status: StatusIdle},
 		{PaneID: "p2", TerminalTitle: "relay:program:alpha", Status: StatusWorking},
 	}
 
-	got, err := FindLiveCTO(agents, "alpha")
+	got, err := FindLiveTL(agents, "alpha")
 	if err == nil {
-		t.Fatalf("FindLiveCTO matched %#v with two live owners", got)
+		t.Fatalf("FindLiveTL matched %#v with two live owners", got)
 	}
-	var duplicate *DuplicateCTOError
+	var duplicate *DuplicateTLError
 	if !errors.As(err, &duplicate) {
-		t.Fatalf("FindLiveCTO error = %v, want *DuplicateCTOError", err)
+		t.Fatalf("FindLiveTL error = %v, want *DuplicateTLError", err)
 	}
 	if !reflect.DeepEqual(duplicate.PaneIDs, []string{"p1", "p2"}) {
 		t.Errorf("duplicate panes = %v, want [p1 p2]", duplicate.PaneIDs)
@@ -139,7 +139,7 @@ func TestFindLiveCTORejectsDuplicateOwners(t *testing.T) {
 	if duplicate.ProgramSlug != "alpha" {
 		t.Errorf("duplicate program = %q, want alpha", duplicate.ProgramSlug)
 	}
-	for _, want := range []string{`program "alpha"`, "2 live CTO sessions", "p1", "p2", "herdr agent focus"} {
+	for _, want := range []string{`program "alpha"`, "2 live tech lead sessions", "p1", "p2", "herdr agent focus"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("duplicate error %q is missing %q", err, want)
 		}

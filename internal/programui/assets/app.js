@@ -629,20 +629,20 @@ function renderOverview() {
   dom.patrolNote.textContent = [
     formatPatrolCadence(count(patrol.delay_seconds)),
     patrol.next_tick_at ? `next ${formatTimestamp(patrol.next_tick_at)}` : "",
-    patrol.running ? (patrol.cto_present ? "CTO present" : "CTO unavailable") : "",
-    patrol.doorbell_suppressed ? "CTO wakes suppressed" : "",
+    patrol.running ? (patrol.tl_present ? "TL present" : "TL unavailable") : "",
+    patrol.doorbell_suppressed ? "TL wakes suppressed" : "",
   ].filter(Boolean).join(" · ") || "Start with relay program patrol";
   dom.patrolTurn.textContent = patrolTurnNote(patrol.turn || {});
 }
 
 /* Older patrol state may retain bounded-turn log metadata. New patrols report
-   only whether the live CTO doorbell was confirmed. */
+   only whether the live tech lead doorbell was confirmed. */
 function patrolTurnNote(turn) {
   const status = text(turn.status);
   if (!status) {
     return "";
   }
-  const parts = [`last CTO wake ${humanize(status)}`];
+  const parts = [`last TL wake ${humanize(status)}`];
   if (turn.ended_at) {
     parts.push(formatTimestamp(turn.ended_at));
   }
@@ -891,7 +891,7 @@ function renderRoadmap() {
   if (nodes.length === 0) {
     dom.roadmapEmpty.hidden = false;
     dom.roadmapEmpty.textContent = state.snapshot
-      ? "No work items yet. The CTO adds tasks when the program is planned."
+      ? "No work items yet. The tech lead adds tasks when the program is planned."
       : "Loading the program…";
     dom.roadmapScroll.hidden = true;
     dom.graph.setAttribute("aria-label", "Dependency flow: no work items yet.");

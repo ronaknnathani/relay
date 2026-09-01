@@ -30,15 +30,15 @@ type PatrolDTO struct {
 	LastTickAt         string            `json:"last_tick_at"`
 	NextTickAt         string            `json:"next_tick_at"`
 	Reasons            []PatrolReasonDTO `json:"reasons"`
-	CTOPresent         bool              `json:"cto_present"`
+	TLPresent          bool              `json:"tl_present"`
 	DoorbellSuppressed bool              `json:"doorbell_suppressed"`
 	Turn               PatrolTurnDTO     `json:"turn"`
 	Error              string            `json:"error"`
 	Warning            string            `json:"warning"`
 }
 
-// PatrolTurnDTO summarizes the last live CTO doorbell attempt. Session and log
-// fields remain for backward-compatible decoding of older patrol state.
+// PatrolTurnDTO summarizes the last live tech lead doorbell attempt. Session
+// and log fields remain for backward-compatible decoding of older patrol state.
 type PatrolTurnDTO struct {
 	Status    string `json:"status"`
 	SessionID string `json:"session_id"`
