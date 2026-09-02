@@ -653,22 +653,22 @@ func TestWorkerCleanupStopsTheWatcherBeforeItTouchesTheWorker(t *testing.T) {
 // A watcher that reaches a merged pull request completes and exits on its own,
 // and it keeps its tab: closing it from inside would race the flush of its own
 // final lines. Cleanup is what closes it, so a finished watcher is not a step
-// cleanup can skip — and it must not be signalled, because there is nothing
+// cleanup can skip — and it must not be signaled, because there is nothing
 // left to signal.
 func TestWorkerCleanupClosesACompletedWatchersTab(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
 	client := &fakeHerdrClient{}
 	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
 	installManagedHerdrFakes(t, client)
-	signalled := installCompletedWatcherState(t, manifest.Slug)
+	signaled := installCompletedWatcherState(t, manifest.Slug)
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
 	if err != nil {
 		t.Fatalf("worker cleanup: %v", err)
 	}
 	result := decodeCleanupOutput(t, out)
-	if len(*signalled) != 0 {
-		t.Errorf("a finished watcher process was signalled: %v", *signalled)
+	if len(*signaled) != 0 {
+		t.Errorf("a finished watcher process was signaled: %v", *signaled)
 	}
 	if !closedIDs(client).has(watcherTabID) {
 		t.Fatalf("the completed watcher's tab was left open: %v", closedIDs(client))
