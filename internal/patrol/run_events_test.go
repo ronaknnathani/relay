@@ -97,7 +97,7 @@ func TestRunPrintsStartTickWakeAndShutdownToStdout(t *testing.T) {
 		})
 	}()
 
-	waitForPatrolEvents(t, out, 4)
+	waitForPatrolEvents(t, out, 3)
 	shutdown := start.Add(20 * time.Minute)
 	clock.Set(shutdown)
 	cancel()
@@ -111,11 +111,10 @@ func TestRunPrintsStartTickWakeAndShutdownToStdout(t *testing.T) {
 	}
 
 	want := []string{
-		"2026-09-01T00:45:00-04:00 patrol started program=events",
-		"2026-09-01T00:45:00-04:00 tick reasons=open-decision:d1 cadence=15m",
-		"2026-09-01T00:45:00-04:00 TL wake delivered program=events pane=pC status=idle",
-		"2026-09-01T00:45:00-04:00 next tick at=2026-09-01T01:00:00-04:00 cadence=15m",
-		"2026-09-01T01:05:00-04:00 patrol stopped program=events reason=context canceled",
+		"[2026-09-01 00:45:00 -0400] START program=events",
+		"[2026-09-01 00:45:00 -0400] TICK  cadence=15m next=01:00:00 reasons=open-decision:d1",
+		"[2026-09-01 00:45:00 -0400] WAKE  TL delivered pane=pC status=idle",
+		"[2026-09-01 01:05:00 -0400] STOP  program=events reason=context canceled",
 	}
 	if got := out.lines(); !equalLines(got, want) {
 		t.Errorf("patrol events =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -137,12 +136,12 @@ func TestRunPrintsDegradedWakesToStderrWithoutRinging(t *testing.T) {
 			agents: []herdr.Agent{{
 				PaneID: "pA", TerminalTitle: "relay:program:degraded", Status: herdr.StatusWorking,
 			}},
-			want: "TL wake busy program=degraded pane=pA status=working",
+			want: "WARN  TL busy pane=pA status=working",
 		},
 		{
 			name:   "absent",
 			agents: []herdr.Agent{},
-			want:   "TL wake absent program=degraded",
+			want:   "WARN  TL absent",
 		},
 		{
 			name: "duplicate",
@@ -150,7 +149,7 @@ func TestRunPrintsDegradedWakesToStderrWithoutRinging(t *testing.T) {
 				{PaneID: "p1", TerminalTitle: "relay:program:degraded", Status: herdr.StatusIdle},
 				{PaneID: "p2", TerminalTitle: "relay:program:degraded", Status: herdr.StatusIdle},
 			},
-			want: "TL wake duplicate program=degraded panes=p1,p2",
+			want: "WARN  TL duplicate panes=p1,p2",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -178,14 +177,14 @@ func TestRunPrintsDegradedWakesToStderrWithoutRinging(t *testing.T) {
 			<-done
 
 			line := errOut.lines()[0]
-			if !strings.Contains(line, "warning: "+test.want) ||
+			if !strings.Contains(line, test.want) ||
 				!strings.Contains(line, "attention remains pending") {
 				t.Errorf("stderr line = %q, want %q", line, test.want)
 			}
 			if len(runner.requests) != 0 {
 				t.Errorf("a degraded wake still rang the tech lead: %+v", runner.requests)
 			}
-			if strings.Contains(out.String(), "TL wake") {
+			if strings.Contains(out.String(), "] WAKE ") {
 				t.Errorf("a degraded wake was printed to stdout: %q", out.String())
 			}
 		})
@@ -223,10 +222,10 @@ func TestRunPrintsSuppressedWakeToStderr(t *testing.T) {
 	cancel()
 	<-done
 
-	if !strings.Contains(lines[0], "TL wake uncertain program=suppressed pane=pA") {
+	if !strings.Contains(lines[0], "WARN  TL uncertain pane=pA") {
 		t.Errorf("first stderr line = %q, want an uncertain wake", lines[0])
 	}
-	if !strings.Contains(lines[1], "TL wake suppressed program=suppressed pane=pA") {
+	if !strings.Contains(lines[1], "WARN  TL suppressed pane=pA") {
 		t.Errorf("second stderr line = %q, want a suppressed wake", lines[1])
 	}
 	if len(runner.requests) != 1 {
@@ -277,16 +276,16 @@ func TestRunPrintsObservationAndHerdrFailuresToStderr(t *testing.T) {
 		t.Fatalf("stderr lines = %d, want 4:\n%s", len(lines), errOut.String())
 	}
 	for _, line := range lines[:3] {
-		if !strings.Contains(line, "error: patrol observation failed") ||
+		if !strings.Contains(line, "ERROR patrol observation failed") ||
 			!strings.Contains(line, "source unavailable") ||
-			!strings.Contains(line, "retrying in 15m") {
+			!strings.Contains(line, "cadence=15m next=") {
 			t.Errorf("observation failure line = %q", line)
 		}
 	}
-	if !strings.Contains(lines[3], "error: patrol failed program=failing after 3 consecutive errors") {
+	if !strings.Contains(lines[3], "ERROR patrol failed program=failing after 3 consecutive errors") {
 		t.Errorf("final stderr line = %q", lines[3])
 	}
-	if strings.Contains(out.String(), "tick reasons") {
+	if strings.Contains(out.String(), "] TICK ") {
 		t.Errorf("a failed observation printed a tick: %q", out.String())
 	}
 }
@@ -316,12 +315,12 @@ func TestRunPrintsHerdrAgentFailureToStderrAndKeepsTicking(t *testing.T) {
 		t.Fatal(err)
 	}
 	line := errOut.lines()[0]
-	if !strings.Contains(line, "error: list Herdr agents for patrol") ||
+	if !strings.Contains(line, "ERROR list Herdr agents for patrol") ||
 		!strings.Contains(line, "connection refused") ||
 		!strings.Contains(line, "tech lead presence is unknown this tick") {
 		t.Errorf("Herdr failure line = %q", line)
 	}
-	if !strings.Contains(out.String(), "next tick at=") {
+	if !strings.Contains(out.String(), "] TICK  cadence=15m next=01:00:00 ") {
 		t.Errorf("patrol stopped ticking after a Herdr failure: %q", out.String())
 	}
 }
@@ -343,18 +342,18 @@ func TestRunPrintsNothingForEarlyTickerWakeups(t *testing.T) {
 		})
 	}()
 
-	waitForPatrolEvents(t, out, 4)
+	waitForPatrolEvents(t, out, 3)
 	for wakeup := 1; wakeup <= 4; wakeup++ {
 		clock.Set(start.Add(time.Duration(wakeup) * 30 * time.Second))
 		ticker.channel <- clock.Now()
 	}
 	clock.Set(start.Add(31 * time.Minute))
 	ticker.channel <- clock.Now()
-	waitForPatrolEvents(t, out, 7)
+	waitForPatrolEvents(t, out, 5)
 	cancel()
 	<-done
 
-	if got := strings.Count(out.String(), " tick reasons="); got != 2 {
+	if got := strings.Count(out.String(), "] TICK  "); got != 2 {
 		t.Errorf("tick events = %d, want 2 (one per due tick):\n%s", got, out.String())
 	}
 	if errOut.String() != "" {
@@ -393,13 +392,13 @@ func TestRunPrintsReasonCodesWithoutReasonText(t *testing.T) {
 		})
 	}()
 
-	waitForPatrolEvents(t, out, 3)
+	waitForPatrolEvents(t, out, 2)
 	waitForPatrolEvents(t, errOut, 1)
 	cancel()
 	<-done
 
 	printed := out.String() + errOut.String()
-	if !strings.Contains(printed, "tick reasons=project-warning,ready-item:w2 cadence=15m") {
+	if !strings.Contains(printed, "TICK  cadence=15m next=01:00:00 reasons=project-warning,ready-item:w2") {
 		t.Errorf("tick line did not print safe codes: %q", printed)
 	}
 	for _, leak := range []string{secret, "token.json", "/home/ceo", "permission denied"} {
@@ -430,9 +429,9 @@ func TestRunStopsWhenAnEventCannotBeWritten(t *testing.T) {
 		after int
 		want  string
 	}{
-		{name: "start event", want: "patrol started program=broken-writer"},
-		{name: "tick event", after: 1, want: "tick reasons="},
-		{name: "next tick event", after: 3, want: "next tick at="},
+		{name: "start event", want: "START program=broken-writer"},
+		{name: "tick event", after: 1, want: "TICK  cadence=15m next="},
+		{name: "wake event", after: 2, want: "WAKE  TL delivered"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -502,10 +501,10 @@ func TestRunReportsAndPropagatesRuntimeStateWriteFailures(t *testing.T) {
 	if !strings.Contains(err.Error(), "patrol state") {
 		t.Errorf("Run error = %v, want the state write failure", err)
 	}
-	if !strings.Contains(errOut.String(), "error: write patrol runtime state") {
+	if !strings.Contains(errOut.String(), "ERROR write patrol runtime state") {
 		t.Errorf("stderr = %q, want the state write failure", errOut.String())
 	}
-	if !strings.Contains(out.String(), "patrol started program=state-broken") {
+	if !strings.Contains(out.String(), "START program=state-broken") {
 		t.Errorf("stdout = %q, want the start event", out.String())
 	}
 }
@@ -548,7 +547,7 @@ func TestRunStampsThePaneLocallyAndKeepsTheRecordInUTC(t *testing.T) {
 			Out:   out, Err: errOut, Location: testDisplayZone,
 		})
 	}()
-	waitForPatrolEvents(t, out, 4)
+	waitForPatrolEvents(t, out, 3)
 	cancel()
 	select {
 	case err := <-done:
@@ -559,7 +558,7 @@ func TestRunStampsThePaneLocallyAndKeepsTheRecordInUTC(t *testing.T) {
 		t.Fatal("Run did not stop after cancellation")
 	}
 
-	if lines := out.lines(); !strings.HasPrefix(lines[0], "2026-09-01T00:45:00-04:00 ") {
+	if lines := out.lines(); !strings.HasPrefix(lines[0], "[2026-09-01 00:45:00 -0400] ") {
 		t.Errorf("first event = %q, want the reader's wall clock", lines[0])
 	}
 	state, err := ReadState("zones")

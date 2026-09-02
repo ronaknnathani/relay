@@ -95,10 +95,10 @@ func TestMergedPullRequestUnlocksDependentWorkAndWakesTheLiveTL(t *testing.T) {
 	events := out.String()
 	// The merged item still holds a live worker and an active child project, so
 	// its cleanup reason travels with the ready dependent item.
-	if !strings.Contains(events, "tick reasons=merged-worker-cleanup,ready-item:w2 cadence=15m") {
+	if !strings.Contains(events, "TICK  cadence=15m next=01:00:00 reasons=merged-worker-cleanup,ready-item:w2") {
 		t.Errorf("patrol events did not report cleanup alongside the ready item:\n%s", events)
 	}
-	if !strings.Contains(events, "TL wake delivered program="+p.Slug+" pane=pTL status=idle") {
+	if !strings.Contains(events, "WAKE  TL delivered pane=pTL status=idle") {
 		t.Errorf("patrol events did not report the delivered wake:\n%s", events)
 	}
 	for _, leak := range []string{"existing-session", "ready to dispatch", state.AttentionFingerprint} {
@@ -181,8 +181,8 @@ func TestOpenPullRequestLeavesDependentWorkBlockedAndTheTLAsleep(t *testing.T) {
 	if len(runner.requests) != 0 {
 		t.Fatalf("an open pull request rang the tech lead: %+v", runner.requests)
 	}
-	if !strings.Contains(out.String(), "tick reasons=none cadence=30m") ||
-		!strings.Contains(out.String(), "TL wake not-needed") {
+	if !strings.Contains(out.String(), "TICK  cadence=30m next=01:15:00 reasons=none") ||
+		!strings.Contains(out.String(), "WAKE  TL not-needed") {
 		t.Errorf("patrol events = %q, want a quiet tick and an unneeded wake", out.String())
 	}
 }

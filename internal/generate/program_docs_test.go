@@ -103,14 +103,16 @@ func TestProgramDocsDescribeVisiblePatrolEventsAndWakeFollowThrough(t *testing.T
 		{
 			path: filepath.Join("docs", "programs.md"),
 			required: []string{
-				"patrol started program=",
-				"tick reasons=",
-				"TL wake delivered",
-				"next tick at=",
+				"START program=",
+				"TICK  cadence=",
+				"WAKE  TL delivered",
+				"next=01:00:00",
 				"stderr",
 				"never written to a file",
 			},
-			forbidden: []string{"patrol log file", "log_path"},
+			forbidden: []string{
+				"patrol log file", "log_path", "next tick at=", "tick reasons=",
+			},
 		},
 	} {
 		t.Run(test.path, func(t *testing.T) {
@@ -126,7 +128,7 @@ func TestProgramDocsDescribeVisiblePatrolEventsAndWakeFollowThrough(t *testing.T
 			}
 			for _, forbidden := range test.forbidden {
 				if strings.Contains(body, forbidden) {
-					t.Errorf("%s documents a patrol log file: %q", test.path, forbidden)
+					t.Errorf("%s documents a retired patrol surface: %q", test.path, forbidden)
 				}
 			}
 		})

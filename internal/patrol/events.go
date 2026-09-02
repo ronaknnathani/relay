@@ -58,33 +58,33 @@ func newEventLog(out, err io.Writer, loc *time.Location) eventLog {
 }
 
 func (l eventLog) started(at time.Time, slug string) error {
-	return l.write(l.out, at, "patrol started program="+slug)
+	return l.write(l.out, at, ui.EventStart, "program="+slug)
 }
 
-func (l eventLog) tick(at time.Time, reasons []Reason, delaySeconds int64) error {
-	return l.write(l.out, at, fmt.Sprintf(
-		"tick reasons=%s cadence=%s", loggedReasons(reasons), cadenceLabel(delaySeconds),
-	))
-}
-
-func (l eventLog) nextTick(at time.Time, nextTickAt string, delaySeconds int64) error {
-	return l.write(l.out, at, fmt.Sprintf(
-		"next tick at=%s cadence=%s", ui.LocalTimeText(nextTickAt, l.loc), cadenceLabel(delaySeconds),
+// tick prints one due observation. It carries the cadence it chose and the wall
+// clock the next observation is actually due at, so a reader learns when the
+// patrol wakes next from the line that made the decision rather than from a
+// second line that repeats it.
+func (l eventLog) tick(at time.Time, reasons []Reason, delaySeconds int64, nextTickAt string) error {
+	return l.write(l.out, at, ui.EventTick, fmt.Sprintf(
+		"cadence=%s%s reasons=%s",
+		cadenceLabel(delaySeconds), l.nextField(at, nextTickAt), loggedReasons(reasons),
 	))
 }
 
 func (l eventLog) stopped(at time.Time, slug, reason string) error {
-	if reason == "" {
-		return l.write(l.out, at, "patrol stopped program="+slug)
+	event := "program=" + slug
+	if reason != "" {
+		event += " reason=" + reason
 	}
-	return l.write(l.out, at, "patrol stopped program="+slug+" reason="+reason)
+	return l.write(l.out, at, ui.EventStop, event)
 }
 
 // wake prints one tech lead wake decision. Delivered and not-needed are routine;
 // every other outcome left attention pending and belongs on stderr with the
 // command that shows the full recorded detail.
 func (l eventLog) wake(at time.Time, slug string, outcome turnOutcome) error {
-	event := "TL wake " + string(outcome.Kind) + " program=" + slug
+	event := "TL " + string(outcome.Kind)
 	switch {
 	case len(outcome.Panes) == 1:
 		event += " pane=" + outcome.Panes[0]
@@ -95,23 +95,44 @@ func (l eventLog) wake(at time.Time, slug string, outcome turnOutcome) error {
 		event += " status=" + outcome.Status
 	}
 	if !outcome.degraded() {
-		return l.write(l.out, at, event)
+		return l.write(l.out, at, ui.EventWake, event)
 	}
-	return l.write(l.err, at, fmt.Sprintf(
-		"warning: %s; attention remains pending, see `relay program patrol status %s`", event, slug,
+	return l.write(l.err, at, ui.EventWarn, fmt.Sprintf(
+		"%s; attention remains pending, see `relay program patrol status %s`", event, slug,
+	))
+}
+
+// retry prints an observation failure with the cadence and the wall clock the
+// patrol will try again at. A failed tick prints no summary of its own, so this
+// is the only line that says when the patrol comes back.
+func (l eventLog) retry(at time.Time, message string, delaySeconds int64, nextTickAt string) error {
+	return l.write(l.err, at, ui.EventError, fmt.Sprintf(
+		"%s; cadence=%s%s", message, cadenceLabel(delaySeconds), l.nextField(at, nextTickAt),
 	))
 }
 
 func (l eventLog) failure(at time.Time, message string) error {
-	return l.write(l.err, at, "error: "+message)
+	return l.write(l.err, at, ui.EventError, message)
 }
 
-func (l eventLog) write(writer io.Writer, at time.Time, event string) error {
+// nextField renders the scheduled time a line carries, and nothing at all when
+// there is none: a terminal event has no next tick, and a blank `next=` would
+// claim a schedule the patrol does not have.
+func (l eventLog) nextField(at time.Time, nextTickAt string) string {
+	next := ui.CompactScheduledText(nextTickAt, at, l.loc)
+	if next == "" {
+		return ""
+	}
+	return " next=" + next
+}
+
+func (l eventLog) write(writer io.Writer, at time.Time, label, event string) error {
 	if writer == nil {
 		return nil
 	}
-	if _, err := fmt.Fprintf(writer, "%s %s\n", ui.LocalTime(at, l.loc), event); err != nil {
-		return fmt.Errorf("write patrol event %q: %w", event, err)
+	line := ui.EventLine(at, l.loc, label, event)
+	if _, err := fmt.Fprintln(writer, line); err != nil {
+		return fmt.Errorf("write patrol event %q: %w", line, err)
 	}
 	return nil
 }

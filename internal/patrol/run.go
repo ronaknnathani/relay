@@ -57,48 +57,6 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 		notificationWarning := ""
 		state.LastTickAt = tickNow.Format(time.RFC3339)
 		state.UpdatedAt = state.LastTickAt
-		if tickErr == nil {
-			state.Reasons = nonNilReasons(observation.Reasons)
-			state.DelaySeconds = observation.DelaySeconds
-			state.StopReason = observation.StopReason
-			if observation.Stop {
-				state.Status = StatusStopped
-				state.NextTickAt = ""
-				state.Error = ""
-				state.ConsecutiveErrors = 0
-				if err := events.stopped(tickNow, slug, observation.StopReason); err != nil {
-					return true, failedRunState(events, &state, tickNow, err)
-				}
-				return true, writeRunState(events, state, tickNow)
-			}
-			if err := events.tick(tickNow, observation.Reasons, observation.DelaySeconds); err != nil {
-				return true, failedRunState(events, &state, tickNow, err)
-			}
-			if observation.AttentionFingerprint == "" {
-				state.AttentionFingerprint = ""
-				state.LastNotifiedAt = ""
-				state.LastTurnFingerprint = ""
-				state.TurnFailures = 0
-			}
-			agents, agentsErr := listAgents(options.Agents)
-			if agentsErr != nil {
-				state.TLPresent = false
-				notificationWarning = agentsErr.Error()
-				if err := events.failure(tickNow, fmt.Sprintf(
-					"%v; tech lead presence is unknown this tick", agentsErr,
-				)); err != nil {
-					return true, failedRunState(events, &state, tickNow, err)
-				}
-			} else {
-				outcome := requestTLTurn(
-					ctx, &state, observation, agents, options.Turns, options.Notifier, tickNow,
-				)
-				notificationWarning = outcome.Warning
-				if err := events.wake(tickNow, slug, outcome); err != nil {
-					return true, failedRunState(events, &state, tickNow, err)
-				}
-			}
-		}
 		if tickErr != nil {
 			state.Warning = ""
 			if errorClass == lastErrorClass {
@@ -110,10 +68,9 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 			state.Error = tickErr.Error()
 			state.DelaySeconds = int64(attentionDelay / time.Second)
 			state.NextTickAt = tickNow.Add(attentionDelay).Format(time.RFC3339)
-			if err := events.failure(tickNow, fmt.Sprintf(
-				"patrol observation failed: %v; retrying in %s",
-				tickErr, cadenceLabel(state.DelaySeconds),
-			)); err != nil {
+			if err := events.retry(tickNow, fmt.Sprintf(
+				"patrol observation failed: %v", tickErr,
+			), state.DelaySeconds, state.NextTickAt); err != nil {
 				return true, failedRunState(events, &state, tickNow, err)
 			}
 			if state.ConsecutiveErrors >= 3 {
@@ -126,6 +83,44 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 			state.Status = StatusRunning
 			return false, writeRunState(events, state, tickNow)
 		}
+
+		state.Reasons = nonNilReasons(observation.Reasons)
+		state.DelaySeconds = observation.DelaySeconds
+		state.StopReason = observation.StopReason
+		if observation.Stop {
+			state.Status = StatusStopped
+			state.NextTickAt = ""
+			state.Error = ""
+			state.ConsecutiveErrors = 0
+			if err := events.stopped(tickNow, slug, observation.StopReason); err != nil {
+				return true, failedRunState(events, &state, tickNow, err)
+			}
+			return true, writeRunState(events, state, tickNow)
+		}
+		if observation.AttentionFingerprint == "" {
+			state.AttentionFingerprint = ""
+			state.LastNotifiedAt = ""
+			state.LastTurnFingerprint = ""
+			state.TurnFailures = 0
+		}
+		// The wake runs before anything is printed, because an undelivered wake
+		// is part of what this tick decided. Only once the record is final does
+		// the tick line quote a next tick a reader can trust.
+		presenceFailure := ""
+		woke := false
+		wakeOutcome := turnOutcome{}
+		agents, agentsErr := listAgents(options.Agents)
+		if agentsErr != nil {
+			state.TLPresent = false
+			notificationWarning = agentsErr.Error()
+			presenceFailure = fmt.Sprintf("%v; tech lead presence is unknown this tick", agentsErr)
+		} else {
+			wakeOutcome = requestTLTurn(
+				ctx, &state, observation, agents, options.Turns, options.Notifier, tickNow,
+			)
+			notificationWarning = wakeOutcome.Warning
+			woke = true
+		}
 		lastErrorClass = ""
 		state.ConsecutiveErrors = 0
 		state.Error = ""
@@ -133,8 +128,20 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 		state.StopReason = ""
 		state.Status = StatusRunning
 		state.NextTickAt = tickNow.Add(time.Duration(state.DelaySeconds) * time.Second).Format(time.RFC3339)
-		if err := events.nextTick(tickNow, state.NextTickAt, state.DelaySeconds); err != nil {
+		if err := events.tick(
+			tickNow, observation.Reasons, state.DelaySeconds, state.NextTickAt,
+		); err != nil {
 			return true, failedRunState(events, &state, tickNow, err)
+		}
+		if presenceFailure != "" {
+			if err := events.failure(tickNow, presenceFailure); err != nil {
+				return true, failedRunState(events, &state, tickNow, err)
+			}
+		}
+		if woke {
+			if err := events.wake(tickNow, slug, wakeOutcome); err != nil {
+				return true, failedRunState(events, &state, tickNow, err)
+			}
 		}
 		return false, writeRunState(events, state, tickNow)
 	}

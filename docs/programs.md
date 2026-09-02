@@ -357,26 +357,34 @@ file plus rename. Archiving a program stops its patrol cleanly while leaving run
 never written to a file: the pane is the log, and `patrol.json` remains the durable state.
 
 ```text
-2026-09-01T00:45:00-04:00 patrol started program=auth-platform
-2026-09-01T00:45:00-04:00 tick reasons=ready-item:w2,unread-worker-outbox:w1 cadence=15m
-2026-09-01T00:45:01-04:00 TL wake delivered program=auth-platform pane=w2:pC status=idle
-2026-09-01T00:45:01-04:00 next tick at=2026-09-01T01:00:01-04:00 cadence=15m
-2026-09-01T01:10:00-04:00 patrol stopped program=auth-platform reason=context canceled
+[2026-09-01 00:45:00 -0400] START program=auth-platform
+[2026-09-01 00:45:00 -0400] TICK  cadence=15m next=01:00:00 reasons=ready-item:w2,unread-worker-outbox:w1
+[2026-09-01 00:45:00 -0400] WAKE  TL delivered pane=w2:pC status=idle
+[2026-09-01 01:10:00 -0400] STOP  program=auth-platform reason=context canceled
 ```
 
-Pane events are stamped in the host's local zone with the UTC offset spelled out, because the pane is
-read by whoever is sitting in front of it. `patrol.json` is unchanged and still records UTC, and so
-does every `--json` surface; only text a person reads is translated. A reader in UTC sees `+00:00`
-rather than a bare `Z`, so a rendered wall clock is never mistaken for the stored record, and a
-recorded value that is not RFC3339 prints exactly as recorded.
+Every line opens with the reader's own wall clock in brackets and an uppercase label padded to one
+width, so a pane is scanned in a column rather than parsed a line at a time. Each line is
+stamped in the host's local zone with the UTC offset spelled out, because the pane is read by
+whoever is sitting in front of it. `patrol.json` is unchanged and still records UTC, and so does
+every `--json` surface; only text a person reads is translated, and a recorded value that is not
+RFC3339 prints exactly as recorded.
+
+A tick is one line and carries the whole decision: the cadence it chose, the wall clock the next tick
+is actually due at, and why it woke. There is no separate line announcing the next tick, so nothing
+can print a schedule that the rest of the tick then changed. A `next=` later the same local day is a
+bare `01:00:00`; one on any other day is spelled out in full (`2026-09-02 00:20:00 -0400`), so
+tomorrow's tick never reads as one twenty minutes away. A terminal event has no next tick and omits
+the field entirely.
 
 Only a due tick prints; the internal 30-second wall-clock wakeup is silent. Outcomes that leave
 attention undelivered go to stderr with the command that shows the recorded detail, as do
-observation, Herdr, and runtime-state failures:
+observation, Herdr, and runtime-state failures. A failed observation prints no tick, so its `ERROR`
+line carries the retry cadence and the wall clock the patrol comes back at:
 
 ```text
-2026-09-01T01:00:01-04:00 warning: TL wake busy program=auth-platform pane=pC status=working; attention remains pending, see `relay program patrol status auth-platform`
-2026-09-01T01:00:01-04:00 error: patrol observation failed: build patrol snapshot for program "auth-platform": ...; retrying in 15m
+[2026-09-01 01:00:00 -0400] WARN  TL busy pane=pC status=working; attention remains pending, see `relay program patrol status auth-platform`
+[2026-09-01 01:00:00 -0400] ERROR patrol observation failed: build patrol snapshot for program "auth-platform": ...; cadence=15m next=01:15:00
 ```
 
 Events carry timestamps, the program slug, safe enums, pane IDs, and reason codes only. Reason text,
