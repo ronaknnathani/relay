@@ -11,6 +11,15 @@ import (
 // can always tell a rendered wall clock from the UTC value on disk.
 const localTimeLayout = "2006-01-02T15:04:05-07:00"
 
+// compactTimeLayout is the same wall clock written for a person scanning a
+// pane: a space instead of the "T", and no colon in the offset, so the eye
+// separates date, time, and zone without decoding anything.
+const compactTimeLayout = "2006-01-02 15:04:05 -0700"
+
+// compactClockLayout is that instant with the date and offset dropped, which is
+// everything a scheduled time needs when it falls on the day it is printed on.
+const compactClockLayout = "15:04:05"
+
 // LocalTime renders an instant as the wall clock a reader in loc has, with the
 // UTC offset in force at that instant. A nil loc means the host's own zone.
 //
@@ -31,6 +40,41 @@ func LocalTimeText(value string, loc *time.Location) string {
 		return value
 	}
 	return LocalTime(parsed, loc)
+}
+
+// CompactTime renders an instant as the compact local wall clock a pane event
+// carries. A nil loc means the host's own zone. Like LocalTime this is display
+// only: nothing written to a runtime record, a digest, GitHub, or --json output
+// goes through here.
+func CompactTime(t time.Time, loc *time.Location) string {
+	return t.In(displayLocation(loc)).Format(compactTimeLayout)
+}
+
+// CompactScheduledText renders one stored RFC3339 timestamp as the compact form
+// a reader needs beside an event stamped at `at`. A time later the same local
+// day prints as a bare wall clock, because the date is the one the reader is
+// already looking at; a time on any other day prints in full, date and offset
+// included, so tomorrow's check is never read as today's.
+//
+// A value that does not parse is returned exactly as it was given, and an empty
+// value stays empty so a caller can drop the field rather than print a blank.
+func CompactScheduledText(value string, at time.Time, loc *time.Location) string {
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return value
+	}
+	zone := displayLocation(loc)
+	scheduled, printed := parsed.In(zone), at.In(zone)
+	if sameCalendarDay(scheduled, printed) {
+		return scheduled.Format(compactClockLayout)
+	}
+	return scheduled.Format(compactTimeLayout)
+}
+
+func sameCalendarDay(first, second time.Time) bool {
+	firstYear, firstMonth, firstDay := first.Date()
+	secondYear, secondMonth, secondDay := second.Date()
+	return firstYear == secondYear && firstMonth == secondMonth && firstDay == secondDay
 }
 
 func displayLocation(loc *time.Location) *time.Location {
