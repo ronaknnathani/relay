@@ -63,11 +63,14 @@ const (
 
 // Agent is the subset of live Herdr agent state Relay uses.
 type Agent struct {
-	Status          Status
-	StateChangeSeq  int64
-	PaneID          string
-	TabID           string
-	WorkspaceID     string
+	Status         Status
+	StateChangeSeq int64
+	PaneID         string
+	TabID          string
+	WorkspaceID    string
+	// TerminalID names the terminal hosting the agent. Herdr reuses pane and
+	// tab ids, so it is part of what makes one live session identifiable.
+	TerminalID      string
 	TerminalTitle   string
 	CWD             string
 	ForegroundCWD   string
@@ -208,6 +211,7 @@ func (c *Client) Agents() ([]Agent, error) {
 				PaneID         string `json:"pane_id"`
 				TabID          string `json:"tab_id"`
 				WorkspaceID    string `json:"workspace_id"`
+				TerminalID     string `json:"terminal_id"`
 				TerminalTitle  string `json:"terminal_title_stripped"`
 				CWD            string `json:"cwd"`
 				ForegroundCWD  string `json:"foreground_cwd"`
@@ -228,6 +232,7 @@ func (c *Client) Agents() ([]Agent, error) {
 			PaneID:         raw.PaneID,
 			TabID:          raw.TabID,
 			WorkspaceID:    raw.WorkspaceID,
+			TerminalID:     raw.TerminalID,
 			TerminalTitle:  raw.TerminalTitle,
 			CWD:            raw.CWD,
 			ForegroundCWD:  raw.ForegroundCWD,
