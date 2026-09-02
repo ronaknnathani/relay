@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ronaknnathani/relay/internal/herdr"
+	"github.com/ronaknnathani/relay/internal/ui"
 )
 
 // watchHarness drives Run with a manual clock and a manual ticker so cadence
@@ -58,6 +59,19 @@ func (w *signalWriter) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.buffer.String()
+}
+
+// drain discards the lines already printed. A check prints several of them and
+// a test rarely waits for all of them, so the next wait would otherwise match a
+// line the previous check left behind.
+func (w *signalWriter) drain() {
+	for {
+		select {
+		case <-w.signal:
+		default:
+			return
+		}
+	}
 }
 
 // awaitLine waits for an event line containing want.
@@ -166,9 +180,13 @@ func (h *watchHarness) observations() int {
 	return h.observed
 }
 
-// tick fires the internal watcher wakeup.
+// tick fires the internal watcher wakeup. Whatever the previous check printed
+// is discarded first, so every line a test waits for afterwards is one this
+// wakeup produced.
 func (h *watchHarness) tick() {
 	h.t.Helper()
+	h.out.drain()
+	h.err.drain()
 	select {
 	case h.ticks <- h.clock():
 	case <-time.After(5 * time.Second):
@@ -250,7 +268,7 @@ func (h *watchHarness) runScheduledCheck() State {
 	}
 	h.setNow(next)
 	h.tick()
-	h.out.awaitLine(h.t, "next check at=")
+	h.out.awaitLine(h.t, "] CHECK ")
 	return h.state()
 }
 
@@ -258,7 +276,7 @@ func TestCadenceRunsFifteenThirtyThenSixtyMinuteChecks(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
 	start := harness.clock()
 
-	harness.out.awaitLine(t, "next check at=")
+	harness.out.awaitLine(t, "] CHECK ")
 	immediate := harness.state()
 	if immediate.ScheduledChecks != 0 {
 		t.Fatalf("scheduled checks after the start observation = %d, want 0: it is not a scheduled check",
@@ -290,7 +308,7 @@ func TestCadenceRunsFifteenThirtyThenSixtyMinuteChecks(t *testing.T) {
 
 func TestInternalTickBeforeTheScheduledCheckIsSilent(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
-	harness.out.awaitLine(t, "next check at=")
+	harness.out.awaitLine(t, "] CHECK ")
 
 	before := harness.out.String()
 	observations := harness.observations()
@@ -311,7 +329,7 @@ func TestInternalTickBeforeTheScheduledCheckIsSilent(t *testing.T) {
 
 func TestNewHeadResetsTheCadence(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
-	harness.out.awaitLine(t, "next check at=")
+	harness.out.awaitLine(t, "] CHECK ")
 	for i := 0; i < 5; i++ {
 		harness.runScheduledCheck()
 	}
@@ -337,7 +355,7 @@ func TestNewHeadResetsTheCadence(t *testing.T) {
 
 func TestPendingCheckTransitionAloneDoesNotResetTheCadence(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
-	harness.out.awaitLine(t, "next check at=")
+	harness.out.awaitLine(t, "] CHECK ")
 	for i := 0; i < 5; i++ {
 		harness.runScheduledCheck()
 	}
@@ -357,8 +375,7 @@ func TestPendingCheckTransitionAloneDoesNotResetTheCadence(t *testing.T) {
 
 func TestClearedAttentionResetsTheCadence(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
-	harness.out.awaitLine(t, "owner wake delivered")
-	harness.out.awaitLine(t, "next check at=")
+	harness.out.awaitLine(t, "] WAKE  delivered")
 	for i := 0; i < 4; i++ {
 		harness.runScheduledCheck()
 	}
@@ -385,7 +402,7 @@ func TestClearedAttentionResetsTheCadence(t *testing.T) {
 
 func TestFirstStartWakesImmediatelyForExistingAttention(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
-	line := harness.out.awaitLine(t, "owner wake delivered")
+	line := harness.out.awaitLine(t, "] WAKE  delivered")
 	if !strings.Contains(line, "pane=pane-owner") {
 		t.Errorf("wake line = %q, want the exact owner pane", line)
 	}
@@ -407,8 +424,7 @@ func TestFirstStartWakesImmediatelyForExistingAttention(t *testing.T) {
 
 func TestRestartResetsTheScheduleAndWakesAgain(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
-	harness.out.awaitLine(t, "owner wake delivered")
-	harness.out.awaitLine(t, "next check at=")
+	harness.out.awaitLine(t, "] WAKE  delivered")
 	for i := 0; i < 5; i++ {
 		harness.runScheduledCheck()
 	}
@@ -419,7 +435,7 @@ func TestRestartResetsTheScheduleAndWakesAgain(t *testing.T) {
 	harness.stop()
 
 	restarted := newWatchHarnessReusingHome(t, harness)
-	restarted.out.awaitLine(t, "owner wake delivered")
+	restarted.out.awaitLine(t, "] WAKE  delivered")
 	state := restarted.state()
 	if state.ScheduledChecks != 0 {
 		t.Errorf("scheduled checks = %d, want 0 after a restart", state.ScheduledChecks)
@@ -478,7 +494,7 @@ func TestMergedPullRequestCompletesSilently(t *testing.T) {
 	merged.PR.State = "MERGED"
 	harness := newWatchHarness(t, ModeStandalone, "", merged)
 
-	harness.out.awaitLine(t, "pr watch complete")
+	harness.out.awaitLine(t, "] DONE  ")
 	harness.awaitExit()
 
 	if harness.client.promptCount() != 0 {
@@ -498,7 +514,7 @@ func TestMergedStackFrontWakesTheOrchestrator(t *testing.T) {
 	merged.PR.State = "MERGED"
 	harness := newWatchHarness(t, ModeStack, "stack-run", merged)
 
-	harness.out.awaitLine(t, "owner wake delivered")
+	harness.out.awaitLine(t, "] WAKE  delivered")
 	state := harness.state()
 	if state.Status == StatusComplete {
 		t.Fatal("stack front watcher completed instead of staying up to retarget")
@@ -519,7 +535,7 @@ func TestUncertainDeliverySuppressesFurtherWakes(t *testing.T) {
 	harness := newWatchHarnessWithClient(t, ModeStandalone, "", actionableObservation(),
 		func(client *fakeOwnerClient) { client.promptErr = wrapUncertain() })
 
-	harness.err.awaitLine(t, "owner wake uncertain")
+	harness.err.awaitLine(t, "] WARN  uncertain")
 	if !harness.state().WakesSuppressed {
 		t.Fatal("uncertain delivery did not suppress further wakes")
 	}
@@ -529,7 +545,7 @@ func TestUncertainDeliverySuppressesFurtherWakes(t *testing.T) {
 	if harness.client.promptCount() != prompts {
 		t.Errorf("prompts = %d, want no wake while suppressed", harness.client.promptCount())
 	}
-	harness.err.awaitLine(t, "owner wake suppressed")
+	harness.err.awaitLine(t, "] WARN  suppressed")
 }
 
 func wrapUncertain() error {
@@ -541,22 +557,20 @@ func TestBusyOwnerHoldsTheFastCadenceUntilAWakeIsDelivered(t *testing.T) {
 		func(client *fakeOwnerClient) {
 			client.agents = []herdr.Agent{liveAgent("relay:demo", "pane-owner", herdr.StatusWorking)}
 		})
-	harness.err.awaitLine(t, "owner wake owner-busy")
+	harness.err.awaitLine(t, "] WARN  owner-busy")
 	if !harness.state().AttentionPending {
 		t.Error("attention stopped being pending after a busy owner")
 	}
 	if harness.client.promptCount() != 0 {
 		t.Errorf("a busy owner was prompted with %v", harness.client.promptTexts())
 	}
-	harness.out.awaitLine(t, "next check at=")
 
 	// A busy owner never took the attention, so no scheduled check may be
 	// spent: the watcher stays at the fast cadence however long it lasts.
 	for i := 0; i < 6; i++ {
 		harness.setNow(harness.clock().Add(FastCadence))
 		harness.tick()
-		harness.err.awaitLine(t, "owner wake owner-busy")
-		harness.out.awaitLine(t, "next check at=")
+		harness.err.awaitLine(t, "] WARN  owner-busy")
 		state := harness.state()
 		if state.ScheduledChecks != 0 {
 			t.Fatalf("scheduled checks = %d after busy wake %d, want 0", state.ScheduledChecks, i+1)
@@ -577,14 +591,12 @@ func TestBusyOwnerHoldsTheFastCadenceUntilAWakeIsDelivered(t *testing.T) {
 func TestMissingOwnerHoldsTheFastCadence(t *testing.T) {
 	harness := newWatchHarnessWithClient(t, ModeStandalone, "", actionableObservation(),
 		func(client *fakeOwnerClient) { client.agents = nil })
-	harness.err.awaitLine(t, "owner wake owner-missing")
-	harness.out.awaitLine(t, "next check at=")
+	harness.err.awaitLine(t, "] WARN  owner-missing")
 
 	for i := 0; i < 5; i++ {
 		harness.setNow(harness.clock().Add(FastCadence))
 		harness.tick()
-		harness.err.awaitLine(t, "owner wake owner-missing")
-		harness.out.awaitLine(t, "next check at=")
+		harness.err.awaitLine(t, "] WARN  owner-missing")
 	}
 	state := harness.state()
 	if state.ScheduledChecks != 0 || state.DelaySeconds != int64(FastCadence/time.Second) {
@@ -668,7 +680,7 @@ func TestWatcherEventsCarryNoPullRequestContent(t *testing.T) {
 	observation := actionableObservation()
 	observation.PR.Title = "Add the secret widget"
 	harness := newWatchHarness(t, ModeStandalone, "", observation)
-	harness.out.awaitLine(t, "owner wake delivered")
+	harness.out.awaitLine(t, "] WAKE  delivered")
 
 	events := harness.out.String() + harness.err.String()
 	for _, forbidden := range []string{
@@ -734,7 +746,7 @@ func TestTickReportsObservationFailures(t *testing.T) {
 
 func TestRunRefusesASecondWatcher(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
-	harness.out.awaitLine(t, "next check at=")
+	harness.out.awaitLine(t, "] CHECK ")
 
 	err := Run(context.Background(), harness.slug, Options{
 		Mode: ModeStandalone,
@@ -753,7 +765,7 @@ func TestClosedUnmergedWakesTheOwnerThenFinishes(t *testing.T) {
 	closed.PR.State = "CLOSED"
 	harness := newWatchHarness(t, ModeStandalone, "", closed)
 
-	harness.out.awaitLine(t, "owner wake delivered")
+	harness.out.awaitLine(t, "] WAKE  delivered")
 	harness.out.awaitLine(t, "reason=closed-unmerged")
 	harness.awaitExit()
 
@@ -778,8 +790,7 @@ func TestClosedUnmergedKeepsWatchingUntilTheEscalationLands(t *testing.T) {
 	harness := newWatchHarnessWithClient(t, ModeStandalone, "", closed,
 		func(client *fakeOwnerClient) { client.agents = nil })
 
-	harness.err.awaitLine(t, "owner wake owner-missing")
-	harness.out.awaitLine(t, "next check at=")
+	harness.err.awaitLine(t, "] WARN  owner-missing")
 	state := harness.state()
 	if state.Status != StatusRunning {
 		t.Fatalf("status = %q, want a watcher still trying to escalate", state.Status)
@@ -805,8 +816,7 @@ func TestMergedStackFrontKeepsWatchingUntilItIsStopped(t *testing.T) {
 	merged.PR.State = "MERGED"
 	harness := newWatchHarness(t, ModeStack, "stack-run", merged)
 
-	harness.out.awaitLine(t, "owner wake delivered")
-	harness.out.awaitLine(t, "next check at=")
+	harness.out.awaitLine(t, "] WAKE  delivered")
 	state := harness.state()
 	if state.Status != StatusRunning {
 		t.Fatalf("status = %q, want the stack front watcher still running", state.Status)
@@ -828,7 +838,7 @@ func TestMergedStackFrontKeepsWatchingUntilItIsStopped(t *testing.T) {
 
 func TestNewActionableAttentionResetsTheCadence(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
-	harness.out.awaitLine(t, "next check at=")
+	harness.out.awaitLine(t, "] CHECK ")
 	for i := 0; i < 6; i++ {
 		harness.runScheduledCheck()
 	}
@@ -883,20 +893,25 @@ func TestAWakeIsAbandonedWhenTheObservationIsNoLongerCurrent(t *testing.T) {
 				t.Fatalf("UpdateState: %v", err)
 			}
 			before := client.promptCount()
-			terminal, err := runner.wake(now, schedule{}, digest)
+			summary, err := runner.wake(now, schedule{}, digest)
 			if err != nil {
 				t.Fatalf("wake: %v", err)
 			}
-			if terminal {
-				t.Error("an abandoned wake reported the watcher terminal")
+			if !summary.skipped {
+				t.Errorf("wake summary = %+v, want an abandoned wake", summary)
+			}
+			if summary.attempted || summary.terminal {
+				t.Errorf("wake summary = %+v, want no wake and no terminal state", summary)
 			}
 			if client.promptCount() != before {
 				t.Errorf("prompts = %v, want none for a superseded observation", client.promptTexts())
 			}
 		})
 	}
-	if !strings.Contains(out.String(), "owner wake skipped") {
-		t.Errorf("watcher events did not record the skipped wake:\n%s", out.String())
+	// The line itself is printed by the check that abandoned the wake, so
+	// deciding to skip prints nothing on its own.
+	if printed := out.String() + errOut.String(); printed != "" {
+		t.Errorf("an abandoned wake printed on its own:\n%s", printed)
 	}
 }
 
@@ -917,8 +932,7 @@ func changesRequestedObservation() Observation {
 // moves.
 func TestAnAnsweredChangesRequestedReviewStopsWakingTheOwner(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", changesRequestedObservation())
-	harness.out.awaitLine(t, "owner wake delivered")
-	harness.out.awaitLine(t, "next check at=")
+	harness.out.awaitLine(t, "] WAKE  delivered")
 	if harness.client.promptCount() != 1 {
 		t.Fatalf("prompts = %v, want one wake for the changes-requested review",
 			harness.client.promptTexts())
@@ -968,10 +982,10 @@ func TestAnAnsweredChangesRequestedReviewStopsWakingTheOwner(t *testing.T) {
 // record that drifted into local time would silently change the cadence.
 func TestRunStampsThePaneLocallyAndKeepsTheRecordInUTC(t *testing.T) {
 	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
-	started := harness.out.awaitLine(t, "pr watch started")
-	harness.out.awaitLine(t, "next check at=")
+	started := harness.out.awaitLine(t, "] START ")
+	harness.out.awaitLine(t, "] CHECK ")
 
-	if !strings.HasPrefix(started, "2026-03-01T04:00:00-04:00 ") {
+	if !strings.HasPrefix(started, "[2026-03-01 04:00:00 -0400] ") {
 		t.Errorf("started event = %q, want the reader's wall clock", started)
 	}
 	state := harness.state()
@@ -999,5 +1013,126 @@ func TestRunStampsThePaneLocallyAndKeepsTheRecordInUTC(t *testing.T) {
 	}
 	if !strings.HasSuffix(digest.ObservedAt, "Z") {
 		t.Errorf("digest observed at = %q, want a UTC record", digest.ObservedAt)
+	}
+}
+
+// A pane is read top to bottom: what the watcher saw, then who it handed the
+// attention to. The wake runs first because it can change the schedule, but the
+// lines still land in reading order and the check line carries the schedule the
+// wake left behind.
+func TestRunPrintsStartThenCheckThenWake(t *testing.T) {
+	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
+	harness.out.awaitLine(t, "] WAKE  delivered")
+
+	state := harness.state()
+	lines := strings.Split(strings.TrimSuffix(harness.out.String(), "\n"), "\n")
+	want := []string{
+		"[2026-03-01 04:00:00 -0400] START project=demo mode=standalone owner=demo pr=#42",
+		"[2026-03-01 04:00:00 -0400] CHECK start pr=#42 state=OPEN actionable=1 " +
+			"cadence=15m next=04:15:00 reasons=new-comment fp=" +
+			state.CurrentFingerprint[:shortFingerprintLength],
+		"[2026-03-01 04:00:00 -0400] WAKE  delivered owner=demo pane=pane-owner status=idle fp=" +
+			state.CurrentFingerprint[:shortFingerprintLength],
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("watcher events =\n%s\nwant\n%s", harness.out.String(), strings.Join(want, "\n"))
+	}
+	for index, line := range want {
+		if lines[index] != line {
+			t.Errorf("event %d = %q, want %q", index, lines[index], line)
+		}
+	}
+	if got := harness.err.String(); got != "" {
+		t.Errorf("routine events wrote to stderr: %q", got)
+	}
+}
+
+// An owner that was not there to take the attention rolls the cadence back to
+// fast. The check line is printed after that rollback, so what a reader sees is
+// when the watcher actually returns — not the slower cadence the observation on
+// its own would have chosen.
+func TestAnUndeliveredWakePrintsTheCadenceItRolledBackTo(t *testing.T) {
+	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
+	harness.out.awaitLine(t, "] WAKE  delivered")
+	for i := 0; i < 4; i++ {
+		harness.runScheduledCheck()
+		harness.out.awaitLine(t, "] WAKE  delivered")
+	}
+	if got := harness.state().DelaySeconds; got != int64(MediumCadence/time.Second) {
+		t.Fatalf("cadence = %ds, want the 30m backoff before the owner goes away", got)
+	}
+
+	harness.client.setAgents([]herdr.Agent{liveAgent("relay:demo", "pane-owner", herdr.StatusWorking)})
+	next, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
+	if err != nil {
+		t.Fatalf("parse next check: %v", err)
+	}
+	harness.setNow(next)
+	harness.tick()
+	line := harness.out.awaitLine(t, "] CHECK ")
+
+	state := harness.state()
+	if state.DelaySeconds != int64(FastCadence/time.Second) {
+		t.Fatalf("cadence = %ds, want the 15m hold after an undelivered wake", state.DelaySeconds)
+	}
+	want := "cadence=15m next=" + ui.CompactScheduledText(state.NextCheckAt, next, testDisplayZone)
+	if !strings.Contains(line, want) {
+		t.Errorf("check line = %q, want %q", line, want)
+	}
+	if strings.Contains(line, "cadence=30m") {
+		t.Errorf("check line = %q, want the rolled-back cadence, not the one the observation chose", line)
+	}
+}
+
+// A watcher whose events cannot reach its pane is unobservable, so it stops and
+// records why. Every line of a check is on that path, including the one printed
+// after the wake has already run.
+func TestRunStopsWhenAnEventCannotBeWritten(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		after int
+		want  string
+	}{
+		{name: "start event", want: "START project=broken-writer"},
+		{name: "check event", after: 1, want: "CHECK start pr=#42"},
+		{name: "wake event", after: 2, want: "WAKE  delivered"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			withRuntimeHome(t)
+			broken := &failingWriter{err: errors.New("broken pipe"), after: test.after}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			err := Run(ctx, "broken-writer", Options{
+				Mode: ModeStandalone,
+				Now:  func() time.Time { return time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC) },
+				Locate: func(slug string) (Target, error) {
+					return Target{Slug: slug, Dir: t.TempDir(), PRNumber: 42}, nil
+				},
+				Observe: func(context.Context, Target) (Observation, error) {
+					return actionableObservation(), nil
+				},
+				Client: &fakeOwnerClient{agents: []herdr.Agent{
+					liveAgent("relay:broken-writer", "pane-owner", herdr.StatusIdle),
+				}},
+				Out:      broken,
+				Err:      &failingWriter{err: errors.New("broken pipe"), after: 64},
+				Location: testDisplayZone,
+			})
+			if err == nil {
+				t.Fatal("a watcher whose pane is gone reported success")
+			}
+			for _, want := range []string{"write pr watch event", test.want, "broken pipe"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Run error %q is missing %q", err, want)
+				}
+			}
+			state, readErr := ReadState("broken-writer")
+			if readErr != nil {
+				t.Fatalf("ReadState: %v", readErr)
+			}
+			if state.Status != StatusFailed || !strings.Contains(state.Error, "broken pipe") {
+				t.Errorf("state = %+v, want the write failure recorded", state)
+			}
+		})
 	}
 }

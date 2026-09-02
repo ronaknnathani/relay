@@ -233,13 +233,50 @@ Every timestamp Relay records is UTC: `watch.json`, every digest, every value re
 `--json` field, and every comparison that decides when the next check is due. Nothing about that
 changes, and no schema field is ever written in local time.
 
-What a person reads is rendered where that person is. Watcher pane events and the text output of
-`relay pr watch status` print the host's local wall clock with the UTC offset spelled out —
-`2026-09-02T10:30:00-04:00` — resolved from the system zone when the line is printed, so a reader in
-UTC sees `+00:00` rather than a bare `Z` and never mistakes a rendered time for the stored record. A
-recorded value that is not RFC3339 is printed exactly as recorded rather than blanked.
+What a person reads is rendered where that person is. The text output of `relay pr watch status`
+prints the host's local wall clock with the UTC offset spelled out — `2026-09-02T10:30:00-04:00` —
+resolved from the system zone when the line is printed, so a reader in UTC sees `+00:00` rather than
+a bare `Z` and never mistakes a rendered time for the stored record. Watcher pane events carry the
+same wall clock in the compact form described under [Visible watcher events](#visible-watcher-events).
+A recorded value that is not RFC3339 is printed exactly as recorded rather than blanked.
 
 `--json` is the machine surface and is never translated. Compare timestamps there, not in the text.
+
+## Visible watcher events
+
+`relay pr watch run` prints one line per high-level event to its own stdout and stderr, so the
+`relay-pr-watch:<project-slug>` Herdr pane shows what the watcher is doing. Watcher events are
+never written to a file: the pane is the log, and `watch.json` remains the durable state.
+
+```text
+[2026-09-01 00:45:00 -0400] START project=auth-api mode=managed owner=w2 pr=#42
+[2026-09-01 00:45:00 -0400] CHECK start pr=#42 state=OPEN actionable=1 cadence=15m next=01:00:00 reasons=new-comment fp=1a2b3c4d
+[2026-09-01 00:45:00 -0400] WAKE  delivered owner=w2 pane=w2:pC status=idle fp=1a2b3c4d
+[2026-09-01 03:10:00 -0400] CHECK n=6 pr=#42 state=MERGED actionable=0 cadence=60m reasons=none fp=none
+[2026-09-01 03:10:00 -0400] DONE  project=auth-api pr=#42 reason=merged
+```
+
+Every line opens with the reader's own wall clock in brackets and an uppercase label padded to one
+width, so a pane is scanned in a column rather than parsed a line at a time. A `next=` later the
+same local day is a bare `01:00:00`; one on any other day is spelled out in full
+(`2026-09-02 00:20:00 -0400`), so tomorrow's check never reads as one twenty minutes away. A watch
+that has finished has no next check and omits the field.
+
+A check is one line and carries everything that check decided, `start` for the observation a watcher
+runs as soon as it starts and `n=<count>` for a scheduled one. There is no separate line announcing
+the next check. The wake runs before any of it is printed, because an owner who was not there to take
+the attention rolls the cadence back to fast, and a check line may only quote the schedule the watcher
+will actually keep — so `CHECK` is printed after the wake decided, and still above it.
+
+Only a due check prints; the internal 30-second wall-clock wakeup is silent. Every outcome that left
+attention pending goes to stderr with the command that shows the recorded detail. A failed
+observation prints no check line, so its `ERROR` line carries the retry cadence and the wall clock the
+watcher comes back at:
+
+```text
+[2026-09-01 01:00:00 -0400] WARN  owner-busy owner=w2 pane=w2:pC status=working fp=1a2b3c4d; attention remains pending, see `relay pr watch status auth-api`
+[2026-09-01 01:00:00 -0400] ERROR observe pull request #42 for project "auth-api": gh: HTTP 500; cadence=15m next=01:15:00
+```
 
 ## Runtime layout
 

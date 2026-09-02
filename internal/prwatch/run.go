@@ -282,38 +282,71 @@ func (r *checkRunner) run(ctx context.Context, immediate bool) (bool, error) {
 			return true, errors.Join(err, r.events.failure(now, err.Error()))
 		}
 	}
-	state, schedule, err := r.recordObservation(now, digest, immediate)
+	state, observed, err := r.recordObservation(now, digest, immediate)
 	if err != nil {
 		return true, err
 	}
 	label := "start"
 	if !immediate {
-		label = fmt.Sprintf("check n=%d", state.ScheduledChecks)
+		label = fmt.Sprintf("n=%d", state.ScheduledChecks)
 	}
-	if err := r.events.observation(now, label, digest, schedule.delay); err != nil {
-		return true, recordFailure(r.slug, now, err)
-	}
+	// Nothing is printed until this check has decided everything, because an
+	// undelivered wake rolls the cadence back and the check line quotes the
+	// schedule the watcher will actually keep. The pane still reads CHECK then
+	// WAKE: only the printing waits, never the decision.
 	if digest.Complete {
-		return true, r.recordComplete(now, digest)
+		if err := r.recordComplete(now); err != nil {
+			return true, err
+		}
+		return true, r.report(now, label, digest, wakeSummary{})
 	}
-	terminal, err := r.wake(now, schedule, digest)
+	summary, err := r.wake(now, observed, digest)
 	if err != nil {
 		return true, err
 	}
-	if terminal {
+	if err := r.report(now, label, digest, summary); err != nil {
+		return true, err
+	}
+	if summary.terminal {
 		return true, nil
-	}
-	final, err := ReadState(r.slug)
-	if err != nil {
-		return true, err
-	}
-	if err := r.events.nextCheck(now, final.NextCheckAt, time.Duration(final.DelaySeconds)*time.Second); err != nil {
-		return true, recordFailure(r.slug, now, err)
 	}
 	if err := Prune(r.slug, MaxRetainedDigests, digest.Fingerprint); err != nil {
 		return true, errors.Join(err, r.events.failure(now, err.Error()))
 	}
 	return false, nil
+}
+
+// report prints what one check decided, in the order a pane reads it: the check
+// line, the wake it produced, and the event that ended the watch. Every value
+// it prints comes from the settled runtime record, so a schedule a wake rolled
+// back is the one the reader sees.
+func (r *checkRunner) report(
+	now time.Time, label string, digest Digest, summary wakeSummary,
+) error {
+	final, err := ReadState(r.slug)
+	if err != nil {
+		return err
+	}
+	if err := r.events.check(now, label, digest, final.DelaySeconds, final.NextCheckAt); err != nil {
+		return recordFailure(r.slug, now, err)
+	}
+	switch {
+	case summary.skipped:
+		if err := r.events.wakeSkipped(now, r.owner, digest.Fingerprint); err != nil {
+			return recordFailure(r.slug, now, err)
+		}
+	case summary.attempted:
+		if err := r.events.wake(now, r.slug, summary.outcome, digest.Fingerprint); err != nil {
+			return recordFailure(r.slug, now, err)
+		}
+	}
+	switch {
+	case digest.Complete:
+		return r.events.complete(now, r.slug, digest.PR.Number)
+	case summary.terminal:
+		return r.events.closed(now, r.slug, digest.PR.Number, r.owner)
+	}
+	return nil
 }
 
 // schedule is what one observation decided about the watcher's cadence.
@@ -365,20 +398,36 @@ func (r *checkRunner) recordObservation(
 	return state, next, err
 }
 
-// wake hands actionable attention to the exact owner session and reports
-// whether the watcher reached a terminal state. Immediately before prompting it
-// re-reads the runtime record under the state lock, so a wake is never
-// delivered for an observation that is no longer current.
-func (r *checkRunner) wake(now time.Time, observed schedule, digest Digest) (bool, error) {
+// wakeSummary is what one wake decided, held until the check line that produced
+// it has been printed. A pane reads CHECK then WAKE, but the wake has to run
+// first: it can roll the cadence back, and a check line may only quote a
+// schedule the watcher will actually keep.
+type wakeSummary struct {
+	// attempted is set when a wake ran and produced an outcome.
+	attempted bool
+	// skipped is set when the observation stopped being current before the
+	// wake could be delivered, so no owner was prompted.
+	skipped bool
+	outcome WakeOutcome
+	// terminal is set when a delivered escalation ended the watch.
+	terminal bool
+}
+
+// wake hands actionable attention to the exact owner session and reports what
+// it decided, including whether the watcher reached a terminal state.
+// Immediately before prompting it re-reads the runtime record under the state
+// lock, so a wake is never delivered for an observation that is no longer
+// current.
+func (r *checkRunner) wake(now time.Time, observed schedule, digest Digest) (wakeSummary, error) {
 	if len(digest.Items) == 0 {
-		return false, nil
+		return wakeSummary{}, nil
 	}
 	current, err := ReadStateLocked(r.slug)
 	if err != nil {
-		return false, err
+		return wakeSummary{}, err
 	}
 	if !wakeStillCurrent(current, digest) {
-		return false, r.events.wakeSkipped(now, r.owner, digest.Fingerprint)
+		return wakeSummary{skipped: true}, nil
 	}
 	outcome := WakeOutcome{Kind: WakeSuppressed, Owner: r.owner}
 	if !current.WakesSuppressed {
@@ -404,15 +453,16 @@ func (r *checkRunner) wake(now time.Time, observed schedule, digest Digest) (boo
 		return next, nil
 	})
 	if err != nil {
-		return false, err
+		return wakeSummary{}, err
 	}
-	if err := r.events.wake(now, r.slug, outcome, digest.Fingerprint); err != nil {
-		return false, err
-	}
+	summary := wakeSummary{attempted: true, outcome: outcome}
 	if outcome.Delivered() && digest.PR.State == "CLOSED" {
-		return true, r.recordClosed(now, updated, digest)
+		if err := r.recordClosed(now, updated); err != nil {
+			return summary, err
+		}
+		summary.terminal = true
 	}
-	return false, nil
+	return summary, nil
 }
 
 // wakeStillCurrent reports whether the digest a wake was built from is still
@@ -436,36 +486,32 @@ func holdsFastCadence(kind WakeKind) bool {
 	return false
 }
 
-func (r *checkRunner) recordComplete(now time.Time, digest Digest) error {
-	if _, err := UpdateState(r.slug, func(state State) (State, error) {
+func (r *checkRunner) recordComplete(now time.Time) error {
+	_, err := UpdateState(r.slug, func(state State) (State, error) {
 		state.Status = StatusComplete
 		state.StopReason = "pull request merged"
 		state.NextCheckAt = ""
 		state.AttentionPending = false
 		state.UpdatedAt = now.Format(time.RFC3339)
 		return state, nil
-	}); err != nil {
-		return err
-	}
-	return r.events.complete(now, r.slug, digest.PR.Number)
+	})
+	return err
 }
 
 // recordClosed ends a watch on a pull request that was closed without merging,
 // once its owner has actually been handed the escalation. The watcher cannot
 // act on a closed pull request, and leaving one running would be a process that
 // never finishes.
-func (r *checkRunner) recordClosed(now time.Time, state State, digest Digest) error {
-	if _, err := UpdateState(r.slug, func(next State) (State, error) {
+func (r *checkRunner) recordClosed(now time.Time, state State) error {
+	_, err := UpdateState(r.slug, func(next State) (State, error) {
 		next.Status = StatusComplete
 		next.StopReason = "pull request closed without merging; escalation delivered to " + state.OwnerSlug
 		next.NextCheckAt = ""
 		next.AttentionPending = false
 		next.UpdatedAt = now.Format(time.RFC3339)
 		return next, nil
-	}); err != nil {
-		return err
-	}
-	return r.events.closed(now, r.slug, digest.PR.Number, r.owner)
+	})
+	return err
 }
 
 // recordObservationError treats a GitHub failure as an error, never as a quiet
@@ -497,9 +543,7 @@ func (r *checkRunner) recordObservationError(now time.Time, cause error) (bool, 
 		))
 		return true, errors.Join(wrapped, failure)
 	}
-	return false, r.events.failure(now, fmt.Sprintf(
-		"%v; retrying in %s", wrapped, cadenceLabel(FastCadence),
-	))
+	return false, r.events.retry(now, wrapped.Error(), state.DelaySeconds, state.NextCheckAt)
 }
 
 // recordFailure records why a watcher stopped when its own events could not be

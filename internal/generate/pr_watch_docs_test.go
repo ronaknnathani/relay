@@ -78,8 +78,18 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"A finished watcher therefore still holds a tab",
 				"`relay program worker cleanup <program> <item>` closes as its first step",
 				"until those recorded ids are gone",
+				// The pane format itself: one compact stamp, one aligned label,
+				// and a check line that carries its own next check.
+				"## Visible watcher events",
+				"] START project=",
+				"] CHECK start pr=",
+				"] WAKE  delivered",
+				"next=01:00:00",
+				"never written to a file",
 			},
-			forbidden: []string{"relay pr watch acknowledge"},
+			forbidden: []string{
+				"relay pr watch acknowledge", "next check at=",
+			},
 		},
 		{
 			path: filepath.Join("skills", "deliver-pr", "SKILL.md"),
