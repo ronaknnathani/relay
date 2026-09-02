@@ -157,6 +157,17 @@ func TestProgramDocsDescribeChangeRoutingAndMergedCleanup(t *testing.T) {
 				"relay archive <child-project-slug> --force",
 				"discards dirty and untracked files",
 				"only ever accepts an item Relay records as `merged`",
+				// A watcher that merged its pull request exits on its own and
+				// keeps its tab. The tech lead has to know that a stopped
+				// watcher is not a retired one and that cleanup closes it.
+				"**A watcher that already stopped still needs this command.**",
+				"it never closes its own tab",
+				"Cleanup's first step is what closes it.",
+				"recorded tab and pane ids are cleared",
+				"Never conclude the item is",
+				// Local output, UTC state.
+				"Everything Relay stores stays UTC",
+				"compare timestamps from `--json`",
 			},
 			forbidden: []string{
 				"message the worker first to see",
@@ -178,6 +189,12 @@ func TestProgramDocsDescribeChangeRoutingAndMergedCleanup(t *testing.T) {
 				"Archive the child project",
 				"deliberately destructive",
 				"merged-worker-cleanup:<item>",
+				"A completed watcher is the normal case",
+				"This command is what closes that tab.",
+				"recorded tab and pane ids are cleared",
+				"stamped in the host's local zone with the UTC offset spelled out",
+				"only text a person reads is translated",
+				"`--json` returns the stored UTC record unchanged",
 			},
 		},
 		{

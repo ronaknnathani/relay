@@ -65,6 +65,23 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 			},
 		},
 		{
+			// A watcher's pane is human output and its runtime record is machine
+			// state. The guide has to keep those apart, and it has to say who
+			// closes the tab a finished watcher keeps.
+			path: filepath.Join("docs", "pr-watch.md"),
+			required: []string{
+				"## Times you read and times Relay stores",
+				"Every timestamp Relay records is UTC",
+				"`2026-09-02T10:30:00-04:00`",
+				"`--json` is the machine surface and is never translated.",
+				"is not RFC3339 is printed exactly as recorded rather than blanked",
+				"A finished watcher therefore still holds a tab",
+				"`relay program worker cleanup <program> <item>` closes as its first step",
+				"until those recorded ids are gone",
+			},
+			forbidden: []string{"relay pr watch acknowledge"},
+		},
+		{
 			path: filepath.Join("skills", "deliver-pr", "SKILL.md"),
 			required: []string{
 				`relay pr watch start "$SLUG"`,

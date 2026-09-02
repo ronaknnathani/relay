@@ -228,6 +228,12 @@ The order matters and each step must be confirmed before the next runs:
    also closes its exact recorded tab. A watcher that was never started, already stopped, or already
    complete is a success. The watcher goes first because it is the only piece that keeps working on
    its own.
+
+   A completed watcher is the normal case, not an edge one. A watcher whose pull request merged
+   finishes and exits by itself and deliberately keeps its tab, because closing it from inside would
+   race the flush of its own final lines. This command is what closes that tab. A close that cannot
+   happen — no Herdr here, ids that now belong to somebody else — keeps the recorded ids on purpose
+   and reports the retry command, because those ids are the only handle on that tab.
 2. **End the item's one worker session.** Ownership must be unambiguous: two live sessions claiming
    one child project stop cleanup. A `working` or `blocked` worker is never interrupted — cleanup
    reports `worker-busy` with the retry command and changes nothing. An `idle` or `done` worker is
@@ -250,8 +256,10 @@ left exactly as they are. A child that is already archived is an idempotent succ
 stays `merged` throughout, and `Program.Reconcile` never downgrades it.
 
 While any of that runtime is outstanding, the patrol raises `merged-worker-cleanup:<item>`. The reason
-clears only once the watcher is stopped, the worker session and its tab are gone, and the child project
-is archived. It coexists with `ready-item:<id>`, so one wake can say both "retire w1" and "dispatch
+clears only once the watcher's recorded tab and pane ids are cleared, the worker session and its tab
+are gone, and the child project is archived with its worktree removed. The watcher counts by what it
+still holds, not by whether its process is alive: a completed watcher that kept its tab is
+outstanding runtime, so the reason survives the watcher exiting and a failed tab close keeps it. It coexists with `ready-item:<id>`, so one wake can say both "retire w1" and "dispatch
 w2". The patrol only observes: it probes a watcher's lock with a shared non-blocking `flock` and reads
 its runtime record without writing it.
 
@@ -349,20 +357,26 @@ file plus rename. Archiving a program stops its patrol cleanly while leaving run
 never written to a file: the pane is the log, and `patrol.json` remains the durable state.
 
 ```text
-2026-09-01T04:45:00Z patrol started program=auth-platform
-2026-09-01T04:45:00Z tick reasons=ready-item:w2,unread-worker-outbox:w1 cadence=15m
-2026-09-01T04:45:01Z TL wake delivered program=auth-platform pane=w2:pC status=idle
-2026-09-01T04:45:01Z next tick at=2026-09-01T05:00:01Z cadence=15m
-2026-09-01T05:10:00Z patrol stopped program=auth-platform reason=context canceled
+2026-09-01T00:45:00-04:00 patrol started program=auth-platform
+2026-09-01T00:45:00-04:00 tick reasons=ready-item:w2,unread-worker-outbox:w1 cadence=15m
+2026-09-01T00:45:01-04:00 TL wake delivered program=auth-platform pane=w2:pC status=idle
+2026-09-01T00:45:01-04:00 next tick at=2026-09-01T01:00:01-04:00 cadence=15m
+2026-09-01T01:10:00-04:00 patrol stopped program=auth-platform reason=context canceled
 ```
+
+Pane events are stamped in the host's local zone with the UTC offset spelled out, because the pane is
+read by whoever is sitting in front of it. `patrol.json` is unchanged and still records UTC, and so
+does every `--json` surface; only text a person reads is translated. A reader in UTC sees `+00:00`
+rather than a bare `Z`, so a rendered wall clock is never mistaken for the stored record, and a
+recorded value that is not RFC3339 prints exactly as recorded.
 
 Only a due tick prints; the internal 30-second wall-clock wakeup is silent. Outcomes that leave
 attention undelivered go to stderr with the command that shows the recorded detail, as do
 observation, Herdr, and runtime-state failures:
 
 ```text
-2026-09-01T05:00:01Z warning: TL wake busy program=auth-platform pane=pC status=working; attention remains pending, see `relay program patrol status auth-platform`
-2026-09-01T05:00:01Z error: patrol observation failed: build patrol snapshot for program "auth-platform": ...; retrying in 15m
+2026-09-01T01:00:01-04:00 warning: TL wake busy program=auth-platform pane=pC status=working; attention remains pending, see `relay program patrol status auth-platform`
+2026-09-01T01:00:01-04:00 error: patrol observation failed: build patrol snapshot for program "auth-platform": ...; retrying in 15m
 ```
 
 Events carry timestamps, the program slug, safe enums, pane IDs, and reason codes only. Reason text,
@@ -447,7 +461,9 @@ same session to reload durable state and process current mail and program observ
 
 `patrol status` reports the runtime lock as the authority for `running`, and still surfaces `error`,
 `stop_reason`, and `warning` from the last recorded state when the patrol failed or stopped, so a
-dead patrol explains itself instead of reading as a plain `not-running`.
+dead patrol explains itself instead of reading as a plain `not-running`. Its text output prints the
+last and next tick and the last tech lead wake in the host's local zone with the offset spelled out;
+`--json` returns the stored UTC record unchanged, so anything comparing timestamps reads the JSON.
 
 Patrol tech lead discovery requires the agent launch adapter to carry the
 `relay:program:<program>` session name. Claude and Copilot support named sessions; Relay rejects

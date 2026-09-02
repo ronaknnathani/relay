@@ -205,6 +205,11 @@ A watcher that reached a terminal state releases its lock and its process exits,
 `relay pr watch stop` command that closes its tab. It never closes its own tab: doing so would race
 with flushing its final output, and the pane is the only log it has.
 
+A finished watcher therefore still holds a tab, and `watch.json` still names it. For a managed child
+that is exactly what `relay program worker cleanup <program> <item>` closes as its first step, and
+the program patrol keeps raising `merged-worker-cleanup:<item>` until those recorded ids are gone —
+a completed watcher with a retained tab is outstanding runtime, not a retired one.
+
 `relay pr watch stop` signals the exact recorded pid, waits for the watcher to release its lock, then
 closes the exact Herdr tab recorded in `watch.json` — including for a watcher that already finished on
 its own. It never guesses at a tab, and when Herdr is unavailable it says which tab is still open and
@@ -221,6 +226,20 @@ A successful close then blanks the tab and pane in the record under the same loc
 watcher stopped exactly as it was. That is what makes a second stop a no-op: nothing left to close,
 nothing claimed. A close that failed keeps the ids, because the tab is still there and the next stop
 is how it gets cleaned up.
+
+## Times you read and times Relay stores
+
+Every timestamp Relay records is UTC: `watch.json`, every digest, every value read from GitHub, every
+`--json` field, and every comparison that decides when the next check is due. Nothing about that
+changes, and no schema field is ever written in local time.
+
+What a person reads is rendered where that person is. Watcher pane events and the text output of
+`relay pr watch status` print the host's local wall clock with the UTC offset spelled out —
+`2026-09-02T10:30:00-04:00` — resolved from the system zone when the line is printed, so a reader in
+UTC sees `+00:00` rather than a bare `Z` and never mistakes a rendered time for the stored record. A
+recorded value that is not RFC3339 is printed exactly as recorded rather than blanked.
+
+`--json` is the machine surface and is never translated. Compare timestamps there, not in the text.
 
 ## Runtime layout
 

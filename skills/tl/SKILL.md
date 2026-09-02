@@ -56,6 +56,10 @@ decision, and the next tick. Degraded outcomes and failures go to that pane's st
 are never written to a file, so read the pane for history and
 `relay program patrol status "$PROGRAM" --json` for the full recorded detail.
 
+Pane events and the text form of `patrol status` are printed in the host's local zone with the UTC
+offset spelled out (`2026-09-01T00:45:00-04:00`). Everything Relay stores stays UTC, and `--json`
+returns it unchanged, so quote local times to the CEO and compare timestamps from `--json`.
+
 ```bash
 relay program message list "$PROGRAM" --json
 relay program status "$PROGRAM" --json
@@ -171,8 +175,8 @@ the item.
 
 ## Retiring merged work
 
-A merged item still holds runtime until you retire it: its pull request watcher keeps polling, its
-worker session keeps a Herdr tab, and its child project keeps a worktree and branch. The patrol raises
+A merged item still holds runtime until you retire it: its pull request watcher holds a Herdr tab, its
+worker session holds another, and its child project keeps a worktree and branch. The patrol raises
 `merged-worker-cleanup:<item>` while any of that is outstanding. On every wake, run cleanup for those
 items before or alongside the next ready dispatch:
 
@@ -181,9 +185,21 @@ relay program worker cleanup "$PROGRAM" <item> --json
 ```
 
 Cleanup runs one order and stops at the first step it cannot confirm: it stops the child pull request
-watcher, asks the item's one worker session to exit with `/exit` without stealing focus, closes that
-exact tab after re-checking the pane, tab, terminal, and session identity, and then runs the
-equivalent of `relay archive <child-project-slug> --force`.
+watcher and closes the watcher's recorded tab, asks the item's one worker session to exit with
+`/exit` without stealing focus, closes that exact tab after re-checking the pane, tab, terminal, and
+session identity, and then runs the equivalent of `relay archive <child-project-slug> --force`.
+
+**A watcher that already stopped still needs this command.** When the branch pull request merges, the
+watcher completes and exits on its own, and it deliberately keeps its tab so its final lines stay
+readable — it never closes its own tab. Cleanup's first step is what closes it. So
+`merged-worker-cleanup:<item>` stays on the board after the watcher is gone and after the child is
+archived: it clears only when the recorded tab and pane ids are cleared, the worker session and its
+tab are gone, and the child project is archived with its worktree removed. Never conclude the item is
+retired from the watcher no longer running.
+
+If cleanup reports a warning and a `next_command`, the tab it names is still open and the ids were
+kept on purpose. Run that exact command again — it is safe on an already-archived child with no
+worker left, and it has nothing to do once the tab is closed.
 
 That final step is deliberately destructive. `--force` discards dirty and untracked files left in the
 child worktree, removes the worktree, and may force-delete the branch. Merged work is delivered work,
@@ -347,6 +363,7 @@ a program decision or follow-up. Do not silently turn it into recurring automati
 - Deleting a durably recorded follow-up item because its dispatch or start did not finish.
 - Leaving a merged item's watcher, worker tab, and child project running after cleanup was raised.
 - Running `worker cleanup` on work that is not merged, or forcing it past a `working` worker.
+- Treating a merged item as retired because its watcher stopped, while its tab is still recorded.
 - Running `worker cleanup` while a worker may still hold uncommitted work worth keeping.
 - Asking the CEO to approve merely opening a pull request when no real escalated issue exists.
 - Launching a managed pull request without both a durable TL grant and a passing `can-open-pr`.
@@ -378,7 +395,8 @@ a program decision or follow-up. Do not silently turn it into recurring automati
       with later retries delegated to the CLI's unnotified/status checks.
 - [ ] Serialized unread `pr-open` requests with `grant-open-pr` and reported reserved capacity.
 - [ ] Routed every CEO pull request change through `worker request-change` and reported its route.
-- [ ] Retired every merged item that raised `merged-worker-cleanup` with `worker cleanup`.
+- [ ] Retired every merged item that raised `merged-worker-cleanup` with `worker cleanup`, including
+      closing the completed watcher's tab, and reran any cleanup that reported a `next_command`.
 - [ ] Reconstructed state with `program status --json` and `program tick --json`.
 - [ ] Goal, priorities, architecture, and guardrails are durable in `goal.md`.
 - [ ] Every binding contract is immutable, versioned, hashed, and CEO-approved.
