@@ -5,6 +5,41 @@ import (
 	"time"
 )
 
+// localTimeLayout is RFC3339 with the numeric offset always spelled out. The
+// standard layout collapses a zero offset to "Z", which is exactly the shape of
+// the stored record; a displayed timestamp says "+00:00" instead so a reader
+// can always tell a rendered wall clock from the UTC value on disk.
+const localTimeLayout = "2006-01-02T15:04:05-07:00"
+
+// LocalTime renders an instant as the wall clock a reader in loc has, with the
+// UTC offset in force at that instant. A nil loc means the host's own zone.
+//
+// Relay stores every timestamp in UTC. This is display only: nothing that is
+// written to a runtime record, a digest, GitHub, or --json output goes through
+// here.
+func LocalTime(t time.Time, loc *time.Location) string {
+	return t.In(displayLocation(loc)).Format(localTimeLayout)
+}
+
+// LocalTimeText renders one stored RFC3339 timestamp in loc. A value that does
+// not parse — an empty field, a legacy format, a hand-edited record — is
+// returned exactly as it was given, because a status line that hides what it
+// cannot read is worse than one that shows it verbatim.
+func LocalTimeText(value string, loc *time.Location) string {
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return value
+	}
+	return LocalTime(parsed, loc)
+}
+
+func displayLocation(loc *time.Location) *time.Location {
+	if loc == nil {
+		return time.Local
+	}
+	return loc
+}
+
 // RelativeTime formats an RFC3339 timestamp as a human-readable relative
 // duration ("just now", "5m ago", "3h ago", "2d ago", "4w ago"). If the
 // input doesn't parse, the original string is returned.
