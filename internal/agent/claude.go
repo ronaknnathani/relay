@@ -29,6 +29,7 @@ func (claude) Capabilities() Capabilities {
 	return Capabilities{
 		Subagents:          SubagentTask,
 		LargeContext:       true,
+		NamedSessions:      true,
 		DeterministicSlash: true,
 		LifecycleHook:      HookNone,
 		ContextInjection:   ContextFlag,

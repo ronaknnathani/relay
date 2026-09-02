@@ -33,6 +33,7 @@ func (copilot) Capabilities() Capabilities {
 	return Capabilities{
 		Subagents:          SubagentTask,
 		LargeContext:       true,
+		NamedSessions:      true,
 		DeterministicSlash: false,
 		LifecycleHook:      HookNone,
 		ContextInjection:   ContextPrompt,

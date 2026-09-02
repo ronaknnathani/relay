@@ -83,8 +83,9 @@ func TestGeneratedRecurringCommands(t *testing.T) {
 		{name: "claude", generate: generateClaude, want: "/loop", forbidden: "/every"},
 		{name: "codex", generate: generateCodex, want: "/loop", forbidden: "/every"},
 	}
+	// pr-monitor is deliberately absent: it no longer runs a recurring loop, so
+	// it names no recurring command for the generator to translate.
 	files := []string{
-		filepath.Join("skills", "pr-monitor", "SKILL.md"),
 		filepath.Join("skills", "stack-ship", "references", "state-files.md"),
 	}
 
@@ -158,9 +159,80 @@ func TestDeliverPRGoalGuidanceIsGeneratedForEveryHarness(t *testing.T) {
 			for _, want := range []string{
 				"`/goal` to the user's requested outcome",
 				"execution method, not the goal",
+				"relay program message inbox <program> <item> --json",
+				"relay program message ack <program> <item> <inbox-id>",
+				"relay program message send <program> <item> --kind plan --body",
+				"Never run `relay program decision open`",
 			} {
 				if !strings.Contains(body, want) {
 					t.Errorf("%s deliver-pr is missing goal guidance %q", agentName, want)
+				}
+			}
+		})
+	}
+}
+
+func TestTLProgramGuidanceIsGeneratedForEveryHarness(t *testing.T) {
+	for _, agentName := range []string{"claude", "copilot", "codex"} {
+		t.Run(agentName, func(t *testing.T) {
+			_, out := generateAgent(t, agentName)
+			body := readFile(t, filepath.Join(out, "skills", "tl", "SKILL.md"))
+			for _, want := range []string{
+				`description: "Manage a Relay program as the CEO-facing tech lead:`,
+				"relay program status",
+				"relay program tick",
+				"relay program message list \"$PROGRAM\" --json",
+				"relay program message reply",
+				"relay program worker notify",
+				"payload-free doorbell",
+				"Immediately after each new durable inbox write",
+				"` exactly once.",
+				"Never run `worker notify` merely because an inbox message remains unread",
+				"Never doorbell a `working` or `blocked` agent",
+				"Never use\n`herdr agent prompt --wait`",
+				"engineering contracts",
+				"Every issue",
+				"Writing production code yourself",
+				"genuine human GitHub approval",
+				"Never invoke `stack-ship`",
+			} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s tl skill is missing program guidance %q", agentName, want)
+				}
+			}
+		})
+	}
+}
+
+func TestManagedHerdrPolicyIsGeneratedForEveryHarness(t *testing.T) {
+	for _, agentName := range []string{"claude", "copilot", "codex"} {
+		t.Run(agentName, func(t *testing.T) {
+			_, out := generateAgent(t, agentName)
+			tl := readFile(t, filepath.Join(out, "skills", "tl", "SKILL.md"))
+			for _, want := range []string{
+				"Managed programs run only under Herdr",
+				"relay program worker start",
+				"There is no non-Herdr worker path",
+				"per-child start lock",
+				"closed without merging",
+			} {
+				if !strings.Contains(tl, want) {
+					t.Errorf("%s tl skill is missing managed Herdr policy %q", agentName, want)
+				}
+			}
+			deliver := readFile(t, filepath.Join(out, "skills", "deliver-pr", "SKILL.md"))
+			for _, want := range []string{
+				"Managed child sessions always run under Herdr",
+				"closed without merging",
+				"no Herdr requirement",
+			} {
+				if !strings.Contains(deliver, want) {
+					t.Errorf("%s deliver-pr skill is missing managed Herdr policy %q", agentName, want)
+				}
+			}
+			for _, forbidden := range []string{"Outside Herdr", "manual foreground command"} {
+				if strings.Contains(tl, forbidden) || strings.Contains(deliver, forbidden) {
+					t.Errorf("%s skills still offer a non-Herdr managed fallback %q", agentName, forbidden)
 				}
 			}
 		})

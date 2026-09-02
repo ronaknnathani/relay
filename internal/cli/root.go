@@ -96,6 +96,8 @@ func newRootCmd() *cobra.Command {
 		newCmdGenerate(),
 		newCmdState(),
 		newCmdConfig(),
+		newCmdProgram(),
+		newCmdPR(),
 	)
 	return cmd
 }

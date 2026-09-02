@@ -7,10 +7,44 @@ import (
 	"time"
 
 	"github.com/ronaknnathani/relay/internal/gitx"
+	"github.com/ronaknnathani/relay/internal/programview"
 	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/ronaknnathani/relay/internal/ui"
 	"github.com/spf13/cobra"
 )
+
+// loadArchivePRIndex resolves authoritative pull request state for archive.
+var loadArchivePRIndex = programview.GitHubPRIndex
+
+// recordedPullRequestMerged reports whether the project's recorded pull request
+// is merged on GitHub. An unavailable or failing GitHub stays conservative.
+func recordedPullRequestMerged(m project.Manifest, slug string) bool {
+	hasPR, ref, err := programview.RecordedPR(m, project.StatePath(slug))
+	if err != nil || !hasPR {
+		return false
+	}
+	index := loadArchivePRIndex(m.Repo, []string{ref})
+	if index == nil {
+		return false
+	}
+	state, found := index.Lookup(ref)
+	return found && state == programview.PRStateMerged
+}
+
+// recordedPullRequestMergedOnce memoizes recordedPullRequestMerged so archive
+// asks GitHub at most once per run, and only when the answer is still needed.
+func recordedPullRequestMergedOnce(m project.Manifest, slug string) func() bool {
+	var (
+		resolved bool
+		merged   bool
+	)
+	return func() bool {
+		if !resolved {
+			resolved, merged = true, recordedPullRequestMerged(m, slug)
+		}
+		return merged
+	}
+}
 
 func newCmdArchive() *cobra.Command {
 	var force bool
@@ -39,30 +73,45 @@ func runArchive(slug string, force bool) error {
 	var (
 		deleteBranchAfter      bool
 		forceDeleteBranchAfter bool
+		workMerged             bool
 	)
+	// The recorded pull request is authoritative about merge state and is
+	// resolved lazily, at most once, so a locally merged branch costs no GitHub
+	// call and a branch that is already deleted is still evaluated.
+	recordedMerged := recordedPullRequestMergedOnce(m, slug)
 	if m.Branch != "" && gitx.BranchExists(m.Repo, m.Branch) {
 		base := m.BaseBranch
 		if base == "" {
 			base = gitx.DetectDefaultBranch(m.Repo)
 		}
-		merged := false
+		reachable := false
 		if base != "" {
 			if gitx.HasOrigin(m.Repo) && gitx.RevParse(m.Repo, "origin/"+base) != "" {
-				merged = gitx.IsBranchReachable(m.Repo, m.Branch, "origin/"+base)
+				reachable = gitx.IsBranchReachable(m.Repo, m.Branch, "origin/"+base)
+				workMerged = gitx.IsWorkMerged(m.Repo, m.Branch, "origin/"+base, m.StartSHA)
 			}
-			if !merged {
-				merged = gitx.IsBranchReachable(m.Repo, m.Branch, base)
+			if !reachable {
+				reachable = gitx.IsBranchReachable(m.Repo, m.Branch, base)
+			}
+			if !workMerged {
+				workMerged = gitx.IsWorkMerged(m.Repo, m.Branch, base, m.StartSHA)
 			}
 		}
+		// A squashed or rebased merge leaves no local ancestry, so trust the
+		// recorded pull request when GitHub reports it merged.
+		pullRequestMerged := !workMerged && recordedMerged()
 		switch {
-		case merged:
+		case reachable:
 			deleteBranchAfter = true
-		case force:
+		case pullRequestMerged, force:
 			deleteBranchAfter, forceDeleteBranchAfter = true, true
 		default:
 			return fmt.Errorf("branch %q has unmerged work; re-run with --force to delete it anyway, or merge it first", m.Branch)
 		}
 	}
+	// A missing local branch is not evidence of abandoned work: the branch is
+	// usually already deleted precisely because its pull request merged.
+	workMerged = workMerged || recordedMerged()
 
 	if m.Worktree != nil && *m.Worktree != "" {
 		worktree := *m.Worktree
@@ -89,6 +138,7 @@ func runArchive(slug string, force bool) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	m.Status = "archived"
 	m.Archived = &now
+	m.Merged = workMerged
 
 	dstDir := filepath.Join(project.ArchivedDir(), slug)
 	if err := os.MkdirAll(project.ArchivedDir(), 0755); err != nil {

@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Relay Program</title>
+  <link rel="stylesheet" href="/app.css">
+  <!-- Loaded before the body so the stored theme is applied before first paint. -->
+  <script src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#views">Skip to program views</a>
+
+  <header class="brief">
+    <div class="brief__bar">
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <span class="crumbs__root">Relay</span>
+        <span class="crumbs__sep" aria-hidden="true">/</span>
+        <span class="crumbs__leaf mono" id="program-slug">program</span>
+      </nav>
+      <div class="brief__tools">
+        <button id="warning-count" class="chip chip--warn" type="button" hidden></button>
+        <button id="theme-toggle" class="button button--quiet" type="button" aria-label="Switch to dark theme">
+          <span id="theme-glyph" class="button__glyph" aria-hidden="true">☾</span>
+          <span id="theme-text">Dark</span>
+        </button>
+        <button id="refresh" class="button" type="button">Refresh</button>
+      </div>
+    </div>
+
+    <h1 id="program-title">Loading program…</h1>
+    <p id="program-summary" class="brief__summary"></p>
+    <p class="brief__meta">
+      <span id="program-state" class="state">…</span>
+      <span id="program-updated" class="mono"></span>
+      <span id="program-repo" class="mono"></span>
+      <span id="program-agent"></span>
+      <span id="feed-state" class="feed" role="status" aria-live="polite">Connecting…</span>
+    </p>
+
+    <dl class="overview" id="overview">
+      <div class="signal">
+        <dt>Completion</dt>
+        <dd><span id="progress-percent" class="signal__value mono">—</span><span class="signal__unit">%</span></dd>
+        <p id="progress-counts" class="signal__note"></p>
+      </div>
+      <div class="signal">
+        <dt>Tasks</dt>
+        <dd><span id="task-total" class="signal__value mono">—</span></dd>
+        <p id="task-breakdown" class="signal__note"></p>
+      </div>
+      <div class="signal">
+        <dt>Program PR capacity</dt>
+        <dd><span id="capacity-readout" class="signal__value mono">—</span></dd>
+        <p id="capacity-note" class="signal__note"></p>
+      </div>
+      <div class="signal">
+        <dt>Open decisions</dt>
+        <dd><span id="decision-count" class="signal__value mono">—</span></dd>
+        <p id="decision-note" class="signal__note"></p>
+      </div>
+      <div class="signal">
+        <dt>Workers</dt>
+        <dd><span id="worker-count" class="signal__value mono">—</span></dd>
+        <p id="worker-note" class="signal__note"></p>
+      </div>
+      <div class="signal">
+        <dt>Patrol</dt>
+        <dd><span id="patrol-status" class="signal__value">—</span></dd>
+        <p id="patrol-note" class="signal__note"></p>
+        <p id="patrol-turn" class="signal__note"></p>
+      </div>
+    </dl>
+
+    <section class="next" aria-labelledby="next-label">
+      <p id="next-label" class="next__label">Next</p>
+      <p id="next-action" class="next__action">Waiting for the first snapshot.</p>
+      <div class="next__run" id="next-run" hidden>
+        <code id="next-command" class="mono"></code>
+        <button id="copy-command" class="button button--quiet" type="button">Copy</button>
+      </div>
+    </section>
+  </header>
+
+  <p id="reconnect" class="banner banner--warn" role="status" aria-live="polite" hidden></p>
+
+  <noscript>
+    <p class="banner banner--warn">This view needs JavaScript. Run <span class="mono">relay program status &lt;slug&gt;</span> in the terminal instead.</p>
+  </noscript>
+
+  <main id="views">
+    <div class="segmented" role="tablist" aria-label="Program views">
+      <button id="tab-roadmap" class="segment" type="button" role="tab" aria-selected="true" aria-controls="panel-roadmap" data-tab="roadmap">Roadmap</button>
+      <button id="tab-tasks" class="segment" type="button" role="tab" aria-selected="false" aria-controls="panel-tasks" data-tab="tasks" tabindex="-1">Tasks</button>
+      <button id="tab-decisions" class="segment" type="button" role="tab" aria-selected="false" aria-controls="panel-decisions" data-tab="decisions" tabindex="-1">Decisions</button>
+      <button id="tab-goal" class="segment" type="button" role="tab" aria-selected="false" aria-controls="panel-goal" data-tab="goal" tabindex="-1">Goal</button>
+    </div>
+
+    <section id="panel-roadmap" class="panel" role="tabpanel" aria-labelledby="tab-roadmap" tabindex="-1">
+      <div class="panel__head">
+        <h2 id="roadmap-heading">Roadmap</h2>
+        <p id="roadmap-note" class="panel__note"></p>
+      </div>
+      <p id="roadmap-cycle" class="banner banner--warn" hidden></p>
+      <div class="roadmap" id="roadmap-scroll">
+        <div class="roadmap__content" id="roadmap-content">
+          <svg id="graph" class="roadmap__edges" role="img" aria-label="Dependency flow" width="0" height="0" focusable="false">
+            <defs>
+              <marker id="flow-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 1 L 8 5 L 0 9 z" class="arrow"></path>
+              </marker>
+              <marker id="flow-arrow-active" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 1 L 8 5 L 0 9 z" class="arrow arrow--active"></path>
+              </marker>
+            </defs>
+            <g id="graph-edges"></g>
+          </svg>
+          <div id="graph-nodes" class="roadmap__stages"></div>
+        </div>
+      </div>
+      <p id="roadmap-empty" class="empty" hidden></p>
+      <p class="panel__foot">Dependencies flow top to bottom; tasks in the same stage run in parallel. Press <span class="key">g</span> to jump to the selected task, <span class="key">Enter</span> to open it.</p>
+    </section>
+
+    <section id="panel-tasks" class="panel" role="tabpanel" aria-labelledby="tab-tasks" tabindex="-1" hidden>
+      <div class="panel__head">
+        <h2 id="tasks-heading">Tasks</h2>
+        <p id="ledger-count" class="panel__note" role="status" aria-live="polite"></p>
+      </div>
+      <div class="controls">
+        <div class="field">
+          <label for="filter">Filter</label>
+          <input id="filter" type="search" autocomplete="off" spellcheck="false" placeholder="id, title, worker, PR…">
+        </div>
+        <div id="status-filters" class="chips" role="group" aria-label="Filter by status"></div>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <caption class="visually-hidden">Every work item in this program, with status, priority, dependencies, pull request and worker.</caption>
+          <thead>
+            <tr>
+              <th scope="col">Task</th>
+              <th scope="col">Status</th>
+              <th scope="col">Title</th>
+              <th scope="col">Priority</th>
+              <th scope="col">Depends on</th>
+              <th scope="col">PR / worker</th>
+            </tr>
+          </thead>
+          <tbody id="ledger-rows"></tbody>
+        </table>
+      </div>
+      <p id="ledger-empty" class="empty" hidden></p>
+    </section>
+
+    <section id="panel-decisions" class="panel" role="tabpanel" aria-labelledby="tab-decisions" tabindex="-1" hidden>
+      <div class="panel__head">
+        <h2 id="decisions-heading">Decisions</h2>
+        <p id="decisions-note" class="panel__note"></p>
+      </div>
+      <div id="open-decisions" class="stack"></div>
+      <details id="resolved-wrap" class="disclosure">
+        <summary><span id="resolved-summary">Resolved decisions</span></summary>
+        <div id="resolved-decisions" class="stack"></div>
+      </details>
+    </section>
+
+    <section id="panel-goal" class="panel" role="tabpanel" aria-labelledby="tab-goal" tabindex="-1" hidden>
+      <div class="doc">
+        <div class="panel__head">
+          <h2 id="goal-heading">Goal</h2>
+          <div id="goal-nav" class="link-row" role="group" aria-label="Program files"></div>
+        </div>
+        <div id="goal-body" class="prose"></div>
+        <p id="goal-meta" class="mono muted"></p>
+        <details id="contracts-wrap" class="disclosure">
+          <summary><span id="contracts-summary">Contracts</span></summary>
+          <div id="contracts" class="stack"></div>
+        </details>
+        <details id="diagnostics" class="disclosure">
+          <summary><span id="diagnostics-summary">Diagnostics</span></summary>
+          <div id="warnings" class="stack"></div>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <div id="drawer" class="drawer" hidden>
+    <div id="drawer-scrim" class="drawer__scrim"></div>
+    <div id="detail-panel" class="drawer__panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title" tabindex="-1">
+      <header class="drawer__head">
+        <p id="drawer-id" class="drawer__id mono"></p>
+        <h2 id="drawer-title">Task detail</h2>
+        <p id="drawer-meta" class="drawer__meta"></p>
+        <button id="drawer-close" class="button button--quiet" type="button" aria-label="Close task detail">
+          <span aria-hidden="true">✕</span>
+        </button>
+      </header>
+      <div id="drawer-scroll" class="drawer__scroll">
+        <div id="drawer-nav" class="drawer__nav" role="toolbar" aria-label="Task sections"></div>
+        <div id="detail-body" class="drawer__body"></div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <p class="muted">Read-only view · <span id="schema-version" class="mono">relay.program.v1</span> · nothing here changes program state.</p>
+  </footer>
+</body>
+</html>

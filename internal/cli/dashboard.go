@@ -3,9 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 
 	"github.com/ronaknnathani/relay/internal/dashboard"
 	"github.com/ronaknnathani/relay/internal/project"
@@ -44,12 +42,8 @@ func runDashboard() error {
 	if _, err := os.Stat(dashPath); err != nil {
 		return fmt.Errorf("dashboard not found at %s: %w", dashPath, err)
 	}
-	opener := "open"
-	if runtime.GOOS == "linux" {
-		opener = "xdg-open"
-	}
-	if err := exec.Command(opener, dashPath).Run(); err != nil {
-		return fmt.Errorf("%s %s: %w", opener, dashPath, err)
+	if err := ui.OpenBrowser(dashPath); err != nil {
+		return err
 	}
 	fmt.Printf("  %s\n", ui.Color(ui.Dim, "Dashboard opened in browser."))
 	return nil

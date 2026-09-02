@@ -6,6 +6,7 @@ package agent
 type Capabilities struct {
 	Subagents          SubagentSupport // how subagents are spawned
 	LargeContext       bool            // a long-context model/tier is available
+	NamedSessions      bool            // the launch adapter carries LaunchOptions.SessionName
 	DeterministicSlash bool            // slash-with-args fires reliably (vs prose-named skill)
 	LifecycleHook      HookKind        // how the per-session context line is injected at lifecycle events
 	ContextInjection   ContextKind     // how project context reaches the agent

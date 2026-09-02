@@ -83,16 +83,50 @@ func TestCopilotPackageInvariants(t *testing.T) {
 
 	prMonitor := readFile(t, filepath.Join(out, "skills", "pr-monitor", "SKILL.md"))
 	for _, snippet := range []string{
-		"/every",
-		"~10–15 min cadence",
-		"Keep exactly **one**",
-		"healthy loop per PR; restart it if it dies; record the loop id in the run's state",
-		"only done — when the PR is **merged**",
-		"each resume/invocation runs exactly **one** tick",
-		"records `nextTickAfter`",
+		`relay pr watch digest "$SLUG" --fingerprint "$FP" --json`,
+		`relay pr watch tick "$SLUG" --json`,
+		"One digest, one run, one exit",
 	} {
 		if !strings.Contains(prMonitor, snippet) {
 			t.Errorf("pr-monitor is missing %q", snippet)
+		}
+	}
+	tl := readFile(t, filepath.Join(out, "skills", "tl", "SKILL.md"))
+	for _, snippet := range []string{
+		`relay program patrol status "$PROGRAM" --json`,
+		`relay program patrol start "$PROGRAM"`,
+		"payload-free doorbell to this exact live pane",
+		"terminal-session control stream",
+		"still idle after the grace period",
+		"never focuses the pane",
+		"another tech lead session",
+		"never invokes\n`program tick`",
+		"reload durable state\nbefore acting",
+		"suppresses all further doorbells",
+		"Check Relay program mail and patrol state.",
+		"Managed programs run only under Herdr",
+		"There is no plain-terminal fallback",
+		"stop_reason",
+	} {
+		if !strings.Contains(tl, snippet) {
+			t.Errorf("tl is missing adaptive patrol guidance %q", snippet)
+		}
+	}
+	for _, forbidden := range []string{
+		"/loop", "/every", "program worker prompt", "fresh, bounded tech lead-role session",
+		"RELAY_AUTOMATED_TURN=1",
+	} {
+		if strings.Contains(tl, forbidden) {
+			t.Errorf("tl still contains retired patrol transport text %q", forbidden)
+		}
+	}
+	for _, forbidden := range []string{
+		"Outside Herdr",
+		`if [ "${HERDR_ENV:-}" = "1" ]`,
+		"manual foreground command",
+	} {
+		if strings.Contains(tl, forbidden) {
+			t.Errorf("tl still offers a non-Herdr managed fallback %q", forbidden)
 		}
 	}
 }
@@ -100,6 +134,9 @@ func TestCopilotPackageInvariants(t *testing.T) {
 func TestCopilotStackShipUsesNativeGoal(t *testing.T) {
 	_, out := generateCopilot(t)
 	body := readFile(t, filepath.Join(out, "skills", "stack-ship", "SKILL.md"))
+	if !strings.Contains(body, "never invoke inside a tech-lead-managed Relay program") {
+		t.Error("stack-ship is missing the tech-lead-program exclusion")
+	}
 
 	for _, snippet := range []string{
 		`/goal <the user's requested outcome>`,

@@ -115,6 +115,7 @@ func TestClaudeCapabilities(t *testing.T) {
 	want := Capabilities{
 		Subagents:          SubagentTask,
 		LargeContext:       true,
+		NamedSessions:      true,
 		DeterministicSlash: true,
 		LifecycleHook:      HookNone,
 		ContextInjection:   ContextFlag,
@@ -122,6 +123,23 @@ func TestClaudeCapabilities(t *testing.T) {
 	}
 	if got := (claude{}).Capabilities(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Capabilities mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestNamedSessionCapabilitiesMatchLaunchAdapters(t *testing.T) {
+	tests := map[string]bool{
+		"claude":  true,
+		"copilot": true,
+		"codex":   false,
+	}
+	for name, want := range tests {
+		a, err := Get(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := a.Capabilities().NamedSessions; got != want {
+			t.Errorf("%s NamedSessions = %t, want %t", name, got, want)
+		}
 	}
 }
 

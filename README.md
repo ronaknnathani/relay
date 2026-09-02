@@ -23,12 +23,33 @@ with a confidence gate), `validate` (the repo's quality gates, goal-backward), `
 `open-pr` (commit → PR in your conventions), `pr-fix` (CI, comments, conflicts).
 
 **Workflow skills** compose them. `deliver-pr` is a resume-first router that drives one scoped change
-through the foundation pipeline, one phase per sub-agent, to an open PR. `pr-monitor` watches one open
-PR to merged, delegating real failures, review comments, and conflicts to `pr-fix`.
+through the foundation pipeline, one phase per sub-agent, to an open PR, then hands that PR to the
+watcher. `relay pr watch` is the deterministic runtime that observes one project's PR on a 15/30/60
+minute backoff, records a digest of what needs attention, and wakes that project's exact live session.
+Each wake is one `pr-monitor` run: it reads the digest, delegates the real failures, review comments,
+and conflicts to `pr-fix`, re-observes the PR to see what is actually resolved, and exits.
 
 **Orchestration** is the third layer. The `stack-ship` skill turns a goal into an interface-first tree
-of small PRs, builds each with `deliver-pr`, monitors the front PR with `pr-monitor`, and advances the
-stack in order — stopping when every PR is merged and never merging without human approval.
+of small PRs, builds each with `deliver-pr`, watches the front PR with a stack-mode watcher that wakes
+the orchestrator, and advances the stack in order — stopping when every PR is merged and never merging
+without human approval.
+
+**Programs** add a governance layer above projects. A re-enterable tech lead session turns a CEO-approved
+goal and architecture into dependency-aware senior-engineer assignments. Each assignment runs as a
+visible interactive Herdr worker tab that the CEO can inspect, while `deliver-pr` keeps its internal
+phase sub-agents. Program state and worker mail are durable, contracts are immutable and versioned,
+and the CEO remains in every escalation and final PR approval loop. A read-only adaptive patrol
+observes program health at a 15- or 30-minute cadence and, when attention changes, submits a
+payload-free doorbell to the existing idle tech lead pane. Delivery targets the pane directly without
+changing the user's focus. Relay lets Herdr submit normally, then uses Herdr's terminal-control
+stream only as a confirmed-idle fallback. The tech lead processes durable state in its existing
+conversation.
+
+Programs require [Herdr](docs/programs.md#herdr-is-required-for-managed-sessions): every managed
+program command and managed child session first verifies the `herdr` binary, its owning pane, a
+reachable Herdr server, and an approved Copilot or Claude integration, then fails closed with setup
+instructions. Codex programs are rejected rather than silently reporting monitored notifications.
+Standalone single-project Relay workflows never require Herdr.
 
 ## The `relay` CLI
 
@@ -40,11 +61,21 @@ relay -n my-slug "..."                          # custom slug
 relay --workflow stack-ship "<design goal>"     # launch the multi-PR orchestrator instead
 relay                                           # list active projects
 relay resume <slug>                             # reopen where you left off
+relay program new "<large goal>"                # create a tech-lead-managed program
+relay program resume <slug>                     # re-enter the tech lead program
+relay program queue <slug>                      # inspect ready and blocked work
+relay program ui <slug>                         # open the live local program UI
+relay program patrol status <slug>              # inspect the adaptive read-only patrol
+relay program patrol start <slug>               # host patrol in a plain Herdr tab (Herdr required)
 ```
 
 It also owns the **`relay state`** machine — the deterministic, resumable state that workflow skills
 read and update (so they never hand-edit JSON) — and the **`relay generate`** compiler that renders
 the agent-neutral skill source into per-agent packages.
+
+See [Relay Programs](docs/programs.md) for the V1 architecture, deferred roadmap, and complete usage
+guide, and [Relay PR Watch](docs/pr-watch.md) for the pull request watcher's commands, cadence, owner
+routing, and runtime layout.
 
 ## Install
 

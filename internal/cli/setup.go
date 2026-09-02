@@ -82,7 +82,10 @@ func runSetupCommand(opts setupOptions) error {
 		StdinIsTerminal: opts.stdinIsTerminal,
 	}
 	if opts.uninstall {
-		return agent.UnlinkSkills(opts.agent, syncOpts)
+		if err := agent.UnlinkSkills(opts.agent, syncOpts); err != nil {
+			return err
+		}
+		return removeRetiredSkills(opts.agent, syncOpts)
 	}
 
 	if err := regeneratePackage(opts.agent, sourceRoot, packageDir); err != nil {
@@ -96,8 +99,26 @@ func runSetupCommand(opts setupOptions) error {
 	if err := agent.LinkSkills(opts.agent, syncOpts); err != nil {
 		return err
 	}
+	if err := removeRetiredSkills(opts.agent, syncOpts); err != nil {
+		return err
+	}
 	_, err = config.SetupForAgent(opts.agent.Name())
 	return err
+}
+
+// retiredSkills names skills Relay used to install and no longer ships. The
+// managed-program role was renamed from `cto` to `tl`, so a stale `cto` link
+// would keep resolving to a generated package Relay no longer regenerates and
+// would offer the agent two rival entry points for the same role.
+var retiredSkills = []string{"cto"}
+
+func removeRetiredSkills(a agent.Agent, syncOpts agent.SkillSyncOptions) error {
+	for _, name := range retiredSkills {
+		if err := agent.RemoveRetiredSkill(a, name, syncOpts); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func regeneratePackage(a agent.Agent, sourceRoot, packageDir string) error {
