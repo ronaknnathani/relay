@@ -1,128 +1,202 @@
 # Relay
 
-Relay is an open-source system of **composable agent skills and workflows** that automate
-software-engineering work through small, reusable building blocks. Skills are authored once in an
-agent-neutral source and compiled per coding agent, so the same library drives **Claude, Copilot, and
-Codex**.
+Relay turns software work into durable, resumable workflows for coding agents. It works with Claude
+Code, GitHub Copilot CLI, and Codex CLI.
 
-The design principle is leverage through composition: small single-purpose skills compose into
-workflows, workflows compose into an orchestrator, and heavy work is delegated to sub-agents so the
-driving agent stays context-light. Every change is clarified, planned, implemented, simplified,
-reviewed, validated, and monitored to merge.
+Use Relay for:
 
-## The three layers
+- One change delivered as a pull request.
+- A larger change delivered as an ordered stack of pull requests.
+- A program where one tech lead agent manages goals, decisions, workers, and pull requests.
 
-![Relay skill layers](docs/skill-layers.png)
+Relay keeps the state on disk. Agents can stop, restart, or hand work to a subagent without relying
+on conversation history.
 
-Editable source: [docs/skill-layers.html](docs/skill-layers.html).
-
-**Foundation skills** each do one thing. `explore` (read-only codebase understanding), `clarify`
-(requirements + acceptance criteria), `plan` (an executable blueprint), `implement` (build it,
-green each step), `simplify` (cut complexity, behavior unchanged), `review` (a reviewer-role library
-with a confidence gate), `validate` (the repo's quality gates, goal-backward), `commit`, `rebase`,
-`open-pr` (commit → PR in your conventions), `pr-fix` (CI, comments, conflicts).
-
-**Workflow skills** compose them. `deliver-pr` is a resume-first router that drives one scoped change
-through the foundation pipeline, one phase per sub-agent, to an open PR, then hands that PR to the
-watcher. `relay pr watch` is the deterministic runtime that observes one project's PR on a 15/30/60
-minute backoff, records a digest of what needs attention, and wakes that project's exact live session.
-Each wake is one `pr-monitor` run: it reads the digest, delegates the real failures, review comments,
-and conflicts to `pr-fix`, re-observes the PR to see what is actually resolved, and exits.
-
-**Orchestration** is the third layer. The `stack-ship` skill turns a goal into an interface-first tree
-of small PRs, builds each with `deliver-pr`, watches the front PR with a stack-mode watcher that wakes
-the orchestrator, and advances the stack in order — stopping when every PR is merged and never merging
-without human approval.
-
-**Programs** add a governance layer above projects. A re-enterable tech lead session turns a CEO-approved
-goal and architecture into dependency-aware senior-engineer assignments. Each assignment runs as a
-visible interactive Herdr worker tab that the CEO can inspect, while `deliver-pr` keeps its internal
-phase sub-agents. Program state and worker mail are durable, contracts are immutable and versioned,
-and the CEO remains in every escalation and final PR approval loop. A read-only adaptive patrol
-observes program health at a 15- or 30-minute cadence and, when attention changes, submits a
-payload-free doorbell to the existing idle tech lead pane. Delivery targets the pane directly without
-changing the user's focus. Relay lets Herdr submit normally, then uses Herdr's terminal-control
-stream only as a confirmed-idle fallback. The tech lead processes durable state in its existing
-conversation.
-
-Programs require [Herdr](docs/programs.md#herdr-is-required-for-managed-sessions): every managed
-program command and managed child session first verifies the `herdr` binary, its owning pane, a
-reachable Herdr server, and an approved Copilot or Claude integration, then fails closed with setup
-instructions. Codex programs are rejected rather than silently reporting monitored notifications.
-Standalone single-project Relay workflows never require Herdr.
-
-## The `relay` CLI
-
-A thin Go binary that makes starting and resuming work ergonomic:
-
-```bash
-relay "Add retry logic to the HTTP client"     # create a worktree + project, launch the agent on deliver-pr
-relay -n my-slug "..."                          # custom slug
-relay --workflow stack-ship "<design goal>"     # launch the multi-PR orchestrator instead
-relay                                           # list active projects
-relay resume <slug>                             # reopen where you left off
-relay program new "<large goal>"                # create a tech-lead-managed program
-relay program resume <slug>                     # re-enter the tech lead program
-relay program queue <slug>                      # inspect ready and blocked work
-relay program ui <slug>                         # open the live local program UI
-relay program patrol status <slug>              # inspect the adaptive read-only patrol
-relay program patrol start <slug>               # host patrol in a plain Herdr tab (Herdr required)
-```
-
-It also owns the **`relay state`** machine — the deterministic, resumable state that workflow skills
-read and update (so they never hand-edit JSON) — and the **`relay generate`** compiler that renders
-the agent-neutral skill source into per-agent packages.
-
-See [Relay Programs](docs/programs.md) for the V1 architecture, deferred roadmap, and complete usage
-guide, and [Relay PR Watch](docs/pr-watch.md) for the pull request watcher's commands, cadence, owner
-routing, and runtime layout.
-
-## Install
-
-Requires Go 1.25+ and at least one supported coding-agent CLI on your `PATH`.
+## Quick start
 
 ```bash
 git clone https://github.com/ronaknnathani/relay
 cd relay
 make install
+relay setup copilot
 ```
 
-`make install` installs the `relay` binary. Then run `relay setup <agent>` from the relay repository to
-generate that agent's package and link Relay-managed skills into its personal skills directory.
+Replace `copilot` with `claude` or `codex` if needed.
 
-| Agent | Prerequisite | Setup command | Skill install location |
-| --- | --- | --- | --- |
-| Claude Code | `claude` on your `PATH` | `relay setup claude` | `~/.claude/skills` |
-| Codex CLI | `codex` on your `PATH` | `relay setup codex` | `~/.codex/skills` |
-| GitHub Copilot CLI | `copilot` on your `PATH` | `relay setup copilot` | `~/.copilot/skills` |
+Start a single change:
 
-Rerun the same setup command whenever you want to refresh one agent's generated skills. To remove
-Relay-managed links for an agent, run `relay setup <agent> --uninstall`. Skills relay does not own are
-never clobbered: a real file/dir with a colliding name is skipped, and a symlink that does not point
-into relay's own sources is flagged so you can choose whether to replace it.
+```bash
+cd <your-repository>
+relay "Add retry logic to the HTTP client"
+```
 
-First run prompts for a branch prefix, your default agent, and that agent's permission mode (saved to
-`~/.relay/config.json`). Permission modes are stored per agent and are requested only the first time
-that agent is used. Update them with `relay config permission-mode <agent> <mode>`; update the
-default agent with `relay config default-agent <agent>`. Project state lives under
-`~/.relay/projects/`; worktrees under `<repo>/.worktrees/`.
+Relay creates a branch, a worktree, and a project. It then launches `deliver-pr`, which drives the
+change through:
 
-## Multi-agent
+```text
+clarify -> plan -> implement -> simplify -> review -> validate -> open-pr
+```
 
-Skills are authored once under `skills/` with agent-neutral conventions (a single `{{subagent}}`
-directive carries model-tier intent; tool names and frontmatter are normalized per agent). `relay
-generate` renders the strongest mechanism each agent supports — Claude's `Agent` tool and deterministic
-slash invocation, Copilot's prose invocation with prompt context, and Codex's native skills under
-`~/.codex/skills` with prompt context — rather than a lowest-common-denominator. Generator tests
-compare each rendered package to a source-derived expectation instead of duplicating the whole skill
-tree as fixtures.
+Resume it later with:
+
+```bash
+relay resume <project-slug>
+```
+
+## Workflows
+
+### Deliver one pull request
+
+`deliver-pr` is the default workflow. It delegates each phase to a focused subagent and records the
+result under `~/.relay/projects/`.
+
+```bash
+relay "Add request validation to the API"
+relay --name request-validation "Add request validation to the API"
+```
+
+When the project runs under Herdr, `deliver-pr` starts `relay pr watch` after the pull request opens.
+It observes checks, review feedback, conflicts, and merge state, then wakes the exact project session
+only when there is something to do. The watcher is read-only. `pr-monitor` triages the event and
+delegates fixes to `pr-fix`. Outside Herdr, invoke `/pr-monitor` manually.
+
+### Deliver a stack of pull requests
+
+Use `stack-ship` when one goal needs several dependency-ordered pull requests.
+
+```bash
+relay --workflow stack-ship "Introduce the new storage API and migrate callers"
+```
+
+The orchestrator creates the stack, delegates each pull request through `deliver-pr`, watches the
+front pull request, and advances the stack after merge. Agents never approve or merge their own work.
+
+## Programs
+
+Programs add a management layer above ordinary Relay projects. You describe a larger goal to one
+tech lead agent. The tech lead turns it into contracts, decisions, and dependency-aware assignments.
+Each assignment runs as its own visible worker session and produces a pull request.
+
+You continue talking to the tech lead instead of managing each worker directly.
+
+```text
+You
+ |
+ v
+Tech lead session
+ |  goal, priorities, contracts, decisions
+ v
+Worker projects
+ |  clarify, plan, implement, review, validate
+ v
+Pull requests
+```
+
+Managed programs require [Herdr](https://herdr.dev) and currently support Copilot and Claude. Herdr
+keeps the tech lead, workers, program patrol, and PR watchers visible in separate terminal tabs.
+
+Create a program from a Herdr pane:
+
+```bash
+cd <your-repository>
+relay program new "Move our authentication system to short-lived tokens"
+```
+
+Relay creates a draft program and launches its tech lead. Work with the tech lead to define the goal,
+approve architecture contracts, and resolve decisions. The tech lead then dispatches ready work to
+worker sessions.
+
+Useful commands:
+
+```bash
+relay program status <program-slug>          # current program state
+relay program queue <program-slug>           # ready, active, and blocked work
+relay program resume <program-slug>          # reopen the tech lead session
+relay program worker list <program-slug>     # live worker sessions
+relay program ui <program-slug>              # localhost read-only UI
+relay program patrol status <program-slug>   # scheduler and wake status
+relay program patrol start <program-slug>    # start the program patrol
+```
+
+Program state lives under `~/.relay/programs/`. Worker state remains under
+`~/.relay/projects/`. Communication between the tech lead and workers uses durable inboxes and
+outboxes. GitHub pull requests remain the review boundary, and a real human approval remains the
+merge gate.
+
+Read [Relay Programs](docs/programs.md) for the full model and command reference.
+
+## Pull request watcher
+
+The PR watcher moves deterministic polling out of the agent:
+
+```bash
+relay pr watch start <project-slug>
+relay pr watch status <project-slug>
+relay pr watch tick <project-slug>
+relay pr watch stop <project-slug>
+```
+
+It checks immediately, then uses a 15, 30, and 60 minute backoff. New code, new actionable feedback,
+or a changed blocker resets it to the fast interval. The watcher prints high-level activity in its
+Herdr pane and stores private digests under `~/.relay/run/pr-watch/`.
+
+Read [Relay PR Watch](docs/pr-watch.md) for cadence, routing, and digest details.
+
+## Skills
+
+Skills are authored once under `skills/` and generated for each supported agent.
+
+![Relay skill layers](docs/skill-layers.png)
+
+The library has three layers:
+
+1. **Foundation skills** handle one phase, such as `clarify`, `plan`, `implement`, `review`,
+   `validate`, `pr-fix`, and `open-pr`.
+2. **Workflow skills** compose phases. `deliver-pr` owns one pull request and `pr-monitor` handles one
+   watcher event.
+3. **Orchestrators** coordinate larger goals. `stack-ship` manages a PR stack and `tl` manages a
+   Relay program.
+
+Run `relay setup <agent>` after changing skills or updating Relay. Setup generates the agent package
+and links Relay-managed skills into the agent's personal skill directory.
+
+## Installation and configuration
+
+Relay requires Go 1.25+ and at least one supported coding-agent CLI on `PATH`.
+
+```bash
+make install
+relay setup <agent>
+```
+
+| Agent | Setup | Installed skills |
+| --- | --- | --- |
+| Claude Code | `relay setup claude` | `~/.claude/skills` |
+| GitHub Copilot CLI | `relay setup copilot` | `~/.copilot/skills` |
+| Codex CLI | `relay setup codex` | `~/.codex/skills` |
+
+The first setup records a branch prefix, default agent, and permission mode in
+`~/.relay/config.json`.
+
+```bash
+relay config default-agent <agent>
+relay config permission-mode <agent> <mode>
+```
+
+Relay-managed state:
+
+```text
+~/.relay/config.json        user configuration
+~/.relay/projects/          individual and worker projects
+~/.relay/programs/          managed programs
+~/.relay/run/               patrol and watcher runtime state
+<repo>/.worktrees/          project worktrees
+```
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the skill anatomy, the agent-neutral authoring rules, and the
-generate/test workflow.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for skill conventions and the generation workflow.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Some skills adapt content from open-source upstreams; see
-[NOTICE](NOTICE) for attributions.
+MIT. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
