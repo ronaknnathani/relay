@@ -93,7 +93,7 @@ func TestRunPrintsStartTickWakeAndShutdownToStdout(t *testing.T) {
 				}}, nil
 			}),
 			Turns: &recordingTurnRunner{},
-			Out:   out, Err: errOut,
+			Out:   out, Err: errOut, Location: testDisplayZone,
 		})
 	}()
 
@@ -111,11 +111,11 @@ func TestRunPrintsStartTickWakeAndShutdownToStdout(t *testing.T) {
 	}
 
 	want := []string{
-		"2026-09-01T04:45:00Z patrol started program=events",
-		"2026-09-01T04:45:00Z tick reasons=open-decision:d1 cadence=15m",
-		"2026-09-01T04:45:00Z TL wake delivered program=events pane=pC status=idle",
-		"2026-09-01T04:45:00Z next tick at=2026-09-01T05:00:00Z cadence=15m",
-		"2026-09-01T05:05:00Z patrol stopped program=events reason=context canceled",
+		"2026-09-01T00:45:00-04:00 patrol started program=events",
+		"2026-09-01T00:45:00-04:00 tick reasons=open-decision:d1 cadence=15m",
+		"2026-09-01T00:45:00-04:00 TL wake delivered program=events pane=pC status=idle",
+		"2026-09-01T00:45:00-04:00 next tick at=2026-09-01T01:00:00-04:00 cadence=15m",
+		"2026-09-01T01:05:00-04:00 patrol stopped program=events reason=context canceled",
 	}
 	if got := out.lines(); !equalLines(got, want) {
 		t.Errorf("patrol events =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -520,4 +520,70 @@ func equalLines(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// The pane is human output and the runtime record is machine state. A patrol
+// that prints the reader's wall clock must still record UTC: the next tick is
+// decided by comparing recorded values, so a record that drifted into local
+// time would silently change the cadence.
+func TestRunStampsThePaneLocallyAndKeepsTheRecordInUTC(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	start := time.Date(2026, 9, 1, 4, 45, 0, 0, time.UTC)
+	clock := &lockedClock{now: start}
+	ticker := &fakeTicker{channel: make(chan time.Time, 2)}
+	out, errOut := &syncBuffer{}, &syncBuffer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, "zones", Options{
+			Now: clock.Now, Ticker: func(time.Duration) Ticker { return ticker },
+			BuildSnapshot: attentionSnapshot(programview.DecisionDTO{ID: "d1"}),
+			Agents: patrolAgentListerFunc(func() ([]herdr.Agent, error) {
+				return []herdr.Agent{{
+					PaneID: "pC", TerminalTitle: "relay:program:zones - GitHub Copilot",
+					Status: herdr.StatusIdle,
+				}}, nil
+			}),
+			Turns: &recordingTurnRunner{},
+			Out:   out, Err: errOut, Location: testDisplayZone,
+		})
+	}()
+	waitForPatrolEvents(t, out, 4)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not stop after cancellation")
+	}
+
+	if lines := out.lines(); !strings.HasPrefix(lines[0], "2026-09-01T00:45:00-04:00 ") {
+		t.Errorf("first event = %q, want the reader's wall clock", lines[0])
+	}
+	state, err := ReadState("zones")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for field, value := range map[string]string{
+		"StartedAt":  state.StartedAt,
+		"UpdatedAt":  state.UpdatedAt,
+		"LastTickAt": state.LastTickAt,
+	} {
+		if value == "" {
+			t.Errorf("recorded %s is empty", field)
+			continue
+		}
+		if !strings.HasSuffix(value, "Z") {
+			t.Errorf("recorded %s = %q, want a UTC record", field, value)
+		}
+	}
+	recorded, err := os.ReadFile(StatePath("zones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(recorded), "-04:00") {
+		t.Errorf("patrol.json carries the reader's offset:\n%s", recorded)
+	}
 }

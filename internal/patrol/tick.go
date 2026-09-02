@@ -38,8 +38,12 @@ type Options struct {
 	// patrol run` process supplies its own stdout and stderr, which makes the
 	// Herdr patrol pane the patrol's log; nothing is ever written to a file. A
 	// nil writer is silent.
-	Out          io.Writer
-	Err          io.Writer
+	Out io.Writer
+	Err io.Writer
+	// Location is the zone pane events are stamped in. It defaults to the
+	// host's own zone, because the pane is read by whoever is sitting in front
+	// of it; only a test pins it, and nothing persisted is affected.
+	Location     *time.Location
 	PID          int
 	RelayVersion string
 }

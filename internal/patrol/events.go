@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ronaknnathani/relay/internal/ui"
 )
 
 // maxLoggedReasons bounds one tick line. Attention codes are stable and safe to
@@ -45,10 +47,14 @@ var identifierReasonFamilies = map[string]bool{
 type eventLog struct {
 	out io.Writer
 	err io.Writer
+	// loc is the zone events are stamped in: the pane is read by a person, so
+	// it carries their wall clock rather than the UTC the record carries. A nil
+	// loc means the host's own zone.
+	loc *time.Location
 }
 
-func newEventLog(out, err io.Writer) eventLog {
-	return eventLog{out: out, err: err}
+func newEventLog(out, err io.Writer, loc *time.Location) eventLog {
+	return eventLog{out: out, err: err, loc: loc}
 }
 
 func (l eventLog) started(at time.Time, slug string) error {
@@ -63,7 +69,7 @@ func (l eventLog) tick(at time.Time, reasons []Reason, delaySeconds int64) error
 
 func (l eventLog) nextTick(at time.Time, nextTickAt string, delaySeconds int64) error {
 	return l.write(l.out, at, fmt.Sprintf(
-		"next tick at=%s cadence=%s", nextTickAt, cadenceLabel(delaySeconds),
+		"next tick at=%s cadence=%s", ui.LocalTimeText(nextTickAt, l.loc), cadenceLabel(delaySeconds),
 	))
 }
 
@@ -104,7 +110,7 @@ func (l eventLog) write(writer io.Writer, at time.Time, event string) error {
 	if writer == nil {
 		return nil
 	}
-	if _, err := fmt.Fprintf(writer, "%s %s\n", at.UTC().Format(time.RFC3339), event); err != nil {
+	if _, err := fmt.Fprintf(writer, "%s %s\n", ui.LocalTime(at, l.loc), event); err != nil {
 		return fmt.Errorf("write patrol event %q: %w", event, err)
 	}
 	return nil

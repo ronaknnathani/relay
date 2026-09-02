@@ -51,7 +51,11 @@ type Options struct {
 	// silent.
 	Out io.Writer
 	Err io.Writer
-	PID int
+	// Location is the zone pane events are stamped in. It defaults to the
+	// host's own zone, because the pane is read by whoever is sitting in front
+	// of it; only a test pins it, and nothing persisted is affected.
+	Location *time.Location
+	PID      int
 	// TabID and PaneID are the Herdr tab and pane hosting this watcher. They
 	// are recorded in runtime state so `relay pr watch stop` closes the exact
 	// pane it started and never guesses at one.
@@ -89,6 +93,9 @@ func normalizedOptions(options Options) Options {
 	}
 	if options.Mode == "" {
 		options.Mode = ModeStandalone
+	}
+	if options.Location == nil {
+		options.Location = time.Local
 	}
 	if options.PID == 0 {
 		options.PID = os.Getpid()
@@ -153,7 +160,7 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 		retErr = errors.Join(retErr, lock.Release())
 	}()
 
-	events := newEventLog(options.Out, options.Err)
+	events := newEventLog(options.Out, options.Err, options.Location)
 	now := options.Now().UTC()
 	if _, err := UpdateState(slug, func(state State) (State, error) {
 		state.Mode = options.Mode

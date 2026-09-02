@@ -30,7 +30,7 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 	}()
 
 	options = normalizedRunOptions(options)
-	events := newEventLog(options.Out, options.Err)
+	events := newEventLog(options.Out, options.Err, options.Location)
 	now := options.Now().UTC()
 	state := State{
 		Schema:       SchemaVersion,
@@ -203,6 +203,9 @@ func normalizedRunOptions(options Options) Options {
 		options.Ticker = func(interval time.Duration) Ticker {
 			return wallTicker{ticker: time.NewTicker(interval)}
 		}
+	}
+	if options.Location == nil {
+		options.Location = time.Local
 	}
 	if options.PID == 0 {
 		options.PID = os.Getpid()

@@ -115,11 +115,12 @@ func newWatchHarnessWithClient(
 		Locate: func(slug string) (Target, error) {
 			return Target{Slug: slug, Dir: t.TempDir(), PRNumber: 42}, nil
 		},
-		Observe: harness.observe,
-		Client:  harness.client,
-		Out:     harness.out,
-		Err:     harness.err,
-		PID:     4242,
+		Observe:  harness.observe,
+		Client:   harness.client,
+		Out:      harness.out,
+		Err:      harness.err,
+		Location: testDisplayZone,
+		PID:      4242,
 	}
 	go func() { harness.done <- Run(ctx, harness.slug, options) }()
 	t.Cleanup(harness.stop)
@@ -859,7 +860,7 @@ func TestAWakeIsAbandonedWhenTheObservationIsNoLongerCurrent(t *testing.T) {
 			Mode: ModeStandalone, Client: client,
 			Now: func() time.Time { return time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC) },
 		}),
-		events: newEventLog(out, errOut),
+		events: newEventLog(out, errOut, testDisplayZone),
 	}
 	digest := BuildDigest("demo", ModeStandalone, actionableObservation(), observedAt)
 	now := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
@@ -958,5 +959,45 @@ func TestAnAnsweredChangesRequestedReviewStopsWakingTheOwner(t *testing.T) {
 	}
 	if got := harness.state().ActionableCount; got != 2 {
 		t.Errorf("actionable = %d, want the new review and the changes it requested", got)
+	}
+}
+
+// The pane is human output and the runtime record is machine state, so they
+// carry the same instant in two forms: the pane in the reader's zone, watch.json
+// and every digest still in UTC. Scheduling compares recorded values, so a
+// record that drifted into local time would silently change the cadence.
+func TestRunStampsThePaneLocallyAndKeepsTheRecordInUTC(t *testing.T) {
+	harness := newWatchHarness(t, ModeStandalone, "", actionableObservation())
+	started := harness.out.awaitLine(t, "pr watch started")
+	harness.out.awaitLine(t, "next check at=")
+
+	if !strings.HasPrefix(started, "2026-03-01T04:00:00-04:00 ") {
+		t.Errorf("started event = %q, want the reader's wall clock", started)
+	}
+	state := harness.state()
+	for field, value := range map[string]string{
+		"StartedAt":   state.StartedAt,
+		"UpdatedAt":   state.UpdatedAt,
+		"LastCheckAt": state.LastCheckAt,
+		"NextCheckAt": state.NextCheckAt,
+		"LastWakeAt":  state.LastWakeAt,
+	} {
+		if value == "" {
+			t.Errorf("recorded %s is empty", field)
+			continue
+		}
+		if !strings.HasSuffix(value, "Z") {
+			t.Errorf("recorded %s = %q, want a UTC record", field, value)
+		}
+	}
+	if state.CurrentFingerprint == "" {
+		t.Fatal("the watcher recorded no digest")
+	}
+	digest, err := ReadDigest(harness.slug, state.CurrentFingerprint)
+	if err != nil {
+		t.Fatalf("ReadDigest: %v", err)
+	}
+	if !strings.HasSuffix(digest.ObservedAt, "Z") {
+		t.Errorf("digest observed at = %q, want a UTC record", digest.ObservedAt)
 	}
 }

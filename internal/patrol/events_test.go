@@ -21,10 +21,15 @@ func (w *failingWriter) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// testDisplayZone is a fixed reader zone. Pane events are rendered where the
+// reader is, so the tests inject a zone rather than moving the process into
+// one: nothing here touches time.Local.
+var testDisplayZone = time.FixedZone("TEST", -4*60*60)
+
 func newTestEventLog() (eventLog, *strings.Builder, *strings.Builder) {
 	out := &strings.Builder{}
 	errOut := &strings.Builder{}
-	return newEventLog(out, errOut), out, errOut
+	return newEventLog(out, errOut, testDisplayZone), out, errOut
 }
 
 func TestEventLogFormatsOneLinePerEvent(t *testing.T) {
@@ -52,11 +57,11 @@ func TestEventLogFormatsOneLinePerEvent(t *testing.T) {
 	}
 
 	want := strings.Join([]string{
-		"2026-09-01T04:45:00Z patrol started program=foo",
-		"2026-09-01T04:45:00Z tick reasons=ready-item:w2,unread-worker-outbox:w1 cadence=15m",
-		"2026-09-01T04:45:01Z TL wake delivered program=foo pane=w2:pC status=idle",
-		"2026-09-01T04:45:01Z next tick at=2026-09-01T05:00:00Z cadence=15m",
-		"2026-09-01T04:45:02Z patrol stopped program=foo reason=context canceled",
+		"2026-09-01T00:45:00-04:00 patrol started program=foo",
+		"2026-09-01T00:45:00-04:00 tick reasons=ready-item:w2,unread-worker-outbox:w1 cadence=15m",
+		"2026-09-01T00:45:01-04:00 TL wake delivered program=foo pane=w2:pC status=idle",
+		"2026-09-01T00:45:01-04:00 next tick at=2026-09-01T01:00:00-04:00 cadence=15m",
+		"2026-09-01T00:45:02-04:00 patrol stopped program=foo reason=context canceled",
 		"",
 	}, "\n")
 	if out.String() != want {
@@ -100,7 +105,7 @@ func TestEventLogWritesDegradedWakesAndErrorsToStderr(t *testing.T) {
 			if err := log.wake(at, "foo", test.outcome); err != nil {
 				t.Fatal(err)
 			}
-			want := "2026-09-01T04:45:00Z " + test.want +
+			want := "2026-09-01T00:45:00-04:00 " + test.want +
 				", see `relay program patrol status foo`\n"
 			if errOut.String() != want {
 				t.Errorf("stderr =\n%q\nwant\n%q", errOut.String(), want)
@@ -115,7 +120,7 @@ func TestEventLogWritesDegradedWakesAndErrorsToStderr(t *testing.T) {
 	if err := log.failure(at, "build patrol snapshot for program \"foo\": boom"); err != nil {
 		t.Fatal(err)
 	}
-	want := "2026-09-01T04:45:00Z error: build patrol snapshot for program \"foo\": boom\n"
+	want := "2026-09-01T00:45:00-04:00 error: build patrol snapshot for program \"foo\": boom\n"
 	if errOut.String() != want {
 		t.Errorf("stderr = %q, want %q", errOut.String(), want)
 	}
@@ -141,7 +146,7 @@ func TestEventLogPrintsReasonCodesAndRedactsTextDerivedDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 	printed := out.String() + errOut.String()
-	want := "2026-09-01T04:45:00Z tick reasons=contract-drift:api@v1,project-warning,ready-item:w2 cadence=30m\n"
+	want := "2026-09-01T00:45:00-04:00 tick reasons=contract-drift:api@v1,project-warning,ready-item:w2 cadence=30m\n"
 	if out.String() != want {
 		t.Errorf("tick line = %q, want %q", out.String(), want)
 	}
@@ -177,7 +182,7 @@ func TestEventLogBoundsReasonCodesPerTick(t *testing.T) {
 func TestEventLogReportsWriteFailures(t *testing.T) {
 	at := time.Date(2026, 9, 1, 4, 45, 0, 0, time.UTC)
 	broken := &failingWriter{err: errors.New("broken pipe")}
-	log := newEventLog(broken, &strings.Builder{})
+	log := newEventLog(broken, &strings.Builder{}, testDisplayZone)
 	err := log.started(at, "foo")
 	if err == nil {
 		t.Fatal("a broken patrol writer reported success")
@@ -188,7 +193,7 @@ func TestEventLogReportsWriteFailures(t *testing.T) {
 		}
 	}
 
-	log = newEventLog(&strings.Builder{}, broken)
+	log = newEventLog(&strings.Builder{}, broken, testDisplayZone)
 	if err := log.failure(at, "boom"); err == nil {
 		t.Fatal("a broken patrol error writer reported success")
 	}
@@ -197,11 +202,55 @@ func TestEventLogReportsWriteFailures(t *testing.T) {
 // A patrol that is given no writers must stay silent rather than panic: the
 // pane log is an output seam, not a correctness dependency.
 func TestEventLogWithoutWritersIsSilent(t *testing.T) {
-	log := newEventLog(nil, nil)
+	log := newEventLog(nil, nil, testDisplayZone)
 	if err := log.started(time.Now(), "foo"); err != nil {
 		t.Fatal(err)
 	}
 	if err := log.failure(time.Now(), "boom"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The pane is read by a person, so an event is stamped with the wall clock
+// that person had, offset and all. The stored record stays UTC; only this line
+// is translated, and a scheduled time printed inside a line is translated with
+// it so one line never mixes two zones.
+func TestEventLogStampsEventsInTheReadersZone(t *testing.T) {
+	at := time.Date(2026, 9, 1, 4, 45, 0, 0, time.UTC)
+	log, out, _ := newTestEventLog()
+	if err := log.nextTick(at, "2026-09-01T05:00:00Z", 900); err != nil {
+		t.Fatal(err)
+	}
+	want := "2026-09-01T00:45:00-04:00 next tick at=2026-09-01T01:00:00-04:00 cadence=15m\n"
+	if out.String() != want {
+		t.Errorf("event line = %q, want %q", out.String(), want)
+	}
+}
+
+// A scheduled time that is not RFC3339 — a record written by hand or by a much
+// older build — is printed exactly as it was recorded. A pane that blanks a
+// field it cannot parse tells the reader less than one that shows it.
+func TestEventLogPrintsAnUnparsableScheduledTimeVerbatim(t *testing.T) {
+	at := time.Date(2026, 9, 1, 4, 45, 0, 0, time.UTC)
+	log, out, _ := newTestEventLog()
+	if err := log.nextTick(at, "soon", 900); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "next tick at=soon ") {
+		t.Errorf("event line = %q, want the recorded value verbatim", out.String())
+	}
+}
+
+// A patrol given no reader zone stamps events where the process runs, so a
+// caller that has nothing to inject still gets local time.
+func TestEventLogWithoutAZoneUsesTheHostZone(t *testing.T) {
+	at := time.Date(2026, 9, 1, 4, 45, 0, 0, time.UTC)
+	out := &strings.Builder{}
+	if err := newEventLog(out, nil, nil).started(at, "foo"); err != nil {
+		t.Fatal(err)
+	}
+	want := at.In(time.Local).Format("2006-01-02T15:04:05-07:00") + " patrol started program=foo\n"
+	if out.String() != want {
+		t.Errorf("event line = %q, want %q", out.String(), want)
 	}
 }
