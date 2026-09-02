@@ -141,12 +141,19 @@ type WorkItem struct {
 	PRGrantedBy   string     `json:"pr_granted_by,omitempty"`
 	Notes         []string   `json:"notes"`
 	BlockedReason string     `json:"blocked_reason,omitempty"`
-	CreatedAt     string     `json:"created_at"`
-	UpdatedAt     string     `json:"updated_at"`
-	DispatchedAt  string     `json:"dispatched_at,omitempty"`
-	InReviewAt    string     `json:"in_review_at,omitempty"`
-	MergedAt      string     `json:"merged_at,omitempty"`
-	CancelledAt   string     `json:"cancelled_at,omitempty"` //nolint:misspell // Persisted V1 schema spelling.
+	// FollowUpOf names the item whose merged, approved, or queued pull request
+	// this item was created to change. RequestHash is the SHA-256 of the
+	// normalized request that created it, so an identical retry reuses this
+	// item instead of opening a second one. Both are absent on ordinary items
+	// and on every manifest written before follow-ups existed.
+	FollowUpOf   string `json:"follow_up_of,omitempty"`
+	RequestHash  string `json:"request_hash,omitempty"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+	DispatchedAt string `json:"dispatched_at,omitempty"`
+	InReviewAt   string `json:"in_review_at,omitempty"`
+	MergedAt     string `json:"merged_at,omitempty"`
+	CancelledAt  string `json:"cancelled_at,omitempty"` //nolint:misspell // Persisted V1 schema spelling.
 }
 
 // ItemUpdate describes an atomic work item metadata update.
@@ -430,6 +437,7 @@ func (p Program) Validate() error {
 	}
 
 	for _, item := range p.Items {
+		errs = append(errs, validateFollowUp(item, items)...)
 		seenDependencies := make(map[string]bool, len(item.Dependencies))
 		for _, dependency := range item.Dependencies {
 			if dependency == item.ID {
@@ -460,6 +468,9 @@ func (p Program) Validate() error {
 	}
 	if cycle := dependencyCycle(p.Items, items); len(cycle) > 0 {
 		errs = append(errs, fmt.Errorf("dependency cycle: %s", strings.Join(cycle, " -> ")))
+	}
+	if cycle := followUpCycle(p.Items, items); len(cycle) > 0 {
+		errs = append(errs, fmt.Errorf("follow-up cycle: %s", strings.Join(cycle, " -> ")))
 	}
 
 	decisions := make(map[string]bool, len(p.Decisions))
@@ -600,6 +611,14 @@ func (p *Program) AddItem(item WorkItem) (WorkItem, error) {
 	}
 	if item.Status != "" && item.Status != ItemPending {
 		return WorkItem{}, fmt.Errorf("add item: initial status %q must be pending", item.Status)
+	}
+	if item.FollowUpOf != "" || item.RequestHash != "" {
+		if existing, found := p.FindFollowUp(item.FollowUpOf, item.RequestHash); found {
+			return WorkItem{}, fmt.Errorf(
+				"add item: follow-up of %q for this request already exists as %q",
+				item.FollowUpOf, existing.ID,
+			)
+		}
 	}
 	now := timestamp()
 	item.ID = nextNumberedID(p.Items, func(item WorkItem) string { return item.ID }, "w")
