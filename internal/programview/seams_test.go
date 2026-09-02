@@ -198,7 +198,7 @@ func TestProjectViewsWithPRIndexUsesGitHubLifecycleForLinkedCapacity(t *testing.
 		"open":   "#101",
 	}
 	for slug, ref := range refs {
-		number, ok := pullRequestNumber(ref)
+		number, ok := PullRequestNumber(ref)
 		if !ok {
 			t.Fatalf("invalid test PR ref %q", ref)
 		}

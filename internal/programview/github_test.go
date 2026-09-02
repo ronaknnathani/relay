@@ -28,9 +28,9 @@ func TestPullRequestNumber(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.ref, func(t *testing.T) {
-			got, ok := pullRequestNumber(test.ref)
+			got, ok := PullRequestNumber(test.ref)
 			if got != test.want || ok != test.ok {
-				t.Fatalf("pullRequestNumber(%q) = (%d, %t), want (%d, %t)", test.ref, got, ok, test.want, test.ok)
+				t.Fatalf("PullRequestNumber(%q) = (%d, %t), want (%d, %t)", test.ref, got, ok, test.want, test.ok)
 			}
 		})
 	}
@@ -156,7 +156,7 @@ func TestGHPRIndexLoaderBoundsConcurrentSubprocesses(t *testing.T) {
 			mutex.Lock()
 			inFlight--
 			mutex.Unlock()
-			number, _ := pullRequestNumber(args[2])
+			number, _ := PullRequestNumber(args[2])
 			return fmt.Appendf(nil,
 				`{"number":%d,"state":"OPEN","url":"https://github.example/acme/repo/pull/%d"}`,
 				number, number), nil

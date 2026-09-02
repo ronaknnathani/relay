@@ -202,7 +202,7 @@ func decodeChangeOutput(t *testing.T, out string) programWorkerChangeOutput {
 
 func TestRequestChangeSendsDurableFeedbackToTheExistingWorker(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	client := installManagedHerdrFakes(t, &fakeHerdrClient{
 		agentResponses: [][]herdr.Agent{{liveWorkerAgent(manifest, herdr.StatusIdle)}},
 	})
@@ -256,7 +256,7 @@ func TestRequestChangeSendsDurableFeedbackToTheExistingWorker(t *testing.T) {
 
 func TestRequestChangeRetryDoesNotDuplicateFeedbackOrDoorbells(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	client := installManagedHerdrFakes(t, &fakeHerdrClient{
 		agentResponses: [][]herdr.Agent{{liveWorkerAgent(manifest, herdr.StatusIdle)}},
 	})
@@ -295,7 +295,7 @@ func TestRequestChangeRetryDoesNotDuplicateFeedbackOrDoorbells(t *testing.T) {
 
 func TestRequestChangeAfterAWorkerAcknowledgedTheSameRequestWritesNothingNew(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	installManagedHerdrFakes(t, &fakeHerdrClient{
 		agentResponses: [][]herdr.Agent{{liveWorkerAgent(manifest, herdr.StatusIdle)}},
 	})
@@ -330,7 +330,7 @@ func TestRequestChangeAfterAWorkerAcknowledgedTheSameRequestWritesNothingNew(t *
 
 func TestRequestChangeWithADifferentRequestWritesASecondMessage(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	installManagedHerdrFakes(t, &fakeHerdrClient{
 		agentResponses: [][]herdr.Agent{{liveWorkerAgent(manifest, herdr.StatusIdle)}},
 	})
@@ -355,7 +355,7 @@ func TestRequestChangeWithADifferentRequestWritesASecondMessage(t *testing.T) {
 
 func TestRequestChangeDoesNotInterruptABusyWorker(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	client := installManagedHerdrFakes(t, &fakeHerdrClient{
 		agentResponses: [][]herdr.Agent{{liveWorkerAgent(manifest, herdr.StatusWorking)}},
 	})
@@ -387,7 +387,7 @@ func TestRequestChangeDoesNotInterruptABusyWorker(t *testing.T) {
 
 func TestRequestChangeWithNoLiveWorkerKeepsTheMessageAndReportsStart(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	client := installManagedHerdrFakes(t, &fakeHerdrClient{agentResponses: [][]herdr.Agent{nil}})
 	installFakePRInspection(t, openPRInspection("REVIEW_REQUIRED"), nil)
 
@@ -414,7 +414,7 @@ func TestRequestChangeWithNoLiveWorkerKeepsTheMessageAndReportsStart(t *testing.
 
 func TestRequestChangeKeepsAClosedUnmergedPullRequestOnItsOriginalWorker(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	installManagedHerdrFakes(t, &fakeHerdrClient{
 		agentResponses: [][]herdr.Agent{{liveWorkerAgent(manifest, herdr.StatusIdle)}},
 	})
@@ -446,7 +446,7 @@ func TestRequestChangeKeepsAClosedUnmergedPullRequestOnItsOriginalWorker(t *test
 
 func TestRequestChangeOnAnApprovedPullRequestCreatesAPendingFollowUp(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	client := installManagedHerdrFakes(t, &fakeHerdrClient{
 		agentResponses: [][]herdr.Agent{{liveWorkerAgent(manifest, herdr.StatusIdle)}},
 	})
@@ -509,7 +509,7 @@ func TestRequestChangeOnAnApprovedPullRequestCreatesAPendingFollowUp(t *testing.
 
 func TestRequestChangeOnAQueuedPullRequestCreatesAPendingFollowUp(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	client := installManagedHerdrFakes(t, &fakeHerdrClient{
 		agentResponses: [][]herdr.Agent{{liveWorkerAgent(manifest, herdr.StatusIdle)}},
 	})
@@ -537,7 +537,7 @@ func TestRequestChangeOnAQueuedPullRequestCreatesAPendingFollowUp(t *testing.T) 
 
 func TestRequestChangeReusesAPendingFollowUpForTheSameRequest(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	installManagedHerdrFakes(t, &fakeHerdrClient{
 		agentResponses: [][]herdr.Agent{{liveWorkerAgent(manifest, herdr.StatusIdle)}},
 	})
@@ -582,7 +582,7 @@ func TestRequestChangeReusesAPendingFollowUpForTheSameRequest(t *testing.T) {
 
 func TestRequestChangeOnAMergedPullRequestDispatchesAndStartsAFollowUp(t *testing.T) {
 	p, item, manifest := createChangeFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	mergeProgramItem(t, p.Slug, item.ID)
 	worker := liveWorkerAgent(manifest, herdr.StatusIdle)
 	client := &fakeHerdrClient{tab: herdr.Tab{ID: "w7:t10", RootPaneID: "w7:p10"}}
@@ -642,7 +642,7 @@ func TestRequestChangeOnAMergedPullRequestDispatchesAndStartsAFollowUp(t *testin
 
 func TestRequestChangeReportsAPartialFollowUpWithoutRollingItBack(t *testing.T) {
 	p, item, manifest := createChangeFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	mergeProgramItem(t, p.Slug, item.ID)
 	worker := liveWorkerAgent(manifest, herdr.StatusIdle)
 	client := installManagedHerdrFakes(t, &fakeHerdrClient{
@@ -677,7 +677,7 @@ func TestRequestChangeReportsAPartialFollowUpWithoutRollingItBack(t *testing.T) 
 
 func TestRequestChangeWritesNothingWhenGitHubCannotBeRead(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	client := installManagedHerdrFakes(t, &fakeHerdrClient{
 		agentResponses: [][]herdr.Agent{{liveWorkerAgent(manifest, herdr.StatusIdle)}},
 	})
@@ -708,10 +708,10 @@ func TestRequestChangeWritesNothingWhenGitHubCannotBeRead(t *testing.T) {
 
 func TestRequestChangeRefusesAPullRequestMismatch(t *testing.T) {
 	p, item, _ := createWorkerFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	installManagedHerdrFakes(t, &fakeHerdrClient{})
 	inspection := openPRInspection("REVIEW_REQUIRED")
-	inspection.Ref = "9"
+	inspection.Number, inspection.Ref = 9, "9"
 	installFakePRInspection(t, inspection, nil)
 
 	_, err := runProgramCommand(t, "worker", "request-change", p.Slug, item.ID,
@@ -741,7 +741,7 @@ func TestRequestChangeRefusesAnItemWithNoRecordedPullRequest(t *testing.T) {
 
 func TestRequestChangeRefusesAnEmptyRequest(t *testing.T) {
 	p, item, _ := createWorkerFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	installManagedHerdrFakes(t, &fakeHerdrClient{})
 	calls := installFakePRInspection(t, openPRInspection("REVIEW_REQUIRED"), nil)
 
@@ -758,7 +758,7 @@ func TestRequestChangeRefusesAnEmptyRequest(t *testing.T) {
 
 func TestRequestChangeKeepsTheRequestDurableWhenTheDoorbellIsUncertain(t *testing.T) {
 	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
-	p = recordItemPR(t, p, item.ID, "7")
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	client := installManagedHerdrFakes(t, &fakeHerdrClient{
 		agentResponses: [][]herdr.Agent{{liveWorkerAgent(manifest, herdr.StatusIdle)}},
 		promptErr:      herdr.ErrPromptDeliveryUncertain,
@@ -798,5 +798,46 @@ func TestRequestChangeKeepsTheRequestDurableWhenTheDoorbellIsUncertain(t *testin
 	if len(client.prompted) != 1 {
 		t.Fatalf("doorbells = %d after a retry, want the marked message to suppress a second one",
 			len(client.prompted))
+	}
+}
+
+func TestRequestChangeAcceptsBothRecordedPullRequestReferenceForms(t *testing.T) {
+	for name, ref := range map[string]string{
+		"url":    "https://github.com/acme/widgets/pull/7",
+		"number": "#7",
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+			p = recordItemPR(t, p, item.ID, ref)
+			installManagedHerdrFakes(t, &fakeHerdrClient{
+				agentResponses: [][]herdr.Agent{{liveWorkerAgent(manifest, herdr.StatusIdle)}},
+			})
+			installFakePRInspection(t, openPRInspection("REVIEW_REQUIRED"), nil)
+
+			out, err := runProgramCommand(t, "worker", "request-change", p.Slug, item.ID,
+				"--body", "Rename the token field", "--json")
+			if err != nil {
+				t.Fatalf("request-change with recorded ref %q: %v", ref, err)
+			}
+			if decodeChangeOutput(t, out).Route != changeRouteSameWorker {
+				t.Fatalf("route for recorded ref %q is wrong", ref)
+			}
+		})
+	}
+}
+
+func TestRequestChangeRefusesAnUnparsableRecordedReference(t *testing.T) {
+	p, item, _ := createWorkerFixture(t, program.ItemDispatched)
+	p = recordItemPR(t, p, item.ID, "not-a-pull-request")
+	installManagedHerdrFakes(t, &fakeHerdrClient{})
+	calls := installFakePRInspection(t, openPRInspection("REVIEW_REQUIRED"), nil)
+
+	_, err := runProgramCommand(t, "worker", "request-change", p.Slug, item.ID,
+		"--body", "Rename the token field", "--json")
+	if err == nil {
+		t.Fatal("request-change accepted an unparsable recorded pull request reference")
+	}
+	if *calls != 1 {
+		t.Fatalf("GitHub reads = %d, want exactly the one fail-closed read", *calls)
 	}
 }

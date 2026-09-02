@@ -13,6 +13,7 @@ import (
 
 	"github.com/ronaknnathani/relay/internal/mailbox"
 	"github.com/ronaknnathani/relay/internal/program"
+	"github.com/ronaknnathani/relay/internal/programview"
 	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/ronaknnathani/relay/internal/prwatch"
 	"github.com/spf13/cobra"
@@ -184,11 +185,22 @@ func loadProgramChangeTarget(programSlug, itemID string) (programChangeTarget, e
 			programSlug, itemID, err,
 		)
 	}
-	if inspection.Ref != item.PRRef {
+	// The item records a pull request URL or "#<n>" while the inspection names
+	// the number GitHub answered for. Comparing the numbers is what confirms
+	// the read describes the pull request this item actually owns.
+	recorded, ok := programview.PullRequestNumber(item.PRRef)
+	if !ok {
 		return programChangeTarget{}, fmt.Errorf(
-			"request change for %s/%s: GitHub was read for pull request %q, but the item records %q; "+
+			"request change for %s/%s: recorded pull request %q is not a pull request URL or #<number>; "+
 				"reconcile with `relay program tick %s` and retry",
-			programSlug, itemID, inspection.Ref, item.PRRef, programSlug,
+			programSlug, itemID, item.PRRef, programSlug,
+		)
+	}
+	if inspection.Number != recorded {
+		return programChangeTarget{}, fmt.Errorf(
+			"request change for %s/%s: GitHub was read for pull request #%d, but the item records %q; "+
+				"reconcile with `relay program tick %s` and retry",
+			programSlug, itemID, inspection.Number, item.PRRef, programSlug,
 		)
 	}
 	return programChangeTarget{

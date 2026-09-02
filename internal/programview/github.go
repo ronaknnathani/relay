@@ -157,7 +157,7 @@ func (l ghPRIndexLoader) Load(repo string, refs []string) PRIndex {
 }
 
 func (i githubPRIndex) record(ref, url string, number int, state PRState) {
-	if parsed, ok := pullRequestNumber(ref); ok {
+	if parsed, ok := PullRequestNumber(ref); ok {
 		i.byNumber[parsed] = state
 	}
 	if number > 0 {
@@ -191,14 +191,16 @@ func (i githubPRIndex) Lookup(ref string) (PRState, bool) {
 	if state, found := i.byURL[trimmed]; found {
 		return state, true
 	}
-	if number, ok := pullRequestNumber(trimmed); ok {
+	if number, ok := PullRequestNumber(trimmed); ok {
 		state, found := i.byNumber[number]
 		return state, found
 	}
 	return "", false
 }
 
-func pullRequestNumber(ref string) (int, bool) {
+// PullRequestNumber extracts the pull request number from one recorded
+// reference, which Relay writes either as a pull request URL or as "#<n>".
+func PullRequestNumber(ref string) (int, bool) {
 	ref = strings.TrimSpace(ref)
 	if strings.HasPrefix(ref, "#") {
 		return positiveNumber(strings.TrimPrefix(ref, "#"))

@@ -60,7 +60,7 @@ func createCleanupFixture(t *testing.T) (program.Program, program.WorkItem, proj
 	if err := project.Save(manifestPath, manifest); err != nil {
 		t.Fatal(err)
 	}
-	recordItemPR(t, p, item.ID, "7")
+	recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
 	mergeProgramItem(t, p.Slug, item.ID)
 	loaded, err := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
 	if err != nil {
