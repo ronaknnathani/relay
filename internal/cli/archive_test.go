@@ -311,3 +311,94 @@ func installArchivePRIndex(t *testing.T, states map[string]programview.PRState) 
 	}
 	t.Cleanup(func() { loadArchivePRIndex = previous })
 }
+
+func TestArchiveProjectReturnsAResultWithoutWritingToStdout(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "result-archive"
+	branch := "user/result-archive"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+
+	var result archiveResult
+	out, err := captureStdout(t, func() error {
+		var archiveErr error
+		result, archiveErr = archiveProject(slug, false)
+		return archiveErr
+	})
+	if err != nil {
+		t.Fatalf("archiveProject: %v", err)
+	}
+	if out != "" {
+		t.Fatalf("archiveProject wrote %q to stdout", out)
+	}
+	if result.Slug != slug || result.Branch != branch {
+		t.Fatalf("result identity = %q/%q", result.Slug, result.Branch)
+	}
+	if !result.WorktreeRemoved || result.Worktree != worktree {
+		t.Fatalf("worktree result = %t/%q", result.WorktreeRemoved, result.Worktree)
+	}
+	if !result.BranchDeleted {
+		t.Fatalf("branch %q was not deleted: %v", branch, result.Warnings)
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", result.Warnings)
+	}
+	if result.ArchivedPath != filepath.Join(project.ArchivedDir(), slug) {
+		t.Fatalf("archived path = %q", result.ArchivedPath)
+	}
+	if pathExists(worktree) || pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("archiveProject left the worktree or active project behind")
+	}
+}
+
+func TestArchiveForceDiscardsDirtyAndUntrackedWork(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "force-discard"
+	branch := "user/force-discard"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "unique\n", "unique work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	writeArchiveFile(t, worktree, "feature.txt", "dirty edit\n")
+	writeArchiveFile(t, worktree, "scratch/notes.txt", "untracked\n")
+
+	result, err := archiveProject(slug, true)
+	if err != nil {
+		t.Fatalf("archiveProject --force: %v", err)
+	}
+	if !result.WorktreeRemoved {
+		t.Fatal("the dirty worktree was not removed")
+	}
+	if pathExists(worktree) {
+		t.Fatalf("worktree %s survived a forced archive", worktree)
+	}
+	if gitx.BranchExists(repo, branch) {
+		t.Fatalf("unmerged branch %s survived a forced archive", branch)
+	}
+	if !pathExists(filepath.Join(project.ArchivedDir(), slug)) {
+		t.Fatal("the project was not moved to archived")
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("the project is still active after archiving")
+	}
+}
+
+func TestRunArchiveKeepsItsTextOutput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "text-archive"
+	branch := "user/text-archive"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+
+	out, err := captureStdout(t, func() error { return runArchive(slug, false) })
+	if err != nil {
+		t.Fatalf("runArchive: %v", err)
+	}
+	for _, want := range []string{"Archived:", slug, "Worktree removed:", worktree} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("archive output %q is missing %q", out, want)
+		}
+	}
+}

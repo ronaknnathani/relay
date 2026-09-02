@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -60,13 +61,59 @@ func newCmdArchive() *cobra.Command {
 	return cmd
 }
 
+// archiveResult is what archiving one project did. Returning it instead of
+// printing lets a caller that owns its own output — a JSON command, for
+// instance — report the same facts without archive writing into its stream.
+type archiveResult struct {
+	Slug            string   `json:"slug"`
+	Worktree        string   `json:"worktree,omitempty"`
+	WorktreeRemoved bool     `json:"worktree_removed"`
+	Branch          string   `json:"branch,omitempty"`
+	BranchDeleted   bool     `json:"branch_deleted"`
+	Merged          bool     `json:"merged"`
+	ArchivedPath    string   `json:"archived_path"`
+	Warnings        []string `json:"warnings"`
+}
+
+// runArchive archives a project and prints the human-facing report.
 func runArchive(slug string, force bool) error {
+	result, err := archiveProject(slug, force)
+	if err != nil {
+		return err
+	}
+	renderArchive(os.Stdout, result)
+	return nil
+}
+
+// renderArchive prints archive's long-standing text output, including the
+// branch-deletion warning it has always written to stderr.
+func renderArchive(out io.Writer, result archiveResult) {
+	for _, warning := range result.Warnings {
+		ui.Warn("%s", warning)
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Green, "Archived:"), result.Slug)
+	if result.WorktreeRemoved {
+		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Dim, "Worktree removed:"), result.Worktree)
+	}
+	if !result.BranchDeleted && result.Branch != "" && len(result.Warnings) > 0 {
+		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Yellow, "Branch still present:"), result.Branch)
+	}
+	fmt.Fprintln(out)
+}
+
+// archiveProject removes a project's worktree, decides its branch's fate, and
+// moves its metadata from active to archived. With force it deliberately
+// discards dirty and untracked files in the worktree and force-deletes an
+// unmerged branch: the caller has already decided that work is finished.
+func archiveProject(slug string, force bool) (archiveResult, error) {
 	srcDir := filepath.Join(project.ActiveDir(), slug)
 	manifestPath := filepath.Join(srcDir, "manifest.json")
 	m, err := project.Load(manifestPath)
 	if err != nil {
-		return fmt.Errorf("project not found in active: %s: %w", slug, err)
+		return archiveResult{}, fmt.Errorf("project not found in active: %s: %w", slug, err)
 	}
+	result := archiveResult{Slug: slug, Branch: m.Branch, Warnings: []string{}}
 
 	// Decide branch fate up front so we don't tear down the worktree and
 	// then fail on an unmerged branch with no recovery path.
@@ -106,7 +153,7 @@ func runArchive(slug string, force bool) error {
 		case pullRequestMerged, force:
 			deleteBranchAfter, forceDeleteBranchAfter = true, true
 		default:
-			return fmt.Errorf("branch %q has unmerged work; re-run with --force to delete it anyway, or merge it first", m.Branch)
+			return archiveResult{}, fmt.Errorf("branch %q has unmerged work; re-run with --force to delete it anyway, or merge it first", m.Branch)
 		}
 	}
 	// A missing local branch is not evidence of abandoned work: the branch is
@@ -115,23 +162,29 @@ func runArchive(slug string, force bool) error {
 
 	if m.Worktree != nil && *m.Worktree != "" {
 		worktree := *m.Worktree
+		result.Worktree = worktree
 		if err := gitx.WorktreeRemove(m.Repo, worktree, force); err != nil {
 			if !force {
-				return fmt.Errorf("%w\nhint: use --force to remove worktrees with untracked/modified files", err)
+				return archiveResult{}, fmt.Errorf("%w\nhint: use --force to remove worktrees with untracked/modified files", err)
 			}
-			return err
+			return archiveResult{}, err
 		}
+		result.WorktreeRemoved = true
 	}
 
-	var branchDeleteErr error
 	if deleteBranchAfter {
+		var branchDeleteErr error
 		if forceDeleteBranchAfter {
 			branchDeleteErr = gitx.ForceDeleteBranch(m.Repo, m.Branch)
 		} else {
 			branchDeleteErr = gitx.DeleteBranch(m.Repo, m.Branch)
 		}
 		if branchDeleteErr != nil {
-			ui.Warn("%s\nhint: delete manually with 'git branch -D %s'", branchDeleteErr, m.Branch)
+			result.Warnings = append(result.Warnings, fmt.Sprintf(
+				"%s\nhint: delete manually with 'git branch -D %s'", branchDeleteErr, m.Branch,
+			))
+		} else {
+			result.BranchDeleted = true
 		}
 	}
 
@@ -139,26 +192,18 @@ func runArchive(slug string, force bool) error {
 	m.Status = "archived"
 	m.Archived = &now
 	m.Merged = workMerged
+	result.Merged = workMerged
 
 	dstDir := filepath.Join(project.ArchivedDir(), slug)
 	if err := os.MkdirAll(project.ArchivedDir(), 0755); err != nil {
-		return fmt.Errorf("create archived dir: %w", err)
+		return archiveResult{}, fmt.Errorf("create archived dir: %w", err)
 	}
 	if err := os.Rename(srcDir, dstDir); err != nil {
-		return fmt.Errorf("move project to archived: %w", err)
+		return archiveResult{}, fmt.Errorf("move project to archived: %w", err)
 	}
 	if err := project.Save(filepath.Join(dstDir, "manifest.json"), m); err != nil {
-		return err
+		return archiveResult{}, err
 	}
-
-	fmt.Println()
-	fmt.Printf("  %s %s\n", ui.Color(ui.Green, "Archived:"), slug)
-	if m.Worktree != nil {
-		fmt.Printf("  %s %s\n", ui.Color(ui.Dim, "Worktree removed:"), *m.Worktree)
-	}
-	if branchDeleteErr != nil {
-		fmt.Printf("  %s %s\n", ui.Color(ui.Yellow, "Branch still present:"), m.Branch)
-	}
-	fmt.Println()
-	return nil
+	result.ArchivedPath = dstDir
+	return result, nil
 }
