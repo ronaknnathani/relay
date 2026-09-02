@@ -122,6 +122,24 @@ func TestObserveCadenceMatrix(t *testing.T) {
 			item.Child.Watcher = &programview.ChildWatcherDTO{Running: true, Status: "running"}
 			s.Items = []programview.ItemDTO{item}
 		}), delay: 15 * time.Minute, reasonIDs: []string{"merged-worker-cleanup:w1"}},
+		// A watcher that finished on its own keeps its tab so its last lines
+		// stay readable. That tab is still a tab, so the item is not retired.
+		{name: "merged worker cleanup for a completed watcher tab", snapshot: with(func(s *programview.Snapshot) {
+			item := cloneLinked()
+			item.Status = string(program.ItemMerged)
+			item.Worker = nil
+			item.Child.Manifest.Archived = true
+			item.Child.Watcher = &programview.ChildWatcherDTO{Status: "complete", TabID: "w7:t42"}
+			s.Items = []programview.ItemDTO{item}
+		}), delay: 15 * time.Minute, reasonIDs: []string{"merged-worker-cleanup:w1"}},
+		{name: "merged worker cleanup for a stopped watcher pane", snapshot: with(func(s *programview.Snapshot) {
+			item := cloneLinked()
+			item.Status = string(program.ItemMerged)
+			item.Worker = nil
+			item.Child.Manifest.Archived = true
+			item.Child.Watcher = &programview.ChildWatcherDTO{Status: "stopped", PaneID: "w7:p42"}
+			s.Items = []programview.ItemDTO{item}
+		}), delay: 15 * time.Minute, reasonIDs: []string{"merged-worker-cleanup:w1"}},
 		{name: "merged worker cleanup for an uncleaned worktree", snapshot: with(func(s *programview.Snapshot) {
 			item := cloneLinked()
 			item.Status = string(program.ItemMerged)
@@ -309,5 +327,54 @@ func TestUnreadOutboxAttentionKeyTracksMessageIdentifiers(t *testing.T) {
 	replaced := observeSnapshot(snapshot("m-3"), nil)
 	if replaced.AttentionFingerprint == one.AttentionFingerprint {
 		t.Fatal("a different message with the same count did not change the fingerprint")
+	}
+}
+
+// A merged item is not retired until the last thing it holds is gone. The
+// watcher tab is the piece that outlives the watcher process, so the reason has
+// to name it and has to survive the process exiting: a completed watcher whose
+// tab is still recorded is exactly the case a tech lead would otherwise never
+// be told about.
+func TestMergedCleanupReasonNamesARetainedWatcherTab(t *testing.T) {
+	retired := programview.ItemDTO{
+		ID: "w1", Status: string(program.ItemMerged), ProjectSlug: "demo-w1",
+		Child: &programview.ChildDTO{
+			Manifest: programview.ChildManifestDTO{Slug: "demo-w1", Archived: true},
+		},
+	}
+	completed := retired
+	completed.Child = &programview.ChildDTO{
+		Manifest: retired.Child.Manifest,
+		Watcher: &programview.ChildWatcherDTO{
+			Running: false, Status: "complete", TabID: "w7:t42", PaneID: "w7:p42",
+		},
+	}
+
+	outstanding := mergedCleanupOutstanding(completed)
+	if len(outstanding) != 1 {
+		t.Fatalf("outstanding = %v, want the retained watcher tab alone", outstanding)
+	}
+	if !strings.Contains(outstanding[0], "watcher") || !strings.Contains(outstanding[0], "tab") {
+		t.Errorf("outstanding = %q, want the watcher tab named", outstanding[0])
+	}
+
+	// Clearing the recorded ids is what retires the watcher. The lifecycle
+	// status alone never does: a complete watcher with a tab is not retired,
+	// and a running watcher without one still is not.
+	cleared := retired
+	cleared.Child = &programview.ChildDTO{
+		Manifest: retired.Child.Manifest,
+		Watcher:  &programview.ChildWatcherDTO{Status: "complete"},
+	}
+	if outstanding := mergedCleanupOutstanding(cleared); len(outstanding) != 0 {
+		t.Errorf("outstanding after the ids were cleared = %v, want none", outstanding)
+	}
+	running := retired
+	running.Child = &programview.ChildDTO{
+		Manifest: retired.Child.Manifest,
+		Watcher:  &programview.ChildWatcherDTO{Running: true, Status: "running"},
+	}
+	if outstanding := mergedCleanupOutstanding(running); len(outstanding) != 1 {
+		t.Errorf("outstanding for a running watcher = %v, want one", outstanding)
 	}
 }

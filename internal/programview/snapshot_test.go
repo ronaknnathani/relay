@@ -656,3 +656,51 @@ func mustBuild(t *testing.T, slug string) Snapshot {
 	}
 	return snapshot
 }
+
+// A watcher that finished on its own keeps its tab so its final lines stay
+// readable, and archiving the child project does not close that tab. The
+// snapshot has to keep reporting the completed watcher and its exact ids, or
+// the one signal that says "this tab is still open" disappears at exactly the
+// point cleanup is half done.
+func TestBuildKeepsACompletedWatcherForAnArchivedChild(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p, childDir := newMailboxSnapshotProgram(t)
+	if _, err := prwatch.UpdateState("mail-child", func(state prwatch.State) (prwatch.State, error) {
+		state.Project = "mail-child"
+		state.Status = prwatch.StatusComplete
+		state.StopReason = "pull request merged"
+		state.TabID = "w1:t5"
+		state.PaneID = "w1:p5"
+		return state, nil
+	}); err != nil {
+		t.Fatalf("seed watcher state: %v", err)
+	}
+	archived := filepath.Join(project.ArchivedDir(), "mail-child")
+	if err := os.MkdirAll(filepath.Dir(archived), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(childDir, archived); err != nil {
+		t.Fatal(err)
+	}
+
+	item := findSnapshotItem(t, mustBuild(t, p.Slug).Items, "w1")
+	if item.Child == nil {
+		t.Fatal("an archived child is missing from the snapshot")
+	}
+	if !item.Child.Manifest.Archived {
+		t.Fatal("an archived child is reported as active")
+	}
+	watcher := item.Child.Watcher
+	if watcher == nil {
+		t.Fatal("the completed watcher disappeared once the child was archived")
+	}
+	if watcher.Running {
+		t.Fatal("a watcher with no live process is reported as running")
+	}
+	if watcher.Status != string(prwatch.StatusComplete) {
+		t.Errorf("watcher status = %q, want the completed lifecycle", watcher.Status)
+	}
+	if watcher.TabID != "w1:t5" || watcher.PaneID != "w1:p5" {
+		t.Errorf("watcher ids = %+v, want the recorded tab and pane", watcher)
+	}
+}

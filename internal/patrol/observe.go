@@ -180,11 +180,11 @@ func addMissingWorkerReasons(snapshot programview.Snapshot, add func(string, str
 
 // addMergedCleanupReasons reports merged work that is still holding runtime.
 //
-// A merged item is finished, but until its watcher is stopped, its worker
+// A merged item is finished, but until its watcher's tab is closed, its worker
 // session and tab are gone, and its child project is archived, it is still
-// occupying a Herdr tab, still polling GitHub, and still keeping a worktree and
-// branch on disk. The reason stays until all of that is retired, so the tech
-// lead is woken to run cleanup rather than accumulating dead sessions.
+// occupying Herdr tabs and still keeping a worktree and branch on disk. The
+// reason stays until all of that is retired, so the tech lead is woken to run
+// cleanup rather than accumulating dead sessions.
 func addMergedCleanupReasons(snapshot programview.Snapshot, add func(string, string)) {
 	for _, item := range snapshot.Items {
 		if item.Status != string(program.ItemMerged) || item.ProjectSlug == "" {
@@ -202,6 +202,13 @@ func addMergedCleanupReasons(snapshot programview.Snapshot, add func(string, str
 }
 
 // mergedCleanupOutstanding names what a merged item has not yet released.
+//
+// A watcher counts while it is running and, just as importantly, after it has
+// finished: a watcher that completes on its own deliberately keeps its Herdr
+// tab so its last lines stay readable, and that tab is released only when
+// something stops the watcher and clears the recorded ids. Reading the
+// lifecycle status alone would make a merged item look retired the moment its
+// process exited, leaving a dead tab nobody is told about.
 func mergedCleanupOutstanding(item programview.ItemDTO) []string {
 	var outstanding []string
 	if item.Worker != nil {
@@ -215,8 +222,13 @@ func mergedCleanupOutstanding(item programview.ItemDTO) []string {
 	} else if item.Child.Manifest.WorktreePresent {
 		outstanding = append(outstanding, "an uncleaned worktree")
 	}
-	if item.Child.Watcher != nil && item.Child.Watcher.Running {
-		outstanding = append(outstanding, "a running pull request watcher")
+	if watcher := item.Child.Watcher; watcher != nil {
+		switch {
+		case watcher.Running:
+			outstanding = append(outstanding, "a running pull request watcher")
+		case watcher.TabID != "" || watcher.PaneID != "":
+			outstanding = append(outstanding, "a finished pull request watcher's open tab")
+		}
 	}
 	return outstanding
 }
