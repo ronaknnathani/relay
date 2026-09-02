@@ -569,6 +569,7 @@ func TestProgramPatrolStatusReportsLiveDoorbellMetadata(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	client := &fakeHerdrClient{}
 	installPatrolFakes(t, client)
+	pinDisplayZone(t)
 	patrolIsRunning = func(string) (bool, error) { return true, nil }
 	patrolReadState = func(slug string) (patrol.State, error) {
 		return patrol.State{
@@ -586,7 +587,7 @@ func TestProgramPatrolStatusReportsLiveDoorbellMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"Last TL wake: failed at 2026-08-27T10:17:00Z (session session-1)",
+		"Last TL wake: failed at 2026-08-27T06:17:00-04:00 (session session-1)",
 		"Legacy turn log: /home/u/.relay/run/adaptive/turns/20260827T101530Z-session-1.log",
 		"TL wake error: exit status 2",
 		"Consecutive TL wake failures: 2",
@@ -714,5 +715,83 @@ func TestProgramPatrolStartTimeoutStaysCleanWithoutAReadFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "did not report running within 10s") ||
 		strings.Contains(err.Error(), "state read failed") {
 		t.Fatalf("start timeout error = %v", err)
+	}
+}
+
+// Patrol status is read by a person, so its tick schedule prints in the
+// reader's own wall clock. The JSON is read by a program, so it hands back the
+// stored UTC record byte for byte.
+func TestProgramPatrolStatusPrintsLocalTimeAndReportsUTCJSON(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	installPatrolFakes(t, &fakeHerdrClient{})
+	pinDisplayZone(t)
+	patrolIsRunning = func(string) (bool, error) { return true, nil }
+	patrolReadState = func(slug string) (patrol.State, error) {
+		return patrol.State{
+			Schema: patrol.SchemaVersion, Version: 1, ProgramSlug: slug,
+			Status: patrol.StatusRunning, Reasons: []patrol.Reason{}, TLPresent: true,
+			LastTickAt: "2026-08-27T10:15:00Z", NextTickAt: "2026-08-27T10:30:00Z",
+			LastTurnStatus: "delivered", LastTurnEndedAt: "2026-08-27T10:17:00Z",
+		}, nil
+	}
+
+	text, err := runProgramCommand(t, "patrol", "status", "adaptive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Last tick: 2026-08-27T06:15:00-04:00",
+		"Next tick: 2026-08-27T06:30:00-04:00",
+		"Last TL wake: delivered at 2026-08-27T06:17:00-04:00",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("patrol status text is missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "2026-08-27T10:30:00Z") {
+		t.Errorf("patrol status text printed a stored UTC value:\n%s", text)
+	}
+
+	raw, err := runProgramCommand(t, "patrol", "status", "adaptive", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(raw, "-04:00") {
+		t.Errorf("patrol status JSON carries a display offset:\n%s", raw)
+	}
+	var status programPatrolStatusOutput
+	if err := json.Unmarshal([]byte(raw), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.State == nil || status.State.NextTickAt != "2026-08-27T10:30:00Z" ||
+		status.State.LastTickAt != "2026-08-27T10:15:00Z" {
+		t.Fatalf("patrol status JSON timestamps = %+v, want the stored UTC record", status.State)
+	}
+	if status.State.LastTurnEndedAt != "2026-08-27T10:17:00Z" {
+		t.Errorf("patrol status JSON wake time = %q, want the stored UTC record",
+			status.State.LastTurnEndedAt)
+	}
+}
+
+// A recorded value that is not RFC3339 is shown exactly as recorded: status
+// must keep working on a record an older build wrote.
+func TestProgramPatrolStatusPrintsAnUnparsableTimestampVerbatim(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	installPatrolFakes(t, &fakeHerdrClient{})
+	pinDisplayZone(t)
+	patrolIsRunning = func(string) (bool, error) { return true, nil }
+	patrolReadState = func(slug string) (patrol.State, error) {
+		return patrol.State{
+			Schema: patrol.SchemaVersion, Version: 1, ProgramSlug: slug,
+			Status: patrol.StatusRunning, Reasons: []patrol.Reason{},
+			LastTickAt: "recently", NextTickAt: "",
+		}, nil
+	}
+	text, err := runProgramCommand(t, "patrol", "status", "adaptive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "Last tick: recently") {
+		t.Errorf("patrol status text is missing the verbatim value:\n%s", text)
 	}
 }

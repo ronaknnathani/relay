@@ -845,3 +845,92 @@ func TestPRWatchStopSkipsAReplacedWatcher(t *testing.T) {
 		t.Errorf("state = %+v, want the running watcher's own tab left alone", live)
 	}
 }
+
+// pinDisplayZone fixes the zone human status output renders in, so an assertion
+// about an offset holds wherever the suite runs. The process's own zone is
+// never changed.
+func pinDisplayZone(t *testing.T) {
+	t.Helper()
+	previous := displayZone
+	zone := time.FixedZone("TEST", -4*60*60)
+	displayZone = func() *time.Location { return zone }
+	t.Cleanup(func() { displayZone = previous })
+}
+
+// Status is read by a person, so every timestamp it prints is the reader's own
+// wall clock. The JSON is read by a program, so it hands back the stored UTC
+// record byte for byte.
+func TestPRWatchStatusPrintsLocalTimeAndReportsUTCJSON(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	installPRWatchFakes(t, &fakeHerdrClient{})
+	pinDisplayZone(t)
+	prWatchIsRunning = func(string) (bool, error) { return true, nil }
+	prWatchReadState = func(slug string) (prwatch.State, error) {
+		return prwatch.State{
+			Project: slug, Status: prwatch.StatusRunning, Mode: prwatch.ModeStandalone,
+			OwnerSlug: slug, PRNumber: 42, PRState: "OPEN", ScheduledChecks: 3,
+			LastCheckAt: "2026-03-01T08:45:00Z", NextCheckAt: "2026-03-01T09:00:00Z",
+			LastWakeStatus: "delivered", LastWakeAt: "2026-03-01T08:45:01Z",
+			RelayVersion: version,
+		}, nil
+	}
+
+	text, err := runPRCommand(t, "watch", "status", "demo")
+	if err != nil {
+		t.Fatalf("status text: %v", err)
+	}
+	for _, want := range []string{
+		"Last check: 2026-03-01T04:45:00-04:00",
+		"Next check: 2026-03-01T05:00:00-04:00",
+		"Last owner wake: delivered at 2026-03-01T04:45:01-04:00",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("status text is missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "2026-03-01T09:00:00Z") {
+		t.Errorf("status text printed a stored UTC value:\n%s", text)
+	}
+
+	raw, err := runPRCommand(t, "watch", "status", "demo", "--json")
+	if err != nil {
+		t.Fatalf("status json: %v", err)
+	}
+	if strings.Contains(raw, "-04:00") {
+		t.Errorf("status JSON carries a display offset:\n%s", raw)
+	}
+	var got prWatchStatusOutput
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("decode %q: %v", raw, err)
+	}
+	if got.State.NextCheckAt != "2026-03-01T09:00:00Z" || got.State.LastCheckAt != "2026-03-01T08:45:00Z" {
+		t.Errorf("status JSON timestamps = %q and %q, want the stored UTC record",
+			got.State.LastCheckAt, got.State.NextCheckAt)
+	}
+	if got.State.LastWakeAt != "2026-03-01T08:45:01Z" {
+		t.Errorf("status JSON wake time = %q, want the stored UTC record", got.State.LastWakeAt)
+	}
+}
+
+// A recorded value that is not RFC3339 — written by hand, or by a build that
+// predates the field — is shown exactly as recorded rather than blanked.
+func TestPRWatchStatusPrintsAnUnparsableTimestampVerbatim(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	installPRWatchFakes(t, &fakeHerdrClient{})
+	pinDisplayZone(t)
+	prWatchIsRunning = func(string) (bool, error) { return true, nil }
+	prWatchReadState = func(slug string) (prwatch.State, error) {
+		return prwatch.State{
+			Project: slug, Status: prwatch.StatusRunning, Mode: prwatch.ModeStandalone,
+			OwnerSlug: slug, PRNumber: 42, PRState: "OPEN",
+			LastCheckAt: "a while ago", NextCheckAt: "", RelayVersion: version,
+		}, nil
+	}
+	text, err := runPRCommand(t, "watch", "status", "demo")
+	if err != nil {
+		t.Fatalf("status text: %v", err)
+	}
+	if !strings.Contains(text, "Last check: a while ago") {
+		t.Errorf("status text is missing the verbatim value:\n%s", text)
+	}
+}

@@ -335,7 +335,8 @@ func runProgramPatrolStatus(out io.Writer, slug string, jsonOutput bool) error {
 	}
 	fmt.Fprintf(out, "Patrol: %s\n", result.Status)
 	if result.State != nil {
-		fmt.Fprintf(out, "Last tick: %s\nNext tick: %s\n", result.State.LastTickAt, result.State.NextTickAt)
+		fmt.Fprintf(out, "Last tick: %s\nNext tick: %s\n",
+			localTime(result.State.LastTickAt), localTime(result.State.NextTickAt))
 		fmt.Fprintf(out, "TL present: %t\n", result.State.TLPresent)
 		renderProgramPatrolTurn(out, *result.State)
 	}
@@ -359,7 +360,7 @@ func renderProgramPatrolTurn(out io.Writer, state patrol.State) {
 	}
 	fmt.Fprintf(out, "Last TL wake: %s", state.LastTurnStatus)
 	if state.LastTurnEndedAt != "" {
-		fmt.Fprintf(out, " at %s", state.LastTurnEndedAt)
+		fmt.Fprintf(out, " at %s", localTime(state.LastTurnEndedAt))
 	}
 	if state.LastTurnSessionID != "" {
 		fmt.Fprintf(out, " (session %s)", state.LastTurnSessionID)

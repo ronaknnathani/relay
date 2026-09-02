@@ -367,12 +367,13 @@ func runPRWatchStatus(out io.Writer, slug string, jsonOutput bool) error {
 			result.State.Project, result.State.Mode, result.State.OwnerSlug,
 			result.State.PRNumber, result.State.PRState)
 		fmt.Fprintf(out, "Last check: %s\nNext check: %s\nScheduled checks: %d\n",
-			result.State.LastCheckAt, result.State.NextCheckAt, result.State.ScheduledChecks)
+			localTime(result.State.LastCheckAt), localTime(result.State.NextCheckAt),
+			result.State.ScheduledChecks)
 		fmt.Fprintf(out, "Actionable: %d\nCurrent digest: %s\n",
 			result.State.ActionableCount, prWatchFingerprintLabel(result.State.CurrentFingerprint))
 		if result.State.LastWakeStatus != "" {
 			fmt.Fprintf(out, "Last owner wake: %s at %s\n",
-				result.State.LastWakeStatus, result.State.LastWakeAt)
+				result.State.LastWakeStatus, localTime(result.State.LastWakeAt))
 		}
 		if result.State.WakesSuppressed {
 			fmt.Fprintln(out,
