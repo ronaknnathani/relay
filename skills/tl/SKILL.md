@@ -46,7 +46,9 @@ before acting rather than relying on conversation memory.
 A wake is an instruction to act, not a status ping. On every wake, run `relay program tick`, follow
 its next action, dispatch the ready item, and start or adopt its worker (step 5). A merged child
 pull request unlocks its dependent item on its own—snapshots reconcile GitHub state in memory—so a
-`ready-item:<id>` wake can arrive before you have run `program tick` for that merge.
+`ready-item:<id>` wake can arrive before you have run `program tick` for that merge. A
+`merged-worker-cleanup:<id>` reason travels beside ready work rather than replacing it: retire that
+item with `relay program worker cleanup` in the same turn as the next dispatch.
 
 The patrol runs in its own `relay-patrol:$PROGRAM` Herdr pane and prints one line per high-level
 event there: process start and shutdown, each due tick with its reason codes and cadence, the wake
@@ -134,6 +136,64 @@ request for that item, and then best-effort rings the Herdr doorbell. If capacit
 leave the request unread for a later turn. Do not escalate a routine capacity wait or ask the CEO to
 approve merely opening a pull request; escalate only a real goal, architecture, risk, scope, or
 conflict issue. Use `revoke-open-pr --reason "<reason>"` when a worker should release an unused grant.
+
+## Changes the CEO asks for on an open pull request
+
+When the CEO asks for a code change to a pull request a managed item already produced, route it with
+one command and never by messaging the worker yourself:
+
+```bash
+relay program worker request-change "$PROGRAM" <item> --body "<exactly what the CEO asked for>"
+```
+
+The command reads the pull request's current GitHub state first and writes in exactly one place. Never
+write worker feedback for a pull request change by hand, and never message the old worker first "to
+see": a pull request that is approved or in the merge queue must not be rewritten, and only the
+command knows which it is.
+
+The route it takes, and what you report back to the CEO:
+
+- **Open and unapproved**, or **closed without merging**: the same item and the same worker keep the
+  work. The request lands in that worker's durable inbox and its doorbell rings once. A `working` or
+  `blocked` worker is not interrupted; the durable request waits in its inbox. If the worker session
+  is gone, run the printed `relay program worker start` command — never create a second owner.
+- **Approved, or in GitHub's merge queue**: the pull request is protected. The command records a
+  pending follow-up work item that depends on the original and dispatches nothing. Tell the CEO the
+  change is captured and will start once the original merges, then run the same command again after
+  the merge to start it.
+- **Merged**: the command records the follow-up, dispatches its own child project and branch, and
+  starts its own Herdr worker.
+
+Repeating the identical request is safe: the same request reuses the message or follow-up the first
+run created rather than duplicating it. A different request creates its own. If the command reports a
+follow-up that is durable but not fully started, run the exact repair command it prints; never delete
+the item.
+
+## Retiring merged work
+
+A merged item still holds runtime until you retire it: its pull request watcher keeps polling, its
+worker session keeps a Herdr tab, and its child project keeps a worktree and branch. The patrol raises
+`merged-worker-cleanup:<item>` while any of that is outstanding. On every wake, run cleanup for those
+items before or alongside the next ready dispatch:
+
+```bash
+relay program worker cleanup "$PROGRAM" <item> --json
+```
+
+Cleanup runs one order and stops at the first step it cannot confirm: it stops the child pull request
+watcher, asks the item's one worker session to exit with `/exit` without stealing focus, closes that
+exact tab after re-checking the pane, tab, terminal, and session identity, and then runs the
+equivalent of `relay archive <child-project-slug> --force`.
+
+That final step is deliberately destructive. `--force` discards dirty and untracked files left in the
+child worktree, removes the worktree, and may force-delete the branch. Merged work is delivered work,
+so anything still uncommitted in that checkout is scratch. If a worker may still have something
+worth keeping, do not run cleanup — read its outbox and settle it first.
+
+Cleanup only ever accepts an item Relay records as `merged`. It refuses `pending`, `dispatched`,
+`in-review`, `blocked`, and `cancelled` items outright. A `working` or `blocked` worker is left
+running and reported as pending with the retry command: never force it. Re-running cleanup after a
+partial run finishes the job, and the work item stays `merged` throughout.
 
 ## Operating model
 
@@ -280,6 +340,14 @@ a program decision or follow-up. Do not silently turn it into recurring automati
 - Hiding, combining away, or unilaterally resolving an issue the CEO asked to see.
 - Dispatching blocked work or work pinned to a pending or rejected contract.
 - Replying manually to a routine `pr-open` request instead of using `grant-open-pr`.
+- Writing worker feedback by hand for a CEO change request instead of using `worker request-change`.
+- Messaging a worker about a change before reading its pull request's current GitHub state.
+- Pushing a CEO change onto a branch whose pull request is approved or in GitHub's merge queue.
+- Starting a follow-up item before the pull request it depends on has merged.
+- Deleting a durably recorded follow-up item because its dispatch or start did not finish.
+- Leaving a merged item's watcher, worker tab, and child project running after cleanup was raised.
+- Running `worker cleanup` on work that is not merged, or forcing it past a `working` worker.
+- Running `worker cleanup` while a worker may still hold uncommitted work worth keeping.
 - Asking the CEO to approve merely opening a pull request when no real escalated issue exists.
 - Launching a managed pull request without both a durable TL grant and a passing `can-open-pr`.
 - Approving, directly merging, or impersonating the CEO on GitHub.
@@ -309,6 +377,8 @@ a program decision or follow-up. Do not silently turn it into recurring automati
 - [ ] Sent complete replies through worker inboxes and rang each new durable doorbell exactly once,
       with later retries delegated to the CLI's unnotified/status checks.
 - [ ] Serialized unread `pr-open` requests with `grant-open-pr` and reported reserved capacity.
+- [ ] Routed every CEO pull request change through `worker request-change` and reported its route.
+- [ ] Retired every merged item that raised `merged-worker-cleanup` with `worker cleanup`.
 - [ ] Reconstructed state with `program status --json` and `program tick --json`.
 - [ ] Goal, priorities, architecture, and guardrails are durable in `goal.md`.
 - [ ] Every binding contract is immutable, versioned, hashed, and CEO-approved.

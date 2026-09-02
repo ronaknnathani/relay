@@ -215,6 +215,8 @@ func TestManagedHerdrPolicyIsGeneratedForEveryHarness(t *testing.T) {
 				"There is no non-Herdr worker path",
 				"per-child start lock",
 				"closed without merging",
+				"relay program worker request-change",
+				"relay program worker cleanup",
 			} {
 				if !strings.Contains(tl, want) {
 					t.Errorf("%s tl skill is missing managed Herdr policy %q", agentName, want)

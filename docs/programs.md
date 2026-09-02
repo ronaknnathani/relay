@@ -168,6 +168,93 @@ discovery, tab creation, the resume command, Herdr recognition, and renaming. A 
 start waits, then adopts the single owner instead of creating a duplicate tab; a crashed holder's
 lock is released by the kernel. Relay never installs or changes Herdr integrations automatically.
 
+### Routing a change to an existing pull request
+
+A change the CEO asks for on a pull request a managed item already produced is routed by one command,
+never by hand:
+
+```bash
+relay program worker request-change auth-platform w1 --body "Rename the token field to access_token"
+```
+
+The command reads the recorded pull request's current GitHub state before it writes anything. It
+reuses the PR watcher's own read-only `gh` client and pull request model, so one description of a
+pull request never drifts from the other, and it writes no watcher runtime state or digest. If the
+pull request, the child project, or GitHub cannot be read, the command fails and leaves no message,
+no work item, and no worker behind.
+
+| Observed GitHub state | Route | What happens |
+| --- | --- | --- |
+| `OPEN`, not `APPROVED`, not queued | Same item and worker | Durable `feedback` inbox message plus one doorbell |
+| `CLOSED` without merging | Same item and worker | Durable `feedback` inbox message plus one doorbell; existing reconcile still clears the reference |
+| `APPROVED`, or `mergeStateStatus == QUEUED` | Pending follow-up | A follow-up item is recorded and nothing is dispatched or started |
+| `MERGED`, or the item is already `merged` | Started follow-up | A follow-up item is recorded, dispatched to its own child project, and given its own worker |
+
+The merge queue means GitHub's own `QUEUED` merge state. A pull request with auto-merge merely armed
+has not entered a queue and is not protected by it; an `APPROVED` review decision is protected on its
+own, because pushing to that branch would invalidate a human's judgement of an exact diff.
+
+A follow-up item records `follow_up_of` and `request_hash` — the SHA-256 of the normalized request.
+It inherits the original item's repository, priority, and approved contract references, depends on the
+original item, and stores the request text in its notes. Because the identity is the request itself,
+repeating the identical command reuses the message or follow-up the first run created instead of
+writing a second one, even after a crash between the durable write and the doorbell. Whitespace is
+normalized before hashing, so a request pasted through a shell heredoc is the same request. A
+different request always creates its own item.
+
+The same-worker route derives its inbox message id from the request hash, so a retry finds the message
+already in the worker's inbox — unread or already acknowledged — rather than stacking a duplicate.
+The doorbell is the existing unnotified-marker path, so a retry does not ring a second time.
+
+A follow-up is made durable before it is dispatched or started. If dispatch or start then fails, the
+command reports the exact repair command and never rolls the item back: losing the CEO's request to
+make an error look clean is worse than a half-finished item.
+
+### Retiring a merged item's runtime
+
+A merged item still holds a watcher, a session, a tab, a worktree, and a branch. One command retires
+all of it:
+
+```bash
+relay program worker cleanup auth-platform w1 --json
+```
+
+Only an item Relay records as `merged` is accepted. `pending`, `dispatched`, `in-review`, `blocked`,
+and `cancelled` items are refused before anything is touched.
+
+The order matters and each step must be confirmed before the next runs:
+
+1. **Stop the child pull request watcher** with the existing `relay pr watch stop` semantics, which
+   also closes its exact recorded tab. A watcher that was never started, already stopped, or already
+   complete is a success. The watcher goes first because it is the only piece that keeps working on
+   its own.
+2. **End the item's one worker session.** Ownership must be unambiguous: two live sessions claiming
+   one child project stop cleanup. A `working` or `blocked` worker is never interrupted — cleanup
+   reports `worker-busy` with the retry command and changes nothing. An `idle` or `done` worker is
+   sent `/exit` without taking focus, and success means that exact session is no longer a recognized
+   agent, not that it started a turn.
+3. **Close that exact tab.** Herdr is re-read immediately before the close and the pane, tab,
+   terminal, and native session identity are checked again, so a replacement session that took over
+   reused ids is never closed. A worker that is already gone and a tab that is already closed are
+   both successes.
+4. **Archive the child project** with the equivalent of `relay archive <child-slug> --force`.
+
+Step 4 is deliberately destructive. `--force` discards dirty and untracked files in the child
+worktree, removes the worktree, and may force-delete the branch. Merged work is delivered work, so
+what remains in that checkout is scratch. Read a worker's outbox and settle anything outstanding
+before running cleanup.
+
+An uncertain exit, a replacement session, a refused tab close, or a watcher that will not stop each
+stop cleanup where it stands and report what is still standing; the tab, project, and worktree are
+left exactly as they are. A child that is already archived is an idempotent success. The work item
+stays `merged` throughout, and `Program.Reconcile` never downgrades it.
+
+While any of that runtime is outstanding, the patrol raises `merged-worker-cleanup:<item>`. The reason
+clears only once the watcher is stopped, the worker session and its tab are gone, and the child project
+is archived. It coexists with `ready-item:<id>`, so one wake can say both "retire w1" and "dispatch
+w2". The patrol only observes: it probes a watcher's lock with a shared non-blocking `flock` and reads
+its runtime record without writing it.
+
 ### Durable managed-worker mailboxes
 
 Every managed child project has filesystem mail that survives worker and Herdr restarts:
@@ -536,6 +623,7 @@ Archived programs are viewable with the same command.
 | Program audit history | `progress.md` | `relay program` commands |
 | Child worktree, branch, workflow, PR | Child Relay project | Existing project and `relay state` commands |
 | Worker handoffs | Child `mail/` directories | TL and worker message commands |
+| CEO change requests against an existing pull request | Child inbox message or a follow-up work item | `relay program worker request-change`; keyed by the normalized request hash |
 | Worker process, tab, pane, and focus | Herdr runtime | Herdr; non-authoritative and re-derived |
 | Patrol process, cadence, reasons, and attention fingerprint | `~/.relay/run/<slug>/patrol.json` | `relay program patrol run`; read-only toward program/project state |
 | Managed worker start exclusion | `~/.relay/run/workers/<child-slug>/start.lock` | `relay program worker start`; kernel-released advisory lock |
@@ -809,6 +897,29 @@ relay program finish auth-platform
 ```
 
 The program moves to `~/.relay/programs/archived/`.
+
+### 9. Route a late change and retire finished runtime
+
+If the CEO asks for a change to a pull request that already exists, route it rather than messaging
+the worker:
+
+```bash
+relay program worker request-change auth-platform w1 --body "Rename the token field to access_token"
+```
+
+Read the reported `route`. `same-worker` means the existing worker got the request. `follow-up-pending`
+means the pull request is approved or queued and the follow-up waits for the merge — run the same
+command again afterwards. `follow-up-dispatched` means the follow-up has its own project and worker.
+
+Once an item is merged and its runtime is no longer needed:
+
+```bash
+relay program worker cleanup auth-platform w1 --json
+```
+
+This stops the child watcher, exits the worker, closes its tab, and archives the child project with
+`--force`, discarding anything uncommitted left in that worktree. A `worker-busy` status means the
+worker is still running: retry later rather than forcing it.
 
 ## Existing limitations in V1.1
 

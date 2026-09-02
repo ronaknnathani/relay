@@ -106,6 +106,12 @@ Relay creates a draft program and launches its tech lead. Work with the tech lea
 approve architecture contracts, and resolve decisions. The tech lead then dispatches ready work to
 worker sessions.
 
+The program patrol checks durable state on its own schedule and rings the existing idle tech lead pane
+when something needs attention, without changing the user's focus. Ask the tech lead for a change to a
+pull request that already exists and it routes the request from live GitHub state; ask it to retire a
+merged item and it stops that item's watcher, exits its worker, closes the tab, and archives the child
+project.
+
 Useful commands:
 
 ```bash
@@ -113,6 +119,7 @@ relay program status <program-slug>          # current program state
 relay program queue <program-slug>           # ready, active, and blocked work
 relay program resume <program-slug>          # reopen the tech lead session
 relay program worker list <program-slug>     # live worker sessions
+relay program worker cleanup <program-slug> <item>  # retire a merged item's runtime
 relay program ui <program-slug>              # localhost read-only UI
 relay program patrol status <program-slug>   # scheduler and wake status
 relay program patrol start <program-slug>    # start the program patrol

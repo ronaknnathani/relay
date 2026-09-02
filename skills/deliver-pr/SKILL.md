@@ -40,6 +40,15 @@ relay program message ack <program> <item> <inbox-id>
 An open-PR grant instruction is the exception: keep it unread until `open-pr` succeeds and the PR is
 recorded. If `open-pr` fails, do not acknowledge the grant.
 
+A `feedback` message about a change the CEO asked for on your open pull request is work, not review
+chatter: make the change on the branch and pull request you already have. Never open a second pull
+request for this item and never start unrelated work from it. Acknowledge it once the change is
+pushed.
+
+After your pull request merges, the tech lead retires this session: it stops the pull request watcher
+and sends `/exit`. Exiting on `/exit` is the expected end of a managed run, so leave nothing
+uncommitted you still need — the child worktree is force-removed once the session is gone.
+
 Herdr notification is only a payload-free doorbell and may be lost, so this inbox check is mandatory
 even when no prompt arrived. Managed child sessions always run under Herdr: if `relay resume` reports
 a Herdr readiness failure, report its exact setup or start instructions and stop instead of working

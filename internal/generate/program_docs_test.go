@@ -132,3 +132,79 @@ func TestProgramDocsDescribeVisiblePatrolEventsAndWakeFollowThrough(t *testing.T
 		})
 	}
 }
+
+// A CEO change to a pull request that already exists, and the retirement of a
+// merged item's runtime, are both destructive if routed by hand. The tech lead
+// skill and the program guide must name the exact commands, the state that
+// decides the route, and the force-archive policy.
+func TestProgramDocsDescribeChangeRoutingAndMergedCleanup(t *testing.T) {
+	root := repoRoot(t)
+	for _, test := range []struct {
+		path      string
+		required  []string
+		forbidden []string
+	}{
+		{
+			path: filepath.Join("skills", "tl", "SKILL.md"),
+			required: []string{
+				"relay program worker request-change",
+				"never by messaging the worker yourself",
+				"Open and unapproved",
+				"in GitHub's merge queue",
+				"pending follow-up work item",
+				"relay program worker cleanup",
+				"merged-worker-cleanup:<item>",
+				"relay archive <child-project-slug> --force",
+				"discards dirty and untracked files",
+				"only ever accepts an item Relay records as `merged`",
+			},
+			forbidden: []string{
+				"message the worker first to see",
+			},
+		},
+		{
+			path: filepath.Join("docs", "programs.md"),
+			required: []string{
+				"relay program worker request-change",
+				"`mergeStateStatus == QUEUED`",
+				"auto-merge merely armed",
+				"follow_up_of",
+				"request_hash",
+				"never rolls the item back",
+				"relay program worker cleanup",
+				"Stop the child pull request watcher",
+				"End the item's one worker session",
+				"Close that exact tab",
+				"Archive the child project",
+				"deliberately destructive",
+				"merged-worker-cleanup:<item>",
+			},
+		},
+		{
+			path: filepath.Join("skills", "deliver-pr", "SKILL.md"),
+			required: []string{
+				"make the change on the branch and pull request you already have",
+				"sends `/exit`",
+				"force-removed",
+			},
+		},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(root, test.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(data)
+			for _, want := range test.required {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s is missing %q", test.path, want)
+				}
+			}
+			for _, forbidden := range test.forbidden {
+				if strings.Contains(body, forbidden) {
+					t.Errorf("%s still contains %q", test.path, forbidden)
+				}
+			}
+		})
+	}
+}
