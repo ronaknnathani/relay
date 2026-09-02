@@ -35,6 +35,7 @@ type herdrRuntimeClient interface {
 	RunPane(paneID, command string) error
 	RenameAgent(target, name string) error
 	PromptAgent(target, text string) error
+	ExitAgent(identity herdr.SessionIdentity) (herdr.ExitResult, error)
 	FocusAgent(target string) error
 	ShowNotification(title, body string) error
 }
@@ -114,6 +115,7 @@ func newCmdProgramWorker() *cobra.Command {
 		newCmdProgramWorkerFocus(),
 		newCmdProgramWorkerNotify(),
 		newCmdProgramWorkerRequestChange(),
+		newCmdProgramWorkerCleanup(),
 	)
 	return cmd
 }

@@ -11,20 +11,32 @@ import (
 // FindLiveWorker returns the first live Herdr agent whose Relay title and
 // working directories identify the child project.
 func FindLiveWorker(agents []Agent, childSlug, repo, worktree string) (Agent, bool) {
-	if childSlug == "" || (repo == "" && worktree == "") {
+	matches := LiveWorkers(agents, childSlug, repo, worktree)
+	if len(matches) == 0 {
 		return Agent{}, false
 	}
+	return matches[0], true
+}
+
+// LiveWorkers returns every live Herdr agent whose Relay title and working
+// directories identify the child project. A caller that is about to end a
+// session uses it to see that ownership is ambiguous before acting.
+func LiveWorkers(agents []Agent, childSlug, repo, worktree string) []Agent {
+	if childSlug == "" || (repo == "" && worktree == "") {
+		return nil
+	}
 	wantTitle := "relay:" + childSlug
+	var matches []Agent
 	for _, agent := range agents {
 		worktreeOwner := pathWithin(agent.CWD, worktree) ||
 			pathWithin(agent.ForegroundCWD, worktree)
 		repoOwner := sameCanonicalPath(agent.CWD, repo) &&
 			matchesRelayTitle(agent.TerminalTitle, wantTitle)
 		if worktreeOwner || repoOwner {
-			return agent, true
+			matches = append(matches, agent)
 		}
 	}
-	return Agent{}, false
+	return matches
 }
 
 // ErrNoLiveTL reports that no live Herdr agent carries a program's tech-lead

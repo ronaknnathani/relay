@@ -31,6 +31,9 @@ type fakeHerdrClient struct {
 	prompted        []fakePrompt
 	promptHook      func() error
 	promptErr       error
+	exited          []herdr.SessionIdentity
+	exitHook        func(herdr.SessionIdentity) (herdr.ExitResult, error)
+	exitErr         error
 	focused         []string
 	notifications   []fakeNotification
 	notificationErr error
@@ -115,6 +118,17 @@ func (f *fakeHerdrClient) PromptAgent(target, text string) error {
 		return f.promptHook()
 	}
 	return f.promptErr
+}
+
+func (f *fakeHerdrClient) ExitAgent(identity herdr.SessionIdentity) (herdr.ExitResult, error) {
+	f.exited = append(f.exited, identity)
+	if f.exitHook != nil {
+		return f.exitHook(identity)
+	}
+	if f.exitErr != nil {
+		return herdr.ExitResult{}, f.exitErr
+	}
+	return herdr.ExitResult{Outcome: herdr.ExitedNow, PaneGone: true}, nil
 }
 
 func (f *fakeHerdrClient) FocusAgent(target string) error {
@@ -1090,6 +1104,10 @@ func (c *lockstepHerdrClient) RenameAgent(string, string) error {
 }
 
 func (c *lockstepHerdrClient) PromptAgent(string, string) error { return nil }
+
+func (c *lockstepHerdrClient) ExitAgent(herdr.SessionIdentity) (herdr.ExitResult, error) {
+	return herdr.ExitResult{}, errors.New("lockstep client does not exit agents")
+}
 
 func (c *lockstepHerdrClient) FocusAgent(string) error { return nil }
 
