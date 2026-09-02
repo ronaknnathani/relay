@@ -56,9 +56,11 @@ func newCmdProgramWorkerCleanup() *cobra.Command {
 		Short: "Retire a merged item's watcher, worker, tab, and child project",
 		Long: "Retire everything a merged work item still holds open.\n\n" +
 			"Only an item Relay records as merged qualifies. The pull request watcher is stopped\n" +
-			"first, then the item's one worker session is asked to exit and its exact tab is closed,\n" +
-			"and finally the child project is archived with --force, which discards any dirty or\n" +
-			"untracked files left in its worktree and removes the branch.",
+			"first and its recorded tab is closed — a watcher that already finished on its own keeps\n" +
+			"that tab so its last lines stay readable, and this is the command that closes it. Then\n" +
+			"the item's one worker session is asked to exit and its exact tab is closed, and finally\n" +
+			"the child project is archived with --force, which discards any dirty or untracked files\n" +
+			"left in its worktree and removes the branch.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runProgramWorkerCleanup(cmd.OutOrStdout(), args[0], args[1], jsonOutput)
@@ -108,6 +110,11 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 	result.WatcherStopped = stopped
 	if warning != "" {
 		result.Warnings = append(result.Warnings, warning)
+		// A close that did not happen keeps the recorded tab and pane ids, so
+		// the patrol keeps raising merged-worker-cleanup for this item. Name
+		// the command that finishes it rather than leaving the tech lead to
+		// infer one from a warning.
+		result.NextCommand = fmt.Sprintf("relay program worker cleanup %s %s", p.Slug, item.ID)
 	}
 
 	exited, err := exitCleanupWorker(&result, manifest)
@@ -187,7 +194,14 @@ func loadProgramCleanupTarget(
 
 // stopCleanupWatcher stops the child's pull request watcher and closes its
 // recorded tab. A watcher that was never started, already stopped, or already
-// finished on its own is a success: the point is that nothing is still polling.
+// finished on its own is a success: the point is that nothing is still polling
+// and that no tab is left behind.
+//
+// A finished watcher is the common case here, not an edge one. A watcher whose
+// pull request merged completes and exits by itself, and it deliberately keeps
+// its tab rather than closing it from inside, which would race the flush of its
+// own final lines. Cleanup is what closes that tab, so this step runs whether
+// or not a process is still alive.
 func stopCleanupWatcher(childSlug string) (bool, string, error) {
 	running, err := prWatchIsRunning(childSlug)
 	if err != nil {

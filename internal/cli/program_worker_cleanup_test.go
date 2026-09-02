@@ -75,6 +75,10 @@ func createCleanupFixture(t *testing.T) (program.Program, program.WorkItem, proj
 // worker's tab must name it exactly.
 const workerTabID = "w7:t9"
 
+// watcherTabID is the tab the child's pull request watcher holds in these
+// fixtures, recorded so it can be closed after the watcher is gone.
+const watcherTabID = "w7:t42"
+
 type closedTargets []string
 
 func (c closedTargets) has(id string) bool {
@@ -103,13 +107,28 @@ func decodeCleanupOutput(t *testing.T, out string) programWorkerCleanupOutput {
 // reports whether stop was asked to signal a running process.
 func installStubWatcherState(t *testing.T, slug string, running bool) *[]string {
 	t.Helper()
+	return installWatcherState(t, slug, running, prwatch.StatusRunning)
+}
+
+// installCompletedWatcherState installs the record a watcher leaves behind when
+// it finishes on its own: no live process, a terminal lifecycle status, and the
+// tab it deliberately kept open so its last lines stay readable.
+func installCompletedWatcherState(t *testing.T, slug string) *[]string {
+	t.Helper()
+	return installWatcherState(t, slug, false, prwatch.StatusComplete)
+}
+
+func installWatcherState(
+	t *testing.T, slug string, running bool, status prwatch.Status,
+) *[]string {
+	t.Helper()
 	stopped := []string{}
 	previousRunning, previousRead, previousUpdate, previousSignal :=
 		prWatchIsRunning, prWatchReadState, prWatchUpdateState, prWatchSignal
 	live := running
 	state := prwatch.State{
 		Project: slug, PID: 4242, StartedAt: "2026-01-01T00:00:00Z",
-		TabID: "w7:t42", PaneID: "w7:p42", Status: prwatch.StatusRunning,
+		TabID: watcherTabID, PaneID: "w7:p42", Status: status,
 	}
 	prWatchIsRunning = func(candidate string) (bool, error) {
 		if candidate != slug {
@@ -628,5 +647,107 @@ func TestWorkerCleanupStopsTheWatcherBeforeItTouchesTheWorker(t *testing.T) {
 	}
 	if !pathExists(filepath.Join(project.ArchivedDir(), manifest.Slug)) {
 		t.Fatal("the child project was not archived last")
+	}
+}
+
+// A watcher that reaches a merged pull request completes and exits on its own,
+// and it keeps its tab: closing it from inside would race the flush of its own
+// final lines. Cleanup is what closes it, so a finished watcher is not a step
+// cleanup can skip — and it must not be signalled, because there is nothing
+// left to signal.
+func TestWorkerCleanupClosesACompletedWatchersTab(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	signalled := installCompletedWatcherState(t, manifest.Slug)
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("worker cleanup: %v", err)
+	}
+	result := decodeCleanupOutput(t, out)
+	if len(*signalled) != 0 {
+		t.Errorf("a finished watcher process was signalled: %v", *signalled)
+	}
+	if !closedIDs(client).has(watcherTabID) {
+		t.Fatalf("the completed watcher's tab was left open: %v", closedIDs(client))
+	}
+	state, err := prWatchReadState(manifest.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.TabID != "" || state.PaneID != "" {
+		t.Errorf("watcher record still names %s/%s after the close", state.TabID, state.PaneID)
+	}
+	if result.WorkerExit != cleanupWorkerAbsent || !result.Archived || result.Status != cleanupClean {
+		t.Fatalf("result = %+v, want a clean retirement", result)
+	}
+	if result.NextCommand != "" {
+		t.Errorf("a finished cleanup asked for a retry: %q", result.NextCommand)
+	}
+}
+
+// A close that does not happen must leave the recorded ids alone: they are the
+// only handle on that tab, and they are what the patrol reads to keep raising
+// merged-worker-cleanup. Cleanup therefore names the retry, and the retry
+// finishes the job even though the child is already archived and the worker is
+// long gone. A third run has nothing left to close.
+func TestWorkerCleanupRetriesAWatcherTabItCouldNotClose(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	client := &fakeHerdrClient{closeErr: errors.New("herdr refused to close the tab")}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installCompletedWatcherState(t, manifest.Slug)
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("first cleanup: %v", err)
+	}
+	blocked := decodeCleanupOutput(t, out)
+	retry := "relay program worker cleanup " + p.Slug + " " + item.ID
+	if blocked.NextCommand != retry {
+		t.Errorf("next command = %q, want %q", blocked.NextCommand, retry)
+	}
+	if len(blocked.Warnings) == 0 || !strings.Contains(strings.Join(blocked.Warnings, " "), watcherTabID) {
+		t.Errorf("warnings = %v, want the open watcher tab named", blocked.Warnings)
+	}
+	held, err := prWatchReadState(manifest.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held.TabID != watcherTabID {
+		t.Fatalf("watcher record = %+v, want the tab that is still open", held)
+	}
+
+	client.closeErr = nil
+	out, err = runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("retry cleanup: %v", err)
+	}
+	finished := decodeCleanupOutput(t, out)
+	if !finished.AlreadyArchived || finished.WorkerExit != cleanupWorkerAbsent {
+		t.Fatalf("retry result = %+v, want an archived child and an absent worker", finished)
+	}
+	if finished.Status != cleanupClean || finished.NextCommand != "" {
+		t.Fatalf("retry result = %+v, want a clean finish", finished)
+	}
+	if !closedIDs(client).has(watcherTabID) {
+		t.Fatalf("the retry left the watcher tab open: %v", closedIDs(client))
+	}
+	cleared, err := prWatchReadState(manifest.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.TabID != "" || cleared.PaneID != "" {
+		t.Errorf("watcher record still names %s/%s after the close", cleared.TabID, cleared.PaneID)
+	}
+
+	closes := len(closedIDs(client))
+	if _, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json"); err != nil {
+		t.Fatalf("third cleanup: %v", err)
+	}
+	if len(closedIDs(client)) != closes {
+		t.Errorf("a repeated cleanup closed ids again: %v", closedIDs(client))
 	}
 }
