@@ -93,8 +93,10 @@ func TestMergedPullRequestUnlocksDependentWorkAndWakesTheLiveTL(t *testing.T) {
 	// The pane shows the progression: a ready dependent item and a delivered
 	// wake, with no reason text and no session identity.
 	events := out.String()
-	if !strings.Contains(events, "tick reasons=ready-item:w2 cadence=15m") {
-		t.Errorf("patrol events did not report the ready item:\n%s", events)
+	// The merged item still holds a live worker and an active child project, so
+	// its cleanup reason travels with the ready dependent item.
+	if !strings.Contains(events, "tick reasons=merged-worker-cleanup,ready-item:w2 cadence=15m") {
+		t.Errorf("patrol events did not report cleanup alongside the ready item:\n%s", events)
 	}
 	if !strings.Contains(events, "TL wake delivered program="+p.Slug+" pane=pTL status=idle") {
 		t.Errorf("patrol events did not report the delivered wake:\n%s", events)

@@ -187,6 +187,19 @@ type GrantDTO struct {
 type ChildDTO struct {
 	Manifest ChildManifestDTO  `json:"manifest"`
 	Workflow *WorkflowStateDTO `json:"workflow,omitempty"`
+	// Watcher reports the child's own pull request watcher. It is present only
+	// when a watcher runtime record exists.
+	Watcher *ChildWatcherDTO `json:"watcher,omitempty"`
+}
+
+// ChildWatcherDTO is the read-only summary of a child project's pull request
+// watcher. It exists so a reader can tell that a finished item still has a
+// process polling GitHub on its behalf.
+type ChildWatcherDTO struct {
+	Running bool   `json:"running"`
+	Status  string `json:"status"`
+	TabID   string `json:"tab_id,omitempty"`
+	PaneID  string `json:"pane_id,omitempty"`
 }
 
 // ChildManifestDTO contains linked project metadata.
@@ -198,13 +211,17 @@ type ChildManifestDTO struct {
 	BaseBranch string `json:"base_branch"`
 	StartSHA   string `json:"start_sha"`
 	Worktree   string `json:"worktree"`
-	Status     string `json:"status"`
-	Workflow   string `json:"workflow"`
-	Phase      string `json:"phase"`
-	Merged     bool   `json:"merged"`
-	Archived   bool   `json:"archived"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	// WorktreePresent reports that the recorded worktree directory still
+	// exists on disk, so a reader can tell finished work from work whose
+	// checkout is still waiting to be cleaned up.
+	WorktreePresent bool   `json:"worktree_present"`
+	Status          string `json:"status"`
+	Workflow        string `json:"workflow"`
+	Phase           string `json:"phase"`
+	Merged          bool   `json:"merged"`
+	Archived        bool   `json:"archived"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
 }
 
 // WorkflowStateDTO contains the current child workflow phase state.

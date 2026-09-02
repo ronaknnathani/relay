@@ -15,6 +15,7 @@ import (
 	"github.com/ronaknnathani/relay/internal/mailbox"
 	"github.com/ronaknnathani/relay/internal/program"
 	"github.com/ronaknnathani/relay/internal/project"
+	"github.com/ronaknnathani/relay/internal/prwatch"
 )
 
 func artifactText(artifact ArtifactDTO) string {
@@ -592,4 +593,66 @@ func newMailboxSnapshotProgram(t *testing.T) (program.Program, string) {
 		t.Fatal(err)
 	}
 	return p, childDir
+}
+
+func TestBuildReportsChildWorktreePresenceAndItsWatcher(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p, _ := newMailboxSnapshotProgram(t)
+	item := findSnapshotItem(t, mustBuild(t, p.Slug).Items, "w1")
+	if item.Child == nil {
+		t.Fatal("the linked child is missing from the snapshot")
+	}
+	if item.Child.Manifest.WorktreePresent {
+		t.Fatal("a worktree that was never created is reported as present")
+	}
+	if item.Child.Watcher != nil {
+		t.Fatalf("a project with no watcher reported one: %+v", item.Child.Watcher)
+	}
+
+	if err := os.MkdirAll(item.Child.Manifest.Worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prwatch.UpdateState("mail-child", func(state prwatch.State) (prwatch.State, error) {
+		state.Project = "mail-child"
+		state.Status = prwatch.StatusRunning
+		state.TabID = "w1:t5"
+		state.PaneID = "w1:p5"
+		return state, nil
+	}); err != nil {
+		t.Fatalf("seed watcher state: %v", err)
+	}
+	before, err := os.ReadFile(prwatch.StatePath("mail-child"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	item = findSnapshotItem(t, mustBuild(t, p.Slug).Items, "w1")
+	if !item.Child.Manifest.WorktreePresent {
+		t.Fatal("an existing worktree is reported as absent")
+	}
+	if item.Child.Watcher == nil {
+		t.Fatal("a recorded watcher is missing from the snapshot")
+	}
+	if item.Child.Watcher.TabID != "w1:t5" || item.Child.Watcher.PaneID != "w1:p5" {
+		t.Fatalf("watcher ids = %+v", item.Child.Watcher)
+	}
+	if item.Child.Watcher.Running {
+		t.Fatal("a watcher with no live process is reported as running")
+	}
+	after, err := os.ReadFile(prwatch.StatePath("mail-child"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("the snapshot rewrote watcher runtime state:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+func mustBuild(t *testing.T, slug string) Snapshot {
+	t.Helper()
+	snapshot, err := Build(slug, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
 }

@@ -101,6 +101,59 @@ func TestObserveCadenceMatrix(t *testing.T) {
 			item.Status = string(program.ItemMerged)
 			item.Child.Workflow.CurrentPhase = "plan"
 			s.Items = []programview.ItemDTO{item}
+		}), delay: 15 * time.Minute, reasonIDs: []string{"merged-worker-cleanup:w1"}},
+		{name: "merged worker cleanup for a live worker", snapshot: with(func(s *programview.Snapshot) {
+			item := cloneLinked()
+			item.Status = string(program.ItemMerged)
+			item.Child.Manifest.Archived = true
+			s.Items = []programview.ItemDTO{item}
+		}), delay: 15 * time.Minute, reasonIDs: []string{"merged-worker-cleanup:w1"}},
+		{name: "merged worker cleanup for an active child project", snapshot: with(func(s *programview.Snapshot) {
+			item := cloneLinked()
+			item.Status = string(program.ItemMerged)
+			item.Worker = nil
+			s.Items = []programview.ItemDTO{item}
+		}), delay: 15 * time.Minute, reasonIDs: []string{"merged-worker-cleanup:w1"}},
+		{name: "merged worker cleanup for a running watcher", snapshot: with(func(s *programview.Snapshot) {
+			item := cloneLinked()
+			item.Status = string(program.ItemMerged)
+			item.Worker = nil
+			item.Child.Manifest.Archived = true
+			item.Child.Watcher = &programview.ChildWatcherDTO{Running: true, Status: "running"}
+			s.Items = []programview.ItemDTO{item}
+		}), delay: 15 * time.Minute, reasonIDs: []string{"merged-worker-cleanup:w1"}},
+		{name: "merged worker cleanup for an uncleaned worktree", snapshot: with(func(s *programview.Snapshot) {
+			item := cloneLinked()
+			item.Status = string(program.ItemMerged)
+			item.Worker = nil
+			item.Child.Manifest.Archived = true
+			item.Child.Manifest.WorktreePresent = true
+			s.Items = []programview.ItemDTO{item}
+		}), delay: 15 * time.Minute, reasonIDs: []string{"merged-worker-cleanup:w1"}},
+		{name: "merged and fully retired is calm", snapshot: with(func(s *programview.Snapshot) {
+			item := cloneLinked()
+			item.Status = string(program.ItemMerged)
+			item.Worker = nil
+			item.Child.Manifest.Archived = true
+			item.Child.Watcher = &programview.ChildWatcherDTO{Status: "complete"}
+			s.Items = []programview.ItemDTO{item}
+		}), delay: 30 * time.Minute},
+		{name: "merged cleanup and ready work coexist", snapshot: with(func(s *programview.Snapshot) {
+			item := cloneLinked()
+			item.Status = string(program.ItemMerged)
+			s.Items = []programview.ItemDTO{item, {ID: "w2", Status: string(program.ItemPending)}}
+			s.Plan.Ready = []string{"w2"}
+		}), delay: 15 * time.Minute, reasonIDs: []string{"merged-worker-cleanup:w1", "ready-item:w2"}},
+		{name: "held merged work still needs cleanup", snapshot: with(func(s *programview.Snapshot) {
+			s.Program.State = string(program.StateHeld)
+			item := cloneLinked()
+			item.Status = string(program.ItemMerged)
+			s.Items = []programview.ItemDTO{item}
+		}), delay: 15 * time.Minute, reasonIDs: []string{"merged-worker-cleanup:w1"}},
+		{name: "cancelled work needs no cleanup", snapshot: with(func(s *programview.Snapshot) {
+			item := cloneLinked()
+			item.Status = string(program.ItemCancelled)
+			s.Items = []programview.ItemDTO{item}
 		}), delay: 30 * time.Minute},
 		{name: "active project warning", snapshot: with(func(s *programview.Snapshot) {
 			s.SourceHealth.Projects = programview.SourceDTO{

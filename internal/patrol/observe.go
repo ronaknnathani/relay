@@ -94,6 +94,7 @@ func observeSnapshot(snapshot programview.Snapshot, contractDrifts []Reason) Obs
 		}
 		addBlockedReasons(snapshot, add)
 		addMissingWorkerReasons(snapshot, add)
+		addMergedCleanupReasons(snapshot, add)
 		for _, item := range snapshot.Items {
 			if item.ProjectSlug == "" || item.Child == nil {
 				continue
@@ -125,6 +126,7 @@ func observeSnapshot(snapshot programview.Snapshot, contractDrifts []Reason) Obs
 	case program.StateHeld:
 		addBlockedReasons(snapshot, add)
 		addMissingWorkerReasons(snapshot, add)
+		addMergedCleanupReasons(snapshot, add)
 	case program.StateDraft, program.StatePendingApproval:
 		// Draft programs observe only mail and decisions; ready work is not
 		// actionable before approval.
@@ -174,6 +176,49 @@ func addMissingWorkerReasons(snapshot programview.Snapshot, add func(string, str
 			add("missing-worker:"+item.ID, fmt.Sprintf("Item %s has no live Herdr worker.", item.ID))
 		}
 	}
+}
+
+// addMergedCleanupReasons reports merged work that is still holding runtime.
+//
+// A merged item is finished, but until its watcher is stopped, its worker
+// session and tab are gone, and its child project is archived, it is still
+// occupying a Herdr tab, still polling GitHub, and still keeping a worktree and
+// branch on disk. The reason stays until all of that is retired, so the tech
+// lead is woken to run cleanup rather than accumulating dead sessions.
+func addMergedCleanupReasons(snapshot programview.Snapshot, add func(string, string)) {
+	for _, item := range snapshot.Items {
+		if item.Status != string(program.ItemMerged) || item.ProjectSlug == "" {
+			continue
+		}
+		outstanding := mergedCleanupOutstanding(item)
+		if len(outstanding) == 0 {
+			continue
+		}
+		add(
+			"merged-worker-cleanup:"+item.ID,
+			fmt.Sprintf("Item %s merged but still holds %s.", item.ID, strings.Join(outstanding, " and ")),
+		)
+	}
+}
+
+// mergedCleanupOutstanding names what a merged item has not yet released.
+func mergedCleanupOutstanding(item programview.ItemDTO) []string {
+	var outstanding []string
+	if item.Worker != nil {
+		outstanding = append(outstanding, "a live worker session")
+	}
+	if item.Child == nil {
+		return outstanding
+	}
+	if !item.Child.Manifest.Archived {
+		outstanding = append(outstanding, "an active child project")
+	} else if item.Child.Manifest.WorktreePresent {
+		outstanding = append(outstanding, "an uncleaned worktree")
+	}
+	if item.Child.Watcher != nil && item.Child.Watcher.Running {
+		outstanding = append(outstanding, "a running pull request watcher")
+	}
+	return outstanding
 }
 
 func childPhase(item programview.ItemDTO) string {

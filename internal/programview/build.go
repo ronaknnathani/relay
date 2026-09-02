@@ -20,6 +20,7 @@ import (
 	"github.com/ronaknnathani/relay/internal/patrollock"
 	"github.com/ronaknnathani/relay/internal/program"
 	"github.com/ronaknnathani/relay/internal/project"
+	"github.com/ronaknnathani/relay/internal/prwatch"
 )
 
 const defaultArtifactLimit int64 = 128 * 1024
@@ -638,21 +639,23 @@ func childDTO(manifest project.Manifest, childDir string, archived bool, warning
 		worktree = *manifest.Worktree
 	}
 	child := &ChildDTO{Manifest: ChildManifestDTO{
-		Slug:       manifest.Slug,
-		Title:      manifest.Title,
-		Repo:       manifest.Repo,
-		Branch:     manifest.Branch,
-		BaseBranch: manifest.BaseBranch,
-		StartSHA:   manifest.StartSHA,
-		Worktree:   worktree,
-		Status:     manifest.Status,
-		Workflow:   manifest.Workflow,
-		Phase:      manifest.Phase,
-		Merged:     manifest.Merged,
-		Archived:   archived,
-		CreatedAt:  manifest.Created,
-		UpdatedAt:  manifest.Updated,
+		Slug:            manifest.Slug,
+		Title:           manifest.Title,
+		Repo:            manifest.Repo,
+		Branch:          manifest.Branch,
+		BaseBranch:      manifest.BaseBranch,
+		StartSHA:        manifest.StartSHA,
+		Worktree:        worktree,
+		WorktreePresent: worktreePresent(worktree),
+		Status:          manifest.Status,
+		Workflow:        manifest.Workflow,
+		Phase:           manifest.Phase,
+		Merged:          manifest.Merged,
+		Archived:        archived,
+		CreatedAt:       manifest.Created,
+		UpdatedAt:       manifest.Updated,
 	}}
+	child.Watcher = childWatcherDTO(manifest.Slug, warnings)
 	statePath := filepath.Join(childDir, "state.json")
 	state, err := project.LoadState(statePath)
 	if err != nil {
@@ -677,6 +680,39 @@ func childDTO(manifest project.Manifest, childDir string, archived bool, warning
 		Phases: phases, UpdatedAt: state.Updated,
 	}
 	return child
+}
+
+// worktreePresent reports whether a child's recorded checkout still exists.
+func worktreePresent(worktree string) bool {
+	if strings.TrimSpace(worktree) == "" {
+		return false
+	}
+	info, err := os.Stat(worktree)
+	return err == nil && info.IsDir()
+}
+
+// childWatcherDTO summarizes a child project's pull request watcher. It only
+// reads: the lock is probed with a shared non-blocking flock and the runtime
+// record is read, so a snapshot never disturbs a running watcher and never
+// creates a runtime record for a project that has none.
+func childWatcherDTO(slug string, warnings *[]string) *ChildWatcherDTO {
+	state, err := prwatch.ReadState(slug)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			*warnings = append(*warnings, fmt.Sprintf("read pull request watcher for %q: %v", slug, err))
+		}
+		return nil
+	}
+	watcher := &ChildWatcherDTO{
+		Status: string(state.Status), TabID: state.TabID, PaneID: state.PaneID,
+	}
+	running, err := prwatch.IsRunning(slug)
+	if err != nil {
+		*warnings = append(*warnings, fmt.Sprintf("inspect pull request watcher for %q: %v", slug, err))
+		return watcher
+	}
+	watcher.Running = running
+	return watcher
 }
 
 func mailboxCounts(childDir, itemID string, snapshot *Snapshot, warnings *[]string) MailboxDTO {
