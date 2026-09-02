@@ -225,7 +225,7 @@ func TestFindFollowUpIgnoresCancelledFollowUps(t *testing.T) {
 		t.Fatalf("CancelItem: %v", err)
 	}
 	if _, ok := p.FindFollowUp(original.ID, hash); ok {
-		t.Fatal("FindFollowUp reused a cancelled follow-up")
+		t.Fatal("FindFollowUp reused a canceled follow-up")
 	}
 	replacement, err := p.AddItem(WorkItem{
 		Title: "Follow-up again", Priority: PriorityP1,

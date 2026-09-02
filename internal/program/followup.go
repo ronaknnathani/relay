@@ -45,7 +45,7 @@ func ValidateRequestHash(hash string) error {
 }
 
 // FindFollowUp returns the live follow-up item that already records this exact
-// request against this exact original item. A cancelled follow-up is never
+// request against this exact original item. A canceled follow-up is never
 // reused: the CEO asked for the same change again after it was withdrawn, so
 // the retry deserves its own item.
 func (p Program) FindFollowUp(originalID, requestHash string) (WorkItem, bool) {

@@ -150,7 +150,7 @@ func TestObserveCadenceMatrix(t *testing.T) {
 			item.Status = string(program.ItemMerged)
 			s.Items = []programview.ItemDTO{item}
 		}), delay: 15 * time.Minute, reasonIDs: []string{"merged-worker-cleanup:w1"}},
-		{name: "cancelled work needs no cleanup", snapshot: with(func(s *programview.Snapshot) {
+		{name: "canceled work needs no cleanup", snapshot: with(func(s *programview.Snapshot) {
 			item := cloneLinked()
 			item.Status = string(program.ItemCancelled)
 			s.Items = []programview.ItemDTO{item}

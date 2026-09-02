@@ -143,7 +143,7 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 
 // loadProgramCleanupTarget admits only a merged item. Cleanup discards a
 // worktree and may force-delete a branch, so an item that is still pending,
-// dispatched, in review, blocked, or cancelled is refused outright: its work is
+// dispatched, in review, blocked, or canceled is refused outright: its work is
 // either unfinished or was never delivered.
 func loadProgramCleanupTarget(
 	p program.Program, itemID string,
