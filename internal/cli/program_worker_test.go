@@ -19,7 +19,10 @@ import (
 )
 
 type fakeHerdrClient struct {
-	agentResponses  [][]herdr.Agent
+	agentResponses [][]herdr.Agent
+	// agentsHook answers every agent list from live test state, so a test can
+	// model an agent that only appears once Relay has created its project.
+	agentsHook      func() ([]herdr.Agent, error)
 	agentCalls      int
 	agentErr        error
 	created         []fakeCreatedTab
@@ -68,6 +71,9 @@ func (f *fakeHerdrClient) Agents() ([]herdr.Agent, error) {
 	f.agentCalls++
 	if f.agentErr != nil {
 		return nil, f.agentErr
+	}
+	if f.agentsHook != nil {
+		return f.agentsHook()
 	}
 	if len(f.agentResponses) == 0 {
 		return nil, nil

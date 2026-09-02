@@ -220,6 +220,32 @@ func List(projectDir string, box Box) ([]Message, error) {
 	return messages, nil
 }
 
+// Exists reports whether a message id is already recorded in box, whether it
+// is still unread or has already been acknowledged into the processed mailbox.
+// A caller that derives a message id from the request it carries uses this to
+// make a retry find the message the first attempt already delivered instead of
+// writing a second copy of it.
+func Exists(projectDir string, box Box, id string) (bool, error) {
+	if err := validateID("message id", id); err != nil {
+		return false, err
+	}
+	for _, processed := range []bool{false, true} {
+		dir, err := boxDir(projectDir, box, processed)
+		if err != nil {
+			return false, err
+		}
+		path := filepath.Join(dir, id+".json")
+		switch _, err := os.Lstat(path); {
+		case err == nil:
+			return true, nil
+		case os.IsNotExist(err):
+		default:
+			return false, fmt.Errorf("stat mailbox message %s: %w", path, err)
+		}
+	}
+	return false, nil
+}
+
 // Find returns one unread message by id.
 func Find(projectDir string, box Box, id string) (Message, error) {
 	if err := validateID("message id", id); err != nil {

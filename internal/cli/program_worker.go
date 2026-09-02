@@ -113,6 +113,7 @@ func newCmdProgramWorker() *cobra.Command {
 		newCmdProgramWorkerList(),
 		newCmdProgramWorkerFocus(),
 		newCmdProgramWorkerNotify(),
+		newCmdProgramWorkerRequestChange(),
 	)
 	return cmd
 }

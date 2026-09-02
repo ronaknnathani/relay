@@ -446,3 +446,78 @@ func TestMailboxLockHolderProcess(t *testing.T) {
 	}
 	time.Sleep(55 * time.Second)
 }
+
+func TestExistsFindsUnreadAndProcessedMessages(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := Ensure(projectDir); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	present, err := Exists(projectDir, Inbox, "change-abc123")
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if present {
+		t.Fatal("Exists reported an unwritten message")
+	}
+	if _, err := Send(projectDir, Inbox, Message{
+		ID: "change-abc123", Kind: KindFeedback, Program: "governance", Item: "w1",
+		From: ActorTL, To: ActorWorker, Body: "Rename the token field",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	present, err = Exists(projectDir, Inbox, "change-abc123")
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if !present {
+		t.Fatal("Exists missed an unread message")
+	}
+	if err := Acknowledge(projectDir, Inbox, "change-abc123"); err != nil {
+		t.Fatalf("Acknowledge: %v", err)
+	}
+	present, err = Exists(projectDir, Inbox, "change-abc123")
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if !present {
+		t.Fatal("Exists missed a processed message")
+	}
+	present, err = Exists(projectDir, Outbox, "change-abc123")
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if present {
+		t.Fatal("Exists matched the wrong mailbox")
+	}
+}
+
+func TestExistsRejectsAnUnsafeMessageID(t *testing.T) {
+	projectDir := t.TempDir()
+	for _, id := range []string{"", "../escape", "with/slash"} {
+		if _, err := Exists(projectDir, Inbox, id); err == nil {
+			t.Fatalf("Exists(%q) succeeded, want a filename-safety error", id)
+		}
+	}
+}
+
+func TestSendRefusesToOverwriteAnExistingMessageID(t *testing.T) {
+	projectDir := t.TempDir()
+	message := Message{
+		ID: "change-abc123", Kind: KindFeedback, Program: "governance", Item: "w1",
+		From: ActorTL, To: ActorWorker, Body: "Rename the token field",
+	}
+	if _, err := Send(projectDir, Inbox, message); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	_, err := Send(projectDir, Inbox, message)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("second Send = %v, want os.ErrExist", err)
+	}
+	unread, err := List(projectDir, Inbox)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(unread) != 1 {
+		t.Fatalf("unread messages = %d, want 1", len(unread))
+	}
+}
