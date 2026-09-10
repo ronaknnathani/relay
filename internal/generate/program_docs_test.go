@@ -135,6 +135,66 @@ func TestProgramDocsDescribeVisiblePatrolEventsAndWakeFollowThrough(t *testing.T
 	}
 }
 
+func TestProgramDocsDescribeRuntimeReconciliation(t *testing.T) {
+	root := repoRoot(t)
+	for _, test := range []struct {
+		path     string
+		required []string
+	}{
+		{
+			path: filepath.Join("skills", "tl", "SKILL.md"),
+			required: []string{
+				`relay program worker ensure "$PROGRAM" --json`,
+				"{item, item_status, project, live, worker?, watcher?}",
+				"every active worker has one live owner",
+				"PR-backed worker has one managed watcher",
+				"every tech lead entry and every patrol wake",
+				"tab_reused",
+				"closed_tab_ids",
+				"never reuses or closes label-inferred tabs",
+				"another workspace",
+			},
+		},
+		{
+			path: filepath.Join("docs", "programs.md"),
+			required: []string{
+				"relay program worker ensure auth-platform",
+				"starts or adopts every active worker",
+				"dedicated `relay-pr-watch:<child-slug>` tab",
+				"reuses only the exact watcher tab, pane, workspace, and",
+				"never reused or closed automatically",
+				"{item, item_status, project, live, worker?, watcher?}",
+				"newly launched or adopted by worktree",
+				"multiple matching panes are an ambiguity warning",
+			},
+		},
+		{
+			path: filepath.Join("docs", "pr-watch.md"),
+			required: []string{
+				"same `relay-pr-watch:<project-slug>` label but no matching runtime record",
+				"never ownership proof",
+				"`~/.relay/run/pr-watch/<project-slug>/lifecycle.lock`",
+				"watch.json.corrupt-<timestamp>",
+				"readable record that replaced an earlier corrupt observation is never discarded",
+				"reports an `incomplete` adopted result",
+			},
+		},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(root, test.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(data)
+			for _, want := range test.required {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s is missing %q", test.path, want)
+				}
+			}
+		})
+	}
+}
+
 // A CEO change to a pull request that already exists, and the retirement of a
 // merged item's runtime, are both destructive if routed by hand. The tech lead
 // skill and the program guide must name the exact commands, the state that
@@ -166,6 +226,8 @@ func TestProgramDocsDescribeChangeRoutingAndMergedCleanup(t *testing.T) {
 				"it never closes its own tab",
 				"Cleanup's first step is what closes it.",
 				"recorded tab and pane ids are cleared",
+				"watcher_tab_closed",
+				"status `incomplete`",
 				"Never conclude the item is",
 				// Local output, UTC state.
 				"Everything Relay stores stays UTC",
@@ -194,6 +256,8 @@ func TestProgramDocsDescribeChangeRoutingAndMergedCleanup(t *testing.T) {
 				"A completed watcher is the normal case",
 				"This command is what closes that tab.",
 				"recorded tab and pane ids are cleared",
+				"`watcher_tab_closed`",
+				"status is",
 				"stamped in the host's local zone with the UTC offset spelled out",
 				"only text a person reads is translated",
 				"`--json` returns the stored UTC record unchanged",

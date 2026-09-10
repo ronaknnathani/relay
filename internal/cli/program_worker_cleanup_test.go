@@ -128,7 +128,11 @@ func installWatcherState(
 	live := running
 	state := prwatch.State{
 		Project: slug, PID: 4242, StartedAt: "2026-01-01T00:00:00Z",
-		TabID: watcherTabID, PaneID: "w7:p42", Status: status,
+		WorkspaceID: "w7", TabID: watcherTabID, PaneID: "w7:p42",
+		TerminalID: "watcher-term-42", Status: status,
+	}
+	if client, ok := newHerdrClient().(*fakeHerdrClient); ok {
+		installFakeWatcherInventory(client, state)
 	}
 	prWatchIsRunning = func(candidate string) (bool, error) {
 		if candidate != slug {
@@ -358,12 +362,9 @@ func TestWorkerCleanupKeepsEverythingWhenTheExitIsUncertain(t *testing.T) {
 	installManagedHerdrFakes(t, client)
 	installStubWatcherState(t, manifest.Slug, true)
 
-	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err == nil {
-		t.Fatal("cleanup succeeded although the exit was uncertain")
-	}
-	if !strings.Contains(err.Error(), "left exactly as they are") {
-		t.Fatalf("error = %v, want the untouched state explained", err)
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("cleanup result: %v", err)
 	}
 	if closedIDs(client).has(workerTabID) {
 		t.Fatal("an uncertain exit still closed the worker tab")
@@ -373,6 +374,14 @@ func TestWorkerCleanupKeepsEverythingWhenTheExitIsUncertain(t *testing.T) {
 	}
 	if !pathExists(filepath.Join(project.ActiveDir(), manifest.Slug)) {
 		t.Fatal("an uncertain exit still archived the child project")
+	}
+	result := decodeCleanupOutput(t, out)
+	if result.Status != cleanupIncomplete || !result.WatcherStopped || !result.WatcherTabClosed ||
+		!strings.Contains(result.Error, "left exactly as they are") {
+		t.Fatalf("partial cleanup output = %+v, want the completed watcher stop and later failure", result)
+	}
+	if result.NextCommand != "relay program worker cleanup "+p.Slug+" "+item.ID {
+		t.Fatalf("next command = %q", result.NextCommand)
 	}
 }
 
@@ -394,9 +403,9 @@ func TestWorkerCleanupRefusesToCloseAReplacementSession(t *testing.T) {
 	installManagedHerdrFakes(t, client)
 	installStubWatcherState(t, manifest.Slug, true)
 
-	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err == nil {
-		t.Fatal("cleanup succeeded although a replacement session took the pane")
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("cleanup result: %v", err)
 	}
 	if closedIDs(client).has(workerTabID) || closedIDs(client).has(worker.PaneID) {
 		t.Fatalf("cleanup closed a replacement session's ids: %v %v",
@@ -404,6 +413,10 @@ func TestWorkerCleanupRefusesToCloseAReplacementSession(t *testing.T) {
 	}
 	if !pathExists(filepath.Join(project.ActiveDir(), manifest.Slug)) {
 		t.Fatal("cleanup archived the project a replacement session may be using")
+	}
+	result := decodeCleanupOutput(t, out)
+	if result.Status != cleanupIncomplete || !strings.Contains(result.Error, "now running in its pane") {
+		t.Fatalf("result = %+v, want the replacement failure after watcher cleanup", result)
 	}
 }
 
@@ -431,15 +444,19 @@ func TestWorkerCleanupRefusesToCloseAReusedPaneAfterTheExit(t *testing.T) {
 	installManagedHerdrFakes(t, client)
 	installStubWatcherState(t, manifest.Slug, true)
 
-	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err == nil {
-		t.Fatal("cleanup succeeded although the pane was reused before the close")
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("cleanup result: %v", err)
 	}
 	if closedIDs(client).has(workerTabID) || closedIDs(client).has(worker.PaneID) {
 		t.Fatalf("cleanup closed a reused id: %v %v", client.closedTabs, client.closedPanes)
 	}
 	if !pathExists(*manifest.Worktree) {
 		t.Fatal("cleanup removed the worktree after refusing to close the tab")
+	}
+	result := decodeCleanupOutput(t, out)
+	if result.Status != cleanupIncomplete || !strings.Contains(result.Error, "running there now") {
+		t.Fatalf("result = %+v, want the revalidation failure", result)
 	}
 }
 
@@ -461,15 +478,16 @@ func TestWorkerCleanupReportsAFailedTabClose(t *testing.T) {
 	installManagedHerdrFakes(t, client)
 	installStubWatcherState(t, manifest.Slug, true)
 
-	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err == nil {
-		t.Fatal("cleanup succeeded although the tab close failed")
-	}
-	if !strings.Contains(err.Error(), "left intact") {
-		t.Fatalf("error = %v, want the untouched project explained", err)
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("cleanup result: %v", err)
 	}
 	if !pathExists(filepath.Join(project.ActiveDir(), manifest.Slug)) {
 		t.Fatal("cleanup archived the project after failing to close the tab")
+	}
+	result := decodeCleanupOutput(t, out)
+	if result.Status != cleanupIncomplete || !strings.Contains(result.Error, "left intact") {
+		t.Fatalf("result = %+v, want the failed close after watcher cleanup", result)
 	}
 }
 
@@ -542,15 +560,19 @@ func TestWorkerCleanupRefusesAnAmbiguousOwner(t *testing.T) {
 	installManagedHerdrFakes(t, client)
 	installStubWatcherState(t, manifest.Slug, true)
 
-	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err == nil {
-		t.Fatal("cleanup accepted two live sessions for one child project")
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("cleanup result: %v", err)
 	}
 	if len(client.exited) != 0 {
 		t.Fatalf("cleanup ended a session while ownership was ambiguous: %#v", client.exited)
 	}
 	if !pathExists(*manifest.Worktree) {
 		t.Fatal("cleanup removed the worktree while ownership was ambiguous")
+	}
+	result := decodeCleanupOutput(t, out)
+	if result.Status != cleanupIncomplete || !strings.Contains(result.Error, "2 live sessions") {
+		t.Fatalf("result = %+v, want the ambiguity recorded", result)
 	}
 }
 
@@ -564,15 +586,16 @@ func TestWorkerCleanupStopsWhenTheWatcherCannotBeStopped(t *testing.T) {
 	prWatchSignal = func(int, os.Signal) error { return errors.New("no such process permission") }
 	t.Cleanup(func() { prWatchSignal = previousSignal })
 
-	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err == nil {
-		t.Fatal("cleanup succeeded although the watcher could not be stopped")
-	}
-	if !strings.Contains(err.Error(), "nothing else was torn down") {
-		t.Fatalf("error = %v, want the untouched state explained", err)
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("cleanup result: %v", err)
 	}
 	if !pathExists(filepath.Join(project.ActiveDir(), manifest.Slug)) {
 		t.Fatal("cleanup archived the project after failing to stop the watcher")
+	}
+	result := decodeCleanupOutput(t, out)
+	if result.Status != cleanupIncomplete || !strings.Contains(result.Error, "nothing else was torn down") {
+		t.Fatalf("result = %+v, want the watcher stop failure", result)
 	}
 }
 
@@ -670,6 +693,9 @@ func TestWorkerCleanupClosesACompletedWatchersTab(t *testing.T) {
 	if len(*signaled) != 0 {
 		t.Errorf("a finished watcher process was signaled: %v", *signaled)
 	}
+	if !result.WatcherTabClosed {
+		t.Fatal("the completed watcher tab close was not reported")
+	}
 	if !closedIDs(client).has(watcherTabID) {
 		t.Fatalf("the completed watcher's tab was left open: %v", closedIDs(client))
 	}
@@ -706,6 +732,9 @@ func TestWorkerCleanupRetriesAWatcherTabItCouldNotClose(t *testing.T) {
 	}
 	blocked := decodeCleanupOutput(t, out)
 	retry := "relay program worker cleanup " + p.Slug + " " + item.ID
+	if blocked.Status != cleanupIncomplete {
+		t.Fatalf("status = %q, want %q while the watcher tab remains open", blocked.Status, cleanupIncomplete)
+	}
 	if blocked.NextCommand != retry {
 		t.Errorf("next command = %q, want %q", blocked.NextCommand, retry)
 	}
@@ -749,5 +778,31 @@ func TestWorkerCleanupRetriesAWatcherTabItCouldNotClose(t *testing.T) {
 	}
 	if len(closedIDs(client)) != closes {
 		t.Errorf("a repeated cleanup closed ids again: %v", closedIDs(client))
+	}
+}
+
+func TestWorkerCleanupExplainsHowToCloseALegacyWatcherTab(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installCompletedWatcherState(t, manifest.Slug)
+	if _, err := prWatchUpdateState(manifest.Slug, func(state prwatch.State) (prwatch.State, error) {
+		state.WorkspaceID = ""
+		state.TerminalID = ""
+		return state, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("worker cleanup: %v", err)
+	}
+	result := decodeCleanupOutput(t, out)
+	warnings := strings.Join(result.Warnings, " ")
+	if result.Status != cleanupIncomplete || result.WatcherTabClosed ||
+		!strings.Contains(warnings, "herdr tab close "+watcherTabID) {
+		t.Fatalf("result = %+v, want incomplete cleanup with a manual close command", result)
 	}
 }

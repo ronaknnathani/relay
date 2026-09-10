@@ -186,10 +186,13 @@ type State struct {
 	Mode      Mode   `json:"mode"`
 	OwnerSlug string `json:"owner_slug"`
 	PID       int    `json:"pid"`
-	// TabID and PaneID name the Herdr tab and pane hosting the watcher, so
-	// stopping one closes the exact pane it started instead of guessing at one.
+	// The Herdr fields identify the exact terminal Relay created for this
+	// watcher. IDs alone may be reused, so cleanup requires the workspace and
+	// terminal identity to still match before mutating the tab.
+	WorkspaceID         string `json:"workspace_id,omitempty"`
 	TabID               string `json:"tab_id,omitempty"`
 	PaneID              string `json:"pane_id,omitempty"`
+	TerminalID          string `json:"terminal_id,omitempty"`
 	RelayVersion        string `json:"relay_version"`
 	Status              Status `json:"status"`
 	StartedAt           string `json:"started_at"`

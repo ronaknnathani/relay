@@ -1,6 +1,7 @@
 package prwatch
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ronaknnathani/relay/internal/herdr"
+	"github.com/ronaknnathani/relay/internal/patrollock"
 )
 
 // withRuntimeHome points ~/.relay at a per-test directory so runtime records
@@ -49,6 +53,129 @@ func TestRuntimePathsAreProjectScoped(t *testing.T) {
 	}
 	if got := StateLockPath("demo"); got != filepath.Join(want, "state.lock") {
 		t.Errorf("StateLockPath = %q", got)
+	}
+	if got := LifecycleLockPath("demo"); got != filepath.Join(want, "lifecycle.lock") {
+		t.Errorf("LifecycleLockPath = %q", got)
+	}
+}
+
+func TestLifecycleLockIsExclusiveAndReleasable(t *testing.T) {
+	withRuntimeHome(t)
+	first, err := AcquireLifecycleLock("demo", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcquireLifecycleLock("demo", 10*time.Millisecond); !errors.Is(err, patrollock.ErrLocked) {
+		t.Fatalf("second AcquireLifecycleLock error = %v, want ErrLocked", err)
+	}
+	if err := first.Release(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := AcquireLifecycleLock("demo", time.Second)
+	if err != nil {
+		t.Fatalf("AcquireLifecycleLock after release: %v", err)
+	}
+	if err := second.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcquireLifecycleLock("../escape", time.Second); err == nil {
+		t.Fatal("AcquireLifecycleLock accepted an unsafe project slug")
+	}
+}
+
+func TestPrepareStateForStartQuarantinesCorruptStateAndRunInitializes(t *testing.T) {
+	withRuntimeHome(t)
+	if err := os.MkdirAll(RuntimeDir("demo"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const corrupt = `{"schema":"relay.prwatch.v1","pid":`
+	if err := os.WriteFile(StatePath("demo"), []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 9, 21, 19, 14, 123, time.UTC)
+	existingQuarantine := filepath.Join(
+		RuntimeDir("demo"), "watch.json.corrupt-"+now.Format("20060102T150405.000000000Z"),
+	)
+	if err := os.WriteFile(existingQuarantine, []byte("older diagnostic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, quarantined, diagnostic, err := PrepareStateForStart("demo", now)
+	if err != nil {
+		t.Fatalf("PrepareStateForStart: %v", err)
+	}
+	if state != (State{}) {
+		t.Fatalf("state = %+v, want empty state after quarantine", state)
+	}
+	if quarantined == "" {
+		t.Fatal("corrupt state was not quarantined")
+	}
+	if quarantined == existingQuarantine {
+		t.Fatal("new quarantine overwrote an existing diagnostic")
+	}
+	if data, err := os.ReadFile(existingQuarantine); err != nil || string(data) != "older diagnostic" {
+		t.Fatalf("existing quarantine changed: %q, %v", data, err)
+	}
+	if !strings.Contains(diagnostic, "unexpected end of JSON input") {
+		t.Fatalf("diagnostic = %q, want the JSON parse failure", diagnostic)
+	}
+	data, err := os.ReadFile(quarantined)
+	if err != nil {
+		t.Fatalf("read quarantine: %v", err)
+	}
+	if string(data) != corrupt {
+		t.Fatalf("quarantine = %q, want %q", data, corrupt)
+	}
+	if _, err := os.Stat(StatePath("demo")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("watch.json still exists after quarantine: %v", err)
+	}
+
+	merged := quietObservation()
+	merged.PR.State = "MERGED"
+	err = Run(context.Background(), "demo", Options{
+		Mode: ModeStandalone,
+		Now:  func() time.Time { return now },
+		Locate: func(slug string) (Target, error) {
+			return Target{Slug: slug, Dir: t.TempDir(), PRNumber: 42}, nil
+		},
+		Observe: func(context.Context, Target) (Observation, error) { return merged, nil },
+		Client: &fakeOwnerClient{agents: []herdr.Agent{
+			liveAgent("relay:demo", "pane-owner", herdr.StatusIdle),
+		}},
+		PID: 77, WorkspaceID: "w1", TabID: "t1", PaneID: "p1", TerminalID: "term-1",
+	})
+	if err != nil {
+		t.Fatalf("Run after quarantine: %v", err)
+	}
+	initialized, err := ReadState("demo")
+	if err != nil {
+		t.Fatalf("ReadState after Run: %v", err)
+	}
+	if initialized.Project != "demo" || initialized.WorkspaceID != "w1" ||
+		initialized.TabID != "t1" || initialized.PaneID != "p1" ||
+		initialized.TerminalID != "term-1" {
+		t.Fatalf("initialized state = %+v", initialized)
+	}
+}
+
+func TestPrepareStateForStartPreservesReadableState(t *testing.T) {
+	withRuntimeHome(t)
+	want, err := UpdateState("demo", func(state State) (State, error) {
+		state.PID = 42
+		state.TabID = "tab-recorded"
+		return state, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, quarantined, diagnostic, err := PrepareStateForStart("demo", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want || quarantined != "" || diagnostic != "" {
+		t.Fatalf(
+			"PrepareStateForStart = %+v, %q, %q; want %+v and no quarantine",
+			got, quarantined, diagnostic, want,
+		)
 	}
 }
 

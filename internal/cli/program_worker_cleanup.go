@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/ronaknnathani/relay/internal/herdr"
@@ -20,6 +19,8 @@ const (
 	// cleanupClean means the watcher is stopped, the worker session is gone,
 	// its tab is closed, and the child project is archived.
 	cleanupClean = "clean"
+	// cleanupIncomplete means cleanup made progress but a later step failed.
+	cleanupIncomplete = "incomplete"
 	// cleanupWorkerBusy means the worker is still working or blocked. Nothing
 	// was torn down: a busy session is never interrupted.
 	cleanupWorkerBusy = "worker-busy"
@@ -33,20 +34,22 @@ const (
 )
 
 type programWorkerCleanupOutput struct {
-	Program         string         `json:"program"`
-	Item            string         `json:"item"`
-	Project         string         `json:"project"`
-	Status          string         `json:"status"`
-	WatcherStopped  bool           `json:"watcher_stopped"`
-	WorkerExit      string         `json:"worker_exit"`
-	WorkerStatus    string         `json:"worker_status,omitempty"`
-	WorkerPane      string         `json:"worker_pane,omitempty"`
-	TabClosed       bool           `json:"tab_closed"`
-	Archived        bool           `json:"archived"`
-	AlreadyArchived bool           `json:"already_archived"`
-	Archive         *archiveResult `json:"archive,omitempty"`
-	NextCommand     string         `json:"next_command,omitempty"`
-	Warnings        []string       `json:"warnings"`
+	Program          string         `json:"program"`
+	Item             string         `json:"item"`
+	Project          string         `json:"project"`
+	Status           string         `json:"status"`
+	WatcherStopped   bool           `json:"watcher_stopped"`
+	WatcherTabClosed bool           `json:"watcher_tab_closed"`
+	WorkerExit       string         `json:"worker_exit"`
+	WorkerStatus     string         `json:"worker_status,omitempty"`
+	WorkerPane       string         `json:"worker_pane,omitempty"`
+	TabClosed        bool           `json:"tab_closed"`
+	Archived         bool           `json:"archived"`
+	AlreadyArchived  bool           `json:"already_archived"`
+	Archive          *archiveResult `json:"archive,omitempty"`
+	NextCommand      string         `json:"next_command,omitempty"`
+	Warnings         []string       `json:"warnings"`
+	Error            string         `json:"error,omitempty"`
 }
 
 func newCmdProgramWorkerCleanup() *cobra.Command {
@@ -100,14 +103,15 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 		WorkerExit: cleanupWorkerAbsent, Warnings: []string{},
 	}
 
-	stopped, warning, err := stopCleanupWatcher(manifest.Slug)
+	stopped, watcherTabClosed, warning, err := stopCleanupWatcher(manifest.Slug)
 	if err != nil {
-		return fmt.Errorf(
+		return failProgramWorkerCleanup(out, &result, jsonOutput, fmt.Errorf(
 			"cleanup %s/%s: stop the child pull request watcher for %q: %w; nothing else was torn down",
 			p.Slug, item.ID, manifest.Slug, err,
-		)
+		))
 	}
 	result.WatcherStopped = stopped
+	result.WatcherTabClosed = watcherTabClosed
 	if warning != "" {
 		result.Warnings = append(result.Warnings, warning)
 		// A close that did not happen keeps the recorded tab and pane ids, so
@@ -119,7 +123,7 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 
 	exited, err := exitCleanupWorker(&result, manifest)
 	if err != nil {
-		return err
+		return failProgramWorkerCleanup(out, &result, jsonOutput, err)
 	}
 	if !exited {
 		result.Status = cleanupWorkerBusy
@@ -129,23 +133,41 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 
 	if archived {
 		result.AlreadyArchived = true
-		result.Status = cleanupClean
+		result.Status = cleanupFinalStatus(result)
 		return renderProgramWorkerCleanup(out, result, jsonOutput)
 	}
 	archiveOutcome, err := archiveProject(manifest.Slug, true)
 	if err != nil {
-		return fmt.Errorf(
+		return failProgramWorkerCleanup(out, &result, jsonOutput, fmt.Errorf(
 			"cleanup %s/%s: the watcher is stopped and the worker session is gone, but child project %q "+
 				"could not be archived: %w; item %s is still merged and the project is still active — "+
 				"retry with: relay program worker cleanup %s %s",
 			p.Slug, item.ID, manifest.Slug, err, item.ID, p.Slug, item.ID,
-		)
+		))
 	}
 	result.Archived = true
 	result.Archive = &archiveOutcome
 	result.Warnings = append(result.Warnings, archiveOutcome.Warnings...)
-	result.Status = cleanupClean
+	result.Status = cleanupFinalStatus(result)
 	return renderProgramWorkerCleanup(out, result, jsonOutput)
+}
+
+func cleanupFinalStatus(result programWorkerCleanupOutput) string {
+	if result.NextCommand != "" {
+		return cleanupIncomplete
+	}
+	return cleanupClean
+}
+
+func failProgramWorkerCleanup(
+	out io.Writer, result *programWorkerCleanupOutput, jsonOutput bool, cause error,
+) error {
+	result.Status = cleanupIncomplete
+	result.Error = cause.Error()
+	result.NextCommand = fmt.Sprintf(
+		"relay program worker cleanup %s %s", result.Program, result.Item,
+	)
+	return renderProgramWorkerCleanup(out, *result, jsonOutput)
 }
 
 // loadProgramCleanupTarget admits only a merged item. Cleanup discards a
@@ -202,25 +224,18 @@ func loadProgramCleanupTarget(
 // its tab rather than closing it from inside, which would race the flush of its
 // own final lines. Cleanup is what closes that tab, so this step runs whether
 // or not a process is still alive.
-func stopCleanupWatcher(childSlug string) (bool, string, error) {
-	running, err := prWatchIsRunning(childSlug)
-	if err != nil {
-		return false, "", err
-	}
-	if _, stateErr := prWatchReadState(childSlug); stateErr != nil {
-		if errors.Is(stateErr, os.ErrNotExist) && !running {
-			return false, "", nil
-		}
-	}
+func stopCleanupWatcher(childSlug string) (bool, bool, string, error) {
 	var stopOut bytes.Buffer
 	if err := runPRWatchStop(&stopOut, childSlug, true); err != nil {
-		return false, "", err
+		return false, false, "", err
 	}
 	var stop prWatchStopOutput
 	if err := json.Unmarshal(stopOut.Bytes(), &stop); err != nil {
-		return running, "", nil
+		return false, false, "", fmt.Errorf(
+			"decode watcher stop result for child project %q: %w", childSlug, err,
+		)
 	}
-	return stop.Stopped, stop.Warning, nil
+	return stop.Stopped, stop.Closed, stop.Warning, nil
 }
 
 // exitCleanupWorker ends the item's one live worker session and closes its exact
@@ -342,6 +357,9 @@ func renderProgramWorkerCleanup(out io.Writer, result programWorkerCleanupOutput
 	if result.WatcherStopped {
 		fmt.Fprintln(out, "Stopped the child pull request watcher")
 	}
+	if result.WatcherTabClosed {
+		fmt.Fprintln(out, "Closed the child pull request watcher tab")
+	}
 	fmt.Fprintf(out, "Worker: %s\n", result.WorkerExit)
 	if result.TabClosed {
 		fmt.Fprintln(out, "Closed the worker tab")
@@ -360,6 +378,9 @@ func renderProgramWorkerCleanup(out io.Writer, result programWorkerCleanupOutput
 	}
 	if result.NextCommand != "" {
 		fmt.Fprintf(out, "Next: %s\n", result.NextCommand)
+	}
+	if result.Error != "" {
+		fmt.Fprintf(out, "Error: %s\n", result.Error)
 	}
 	return nil
 }

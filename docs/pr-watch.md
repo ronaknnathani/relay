@@ -20,6 +20,33 @@ relay pr watch digest <project-slug> --fingerprint <64-hex> [--json]
 labelled `relay-pr-watch:<project-slug>` and the watcher wakes a live pane. `status`, `stop`, `tick`, and
 `digest` work with no Herdr, which is the manual path.
 
+When no watcher process is running, `start` inventories the current Herdr workspace before creating
+anything. It reuses only the exact tab, pane, workspace, and terminal identity in Relay's previous
+watcher runtime record, after revalidating that identity immediately before launch. A tab with the
+same `relay-pr-watch:<project-slug>` label but no matching runtime record is never ownership proof:
+Relay preserves it and warns, even when it has one pane and no recognized agent. This prevents a
+repurposed shell or a Herdr-reused id from being commandeered or closed.
+
+`--json` retains `tab_id`, `tab_reused`, and `closed_tab_ids` for compatibility. `closed_tab_ids`
+does not report label-inferred cleanup; Relay never closes those tabs automatically. `stop` and
+merged-worker cleanup close only the exact recorded watcher terminal after re-reading Herdr and
+matching its workspace, tab, pane, and terminal identity. Missing or changed identity is preserved
+with an actionable warning.
+
+Start, stop, and watcher cleanup acquire one per-project lifecycle lock before their first liveness
+or state check. The lock is
+`~/.relay/run/pr-watch/<project-slug>/lifecycle.lock`; when a state mutation is also needed, lock
+ordering is lifecycle lock before state lock. The running watcher only uses the state lock, so it can
+exit while stop holds lifecycle. Concurrent start/stop/cleanup operations therefore cannot adopt and
+then close the same new watcher.
+
+A malformed `watch.json` is quarantined under the state lock as
+`watch.json.corrupt-<timestamp>` before launch. The warning preserves that diagnostic path, and the
+hidden watcher process then initializes a clean record through the normal atomic update path. A
+readable record that replaced an earlier corrupt observation is never discarded.
+
+A running watcher records its Herdr workspace. Starting from another workspace reports an `incomplete` adopted result and does not launch a duplicate; stop it explicitly before migrating it.
+
 `tick` performs a fresh observation and records its digest without touching the watcher's schedule, so
 it is safe to run beside a running watcher.
 

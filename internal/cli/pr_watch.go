@@ -10,16 +10,24 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ronaknnathani/relay/internal/herdr"
+	"github.com/ronaknnathani/relay/internal/patrollock"
 	"github.com/ronaknnathani/relay/internal/prwatch"
 	"github.com/spf13/cobra"
 )
 
-const prWatchStartTimeout = 10 * time.Second
+const (
+	prWatchStartTimeout = 10 * time.Second
+	// prWatchLifecycleLockTimeout bounds how long start, stop, or cleanup waits
+	// for another lifecycle mutation of the same watcher.
+	prWatchLifecycleLockTimeout = 60 * time.Second
+)
 
 var (
 	prWatchIsRunning       = prwatch.IsRunning
 	prWatchReadState       = prwatch.ReadState
 	prWatchReadStateLocked = prwatch.ReadStateLocked
+	prWatchPrepareState    = prwatch.PrepareStateForStart
 	prWatchUpdateState     = prwatch.UpdateState
 	prWatchRunLoop         = prwatch.Run
 	prWatchTickOnce        = prwatch.Tick
@@ -38,14 +46,17 @@ var (
 )
 
 type prWatchStartOutput struct {
-	Project   string         `json:"project"`
-	Running   bool           `json:"running"`
-	Adopted   bool           `json:"adopted"`
-	OwnerPane string         `json:"owner_pane,omitempty"`
-	TabID     string         `json:"tab_id,omitempty"`
-	Warning   string         `json:"warning,omitempty"`
-	State     prwatch.State  `json:"state"`
-	Target    prwatch.Target `json:"-"`
+	Project      string         `json:"project"`
+	Running      bool           `json:"running"`
+	Adopted      bool           `json:"adopted"`
+	OwnerPane    string         `json:"owner_pane,omitempty"`
+	TabID        string         `json:"tab_id,omitempty"`
+	TabReused    bool           `json:"tab_reused"`
+	ClosedTabIDs []string       `json:"closed_tab_ids,omitempty"`
+	Incomplete   bool           `json:"incomplete,omitempty"`
+	Warning      string         `json:"warning,omitempty"`
+	State        prwatch.State  `json:"state"`
+	Target       prwatch.Target `json:"-"`
 }
 
 type prWatchStopOutput struct {
@@ -136,56 +147,127 @@ func newCmdPRWatchStart() *cobra.Command {
 }
 
 func runPRWatchStart(out io.Writer, slug string, flags *prWatchModeFlags, jsonOutput bool) error {
-	mode, owner, err := flags.resolve(slug)
+	result, err := startPRWatcher(slug, flags, "relay pr watch start")
 	if err != nil {
 		return err
+	}
+	return renderPRWatchStart(out, result, jsonOutput)
+}
+
+// startPRWatcher starts or adopts the single watcher process for one project.
+// command names the caller's command so every refusal points at the command the
+// operator actually ran.
+func startPRWatcher(
+	slug string, flags *prWatchModeFlags, command string,
+) (result prWatchStartOutput, retErr error) {
+	mode, owner, err := flags.resolve(slug)
+	if err != nil {
+		return prWatchStartOutput{}, err
 	}
 	target, err := prWatchLocate(slug)
 	if err != nil {
-		return err
+		return prWatchStartOutput{}, err
+	}
+	// Lock ordering is lifecycle before state. The watcher process itself only
+	// takes the state lock, so it can finish while stop holds lifecycle.
+	lock, err := acquirePRWatchLifecycleLock(slug, command)
+	if err != nil {
+		return prWatchStartOutput{}, err
+	}
+	defer func() {
+		if releaseErr := lock.Release(); releaseErr != nil {
+			retErr = errors.Join(retErr, releaseErr)
+		}
+	}()
+
+	readiness, err := requireHerdrRuntime(command, true)
+	if err != nil {
+		return prWatchStartOutput{}, err
 	}
 	running, err := prWatchIsRunning(slug)
 	if err != nil {
-		return err
+		return prWatchStartOutput{}, err
 	}
 	if running {
-		state, err := prWatchReadState(slug)
-		if err != nil {
-			return err
-		}
-		return renderPRWatchStart(out, prWatchStartOutput{
-			Project: slug, Running: true, Adopted: true, State: state,
-			Warning: adoptedWatcherWarning(slug, state, mode, owner),
-		}, jsonOutput)
+		return adoptRunningPRWatcher(slug, mode, owner, readiness.WorkspaceID)
 	}
-	readiness, err := requireHerdrRuntime("relay pr watch start", true)
+
+	var warning string
+	staleState, quarantined, diagnostic, err := prWatchPrepareState(slug, prWatchNow())
 	if err != nil {
-		return err
+		return prWatchStartOutput{}, err
+	}
+	if quarantined != "" {
+		warning = appendPatrolWarning(warning, fmt.Sprintf(
+			"the watcher state for project %q was corrupt (%s) and has been quarantined at %s; "+
+				"starting from a clean runtime record", slug, diagnostic, quarantined,
+		))
 	}
 	// Everything that could make this watcher pointless is checked before a tab
 	// exists, so a refused start never leaves an orphan process observing a
 	// pull request on behalf of nobody.
 	if mode == prwatch.ModeManaged {
 		if err := prWatchRequireManaged(slug); err != nil {
-			return err
+			return prWatchStartOutput{}, err
 		}
 	}
 	ownerAgent, err := prWatchRequireOwner(readiness.Agents, mode, slug, owner)
 	if err != nil {
-		return err
+		return prWatchStartOutput{}, err
 	}
 	client := newHerdrClient()
-	tab, err := client.CreateTab(readiness.WorkspaceID, target.Dir, "relay-pr-watch:"+slug)
+	plan, err := preparePRWatchTab(client, readiness.WorkspaceID, target.Dir, slug, staleState)
+	warning = appendPatrolWarning(warning, plan.warning)
 	if err != nil {
-		return err
+		return prWatchStartOutput{}, err
+	}
+	tab := plan.tab
+	if plan.reused {
+		revalidated, reason, revalidateErr := recordedPRWatchTab(
+			client, readiness.WorkspaceID, slug, staleState,
+		)
+		if revalidateErr != nil {
+			return prWatchStartOutput{}, fmt.Errorf(
+				"revalidate recorded PR watcher tab for project %q before reuse: %w", slug, revalidateErr,
+			)
+		}
+		if reason != "" {
+			warning = appendPatrolWarning(warning, fmt.Sprintf(
+				"preserved recorded Herdr tab %s because %s; created a new watcher tab instead",
+				staleState.TabID, reason,
+			))
+			tab, err = createPRWatchTab(
+				client, readiness.WorkspaceID, target.Dir, prWatchWorkspaceLabel(slug),
+			)
+			if err != nil {
+				return prWatchStartOutput{}, fmt.Errorf(
+					"create replacement PR watcher tab for project %q after reuse revalidation failed: %w",
+					slug, err,
+				)
+			}
+			if tab.TerminalID == "" {
+				warning = appendPatrolWarning(warning, missingPRWatchTerminalWarning(tab))
+			}
+			plan.reused = false
+		} else {
+			tab = revalidated
+		}
 	}
 	runCommand := fmt.Sprintf(
-		"relay pr watch run %s --mode %s --owner %s --tab %s --pane %s",
+		"relay pr watch run %s --mode %s --owner %s --workspace %s --tab %s --pane %s --terminal %s",
 		shellQuote(slug), shellQuote(string(mode)), shellQuote(owner),
-		shellQuote(tab.ID), shellQuote(tab.RootPaneID),
+		shellQuote(readiness.WorkspaceID), shellQuote(tab.ID), shellQuote(tab.RootPaneID),
+		shellQuote(tab.TerminalID),
 	)
 	if err := client.RunPane(tab.RootPaneID, runCommand); err != nil {
-		return err
+		kind := "new"
+		if plan.reused {
+			kind = "recorded"
+		}
+		return prWatchStartOutput{}, fmt.Errorf(
+			"launch PR watcher for project %q in %s tab %s pane %s: %w",
+			slug, kind, tab.ID, tab.RootPaneID, err,
+		)
 	}
 	deadline := prWatchNow().Add(prWatchStartTimeout)
 	// A state file that does not exist yet is normal while the watcher boots;
@@ -194,27 +276,285 @@ func runPRWatchStart(out io.Writer, slug string, flags *prWatchModeFlags, jsonOu
 	for {
 		running, err := prWatchIsRunning(slug)
 		if err != nil {
-			return err
+			return prWatchStartOutput{}, err
 		}
 		if running {
 			state, stateErr := prWatchReadState(slug)
 			switch {
 			case stateErr == nil:
 				if state.Status == prwatch.StatusRunning {
-					return renderPRWatchStart(out, prWatchStartOutput{
+					return prWatchStartOutput{
 						Project: slug, Running: true, State: state,
 						OwnerPane: ownerAgent.PaneID, TabID: tab.ID,
-					}, jsonOutput)
+						TabReused: plan.reused, ClosedTabIDs: plan.closed,
+						Warning: warning,
+					}, nil
 				}
 			case !errors.Is(stateErr, os.ErrNotExist):
 				lastStateErr = stateErr
 			}
 		}
 		if !prWatchNow().Before(deadline) {
-			return prWatchStartTimeoutError(slug, tab.ID, lastStateErr)
+			return prWatchStartOutput{}, prWatchStartTimeoutError(slug, tab.ID, lastStateErr)
 		}
 		prWatchSleep(patrolPollInterval)
 	}
+}
+
+// adoptRunningPRWatcher reports the watcher process that already observes this
+// project, warning when it was started for a different owner.
+func adoptRunningPRWatcher(
+	slug string, mode prwatch.Mode, owner, workspaceID string,
+) (prWatchStartOutput, error) {
+	state, err := prWatchReadState(slug)
+	if err != nil {
+		return prWatchStartOutput{}, err
+	}
+	warning := adoptedWatcherWarning(slug, state, mode, owner)
+	incomplete := state.WorkspaceID == "" || state.WorkspaceID != workspaceID
+	if incomplete {
+		recordedWorkspace := state.WorkspaceID
+		if recordedWorkspace == "" {
+			recordedWorkspace = "unknown"
+		}
+		warning = appendPatrolWarning(warning, fmt.Sprintf(
+			"the running watcher for %s is recorded in Herdr workspace %s, not the current workspace %s; "+
+				"it was left running and no duplicate was started",
+			slug, recordedWorkspace, workspaceID,
+		))
+	}
+	return prWatchStartOutput{
+		Project: slug, Running: true, Adopted: true, State: state, TabID: state.TabID,
+		Incomplete: incomplete, Warning: warning,
+	}, nil
+}
+
+func acquirePRWatchLifecycleLock(slug, command string) (*patrollock.Lock, error) {
+	lock, err := prwatch.AcquireLifecycleLock(slug, prWatchLifecycleLockTimeout)
+	if err != nil {
+		path := prwatch.LifecycleLockPath(slug)
+		if errors.Is(err, patrollock.ErrLocked) {
+			return nil, fmt.Errorf(
+				"another pr watcher lifecycle operation for project %q has held %s for longer than %s; "+
+					"wait for it to finish, then retry `%s`",
+				slug, path, prWatchLifecycleLockTimeout, command,
+			)
+		}
+		return nil, fmt.Errorf("lock pr watch lifecycle for project %q: %w", slug, err)
+	}
+	return lock, nil
+}
+
+// prWatchTabPlan records the tab a start will run the watcher in.
+type prWatchTabPlan struct {
+	tab     herdr.Tab
+	reused  bool
+	closed  []string
+	warning string
+}
+
+// preparePRWatchTab reuses only the exact terminal recorded by Relay. A label
+// is diagnostic metadata, never ownership proof; unrecorded matching tabs are
+// preserved and reported.
+func preparePRWatchTab(
+	client herdrRuntimeClient,
+	workspaceID, cwd, slug string, recorded prwatch.State,
+) (prWatchTabPlan, error) {
+	var plan prWatchTabPlan
+	tabs, err := client.Tabs(workspaceID)
+	if err != nil {
+		return plan, err
+	}
+	panes, err := client.Panes(workspaceID)
+	if err != nil {
+		return plan, err
+	}
+	panesByTab := make(map[string][]herdr.Pane, len(panes))
+	for _, pane := range panes {
+		panesByTab[pane.TabID] = append(panesByTab[pane.TabID], pane)
+	}
+
+	label := prWatchWorkspaceLabel(slug)
+	for _, tab := range tabs {
+		if tab.Label != label || tab.ID == recorded.TabID {
+			continue
+		}
+		plan.warning = appendPatrolWarning(plan.warning, fmt.Sprintf(
+			"preserved unrecorded Herdr tab %s labeled %q; a label does not prove Relay owns the tab",
+			tab.ID, label,
+		))
+	}
+
+	if recorded.TabID != "" || recorded.PaneID != "" {
+		reuse, reason := recordedPRWatchTabFromInventory(
+			tabs, panesByTab, workspaceID, slug, recorded,
+		)
+		if reason == "" {
+			plan.tab, plan.reused = reuse, true
+			return plan, nil
+		}
+		plan.warning = appendPatrolWarning(plan.warning, fmt.Sprintf(
+			"preserved recorded Herdr tab %s because %s", recorded.TabID, reason,
+		))
+	}
+
+	plan.tab, err = createPRWatchTab(client, workspaceID, cwd, label)
+	if err != nil {
+		return plan, err
+	}
+	if plan.tab.TerminalID == "" {
+		plan.warning = appendPatrolWarning(plan.warning, missingPRWatchTerminalWarning(plan.tab))
+	}
+	return plan, nil
+}
+
+func missingPRWatchTerminalWarning(tab herdr.Tab) string {
+	return fmt.Sprintf(
+		"Herdr did not report a terminal identity for new watcher tab %s pane %s; "+
+			"Relay will preserve it during cleanup rather than risk closing a reused id",
+		tab.ID, tab.RootPaneID,
+	)
+}
+
+func createPRWatchTab(
+	client herdrRuntimeClient, workspaceID, cwd, label string,
+) (herdr.Tab, error) {
+	tab, err := client.CreateTab(workspaceID, cwd, label)
+	if err != nil {
+		return herdr.Tab{}, err
+	}
+	if tab.WorkspaceID == "" {
+		tab.WorkspaceID = workspaceID
+	}
+	if tab.TerminalID != "" {
+		return tab, nil
+	}
+	panes, err := client.Panes(workspaceID)
+	if err != nil {
+		return herdr.Tab{}, fmt.Errorf(
+			"identify newly created PR watcher pane %s in workspace %s: %w",
+			tab.RootPaneID, workspaceID, err,
+		)
+	}
+	for _, pane := range panes {
+		if pane.ID == tab.RootPaneID && pane.TabID == tab.ID {
+			tab.TerminalID = pane.TerminalID
+			break
+		}
+	}
+	return tab, nil
+}
+
+func recordedPRWatchTab(
+	client herdrRuntimeClient, workspaceID, slug string, recorded prwatch.State,
+) (herdr.Tab, string, error) {
+	if reason := recordedPRWatchIdentityPrerequisite(workspaceID, slug, recorded); reason != "" {
+		return herdr.Tab{}, reason, nil
+	}
+	tabs, err := client.Tabs(workspaceID)
+	if err != nil {
+		return herdr.Tab{}, "", err
+	}
+	panes, err := client.Panes(workspaceID)
+	if err != nil {
+		return herdr.Tab{}, "", err
+	}
+	panesByTab := make(map[string][]herdr.Pane, len(panes))
+	for _, pane := range panes {
+		panesByTab[pane.TabID] = append(panesByTab[pane.TabID], pane)
+	}
+	tab, reason := recordedPRWatchTabFromInventory(tabs, panesByTab, workspaceID, slug, recorded)
+	return tab, reason, nil
+}
+
+func recordedPRWatchTabFromInventory(
+	tabs []herdr.TabInfo,
+	panesByTab map[string][]herdr.Pane,
+	workspaceID, slug string,
+	recorded prwatch.State,
+) (herdr.Tab, string) {
+	if reason := recordedPRWatchIdentityPrerequisite(workspaceID, slug, recorded); reason != "" {
+		return herdr.Tab{}, reason
+	}
+	var tab herdr.TabInfo
+	foundTab := false
+	for _, candidate := range tabs {
+		if candidate.ID == recorded.TabID {
+			tab, foundTab = candidate, true
+			break
+		}
+	}
+	switch {
+	case !foundTab:
+		return herdr.Tab{}, "the recorded tab is no longer present"
+	case tab.WorkspaceID != recorded.WorkspaceID:
+		return herdr.Tab{}, fmt.Sprintf(
+			"the recorded tab now belongs to workspace %s", tab.WorkspaceID,
+		)
+	case tab.Label != prWatchWorkspaceLabel(slug):
+		return herdr.Tab{}, fmt.Sprintf("the recorded tab is now labeled %q", tab.Label)
+	case tab.PaneCount != 1:
+		return herdr.Tab{}, fmt.Sprintf("the recorded tab now holds %d panes", tab.PaneCount)
+	case occupiedHerdrStatus(tab.Status):
+		return herdr.Tab{}, fmt.Sprintf("the recorded tab now has agent status %q", tab.Status)
+	}
+	panes := panesByTab[recorded.TabID]
+	if len(panes) != 1 {
+		return herdr.Tab{}, fmt.Sprintf("Herdr now lists %d panes for the recorded tab", len(panes))
+	}
+	pane := panes[0]
+	switch {
+	case pane.ID != recorded.PaneID:
+		return herdr.Tab{}, fmt.Sprintf("the recorded tab now contains pane %s", pane.ID)
+	case pane.WorkspaceID != recorded.WorkspaceID:
+		return herdr.Tab{}, fmt.Sprintf("the recorded pane now belongs to workspace %s", pane.WorkspaceID)
+	case pane.TerminalID != recorded.TerminalID:
+		return herdr.Tab{}, fmt.Sprintf("the recorded pane now belongs to terminal %s", pane.TerminalID)
+	case occupiedHerdrStatus(pane.Status):
+		return herdr.Tab{}, fmt.Sprintf("the recorded pane now has agent status %q", pane.Status)
+	}
+	return herdr.Tab{
+		ID: recorded.TabID, RootPaneID: recorded.PaneID,
+		WorkspaceID: recorded.WorkspaceID, TerminalID: recorded.TerminalID,
+	}, ""
+}
+
+func recordedPRWatchIdentityPrerequisite(
+	workspaceID, slug string, recorded prwatch.State,
+) string {
+	switch {
+	case recorded.TabID == "" || recorded.PaneID == "":
+		return "the runtime record does not name both a tab and pane"
+	case recorded.WorkspaceID == "":
+		return "the runtime record has no workspace identity"
+	case recorded.WorkspaceID != workspaceID:
+		return fmt.Sprintf(
+			"the runtime record names workspace %s, not workspace %s",
+			recorded.WorkspaceID, workspaceID,
+		)
+	case recorded.TerminalID == "":
+		return "the runtime record has no terminal identity"
+	case slug == "":
+		return "the runtime record has no project identity"
+	default:
+		return ""
+	}
+}
+
+// occupiedHerdrStatus reports a tab or pane Herdr sees an agent in. A watcher
+// runs a plain command rather than an agent, so a reusable watcher tab reports
+// no status at all or "unknown"; every other status names something live.
+func occupiedHerdrStatus(status herdr.Status) bool {
+	switch status {
+	case "", herdr.StatusUnknown:
+		return false
+	default:
+		return true
+	}
+}
+
+func prWatchWorkspaceLabel(slug string) string {
+	return "relay-pr-watch:" + slug
 }
 
 // adoptedWatcherWarning reports an adopted watcher that is watching for someone
@@ -254,15 +594,49 @@ func renderPRWatchStart(out io.Writer, result prWatchStartOutput, jsonOutput boo
 	}
 	fmt.Fprintf(out, "%s for %s (pid %d, mode %s, owner %s)\n",
 		verb, result.Project, result.State.PID, result.State.Mode, result.State.OwnerSlug)
+	fmt.Fprintf(out, "%s\n", prWatchTabSummary(result))
 	if result.Warning != "" {
 		fmt.Fprintf(out, "Warning: %s\n", result.Warning)
 	}
 	return nil
 }
 
+// prWatchOutcome reports whether a start launched this watcher or adopted the
+// one already running.
+func prWatchOutcome(result prWatchStartOutput) string {
+	if result.Incomplete {
+		return "incomplete"
+	}
+	if result.Adopted {
+		return "adopted"
+	}
+	return "started"
+}
+
+// prWatchTabSummary describes what a start did to this project's watcher tabs.
+func prWatchTabSummary(result prWatchStartOutput) string {
+	tab := result.TabID
+	if tab == "" {
+		tab = "unknown"
+	}
+	summary := "Tab: " + tab
+	switch {
+	case result.Adopted:
+		summary += " (already running)"
+	case result.TabReused:
+		summary += " (reused)"
+	default:
+		summary += " (created)"
+	}
+	if len(result.ClosedTabIDs) > 0 {
+		summary += fmt.Sprintf(" closed recorded tabs: %s", strings.Join(result.ClosedTabIDs, ", "))
+	}
+	return summary
+}
+
 func newCmdPRWatchRun() *cobra.Command {
 	flags := &prWatchModeFlags{}
-	var tabID, paneID string
+	var workspaceID, tabID, paneID, terminalID string
 	command := &cobra.Command{
 		Use:    "run <project-slug>",
 		Short:  "Run a project PR watcher in the foreground",
@@ -283,8 +657,10 @@ func newCmdPRWatchRun() *cobra.Command {
 				Mode:         mode,
 				Owner:        owner,
 				Client:       newPatrolHerdrClient(ctx),
+				WorkspaceID:  workspaceID,
 				TabID:        tabID,
 				PaneID:       paneID,
+				TerminalID:   terminalID,
 				RelayVersion: version,
 				// The watcher pane is the watcher's log: routine events go to
 				// this process's stdout and undelivered attention to its
@@ -310,8 +686,10 @@ func newCmdPRWatchRun() *cobra.Command {
 		},
 	}
 	flags.bind(command)
+	command.Flags().StringVar(&workspaceID, "workspace", "", "Herdr workspace hosting this watcher")
 	command.Flags().StringVar(&tabID, "tab", "", "Herdr tab hosting this watcher, recorded for cleanup")
 	command.Flags().StringVar(&paneID, "pane", "", "Herdr pane hosting this watcher, recorded for cleanup")
+	command.Flags().StringVar(&terminalID, "terminal", "", "Herdr terminal identity recorded for safe cleanup")
 	return command
 }
 
@@ -416,7 +794,17 @@ func newCmdPRWatchStop() *cobra.Command {
 // runPRWatchStop signals the exact recorded process, waits for it to release
 // the watcher lock, then closes the exact recorded tab. A watcher that already
 // finished on its own still leaves its tab behind, so cleanup runs either way.
-func runPRWatchStop(out io.Writer, slug string, jsonOutput bool) error {
+func runPRWatchStop(out io.Writer, slug string, jsonOutput bool) (retErr error) {
+	lock, err := acquirePRWatchLifecycleLock(slug, "relay pr watch stop")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if releaseErr := lock.Release(); releaseErr != nil {
+			retErr = errors.Join(retErr, releaseErr)
+		}
+	}()
+
 	running, err := prWatchIsRunning(slug)
 	if err != nil {
 		return err
@@ -515,8 +903,10 @@ func stopPRWatchTab(slug string, state prwatch.State) (bool, string) {
 func samePRWatchInstance(before, current prwatch.State) bool {
 	return before.PID == current.PID &&
 		before.StartedAt == current.StartedAt &&
+		before.WorkspaceID == current.WorkspaceID &&
 		before.TabID == current.TabID &&
-		before.PaneID == current.PaneID
+		before.PaneID == current.PaneID &&
+		before.TerminalID == current.TerminalID
 }
 
 func replacedPRWatchWarning(slug string, before, current prwatch.State) string {
@@ -550,6 +940,8 @@ func clearPRWatchTab(slug string, closed prwatch.State) error {
 		}
 		state.TabID = ""
 		state.PaneID = ""
+		state.WorkspaceID = ""
+		state.TerminalID = ""
 		state.UpdatedAt = prWatchNow().UTC().Format(time.RFC3339)
 		return state, nil
 	})
@@ -572,16 +964,31 @@ func closePRWatchTab(state prwatch.State) (bool, string) {
 		)
 	}
 	client := newHerdrClient()
-	var err error
-	if state.TabID != "" {
-		err = client.CloseTab(state.TabID)
-	} else {
-		err = client.ClosePane(state.PaneID)
-	}
+	_, reason, err := recordedPRWatchTab(client, state.WorkspaceID, state.Project, state)
 	if err != nil {
 		return false, fmt.Sprintf(
+			"the watcher process stopped, but its recorded %s could not be revalidated: %v; "+
+				"it was preserved to avoid closing a reused id",
+			target, err,
+		)
+	}
+	if reason != "" {
+		return false, fmt.Sprintf(
+			"the watcher process stopped, but its recorded %s was preserved because %s; "+
+				"close it manually with `herdr %s`",
+			target, reason, herdrCloseCommand(state),
+		)
+	}
+	var closeErr error
+	if state.TabID != "" {
+		closeErr = client.CloseTab(state.TabID)
+	} else {
+		closeErr = client.ClosePane(state.PaneID)
+	}
+	if closeErr != nil {
+		return false, fmt.Sprintf(
 			"the watcher process stopped, but its %s is still open: %v; close it with `herdr %s`",
-			target, err, herdrCloseCommand(state),
+			target, closeErr, herdrCloseCommand(state),
 		)
 	}
 	return true, ""
