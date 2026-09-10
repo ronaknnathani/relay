@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,17 +17,27 @@ import (
 	"github.com/ronaknnathani/relay/internal/patrollock"
 	"github.com/ronaknnathani/relay/internal/program"
 	"github.com/ronaknnathani/relay/internal/project"
+	"github.com/ronaknnathani/relay/internal/prwatch"
 )
 
 type fakeHerdrClient struct {
 	agentResponses [][]herdr.Agent
 	// agentsHook answers every agent list from live test state, so a test can
 	// model an agent that only appears once Relay has created its project.
-	agentsHook      func() ([]herdr.Agent, error)
-	agentCalls      int
-	agentErr        error
-	created         []fakeCreatedTab
-	runPane         []fakePaneCommand
+	agentsHook func() ([]herdr.Agent, error)
+	agentCalls int
+	agentErr   error
+	tabs       []herdr.TabInfo
+	tabsHook   func(string) ([]herdr.TabInfo, error)
+	tabsErr    error
+	panes      []herdr.Pane
+	panesHook  func(string) ([]herdr.Pane, error)
+	panesErr   error
+	created    []fakeCreatedTab
+	runPane    []fakePaneCommand
+	// runPaneHook lets a test model the process a pane command launches, so
+	// runtime liveness changes exactly when Relay runs the command.
+	runPaneHook     func(pane, command string) error
 	renamed         []fakeRename
 	prompted        []fakePrompt
 	promptHook      func() error
@@ -38,9 +49,12 @@ type fakeHerdrClient struct {
 	notifications   []fakeNotification
 	notificationErr error
 	tab             herdr.Tab
+	createErr       error
 	closedTabs      []string
 	closedPanes     []string
+	closeHook       func(string) error
 	closeErr        error
+	runPaneErr      error
 }
 
 type fakeNotification struct {
@@ -87,13 +101,37 @@ func (f *fakeHerdrClient) Agents() ([]herdr.Agent, error) {
 	return f.agentResponses[index], nil
 }
 
+func (f *fakeHerdrClient) Tabs(workspace string) ([]herdr.TabInfo, error) {
+	if f.tabsHook != nil {
+		return f.tabsHook(workspace)
+	}
+	return f.tabs, f.tabsErr
+}
+
+func (f *fakeHerdrClient) Panes(workspace string) ([]herdr.Pane, error) {
+	if f.panesHook != nil {
+		return f.panesHook(workspace)
+	}
+	return f.panes, f.panesErr
+}
+
 func (f *fakeHerdrClient) CreateTab(workspace, cwd, label string) (herdr.Tab, error) {
 	f.created = append(f.created, fakeCreatedTab{workspace: workspace, cwd: cwd, label: label})
-	return f.tab, nil
+	if f.createErr != nil {
+		return herdr.Tab{}, f.createErr
+	}
+	tab := f.tab
+	if tab.WorkspaceID == "" {
+		tab.WorkspaceID = workspace
+	}
+	return tab, nil
 }
 
 func (f *fakeHerdrClient) CloseTab(tabID string) error {
 	f.closedTabs = append(f.closedTabs, tabID)
+	if f.closeHook != nil {
+		return f.closeHook(tabID)
+	}
 	return f.closeErr
 }
 
@@ -104,7 +142,10 @@ func (f *fakeHerdrClient) ClosePane(paneID string) error {
 
 func (f *fakeHerdrClient) RunPane(pane, command string) error {
 	f.runPane = append(f.runPane, fakePaneCommand{pane: pane, command: command})
-	return nil
+	if f.runPaneHook != nil {
+		return f.runPaneHook(pane, command)
+	}
+	return f.runPaneErr
 }
 
 func (f *fakeHerdrClient) RenameAgent(target, name string) error {
@@ -339,6 +380,7 @@ func TestProgramWorkerStartAdoptsExistingWorkerWithoutCreatingTab(t *testing.T) 
 	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+
 	existing := herdr.Agent{
 		Status: herdr.StatusWorking, PaneID: "w2:p4", TabID: "w2:t4", WorkspaceID: "w2",
 		TerminalTitle: "relay:" + manifest.Slug + " - GitHub Copilot",
@@ -357,6 +399,315 @@ func TestProgramWorkerStartAdoptsExistingWorkerWithoutCreatingTab(t *testing.T) 
 	for _, want := range []string{"Adopted: true", "Status: working", "herdr agent focus w2:p4"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output %q missing %q", out, want)
+		}
+	}
+}
+
+func TestProgramWorkerEnsureStartsEveryMissingActiveWorker(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+	worker := herdr.Agent{
+		Status: herdr.StatusIdle, PaneID: "w7:p9", TabID: "w7:t9", WorkspaceID: "w7",
+		TerminalTitle: "relay:" + manifest.Slug + " - GitHub Copilot",
+		ForegroundCWD: *manifest.Worktree,
+	}
+	client := &fakeHerdrClient{
+		agentResponses: [][]herdr.Agent{nil, nil, {worker}},
+		tab:            herdr.Tab{ID: "w7:t9", RootPaneID: "w7:p9"},
+	}
+	installWorkerFakes(t, client)
+
+	out, err := runProgramCommand(t, "worker", "ensure", p.Slug, "--json")
+	if err != nil {
+		t.Fatalf("worker ensure: %v", err)
+	}
+	var got programWorkerEnsureOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode output %q: %v", out, err)
+	}
+	wantWorker := programWorkerOutput{
+		Item: item.ID, Project: manifest.Slug, Worktree: *manifest.Worktree,
+		WorkspaceID: "w7", TabID: "w7:t9", PaneID: "w7:p9",
+		WorkerName: "governance-" + item.ID, Status: herdr.StatusIdle,
+		FocusCommand: "herdr agent focus w7:p9",
+	}
+	want := programWorkerEnsureOutput{
+		Entries: []programWorkerEnsureEntry{{
+			Item: item.ID, ItemStatus: program.ItemDispatched, Project: manifest.Slug,
+			Live: true, Worker: &wantWorker,
+		}},
+		Warnings: []programItemWarning{},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ensure output:\n got: %#v\nwant: %#v", got, want)
+	}
+	if len(client.created) != 1 || len(client.runPane) != 1 {
+		t.Fatalf("ensure did not start the missing worker: created=%#v run=%#v", client.created, client.runPane)
+	}
+}
+
+func TestProgramWorkerEnsureIsEmptyBeforeProgramActivation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	repo := t.TempDir()
+	p, err := program.New("governance", "Ship governed changes", repo, "copilot", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := program.Create(p); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{}
+	installWorkerFakes(t, client)
+
+	out, err := runProgramCommand(t, "worker", "ensure", p.Slug, "--json")
+	if err != nil {
+		t.Fatalf("worker ensure: %v", err)
+	}
+	var got programWorkerEnsureOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode output %q: %v", out, err)
+	}
+	want := programWorkerEnsureOutput{
+		Entries:  []programWorkerEnsureEntry{},
+		Warnings: []programItemWarning{},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ensure output = %#v, want %#v", got, want)
+	}
+	if client.agentCalls != 0 {
+		t.Fatalf("empty ensure queried Herdr agents %d times", client.agentCalls)
+	}
+}
+
+func TestProgramWorkerEnsureStartsManagedWatcherForPRBackedWorker(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, _, manifest := createWorkerFixture(t, program.ItemDispatched)
+	p.Items[0].Status = program.ItemInReview
+	p.Items[0].PRRef = "#42"
+	p.Items[0].InReviewAt = p.Items[0].UpdatedAt
+	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
+		t.Fatal(err)
+	}
+	worker := herdr.Agent{
+		Status: herdr.StatusWorking, PaneID: "w7:p9", TabID: "w7:t9", WorkspaceID: "w7",
+		TerminalTitle: "relay:" + manifest.Slug + " - GitHub Copilot",
+		ForegroundCWD: *manifest.Worktree,
+	}
+	client := &fakeHerdrClient{
+		agentResponses: [][]herdr.Agent{{worker}, {worker}},
+		tabs: []herdr.TabInfo{
+			{ID: "watch-tab", WorkspaceID: "w7", Label: "relay-pr-watch:" + manifest.Slug, PaneCount: 1},
+			{ID: "watch-duplicate", WorkspaceID: "w7", Label: "relay-pr-watch:" + manifest.Slug, PaneCount: 1},
+		},
+		panes: []herdr.Pane{
+			{ID: "watch-pane", TabID: "watch-tab", WorkspaceID: "w7", TerminalID: "watch-term"},
+			{ID: "watch-duplicate-pane", TabID: "watch-duplicate", WorkspaceID: "w7", TerminalID: "duplicate-term"},
+		},
+	}
+	installWorkerFakes(t, client)
+	installPRWatchFakes(t, client)
+	prWatchRequireManaged = func(string) error { return nil }
+	launch := &prWatchLaunch{
+		stale: prwatch.State{
+			PID: 77, Status: prwatch.StatusComplete, Mode: prwatch.ModeManaged,
+			OwnerSlug: manifest.Slug, WorkspaceID: "w7", TabID: "watch-tab",
+			PaneID: "watch-pane", TerminalID: "watch-term",
+		},
+		running: prwatch.State{
+			PID: 77, Status: prwatch.StatusRunning, Mode: prwatch.ModeManaged,
+			OwnerSlug: manifest.Slug, WorkspaceID: "w7", TabID: "watch-tab",
+			PaneID: "watch-pane", TerminalID: "watch-term",
+		},
+	}
+	launch.install(t, client)
+
+	out, err := runProgramCommand(t, "worker", "ensure", p.Slug, "--json")
+	if err != nil {
+		t.Fatalf("worker ensure: %v", err)
+	}
+	var got programWorkerEnsureOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode output %q: %v", out, err)
+	}
+	entry := got.Entries[0]
+	if len(got.Entries) != 1 || !entry.Live || entry.ItemStatus != program.ItemInReview ||
+		entry.Worker == nil || entry.Watcher == nil {
+		t.Fatalf("ensure output = %#v, want one live worker entry carrying its watcher", got)
+	}
+	if entry.Watcher.TabID != "watch-tab" || !entry.Watcher.TabReused ||
+		entry.Watcher.State.Mode != prwatch.ModeManaged || len(entry.Watcher.ClosedTabIDs) != 0 {
+		t.Fatalf("watcher = %#v, want a managed watcher in the reused tab", entry.Watcher)
+	}
+	if len(client.closedTabs) != 0 {
+		t.Fatalf("closed label-only tabs = %#v, want none", client.closedTabs)
+	}
+	if len(client.created) != 0 {
+		t.Fatalf("ensure created tabs instead of adopting worker and reusing watcher: %#v", client.created)
+	}
+	if want := []fakePaneCommand{{
+		pane: "watch-pane",
+		command: "relay pr watch run '" + manifest.Slug + "' --mode 'managed' --owner '" +
+			manifest.Slug + "' --workspace 'w7' --tab 'watch-tab' --pane 'watch-pane' --terminal 'watch-term'",
+	}}; !reflect.DeepEqual(client.runPane, want) {
+		t.Fatalf("pane commands = %#v, want %#v", client.runPane, want)
+	}
+}
+
+// Herdr recognizes a cold-started worker by its worktree before the agent has
+// set the exact Relay terminal title a managed watcher's owner check needs. The
+// watcher start must wait for that title rather than refuse.
+func TestProgramWorkerEnsureWaitsForTheNewWorkerTitleBeforeStartingItsWatcher(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, _, manifest := createWorkerFixture(t, program.ItemDispatched)
+	p.Items[0].Status = program.ItemInReview
+	p.Items[0].PRRef = "#42"
+	p.Items[0].InReviewAt = p.Items[0].UpdatedAt
+	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
+		t.Fatal(err)
+	}
+
+	untitled := herdr.Agent{
+		Status: herdr.StatusIdle, PaneID: "w7:p9", TabID: "w7:t9", WorkspaceID: "w7",
+		ForegroundCWD: *manifest.Worktree,
+	}
+	titled := untitled
+	titled.TerminalTitle = "relay:" + manifest.Slug + " - GitHub Copilot"
+	client := &fakeHerdrClient{tab: herdr.Tab{
+		ID: "watch-tab", RootPaneID: "watch-pane", TerminalID: "watch-term",
+	}}
+	agentCalls := 0
+	client.agentsHook = func() ([]herdr.Agent, error) {
+		agentCalls++
+		switch {
+		case agentCalls <= 2:
+			return nil, nil
+		case agentCalls <= 4:
+			// Discovered by worktree while the agent is still booting.
+			return []herdr.Agent{untitled}, nil
+		default:
+			return []herdr.Agent{titled}, nil
+		}
+	}
+	installWorkerFakes(t, client)
+	installPRWatchFakes(t, client)
+	prWatchRequireManaged = func(string) error { return nil }
+	launch := &prWatchLaunch{
+		staleErr: os.ErrNotExist,
+		running: prwatch.State{
+			PID: 77, Status: prwatch.StatusRunning, Mode: prwatch.ModeManaged,
+			OwnerSlug: manifest.Slug, WorkspaceID: "w7", TabID: "watch-tab",
+			PaneID: "watch-pane", TerminalID: "watch-term",
+		},
+	}
+	launch.install(t, client)
+
+	out, err := runProgramCommand(t, "worker", "ensure", p.Slug, "--json")
+	if err != nil {
+		t.Fatalf("worker ensure: %v", err)
+	}
+	var got programWorkerEnsureOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode output %q: %v", out, err)
+	}
+	if len(got.Warnings) != 0 {
+		t.Fatalf("warnings = %#v, want the delayed title waited out", got.Warnings)
+	}
+	if len(got.Entries) != 1 || got.Entries[0].Watcher == nil || got.Entries[0].Watcher.Adopted {
+		t.Fatalf("ensure output = %#v, want a freshly started watcher", got)
+	}
+	if agentCalls <= 4 {
+		t.Fatalf("agent list calls = %d, want the watcher start to wait for the exact title", agentCalls)
+	}
+}
+
+// Two sessions claiming one project identity is never resolved by waiting, so
+// the owner wait reports it on the first observation.
+func TestWaitForProgramWorkerOwnerFailsImmediatelyOnDuplicateOwners(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	client := &fakeHerdrClient{agentResponses: [][]herdr.Agent{{
+		{TerminalTitle: "relay:child", PaneID: "w7:p1"},
+		{TerminalTitle: "relay:child", PaneID: "w7:p2"},
+	}}}
+	installWorkerFakes(t, client)
+
+	err := waitForProgramWorkerOwner(client, "child", "")
+	var duplicate *herdr.DuplicateProjectOwnerError
+	if !errors.As(err, &duplicate) {
+		t.Fatalf("error = %v, want a duplicate project owner error", err)
+	}
+	if client.agentCalls != 1 {
+		t.Fatalf("agent list calls = %d, want exactly 1", client.agentCalls)
+	}
+}
+
+// The tech lead reads this output as often as the JSON one, so every watcher
+// outcome it acted on must be visible in it.
+func TestProgramWorkerEnsureReportsWatcherOutcomesInReadableOutput(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+	p.Items[0].Status = program.ItemInReview
+	p.Items[0].PRRef = "#42"
+	p.Items[0].InReviewAt = p.Items[0].UpdatedAt
+	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
+		t.Fatal(err)
+	}
+
+	worker := herdr.Agent{
+		Status: herdr.StatusWorking, PaneID: "w7:p9", TabID: "w7:t9", WorkspaceID: "w7",
+		TerminalTitle: "relay:" + manifest.Slug + " - GitHub Copilot",
+		ForegroundCWD: *manifest.Worktree,
+	}
+	client := &fakeHerdrClient{
+		agentResponses: [][]herdr.Agent{{worker}},
+		tabs: []herdr.TabInfo{
+			{ID: "watch-tab", WorkspaceID: "w7", Label: "relay-pr-watch:" + manifest.Slug, PaneCount: 1},
+			{ID: "watch-duplicate", WorkspaceID: "w7", Label: "relay-pr-watch:" + manifest.Slug, PaneCount: 1},
+			{
+				ID: "watch-live", WorkspaceID: "w7", Label: "relay-pr-watch:" + manifest.Slug,
+				PaneCount: 1, Status: herdr.StatusWorking,
+			},
+		},
+		panes: []herdr.Pane{
+			{ID: "watch-pane", TabID: "watch-tab", WorkspaceID: "w7", TerminalID: "watch-term"},
+			{ID: "watch-duplicate-pane", TabID: "watch-duplicate", WorkspaceID: "w7", TerminalID: "duplicate-term"},
+			{ID: "watch-live-pane", TabID: "watch-live", WorkspaceID: "w7", TerminalID: "live-term"},
+		},
+	}
+	installWorkerFakes(t, client)
+	installPRWatchFakes(t, client)
+	prWatchRequireManaged = func(string) error { return nil }
+	launch := &prWatchLaunch{
+		stale: prwatch.State{
+			PID: 77, Status: prwatch.StatusComplete, Mode: prwatch.ModeManaged,
+			OwnerSlug: manifest.Slug, WorkspaceID: "w7", TabID: "watch-tab",
+			PaneID: "watch-pane", TerminalID: "watch-term",
+		},
+		running: prwatch.State{
+			PID: 77, Status: prwatch.StatusRunning, Mode: prwatch.ModeManaged,
+			OwnerSlug: manifest.Slug, WorkspaceID: "w7", TabID: "watch-tab",
+			PaneID: "watch-pane", TerminalID: "watch-term",
+		},
+	}
+	launch.install(t, client)
+
+	out, err := runProgramCommand(t, "worker", "ensure", p.Slug)
+	if err != nil {
+		t.Fatalf("worker ensure: %v", err)
+	}
+	for _, want := range []string{
+		item.ID, "in-review", "working", manifest.Slug,
+		"watcher: started", "Tab: watch-tab (reused)",
+		"preserved unrecorded Herdr tab watch-duplicate",
+		"preserved unrecorded Herdr tab watch-live",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q is missing %q", out, want)
 		}
 	}
 }
@@ -998,7 +1349,7 @@ func TestWorkerStartLockPathIsPerChildProject(t *testing.T) {
 	if got := workerStartLockPath("child"); got != want {
 		t.Fatalf("workerStartLockPath = %q, want %q", got, want)
 	}
-	lock, err := acquireWorkerStartLock("child")
+	lock, err := acquireWorkerStartLock("child", "relay program worker start")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1070,6 +1421,10 @@ func (c *lockstepHerdrClient) CloseTab(string) error { return nil }
 
 func (c *lockstepHerdrClient) ClosePane(string) error { return nil }
 
+func (c *lockstepHerdrClient) Tabs(string) ([]herdr.TabInfo, error) { return nil, nil }
+
+func (c *lockstepHerdrClient) Panes(string) ([]herdr.Pane, error) { return nil, nil }
+
 func (c *lockstepHerdrClient) Agents() ([]herdr.Agent, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1129,4 +1484,216 @@ func (c *lockstepHerdrClient) renameCalls() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.renames
+}
+
+func TestProgramWorkerStartRejectsDuplicateWorktreeOwners(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+	first := herdr.Agent{
+		Status: herdr.StatusIdle, PaneID: "w7:p1", TabID: "w7:t1", WorkspaceID: "w7",
+		TerminalTitle: "relay:" + manifest.Slug, ForegroundCWD: *manifest.Worktree,
+	}
+	second := first
+	second.PaneID, second.TabID = "w7:p2", "w7:t2"
+	client := &fakeHerdrClient{agentResponses: [][]herdr.Agent{{first, second}}}
+	installWorkerFakes(t, client)
+
+	_, err := runProgramCommand(t, "worker", "start", p.Slug, item.ID, "--json")
+	if err == nil {
+		t.Fatal("worker start accepted two worktree-matching owners")
+	}
+	for _, want := range []string{"2 live workers", "w7:p1", "w7:p2"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want %q", err, want)
+		}
+	}
+	if len(client.created) != 0 || len(client.runPane) != 0 {
+		t.Fatalf("ambiguous start mutated Herdr: created=%v run=%v", client.created, client.runPane)
+	}
+}
+
+func TestProgramWorkerEnsureWaitsForAnAdoptedWorkerTitle(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, _, manifest := createWorkerFixture(t, program.ItemDispatched)
+	p.Items[0].Status = program.ItemInReview
+	p.Items[0].PRRef = "#42"
+	p.Items[0].InReviewAt = p.Items[0].UpdatedAt
+	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
+		t.Fatal(err)
+	}
+	untitled := herdr.Agent{
+		Status: herdr.StatusIdle, PaneID: "w7:p9", TabID: "w7:t9", WorkspaceID: "w7",
+		ForegroundCWD: *manifest.Worktree,
+	}
+	titled := untitled
+	titled.TerminalTitle = "relay:" + manifest.Slug
+	client := &fakeHerdrClient{
+		agentResponses: [][]herdr.Agent{{untitled}, {untitled}, {titled}, {titled}},
+		tab: herdr.Tab{
+			ID: "watch-tab", RootPaneID: "watch-pane", WorkspaceID: "w7", TerminalID: "watch-term",
+		},
+	}
+	installWorkerFakes(t, client)
+	installPRWatchFakes(t, client)
+	prWatchRequireManaged = func(string) error { return nil }
+	launch := &prWatchLaunch{
+		staleErr: os.ErrNotExist,
+		running: prwatch.State{
+			PID: 77, Status: prwatch.StatusRunning, Mode: prwatch.ModeManaged,
+			OwnerSlug: manifest.Slug, WorkspaceID: "w7", TabID: "watch-tab",
+			PaneID: "watch-pane", TerminalID: "watch-term",
+		},
+	}
+	launch.install(t, client)
+
+	out, err := runProgramCommand(t, "worker", "ensure", p.Slug, "--json")
+	if err != nil {
+		t.Fatalf("worker ensure: %v", err)
+	}
+	var got programWorkerEnsureOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Warnings) != 0 || got.Entries[0].Watcher == nil {
+		t.Fatalf("ensure output = %+v, want the adopted owner title waited out", got)
+	}
+}
+
+func TestProgramWorkerEnsureTimesOutWhenAdoptedWorkerNeverGetsExactTitle(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+	p.Items[0].Status = program.ItemInReview
+	p.Items[0].PRRef = "#42"
+	p.Items[0].InReviewAt = p.Items[0].UpdatedAt
+	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
+		t.Fatal(err)
+	}
+	untitled := herdr.Agent{
+		Status: herdr.StatusIdle, PaneID: "w7:p9", TabID: "w7:t9", WorkspaceID: "w7",
+		ForegroundCWD: *manifest.Worktree,
+	}
+	client := &fakeHerdrClient{agentResponses: [][]herdr.Agent{{untitled}}}
+	installWorkerFakes(t, client)
+	installPRWatchFakes(t, client)
+
+	out, err := runProgramCommand(t, "worker", "ensure", p.Slug, "--json")
+	if err != nil {
+		t.Fatalf("worker ensure: %v", err)
+	}
+	var got programWorkerEnsureOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Warnings) != 1 ||
+		!strings.Contains(got.Warnings[0].Error, "timed out waiting for Herdr to report the session titled") {
+		t.Fatalf("warnings = %+v, want an exact-title timeout", got.Warnings)
+	}
+	if got.Entries[0].Worker == nil || !got.Entries[0].Worker.Adopted ||
+		got.Entries[0].Watcher != nil || len(client.created) != 0 {
+		t.Fatalf("ensure output = %+v, want adopted worker and no watcher launch", got)
+	}
+	if got.Warnings[0].Item != item.ID {
+		t.Fatalf("warning item = %q, want %q", got.Warnings[0].Item, item.ID)
+	}
+}
+
+func TestProgramWorkerEnsureRejectsDuplicateWorktreeOwnersWithAndWithoutPR(t *testing.T) {
+	for _, withPR := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pr=%t", withPR), func(t *testing.T) {
+			t.Setenv("HERDR_ENV", "1")
+			t.Setenv("HERDR_WORKSPACE_ID", "w7")
+			p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+			if withPR {
+				p.Items[0].Status = program.ItemInReview
+				p.Items[0].PRRef = "#42"
+				p.Items[0].InReviewAt = p.Items[0].UpdatedAt
+				if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			first := herdr.Agent{
+				Status: herdr.StatusIdle, PaneID: "w7:p1", TabID: "w7:t1", WorkspaceID: "w7",
+				TerminalTitle: "relay:" + manifest.Slug, ForegroundCWD: *manifest.Worktree,
+			}
+			second := first
+			second.PaneID, second.TabID = "w7:p2", "w7:t2"
+			client := &fakeHerdrClient{agentResponses: [][]herdr.Agent{{first, second}}}
+			installWorkerFakes(t, client)
+			installPRWatchFakes(t, client)
+
+			out, err := runProgramCommand(t, "worker", "ensure", p.Slug, "--json")
+			if err != nil {
+				t.Fatalf("worker ensure: %v", err)
+			}
+			var got programWorkerEnsureOutput
+			if err := json.Unmarshal([]byte(out), &got); err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Warnings) != 1 {
+				t.Fatalf("warnings = %+v, want one ambiguity warning", got.Warnings)
+			}
+			for _, want := range []string{"2 live workers", "w7:p1", "w7:p2"} {
+				if !strings.Contains(got.Warnings[0].Error, want) {
+					t.Errorf("warning = %q, want %q", got.Warnings[0].Error, want)
+				}
+			}
+			if got.Entries[0].Live || got.Entries[0].Watcher != nil || len(client.created) != 0 {
+				t.Fatalf("ensure mutated ambiguous runtime: %+v created=%v", got, client.created)
+			}
+			if got.Warnings[0].Item != item.ID {
+				t.Fatalf("warning item = %q, want %q", got.Warnings[0].Item, item.ID)
+			}
+		})
+	}
+}
+
+func TestProgramWorkerEnsureSurfacesWatcherInAnotherWorkspace(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+	p.Items[0].Status = program.ItemInReview
+	p.Items[0].PRRef = "#42"
+	p.Items[0].InReviewAt = p.Items[0].UpdatedAt
+	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
+		t.Fatal(err)
+	}
+	worker := herdr.Agent{
+		Status: herdr.StatusIdle, PaneID: "w7:p9", TabID: "w7:t9", WorkspaceID: "w7",
+		TerminalTitle: "relay:" + manifest.Slug, ForegroundCWD: *manifest.Worktree,
+	}
+	client := &fakeHerdrClient{agentResponses: [][]herdr.Agent{{worker}}}
+	installWorkerFakes(t, client)
+	installPRWatchFakes(t, client)
+	prWatchIsRunning = func(string) (bool, error) { return true, nil }
+	prWatchReadState = func(string) (prwatch.State, error) {
+		return prwatch.State{
+			Project: manifest.Slug, PID: 77, Status: prwatch.StatusRunning,
+			Mode: prwatch.ModeManaged, OwnerSlug: manifest.Slug,
+			WorkspaceID: "w-other", TabID: "watch-other", PaneID: "pane-other",
+		}, nil
+	}
+
+	out, err := runProgramCommand(t, "worker", "ensure", p.Slug, "--json")
+	if err != nil {
+		t.Fatalf("worker ensure: %v", err)
+	}
+	var got programWorkerEnsureOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Entries) != 1 || got.Entries[0].Watcher == nil ||
+		!got.Entries[0].Watcher.Incomplete {
+		t.Fatalf("ensure output = %+v, want an incomplete watcher entry", got)
+	}
+	if len(got.Warnings) != 1 || got.Warnings[0].Item != item.ID ||
+		!strings.Contains(got.Warnings[0].Error, "w-other") ||
+		!strings.Contains(got.Warnings[0].Error, "w7") {
+		t.Fatalf("warnings = %+v, want the workspace mismatch surfaced", got.Warnings)
+	}
+	if len(client.created) != 0 || len(client.runPane) != 0 {
+		t.Fatalf("ensure launched a duplicate watcher: created=%v run=%v", client.created, client.runPane)
+	}
 }

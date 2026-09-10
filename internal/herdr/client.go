@@ -45,8 +45,30 @@ type Workspace struct {
 
 // Tab contains the identifiers returned when Herdr creates a tab.
 type Tab struct {
-	ID         string
-	RootPaneID string
+	ID          string
+	RootPaneID  string
+	WorkspaceID string
+	TerminalID  string
+}
+
+// TabInfo is the subset of an existing Herdr tab Relay uses for reuse.
+type TabInfo struct {
+	ID          string `json:"tab_id"`
+	WorkspaceID string `json:"workspace_id"`
+	Label       string `json:"label"`
+	PaneCount   int    `json:"pane_count"`
+	Status      Status `json:"agent_status"`
+}
+
+// Pane is the subset of an existing Herdr pane Relay uses for tab reuse.
+type Pane struct {
+	ID            string `json:"pane_id"`
+	TabID         string `json:"tab_id"`
+	WorkspaceID   string `json:"workspace_id"`
+	TerminalID    string `json:"terminal_id"`
+	Status        Status `json:"agent_status"`
+	CWD           string `json:"cwd"`
+	ForegroundCWD string `json:"foreground_cwd"`
 }
 
 // Status is Herdr's observed agent liveness state.
@@ -152,6 +174,32 @@ func (c *Client) Workspaces() ([]Workspace, error) {
 	return response.Result.Workspaces, nil
 }
 
+// Tabs lists tabs in one Herdr workspace.
+func (c *Client) Tabs(workspaceID string) ([]TabInfo, error) {
+	var response struct {
+		Result struct {
+			Tabs []TabInfo `json:"tabs"`
+		} `json:"result"`
+	}
+	if err := c.runJSON(&response, "tab", "list", "--workspace", workspaceID); err != nil {
+		return nil, fmt.Errorf("list Herdr tabs in workspace %q: %w", workspaceID, err)
+	}
+	return response.Result.Tabs, nil
+}
+
+// Panes lists panes in one Herdr workspace.
+func (c *Client) Panes(workspaceID string) ([]Pane, error) {
+	var response struct {
+		Result struct {
+			Panes []Pane `json:"panes"`
+		} `json:"result"`
+	}
+	if err := c.runJSON(&response, "pane", "list", "--workspace", workspaceID); err != nil {
+		return nil, fmt.Errorf("list Herdr panes in workspace %q: %w", workspaceID, err)
+	}
+	return response.Result.Panes, nil
+}
+
 // CreateTab creates an unfocused tab in workspace.
 func (c *Client) CreateTab(workspaceID, cwd, label string) (Tab, error) {
 	var response struct {
@@ -160,7 +208,8 @@ func (c *Client) CreateTab(workspaceID, cwd, label string) (Tab, error) {
 				ID string `json:"tab_id"`
 			} `json:"tab"`
 			RootPane struct {
-				ID string `json:"pane_id"`
+				ID         string `json:"pane_id"`
+				TerminalID string `json:"terminal_id"`
 			} `json:"root_pane"`
 		} `json:"result"`
 	}
@@ -174,7 +223,10 @@ func (c *Client) CreateTab(workspaceID, cwd, label string) (Tab, error) {
 	); err != nil {
 		return Tab{}, fmt.Errorf("create Herdr tab in workspace %q: %w", workspaceID, err)
 	}
-	return Tab{ID: response.Result.Tab.ID, RootPaneID: response.Result.RootPane.ID}, nil
+	return Tab{
+		ID: response.Result.Tab.ID, RootPaneID: response.Result.RootPane.ID,
+		WorkspaceID: workspaceID, TerminalID: response.Result.RootPane.TerminalID,
+	}, nil
 }
 
 // CloseTab closes one Herdr tab. Relay closes only tabs it created and

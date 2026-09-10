@@ -31,6 +31,55 @@ func TestClientWorkspacesParsesJSON(t *testing.T) {
 	}
 }
 
+func TestClientTabsAndPanesParseWorkspaceJSON(t *testing.T) {
+	responses := []struct {
+		args   []string
+		output string
+	}{
+		{
+			[]string{"tab", "list", "--workspace", "w1"},
+			`{"result":{"tabs":[{"agent_status":"unknown","label":"relay-pr-watch:demo","pane_count":1,"tab_id":"w1:t2","workspace_id":"w1"}]}}`,
+		},
+		{
+			[]string{"pane", "list", "--workspace", "w1"},
+			`{"result":{"panes":[{"agent_status":"unknown","cwd":"/repo/demo","foreground_cwd":"/repo/demo","pane_id":"w1:p2","tab_id":"w1:t2","workspace_id":"w1","terminal_id":"term-2"}]}}`,
+		},
+	}
+	index := 0
+	client := NewClientWithRunner(func(args ...string) ([]byte, error) {
+		response := responses[index]
+		index++
+		if !reflect.DeepEqual(args, response.args) {
+			t.Fatalf("args = %#v, want %#v", args, response.args)
+		}
+		return []byte(response.output), nil
+	})
+
+	tabs, err := client.Tabs("w1")
+	if err != nil {
+		t.Fatalf("Tabs: %v", err)
+	}
+	wantTabs := []TabInfo{{
+		ID: "w1:t2", WorkspaceID: "w1", Label: "relay-pr-watch:demo",
+		PaneCount: 1, Status: StatusUnknown,
+	}}
+	if !reflect.DeepEqual(tabs, wantTabs) {
+		t.Fatalf("Tabs = %#v, want %#v", tabs, wantTabs)
+	}
+
+	panes, err := client.Panes("w1")
+	if err != nil {
+		t.Fatalf("Panes: %v", err)
+	}
+	wantPanes := []Pane{{
+		ID: "w1:p2", TabID: "w1:t2", WorkspaceID: "w1", Status: StatusUnknown,
+		TerminalID: "term-2", CWD: "/repo/demo", ForegroundCWD: "/repo/demo",
+	}}
+	if !reflect.DeepEqual(panes, wantPanes) {
+		t.Fatalf("Panes = %#v, want %#v", panes, wantPanes)
+	}
+}
+
 func TestClientCommandsParseJSONAndPassExactArguments(t *testing.T) {
 	responses := []struct {
 		args   []string
@@ -38,7 +87,7 @@ func TestClientCommandsParseJSONAndPassExactArguments(t *testing.T) {
 	}{
 		{
 			[]string{"tab", "create", "--workspace", "w1", "--cwd", "/repo/worktree", "--label", "w1: Build it", "--no-focus"},
-			`{"result":{"tab":{"tab_id":"w1:t2"},"root_pane":{"pane_id":"w1:p2"}}}`,
+			`{"result":{"tab":{"tab_id":"w1:t2"},"root_pane":{"pane_id":"w1:p2","terminal_id":"term-2"}}}`,
 		},
 		{
 			[]string{"agent", "list"},
@@ -94,7 +143,9 @@ func TestClientCommandsParseJSONAndPassExactArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTab: %v", err)
 	}
-	if want := (Tab{ID: "w1:t2", RootPaneID: "w1:p2"}); tab != want {
+	if want := (Tab{
+		ID: "w1:t2", RootPaneID: "w1:p2", WorkspaceID: "w1", TerminalID: "term-2",
+	}); tab != want {
 		t.Fatalf("CreateTab = %#v, want %#v", tab, want)
 	}
 	agents, err := client.Agents()

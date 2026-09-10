@@ -15,6 +15,7 @@ import (
 	"github.com/ronaknnathani/relay/internal/patrollock"
 	"github.com/ronaknnathani/relay/internal/program"
 	"github.com/ronaknnathani/relay/internal/project"
+	"github.com/ronaknnathani/relay/internal/prwatch"
 	"github.com/spf13/cobra"
 )
 
@@ -29,6 +30,8 @@ const (
 
 type herdrRuntimeClient interface {
 	Agents() ([]herdr.Agent, error)
+	Tabs(workspaceID string) ([]herdr.TabInfo, error)
+	Panes(workspaceID string) ([]herdr.Pane, error)
 	CreateTab(workspaceID, cwd, label string) (herdr.Tab, error)
 	CloseTab(tabID string) error
 	ClosePane(paneID string) error
@@ -82,6 +85,20 @@ type programWorkerListOutput struct {
 	Warnings []programItemWarning     `json:"warnings"`
 }
 
+type programWorkerEnsureEntry struct {
+	Item       string               `json:"item"`
+	ItemStatus program.ItemStatus   `json:"item_status"`
+	Project    string               `json:"project"`
+	Live       bool                 `json:"live"`
+	Worker     *programWorkerOutput `json:"worker,omitempty"`
+	Watcher    *prWatchStartOutput  `json:"watcher,omitempty"`
+}
+
+type programWorkerEnsureOutput struct {
+	Entries  []programWorkerEnsureEntry `json:"entries"`
+	Warnings []programItemWarning       `json:"warnings"`
+}
+
 type programWorkerTarget struct {
 	item     program.WorkItem
 	manifest project.Manifest
@@ -111,12 +128,27 @@ func newCmdProgramWorker() *cobra.Command {
 	}
 	cmd.AddCommand(
 		newCmdProgramWorkerStart(),
+		newCmdProgramWorkerEnsure(),
 		newCmdProgramWorkerList(),
 		newCmdProgramWorkerFocus(),
 		newCmdProgramWorkerNotify(),
 		newCmdProgramWorkerRequestChange(),
 		newCmdProgramWorkerCleanup(),
 	)
+	return cmd
+}
+
+func newCmdProgramWorkerEnsure() *cobra.Command {
+	var jsonOutput bool
+	cmd := &cobra.Command{
+		Use:   "ensure <program>",
+		Short: "Start or adopt every active program worker and its PR watcher",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runProgramWorkerEnsure(cmd.OutOrStdout(), args[0], jsonOutput)
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 	return cmd
 }
 
@@ -170,23 +202,36 @@ func newCmdProgramWorkerStart() *cobra.Command {
 	return cmd
 }
 
-func runProgramWorkerStart(out io.Writer, programSlug, itemID string, jsonOutput bool) (retErr error) {
-	target, p, err := loadProgramWorkerStartTarget(programSlug, itemID)
+func runProgramWorkerStart(out io.Writer, programSlug, itemID string, jsonOutput bool) error {
+	result, err := startProgramWorker(programSlug, itemID, "relay program worker start")
 	if err != nil {
 		return err
 	}
-	if err := requireManagedAgent(p.Agent, fmt.Sprintf("program %q", p.Slug)); err != nil {
-		return err
+	return renderProgramWorker(out, result, jsonOutput)
+}
+
+// startProgramWorker starts or adopts the single Herdr owner of one work item's
+// child project. command names the caller's command so every refusal points at
+// the command the operator actually ran.
+func startProgramWorker(
+	programSlug, itemID, command string,
+) (result programWorkerOutput, retErr error) {
+	target, p, err := loadProgramWorkerStartTarget(programSlug, itemID)
+	if err != nil {
+		return programWorkerOutput{}, err
 	}
-	if _, err := requireHerdrPane("relay program worker start"); err != nil {
-		return err
+	if err := requireManagedAgent(p.Agent, fmt.Sprintf("program %q", p.Slug)); err != nil {
+		return programWorkerOutput{}, err
+	}
+	if _, err := requireHerdrPane(command); err != nil {
+		return programWorkerOutput{}, err
 	}
 	// One child project has exactly one owner, so discovery, tab creation, the
 	// resume command, Herdr recognition, and renaming all run under a per-child
 	// kernel lock that a crashed holder releases automatically.
-	lock, err := acquireWorkerStartLock(target.manifest.Slug)
+	lock, err := acquireWorkerStartLock(target.manifest.Slug, command)
 	if err != nil {
-		return err
+		return programWorkerOutput{}, err
 	}
 	defer func() {
 		if releaseErr := lock.Release(); releaseErr != nil {
@@ -196,27 +241,29 @@ func runProgramWorkerStart(out io.Writer, programSlug, itemID string, jsonOutput
 
 	// The server probe and its agent list run inside the lock so a concurrent
 	// start that already created the owner is adopted instead of duplicated.
-	readiness, err := requireHerdrRuntime("relay program worker start", true)
+	readiness, err := requireHerdrRuntime(command, true)
 	if err != nil {
-		return err
+		return programWorkerOutput{}, err
 	}
 	client := newHerdrClient()
-	if agent, ok := herdr.FindLiveWorker(
-		readiness.Agents, target.manifest.Slug, target.manifest.Repo, *target.manifest.Worktree,
-	); ok {
-		return renderProgramWorker(out, target, agent, herdr.WorkerName(programSlug, itemID), true, jsonOutput)
+	agent, found, err := singleProgramWorker(readiness.Agents, target.manifest)
+	if err != nil {
+		return programWorkerOutput{}, err
+	}
+	if found {
+		return programWorkerResult(target, agent, herdr.WorkerName(programSlug, itemID), true), nil
 	}
 
 	tab, err := client.CreateTab(readiness.WorkspaceID, *target.manifest.Worktree, workerTabLabel(target.item))
 	if err != nil {
-		return err
+		return programWorkerOutput{}, err
 	}
 	if err := client.RunPane(tab.RootPaneID, "relay resume "+shellQuote(target.manifest.Slug)); err != nil {
-		return err
+		return programWorkerOutput{}, err
 	}
-	agent, err := waitForProgramWorker(client, target.manifest)
+	agent, err = waitForProgramWorker(client, target.manifest)
 	if err != nil {
-		return err
+		return programWorkerOutput{}, err
 	}
 	if agent.WorkspaceID == "" {
 		agent.WorkspaceID = readiness.WorkspaceID
@@ -229,9 +276,156 @@ func runProgramWorkerStart(out io.Writer, programSlug, itemID string, jsonOutput
 	}
 	name := herdr.WorkerName(programSlug, itemID)
 	if err := client.RenameAgent(agent.PaneID, name); err != nil {
+		return programWorkerOutput{}, err
+	}
+	return programWorkerResult(target, agent, name, false), nil
+}
+
+func runProgramWorkerEnsure(out io.Writer, programSlug string, jsonOutput bool) error {
+	const command = "relay program worker ensure"
+	if _, err := requireHerdrPane(command); err != nil {
 		return err
 	}
-	return renderProgramWorker(out, target, agent, name, false, jsonOutput)
+	_, p, err := loadActiveProgram(programSlug)
+	if err != nil {
+		return err
+	}
+
+	result := programWorkerEnsureOutput{
+		Entries:  make([]programWorkerEnsureEntry, 0),
+		Warnings: make([]programItemWarning, 0),
+	}
+	for _, item := range p.Items {
+		if item.ProjectSlug == "" || !activeProgramWorkerStatus(item.Status) {
+			continue
+		}
+		entry, warning := ensureProgramWorkerRuntime(p.Slug, item, command)
+		result.Entries = append(result.Entries, entry)
+		if warning != "" {
+			result.Warnings = append(result.Warnings, programItemWarning{
+				Item: item.ID, Project: item.ProjectSlug, Error: warning,
+			})
+		}
+	}
+	if jsonOutput {
+		return writeProgramJSON(out, result)
+	}
+	renderProgramWorkerEnsure(out, result)
+	return nil
+}
+
+// ensureProgramWorkerRuntime starts or adopts one work item's owner and, when
+// the item records a pull request, that owner's managed watcher. The returned
+// warning is the single reason this item's runtime is incomplete, if any; the
+// entry always reports how far reconciliation got.
+func ensureProgramWorkerRuntime(
+	programSlug string, item program.WorkItem, command string,
+) (programWorkerEnsureEntry, string) {
+	entry := programWorkerEnsureEntry{
+		Item: item.ID, ItemStatus: item.Status, Project: item.ProjectSlug,
+	}
+	worker, err := startProgramWorker(programSlug, item.ID, command)
+	if err != nil {
+		return entry, err.Error()
+	}
+	entry.Live = true
+	entry.Worker = &worker
+	watcher, err := ensureProgramWorkerWatcher(item, worker, command)
+	if err != nil {
+		return entry, err.Error()
+	}
+	entry.Watcher = watcher
+	if watcher == nil {
+		return entry, ""
+	}
+	return entry, watcher.Warning
+}
+
+// ensureProgramWorkerWatcher starts or adopts the managed watcher for an item
+// whose child project already has a pull request. An item with no recorded pull
+// request has nothing to watch and returns no watcher.
+func ensureProgramWorkerWatcher(
+	item program.WorkItem, worker programWorkerOutput, command string,
+) (*prWatchStartOutput, error) {
+	if item.PRRef == "" {
+		return nil, nil
+	}
+	// A cold-started worker is discovered by its worktree before its terminal
+	// title carries the project's exact Relay identity, and a managed watcher
+	// refuses to start until that identity is visible. Waiting for it here turns
+	// a startup race into a bounded wait instead of a spurious refusal.
+	if err := waitForProgramWorkerOwner(
+		newHerdrClient(), item.ProjectSlug, worker.Worktree,
+	); err != nil {
+		return nil, err
+	}
+	flags := &prWatchModeFlags{mode: string(prwatch.ModeManaged)}
+	watcher, err := startPRWatcher(item.ProjectSlug, flags, command)
+	if err != nil {
+		return nil, err
+	}
+	return &watcher, nil
+}
+
+// waitForProgramWorkerOwner waits for Herdr to report exactly one live agent
+// carrying the child project's Relay identity. Ambiguous ownership fails at
+// once because no amount of waiting resolves two owners.
+func waitForProgramWorkerOwner(client herdrRuntimeClient, childSlug, worktree string) error {
+	deadline := workerNow().Add(workerPollTimeout)
+	interval := workerPollInitialInterval
+	var duplicate *herdr.DuplicateProjectOwnerError
+	for {
+		agents, err := client.Agents()
+		if err != nil {
+			return err
+		}
+		if worktree != "" {
+			matches := herdr.LiveWorkers(agents, childSlug, "", worktree)
+			if len(matches) > 1 {
+				return duplicateProgramWorkerError(childSlug, matches)
+			}
+		}
+		_, err = herdr.FindLiveProjectOwner(agents, childSlug)
+		switch {
+		case err == nil:
+			return nil
+		case errors.As(err, &duplicate):
+			return err
+		}
+		if !workerNow().Before(deadline) {
+			return fmt.Errorf(
+				"timed out waiting for Herdr to report the session titled %q for child project %q: %w; "+
+					"focus the worker tab and confirm the agent started, then retry",
+				"relay:"+childSlug, childSlug, err,
+			)
+		}
+		workerSleep(interval)
+		if interval < workerPollMaxInterval {
+			interval *= 2
+			if interval > workerPollMaxInterval {
+				interval = workerPollMaxInterval
+			}
+		}
+	}
+}
+
+func renderProgramWorkerEnsure(out io.Writer, result programWorkerEnsureOutput) {
+	for _, entry := range result.Entries {
+		live := "not-live"
+		pane := ""
+		if entry.Worker != nil {
+			live = string(entry.Worker.Status)
+			pane = "  " + entry.Worker.PaneID
+		}
+		fmt.Fprintf(out, "%s  %-10s %-12s %s%s\n", entry.Item, entry.ItemStatus, live, entry.Project, pane)
+		if entry.Watcher == nil {
+			continue
+		}
+		fmt.Fprintf(out, "    watcher: %s; %s\n", prWatchOutcome(*entry.Watcher), prWatchTabSummary(*entry.Watcher))
+	}
+	for _, warning := range result.Warnings {
+		fmt.Fprintf(out, "Warning: %s (%s): %s\n", warning.Item, warning.Project, warning.Error)
+	}
 }
 
 // WorkerRuntimeDir returns ~/.relay/run/workers/<child-slug>.
@@ -243,15 +437,15 @@ func workerStartLockPath(childSlug string) string {
 	return filepath.Join(workerRuntimeDir(childSlug), "start.lock")
 }
 
-func acquireWorkerStartLock(childSlug string) (*patrollock.Lock, error) {
+func acquireWorkerStartLock(childSlug, command string) (*patrollock.Lock, error) {
 	path := workerStartLockPath(childSlug)
 	lock, err := patrollock.AcquireWait(path, workerStartLockTimeout)
 	if err != nil {
 		if errors.Is(err, patrollock.ErrLocked) {
 			return nil, fmt.Errorf(
-				"another `relay program worker start` for child project %q has held %s for longer than %s; "+
-					"wait for it to finish, then retry",
-				childSlug, path, workerStartLockTimeout,
+				"another worker start for child project %q has held %s for longer than %s; "+
+					"wait for it to finish, then retry `%s`",
+				childSlug, path, workerStartLockTimeout, command,
 			)
 		}
 		return nil, err
@@ -563,7 +757,11 @@ func waitForProgramWorker(client herdrRuntimeClient, manifest project.Manifest) 
 		if err != nil {
 			return herdr.Agent{}, err
 		}
-		if agent, ok := herdr.FindLiveWorker(agents, manifest.Slug, manifest.Repo, *manifest.Worktree); ok {
+		agent, found, err := singleProgramWorker(agents, manifest)
+		if err != nil {
+			return herdr.Agent{}, err
+		}
+		if found {
 			return agent, nil
 		}
 		if !workerNow().Before(deadline) {
@@ -582,6 +780,34 @@ func waitForProgramWorker(client herdrRuntimeClient, manifest project.Manifest) 
 	}
 }
 
+func singleProgramWorker(agents []herdr.Agent, manifest project.Manifest) (herdr.Agent, bool, error) {
+	worktree := ""
+	if manifest.Worktree != nil {
+		worktree = *manifest.Worktree
+	}
+	matches := herdr.LiveWorkers(agents, manifest.Slug, manifest.Repo, worktree)
+	switch len(matches) {
+	case 0:
+		return herdr.Agent{}, false, nil
+	case 1:
+		return matches[0], true, nil
+	}
+	return herdr.Agent{}, false, duplicateProgramWorkerError(manifest.Slug, matches)
+}
+
+func duplicateProgramWorkerError(slug string, matches []herdr.Agent) error {
+	panes := make([]string, 0, len(matches))
+	for _, match := range matches {
+		panes = append(panes, match.PaneID)
+	}
+	return fmt.Errorf(
+		"child project %q has %d live workers matching its worktree/repository (panes %s); "+
+			"exactly one session may own a program item—focus each pane with "+
+			"`herdr agent focus <pane>`, exit all but one, then retry",
+		slug, len(matches), strings.Join(panes, ", "),
+	)
+}
+
 func workerTabLabel(item program.WorkItem) string {
 	label := item.ID + ": " + item.Title
 	runes := []rune(label)
@@ -591,14 +817,13 @@ func workerTabLabel(item program.WorkItem) string {
 	return strings.TrimSpace(string(runes[:workerLabelLimit-3])) + "..."
 }
 
-func renderProgramWorker(
-	out io.Writer,
+func programWorkerResult(
 	target programWorkerTarget,
 	agent herdr.Agent,
 	name string,
-	adopted, jsonOutput bool,
-) error {
-	output := programWorkerOutput{
+	adopted bool,
+) programWorkerOutput {
+	return programWorkerOutput{
 		Item:            target.item.ID,
 		Project:         target.manifest.Slug,
 		Worktree:        *target.manifest.Worktree,
@@ -611,6 +836,9 @@ func renderProgramWorker(
 		Adopted:         adopted,
 		FocusCommand:    "herdr agent focus " + agent.PaneID,
 	}
+}
+
+func renderProgramWorker(out io.Writer, output programWorkerOutput, jsonOutput bool) error {
 	if jsonOutput {
 		return writeProgramJSON(out, output)
 	}

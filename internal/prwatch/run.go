@@ -56,11 +56,12 @@ type Options struct {
 	// of it; only a test pins it, and nothing persisted is affected.
 	Location *time.Location
 	PID      int
-	// TabID and PaneID are the Herdr tab and pane hosting this watcher. They
-	// are recorded in runtime state so `relay pr watch stop` closes the exact
-	// pane it started and never guesses at one.
+	// The Herdr fields identify the terminal hosting this watcher. They are
+	// recorded so cleanup can verify the exact terminal before closing it.
+	WorkspaceID  string
 	TabID        string
 	PaneID       string
+	TerminalID   string
 	RelayVersion string
 }
 
@@ -166,8 +167,10 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 		state.Mode = options.Mode
 		state.OwnerSlug = owner
 		state.PID = options.PID
+		state.WorkspaceID = options.WorkspaceID
 		state.TabID = options.TabID
 		state.PaneID = options.PaneID
+		state.TerminalID = options.TerminalID
 		state.RelayVersion = options.RelayVersion
 		state.Status = StatusRunning
 		state.StartedAt = now.Format(time.RFC3339)

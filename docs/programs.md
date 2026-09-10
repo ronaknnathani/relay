@@ -136,6 +136,35 @@ Each dispatched work item gets one interactive owner tab in the tech lead's curr
 relay program worker start auth-platform w1
 ```
 
+The tech lead reconciles the complete runtime on entry and after every patrol wake:
+
+```bash
+relay program worker ensure auth-platform
+```
+
+`worker ensure` starts or adopts every active worker. For each worker whose item records a pull
+request, it also starts or adopts a managed watcher in a dedicated `relay-pr-watch:<child-slug>` tab
+in the same Herdr workspace. A restart reuses only the exact watcher tab, pane, workspace, and
+terminal identity Relay previously recorded. Tabs that merely share the watcher label are preserved
+and warned about, never reused or closed automatically.
+
+`worker ensure --json` returns `{entries, warnings}`, where each entry is
+`{item, item_status, project, live, worker?, watcher?}`. `worker` carries the owner Relay started or
+adopted, and `watcher` — present only for an item with a recorded pull request — carries the watcher
+start, including `tab_reused`, the compatibility field `closed_tab_ids`, `incomplete`, and `warning`.
+A watcher running in another workspace is reported as incomplete and left running; ensure does not
+claim current-workspace reconciliation or launch a duplicate. An item whose owner or watcher could not be
+started still gets an entry, with `live: false` or no `watcher`, and its reason in the matching
+`{item, project, error}` warning, so one broken item never hides the rest.
+
+Every PR-backed worker, newly launched or adopted by worktree, must become exactly one owner titled
+`relay:<child-slug>` before ensure starts or adopts its watcher. The bounded wait returns immediately
+on the correct title, fails immediately on duplicate exact-title owners, and times out with a repair
+instruction if an adopted session never acquires the title.
+
+Worktree discovery is also strict: zero matching workers starts one, one is adopted, and multiple matching panes are an ambiguity warning naming every pane. Ensure starts no watcher for that item,
+whether or not it already records a pull request.
+
 The command:
 
 1. Resolves the linked child project and worktree.
@@ -221,6 +250,11 @@ relay program worker cleanup auth-platform w1 --json
 
 Only an item Relay records as `merged` is accepted. `pending`, `dispatched`, `in-review`, `blocked`,
 and `cancelled` items are refused before anything is touched.
+
+JSON reports each completed mutation separately, including `watcher_stopped`,
+`watcher_tab_closed`, `worker_exit`, `tab_closed`, and `archived`. If a later step fails, status is
+`incomplete`, `error` names that failure, and already-completed fields remain true so the retry is
+auditable instead of hiding partial cleanup.
 
 The order matters and each step must be confirmed before the next runs:
 
@@ -651,6 +685,7 @@ Archived programs are viewable with the same command.
 | Worker process, tab, pane, and focus | Herdr runtime | Herdr; non-authoritative and re-derived |
 | Patrol process, cadence, reasons, and attention fingerprint | `~/.relay/run/<slug>/patrol.json` | `relay program patrol run`; read-only toward program/project state |
 | Managed worker start exclusion | `~/.relay/run/workers/<child-slug>/start.lock` | `relay program worker start`; kernel-released advisory lock |
+| PR watcher lifecycle exclusion | `~/.relay/run/pr-watch/<child-slug>/lifecycle.lock` | watcher start, stop, and cleanup; lifecycle lock precedes watcher state lock |
 | Pull request lifecycle | GitHub | GitHub; observed read-only through `gh` |
 | Code and merge facts | git and GitHub | Existing git/GitHub workflow |
 

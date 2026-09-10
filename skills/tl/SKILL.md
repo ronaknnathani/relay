@@ -44,7 +44,7 @@ without changing the user's focused pane. Treat that prompt as a new TL turn: re
 before acting rather than relying on conversation memory.
 
 A wake is an instruction to act, not a status ping. On every wake, run `relay program tick`, follow
-its next action, dispatch the ready item, and start or adopt its worker (step 5). A merged child
+its next action, dispatch the ready item, and start or adopt all worker runtime (step 5). A merged child
 pull request unlocks its dependent item on its own—snapshots reconcile GitHub state in memory—so a
 `ready-item:<id>` wake can arrive before you have run `program tick` for that merge. A
 `merged-worker-cleanup:<id>` reason travels beside ready work rather than replacing it: retire that
@@ -64,14 +64,32 @@ returns it unchanged, so quote local times to the CEO and compare timestamps fro
 relay program message list "$PROGRAM" --json
 relay program status "$PROGRAM" --json
 relay program tick "$PROGRAM" --json
-relay program worker list "$PROGRAM" --json
+relay program worker ensure "$PROGRAM" --json
 relay program patrol tick "$PROGRAM" --json
 ```
 
-`message list --json` returns `{messages, warnings}` and `worker list --json` returns
-`{entries, warnings}`. Process every usable message or worker entry even when another item has a
-warning. Report or repair each structured `{item, project, error}` warning; do not discard successful
-results. Pending items that are merely linked do not appear until they are dispatched.
+`message list --json` returns `{messages, warnings}` and `worker ensure --json` returns
+`{entries, warnings}`. Each ensure entry is
+`{item, item_status, project, live, worker?, watcher?}`: `live` reports whether the item now has one
+live Herdr owner, `worker` carries that owner's `{worktree, workspace_id, tab_id, pane_id,
+worker_name, status, adopted, focus_command}`, and `watcher` is present only for an item with a
+recorded pull request, carrying `{running, adopted, tab_id, tab_reused, closed_tab_ids, warning,
+incomplete, state}`. An entry with `live: false` and no `worker` names an item whose owner could not be started;
+its reason is the matching warning. Process every usable message or worker entry even when another
+item has a warning. Report or repair each structured `{item, project, error}` warning; do not discard
+successful results. Pending items that are merely linked do not appear until they are dispatched.
+
+Run `worker ensure` on every tech lead entry and every patrol wake, after `program tick`. It makes
+sure every active worker has one live owner in Herdr. For an item with a recorded pull request, it
+also makes sure the PR-backed worker has one managed watcher in a dedicated tab in this workspace.
+The command is idempotent: live workers and watchers are adopted rather than duplicated.
+
+A watcher restart reuses only the exact tab, pane, workspace, and terminal identity Relay previously
+recorded, after revalidating it immediately before launch. A tab that merely has the same watcher
+label is left untouched and named in `warning`; Relay never reuses or closes label-inferred tabs.
+`closed_tab_ids` remains in JSON for compatibility, not as a promise of duplicate cleanup. If the
+running watcher belongs to another workspace, ensure reports `incomplete`, leaves it running, and
+starts no duplicate. Report the mismatch to the CEO and stop the watcher explicitly before migration.
 
 `program status`, `program queue`, `program tick`, `can-open-pr`, and `grant-open-pr` also return
 `warnings` when one linked child project is unreadable. Those commands keep working: the unreadable
@@ -188,6 +206,9 @@ Cleanup runs one order and stops at the first step it cannot confirm: it stops t
 watcher and closes the watcher's recorded tab, asks the item's one worker session to exit with
 `/exit` without stealing focus, closes that exact tab after re-checking the pane, tab, terminal, and
 session identity, and then runs the equivalent of `relay archive <child-project-slug> --force`.
+Its JSON keeps completed mutations (`watcher_stopped`, `watcher_tab_closed`, `worker_exit`,
+`tab_closed`, and `archived`) when a later operation fails, with status `incomplete` and an actionable
+`error`. Report that partial progress and run the printed `next_command`; do not repeat a close by hand.
 
 **A watcher that already stopped still needs this command.** When the branch pull request merges, the
 watcher completes and exits on its own, and it deliberately keeps its tab so its final lines stay
@@ -390,7 +411,7 @@ a program decision or follow-up. Do not silently turn it into recurring automati
 - [ ] Verified Herdr readiness, checked adaptive patrol status (including the last TL wake),
       and started patrol in Herdr.
 - [ ] Reloaded durable state after a patrol doorbell before acting.
-- [ ] Inspected the Herdr worker list and started/adopted visible owners for dispatched work.
+- [ ] Ran `worker ensure` so every active worker and every PR-backed managed watcher is live.
 - [ ] Sent complete replies through worker inboxes and rang each new durable doorbell exactly once,
       with later retries delegated to the CLI's unnotified/status checks.
 - [ ] Serialized unread `pr-open` requests with `grant-open-pr` and reported reserved capacity.

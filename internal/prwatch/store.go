@@ -25,6 +25,9 @@ const MaxRetainedDigests = 100
 // ErrAlreadyRunning reports that another process holds the watcher lock.
 var ErrAlreadyRunning = errors.New("already running")
 
+// ErrCorruptState reports that watch.json exists but is not valid JSON.
+var ErrCorruptState = errors.New("corrupt pr watch state")
+
 // RuntimeDir returns ~/.relay/run/pr-watch/<slug>.
 func RuntimeDir(slug string) string {
 	return filepath.Join(project.RelayDir(), "run", "pr-watch", slug)
@@ -38,6 +41,12 @@ func WatchLockPath(slug string) string {
 // StateLockPath returns the short mutation lock path guarding watch.json.
 func StateLockPath(slug string) string {
 	return filepath.Join(RuntimeDir(slug), "state.lock")
+}
+
+// LifecycleLockPath returns the lock path that serializes start, stop, and
+// watcher-tab cleanup for one project.
+func LifecycleLockPath(slug string) string {
+	return filepath.Join(RuntimeDir(slug), "lifecycle.lock")
 }
 
 // StatePath returns the watcher runtime state path.
@@ -118,6 +127,19 @@ func IsRunning(slug string) (bool, error) {
 	return running, nil
 }
 
+// AcquireLifecycleLock serializes watcher lifecycle decisions. Callers take it
+// before checking liveness or state and, when both locks are needed, before the
+// shorter state lock. The running watcher never takes this lock.
+func AcquireLifecycleLock(slug string, timeout time.Duration) (*patrollock.Lock, error) {
+	if err := project.ValidateSlug(slug); err != nil {
+		return nil, fmt.Errorf("pr watch project slug: %w", err)
+	}
+	if err := ensureRuntimeDir(slug); err != nil {
+		return nil, err
+	}
+	return patrollock.AcquireWait(LifecycleLockPath(slug), timeout)
+}
+
 func ensureRuntimeDir(slug string) error {
 	dir := RuntimeDir(slug)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -142,9 +164,66 @@ func ReadState(slug string) (State, error) {
 	// rewritten without them on the next state mutation.
 	var state State
 	if err := json.Unmarshal(data, &state); err != nil {
-		return State{}, fmt.Errorf("parse pr watch state %s: %w", path, err)
+		return State{}, fmt.Errorf("%w at %s: %v", ErrCorruptState, path, err)
 	}
 	return state, nil
+}
+
+// PrepareStateForStart reads the latest state under the state lock. If and only
+// if the record is still corrupt while that lock is held, it is renamed for
+// diagnosis so the watcher can initialize a new record. A valid record that
+// replaced an earlier corrupt read is returned untouched.
+func PrepareStateForStart(
+	slug string, now time.Time,
+) (state State, quarantined, diagnostic string, retErr error) {
+	if err := project.ValidateSlug(slug); err != nil {
+		return State{}, "", "", fmt.Errorf("pr watch project slug: %w", err)
+	}
+	if err := ensureRuntimeDir(slug); err != nil {
+		return State{}, "", "", err
+	}
+	lock, err := patrollock.AcquireWait(StateLockPath(slug), stateLockTimeout)
+	if err != nil {
+		return State{}, "", "", fmt.Errorf("lock pr watch state for project %q: %w", slug, err)
+	}
+	defer func() {
+		retErr = errors.Join(retErr, lock.Release())
+	}()
+
+	state, err = ReadState(slug)
+	switch {
+	case err == nil:
+		return state, "", "", nil
+	case errors.Is(err, os.ErrNotExist):
+		return State{}, "", "", nil
+	case !errors.Is(err, ErrCorruptState):
+		return State{}, "", "", err
+	}
+	diagnostic = err.Error()
+
+	path := StatePath(slug)
+	base := filepath.Join(
+		RuntimeDir(slug), "watch.json.corrupt-"+now.UTC().Format("20060102T150405.000000000Z"),
+	)
+	quarantined = base
+	for suffix := 1; ; suffix++ {
+		_, statErr := os.Lstat(quarantined)
+		if errors.Is(statErr, os.ErrNotExist) {
+			break
+		}
+		if statErr != nil {
+			return State{}, "", "", fmt.Errorf(
+				"inspect corrupt pr watch quarantine path %s: %w", quarantined, statErr,
+			)
+		}
+		quarantined = fmt.Sprintf("%s-%d", base, suffix)
+	}
+	if renameErr := os.Rename(path, quarantined); renameErr != nil {
+		return State{}, "", "", fmt.Errorf(
+			"quarantine corrupt pr watch state %s as %s: %w", path, quarantined, renameErr,
+		)
+	}
+	return State{}, quarantined, diagnostic, nil
 }
 
 // ReadStateLocked reads the runtime record while holding the state mutation
