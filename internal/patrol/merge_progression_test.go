@@ -58,7 +58,7 @@ func TestMergedPullRequestUnlocksDependentWorkAndWakesTheLiveTL(t *testing.T) {
 			},
 			Agents: patrolAgentListerFunc(func() ([]herdr.Agent, error) { return tl, nil }),
 			Turns:  runner,
-			Out:    out, Err: errOut,
+			Out:    out, Err: errOut, Location: testDisplayZone,
 		})
 	}()
 
@@ -164,7 +164,7 @@ func TestOpenPullRequestLeavesDependentWorkBlockedAndTheTLAsleep(t *testing.T) {
 				}, nil
 			}),
 			Turns: runner,
-			Out:   out, Err: errOut,
+			Out:   out, Err: errOut, Location: testDisplayZone,
 		})
 	}()
 

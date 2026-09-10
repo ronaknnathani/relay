@@ -305,7 +305,7 @@ func TestRunPrintsHerdrAgentFailureToStderrAndKeepsTicking(t *testing.T) {
 			Agents: patrolAgentListerFunc(func() ([]herdr.Agent, error) {
 				return nil, errors.New("connection refused")
 			}),
-			Out: out, Err: errOut,
+			Out: out, Err: errOut, Location: testDisplayZone,
 		})
 	}()
 
@@ -388,7 +388,7 @@ func TestRunPrintsReasonCodesWithoutReasonText(t *testing.T) {
 	go func() {
 		done <- Run(ctx, "private", Options{
 			Now: clock.Now, Ticker: func(time.Duration) Ticker { return ticker },
-			BuildSnapshot: builder, Out: out, Err: errOut,
+			BuildSnapshot: builder, Out: out, Err: errOut, Location: testDisplayZone,
 		})
 	}()
 
