@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -66,8 +68,17 @@ func newCmdSetup() *cobra.Command {
 
 func runSetupCommand(opts setupOptions) error {
 	sourceRoot, err := discoverSourceDir(opts.sourceOverride)
+	if err != nil && opts.sourceOverride == "" && opts.stdinIsTerminal {
+		if _, writeErr := fmt.Fprintln(opts.stdout, err); writeErr != nil {
+			return fmt.Errorf("write source discovery error: %w", writeErr)
+		}
+		sourceRoot, err = promptForValidSourceDir(opts.stdin, opts.stdout)
+	}
 	if err != nil {
 		return err
+	}
+	if _, err := fmt.Fprintf(opts.stdout, "Using relay source %s\n", sourceRoot); err != nil {
+		return fmt.Errorf("write selected source directory: %w", err)
 	}
 	roots, err := setupManagedRoots(sourceRoot)
 	if err != nil {
@@ -106,6 +117,47 @@ func runSetupCommand(opts setupOptions) error {
 	return err
 }
 
+func promptForSourceDir(stdin *bufio.Reader, stdout io.Writer) (string, error) {
+	if _, err := fmt.Fprint(stdout, "Relay source directory: "); err != nil {
+		return "", fmt.Errorf("write source directory prompt: %w", err)
+	}
+	sourceDir, err := stdin.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", fmt.Errorf("read source directory: %w", err)
+	}
+	sourceDir = strings.TrimSpace(sourceDir)
+	if sourceDir == "" {
+		if err == io.EOF {
+			return "", fmt.Errorf("read source directory: %w", err)
+		}
+		return "", nil
+	}
+	return sourceDir, nil
+}
+
+func promptForValidSourceDir(stdin io.Reader, stdout io.Writer) (string, error) {
+	reader := bufio.NewReader(stdin)
+	for {
+		sourceDir, err := promptForSourceDir(reader, stdout)
+		if err != nil {
+			return "", err
+		}
+		if sourceDir == "" {
+			if _, err := fmt.Fprintln(stdout, "relay source directory is required"); err != nil {
+				return "", fmt.Errorf("write source directory error: %w", err)
+			}
+			continue
+		}
+		sourceRoot, err := sourceDirFromPath(sourceDir, "source directory")
+		if err == nil {
+			return sourceRoot, nil
+		}
+		if _, writeErr := fmt.Fprintln(stdout, err); writeErr != nil {
+			return "", fmt.Errorf("write source directory error: %w", writeErr)
+		}
+	}
+}
+
 // retiredSkills names skills Relay used to install and no longer ships. The
 // managed-program role was renamed from `cto` to `tl`, so a stale `cto` link
 // would keep resolving to a generated package Relay no longer regenerates and
@@ -133,17 +185,21 @@ func regeneratePackage(a agent.Agent, sourceRoot, packageDir string) error {
 
 func discoverSourceDir(srcOverride string) (string, error) {
 	if srcOverride != "" {
-		sourceRoot, err := filepath.Abs(srcOverride)
-		if err != nil {
-			return "", fmt.Errorf("resolve source dir %s: %w", srcOverride, err)
+		return sourceDirFromPath(srcOverride, "--src")
+	}
+	var workingDirErr error
+	if workingDir, err := os.Getwd(); err == nil {
+		sourceRoot, isRelaySource, err := sourceDirFromWorkingDirectory(workingDir)
+		if err == nil && isRelaySource {
+			return sourceRoot, nil
 		}
-		if !hasSourceLayout(sourceRoot) {
-			return "", fmt.Errorf("--src %s is not a relay source directory (missing plugin.json or skills/)", sourceRoot)
+		if isRelaySource {
+			workingDirErr = fmt.Errorf(
+				"relay source directory in current working directory %s is invalid; pass --src <path>: %w",
+				workingDir,
+				err,
+			)
 		}
-		if _, err := generate.LoadSource(sourceRoot); err != nil {
-			return "", err
-		}
-		return sourceRoot, nil
 	}
 	var candidates []string
 	if executable, err := os.Executable(); err == nil {
@@ -152,7 +208,32 @@ func discoverSourceDir(srcOverride string) (string, error) {
 	if os.Args[0] != "" {
 		candidates = append(candidates, os.Args[0])
 	}
-	return discoverSourceDirFromCandidates(candidates)
+	sourceRoot, err := discoverSourceDirFromCandidates(candidates)
+	if err != nil && workingDirErr != nil {
+		return "", workingDirErr
+	}
+	return sourceRoot, err
+}
+
+func sourceDirFromPath(sourceDir, label string) (string, error) {
+	if sourceDir == "~" || strings.HasPrefix(sourceDir, "~"+string(os.PathSeparator)) {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory in source path %s: %w", sourceDir, err)
+		}
+		sourceDir = filepath.Join(homeDir, strings.TrimPrefix(sourceDir, "~"+string(os.PathSeparator)))
+	}
+	sourceRoot, err := filepath.Abs(sourceDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve source dir %s: %w", sourceDir, err)
+	}
+	if !hasSourceLayout(sourceRoot) {
+		return "", fmt.Errorf("%s %s is not a relay source directory (missing plugin.json or skills/)", label, sourceRoot)
+	}
+	if _, err := generate.LoadSource(sourceRoot); err != nil {
+		return "", err
+	}
+	return sourceRoot, nil
 }
 
 func discoverSourceDirFromCandidates(candidates []string) (string, error) {
@@ -162,7 +243,30 @@ func discoverSourceDirFromCandidates(candidates []string) (string, error) {
 			return sourceRoot, nil
 		}
 	}
-	return "", fmt.Errorf("could not discover relay source directory from executable; pass --src <path>")
+	return "", fmt.Errorf("could not discover relay source directory; pass --src <path>")
+}
+
+func sourceDirFromWorkingDirectory(workingDir string) (string, bool, error) {
+	if !hasSourceLayout(workingDir) {
+		return "", false, nil
+	}
+	manifestData, err := os.ReadFile(filepath.Join(workingDir, "plugin.json"))
+	if err != nil {
+		return "", true, fmt.Errorf("read plugin manifest: %w", err)
+	}
+	var manifest struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return "", true, fmt.Errorf("parse plugin manifest: %w", err)
+	}
+	if manifest.Name != "relay" {
+		return "", false, nil
+	}
+	if _, err := generate.LoadSource(workingDir); err != nil {
+		return "", true, err
+	}
+	return workingDir, true, nil
 }
 
 func sourceDirFromExecutable(executable string) (string, error) {

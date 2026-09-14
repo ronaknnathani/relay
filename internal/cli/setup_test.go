@@ -111,6 +111,151 @@ func TestSetupCopilotGeneratesLinksAndWritesConfig(t *testing.T) {
 	}
 }
 
+func TestSetupUsesCurrentRelayRootWithoutSrc(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USER", "tester")
+	source := writeSetupSource(t, "cwd-only")
+	t.Chdir(source)
+
+	if _, err := runSetup(t, "copilot"); err != nil {
+		t.Fatalf("setup copilot from relay root: %v", err)
+	}
+
+	packageSkill := filepath.Join(agent.PackageDir("copilot"), "skills", "cwd-only")
+	if _, err := os.Stat(filepath.Join(packageSkill, "SKILL.md")); err != nil {
+		t.Fatalf("generated copilot skill: %v", err)
+	}
+}
+
+func TestSetupPromptsForSourceWhenDiscoveryFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USER", "tester")
+	source := writeSetupSource(t, "plan")
+	invalidSource := filepath.Join(t.TempDir(), "missing")
+	t.Chdir(t.TempDir())
+	copilot, err := agent.Get("copilot")
+	if err != nil {
+		t.Fatalf("get copilot agent: %v", err)
+	}
+	var out bytes.Buffer
+
+	err = runSetupCommand(setupOptions{
+		agent:           copilot,
+		stdin:           strings.NewReader(invalidSource + "\n" + source + "\n"),
+		stdout:          &out,
+		stdinIsTerminal: true,
+	})
+	if err != nil {
+		t.Fatalf("interactive setup copilot: %v", err)
+	}
+	for _, want := range []string{
+		"could not discover relay source directory; pass --src <path>",
+		"Relay source directory: ",
+		"source directory " + invalidSource + " is not a relay source directory",
+		"Using relay source " + source,
+	} {
+		if got := out.String(); !strings.Contains(got, want) {
+			t.Errorf("setup output = %q, want it to contain %q", got, want)
+		}
+	}
+
+	packageSkill := filepath.Join(agent.PackageDir("copilot"), "skills", "plan")
+	if _, err := os.Stat(filepath.Join(packageSkill, "SKILL.md")); err != nil {
+		t.Fatalf("generated copilot skill: %v", err)
+	}
+}
+
+func TestSetupPromptAcceptsHomeRelativeSourceAfterBlankInput(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USER", "tester")
+	source := filepath.Join(home, "relay-source")
+	if err := os.MkdirAll(source, 0755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "plugin.json"), []byte(`{"name":"relay"}`+"\n"), 0644); err != nil {
+		t.Fatalf("write plugin manifest: %v", err)
+	}
+	skillDir := filepath.Join(source, "skills", "home-relative")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# home-relative\n"), 0644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	t.Chdir(t.TempDir())
+	copilot, err := agent.Get("copilot")
+	if err != nil {
+		t.Fatalf("get copilot agent: %v", err)
+	}
+	var out bytes.Buffer
+
+	err = runSetupCommand(setupOptions{
+		agent:           copilot,
+		stdin:           strings.NewReader("\n~/relay-source\n"),
+		stdout:          &out,
+		stdinIsTerminal: true,
+	})
+	if err != nil {
+		t.Fatalf("interactive setup copilot: %v", err)
+	}
+	if got := strings.Count(out.String(), "Relay source directory: "); got != 2 {
+		t.Errorf("source prompts = %d, want 2; output = %q", got, out.String())
+	}
+	if !strings.Contains(out.String(), "relay source directory is required") {
+		t.Errorf("setup output = %q, want blank-input guidance", out.String())
+	}
+
+	packageSkill := filepath.Join(agent.PackageDir("copilot"), "skills", "home-relative")
+	if _, err := os.Stat(filepath.Join(packageSkill, "SKILL.md")); err != nil {
+		t.Fatalf("generated copilot skill: %v", err)
+	}
+}
+
+func TestSetupWithoutSrcStaysNonInteractiveWhenInputIsNotTerminal(t *testing.T) {
+	t.Chdir(t.TempDir())
+	copilot, err := agent.Get("copilot")
+	if err != nil {
+		t.Fatalf("get copilot agent: %v", err)
+	}
+	var out bytes.Buffer
+
+	err = runSetupCommand(setupOptions{
+		agent:  copilot,
+		stdin:  strings.NewReader(""),
+		stdout: &out,
+	})
+	if err == nil || err.Error() != "could not discover relay source directory; pass --src <path>" {
+		t.Fatalf("non-interactive setup error = %v, want source discovery error", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("non-interactive setup output = %q, want no prompt", out.String())
+	}
+}
+
+func TestSetupSrcTakesPrecedenceOverCurrentRelayRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USER", "tester")
+	currentSource := writeSetupSource(t, "cwd-only")
+	overrideSource := writeSetupSource(t, "override-only")
+	t.Chdir(currentSource)
+
+	if _, err := runSetup(t, "copilot", "--src", overrideSource); err != nil {
+		t.Fatalf("setup copilot with --src: %v", err)
+	}
+
+	packageSkills := filepath.Join(agent.PackageDir("copilot"), "skills")
+	if _, err := os.Stat(filepath.Join(packageSkills, "override-only", "SKILL.md")); err != nil {
+		t.Fatalf("generated override skill: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(packageSkills, "cwd-only")); !os.IsNotExist(err) {
+		t.Fatalf("generated current-directory skill despite --src override: %v", err)
+	}
+}
+
 func TestSetupCodexGeneratesLinksAndWritesConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -231,9 +376,43 @@ func TestDiscoverSourceDir(t *testing.T) {
 	}
 
 	_, err = discoverSourceDirFromCandidates([]string{filepath.Join(t.TempDir(), "relay")})
-	if err == nil || err.Error() != "could not discover relay source directory from executable; pass --src <path>" {
+	if err == nil || err.Error() != "could not discover relay source directory; pass --src <path>" {
 		t.Fatalf("discoverSourceDirFromCandidates error = %v, want --src hint", err)
 	}
+}
+
+func TestDiscoverSourceDirIgnoresNonRelayWorkingDirectories(t *testing.T) {
+	t.Run("invalid source layout", func(t *testing.T) {
+		source := writeSetupSource(t, "broken")
+		if err := os.Remove(filepath.Join(source, "skills", "broken", "SKILL.md")); err != nil {
+			t.Fatalf("remove skill file: %v", err)
+		}
+		t.Chdir(source)
+
+		_, err := discoverSourceDir("")
+		for _, want := range []string{
+			"relay source directory in current working directory " + source + " is invalid",
+			"read skill broken",
+			"pass --src <path>",
+		} {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("discoverSourceDir error = %v, want it to contain %q", err, want)
+			}
+		}
+	})
+
+	t.Run("different plugin", func(t *testing.T) {
+		source := writeSetupSource(t, "plan")
+		if err := os.WriteFile(filepath.Join(source, "plugin.json"), []byte(`{"name":"other"}`+"\n"), 0644); err != nil {
+			t.Fatalf("write plugin manifest: %v", err)
+		}
+		t.Chdir(source)
+
+		_, err := discoverSourceDir("")
+		if err == nil || err.Error() != "could not discover relay source directory; pass --src <path>" {
+			t.Fatalf("discoverSourceDir error = %v, want source discovery error", err)
+		}
+	})
 }
 
 func TestSetupClaudeGeneratesDistAndLinksStablePackage(t *testing.T) {
