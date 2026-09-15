@@ -216,6 +216,11 @@ func loadProgramCleanupTarget(
 			"cleanup %s/%s: item is not linked to a child project", p.Slug, itemID,
 		)
 	}
+	if err := project.ValidateSlug(item.ProjectSlug); err != nil {
+		return program.WorkItem{}, project.Manifest{}, false, fmt.Errorf(
+			"cleanup %s/%s: invalid child project slug: %w", p.Slug, itemID, err,
+		)
+	}
 	manifestPath, err := project.Find(item.ProjectSlug)
 	if err != nil {
 		return program.WorkItem{}, project.Manifest{}, false, fmt.Errorf(
@@ -225,6 +230,12 @@ func loadProgramCleanupTarget(
 	manifest, err := project.Load(manifestPath)
 	if err != nil {
 		return program.WorkItem{}, project.Manifest{}, false, err
+	}
+	if manifest.Slug != item.ProjectSlug {
+		return program.WorkItem{}, project.Manifest{}, false, fmt.Errorf(
+			"cleanup %s/%s: child project manifest slug %q does not match requested child project %q",
+			p.Slug, itemID, manifest.Slug, item.ProjectSlug,
+		)
 	}
 	if manifest.Program != p.Slug || manifest.ProgramItem != item.ID {
 		return program.WorkItem{}, project.Manifest{}, false, fmt.Errorf(

@@ -549,6 +549,80 @@ func TestWorkerCleanupRefusesEveryUnmergedItemStatus(t *testing.T) {
 	}
 }
 
+func TestWorkerCleanupRejectsInvalidRequestedProjectSlugWithoutChangingVictim(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	for i := range p.Items {
+		if p.Items[i].ID == item.ID {
+			p.Items[i].ProjectSlug = "nested/../" + manifest.Slug
+		}
+	}
+
+	_, _, _, err := loadProgramCleanupTarget(p, item.ID)
+	if err == nil || !strings.Contains(err.Error(), "invalid slug") {
+		t.Fatalf("loadProgramCleanupTarget error = %v, want invalid slug rejection", err)
+	}
+	if !pathExists(*manifest.Worktree) {
+		t.Fatal("cleanup removed the victim worktree")
+	}
+	if !gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("cleanup removed the victim branch")
+	}
+	if !pathExists(project.ManifestPath(project.ActiveDir(), manifest.Slug)) {
+		t.Fatal("cleanup removed the victim manifest")
+	}
+}
+
+func TestWorkerCleanupRejectsManifestSlugMismatchBeforeStoppingVictim(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	attackerSlug := "attacker"
+	for i := range p.Items {
+		if p.Items[i].ID == item.ID {
+			p.Items[i].ProjectSlug = attackerSlug
+		}
+	}
+	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
+		t.Fatal(err)
+	}
+	attackerPath := project.ManifestPath(project.ActiveDir(), attackerSlug)
+	if err := os.MkdirAll(filepath.Dir(attackerPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(attackerPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) {
+		return []herdr.Agent{liveWorkerAgent(manifest, herdr.StatusIdle)}, nil
+	}
+	installManagedHerdrFakes(t, client)
+	stopped := installStubWatcherState(t, manifest.Slug, true)
+
+	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), `manifest slug "`+manifest.Slug+
+		`" does not match requested child project "`+attackerSlug+`"`) {
+		t.Fatalf("worker cleanup error = %v, want manifest slug mismatch rejection", err)
+	}
+	if len(*stopped) != 0 {
+		t.Fatalf("cleanup stopped the victim watcher: %v", *stopped)
+	}
+	if len(client.exited) != 0 || len(client.closedTabs) != 0 || len(client.closedPanes) != 0 {
+		t.Fatalf(
+			"cleanup touched the victim session: exited=%v tabs=%v panes=%v",
+			client.exited, client.closedTabs, client.closedPanes,
+		)
+	}
+	if !pathExists(*manifest.Worktree) {
+		t.Fatal("cleanup removed the victim worktree")
+	}
+	if !gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("cleanup removed the victim branch")
+	}
+	if !pathExists(project.ManifestPath(project.ActiveDir(), manifest.Slug)) {
+		t.Fatal("cleanup removed the victim manifest")
+	}
+}
+
 func TestWorkerCleanupRefusesAnAmbiguousOwner(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
 	first := liveWorkerAgent(manifest, herdr.StatusIdle)
