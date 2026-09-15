@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -321,6 +322,42 @@ func TestBuildLocalOnlySkipsExternalSourcesAndArtifactBodies(t *testing.T) {
 	}
 	if got.Items == nil || got.Contracts == nil || got.Warnings == nil {
 		t.Fatalf("local snapshot contains nil arrays: %+v", got)
+	}
+}
+
+func TestBuildPrefetchesPullRequestsWithBoundedConcurrency(t *testing.T) {
+	release := make(chan struct{})
+	var active, maximum atomic.Int32
+	fetcher := fetcherFunc(func(context.Context, string, string) (PullRequestDTO, error) {
+		current := active.Add(1)
+		for {
+			observed := maximum.Load()
+			if current <= observed || maximum.CompareAndSwap(observed, current) {
+				break
+			}
+		}
+		<-release
+		active.Add(-1)
+		return PullRequestDTO{State: "open"}, nil
+	})
+	done := make(chan struct{})
+	var results map[string]memoResult
+	go func() {
+		results = prefetchPullRequests(context.Background(), "/repo",
+			[]string{"#1", "#2", "#3", "#4", "#5", "#6", "#7", "#8"}, fetcher)
+		close(done)
+	}()
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for maximum.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	<-done
+	if got := maximum.Load(); got < 2 || got > 4 {
+		t.Fatalf("maximum concurrent fetches = %d, want 2-4", got)
+	}
+	if len(results) != 8 {
+		t.Fatalf("prefetched results = %d, want 8", len(results))
 	}
 }
 

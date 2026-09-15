@@ -2,6 +2,7 @@ package programui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -176,9 +177,97 @@ func TestServeDefaultHerdrListerTimesOutInsteadOfHanging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "context deadline exceeded") {
-		t.Fatalf("API response did not report the bounded Herdr failure: %s", body)
+	if !strings.Contains(string(body), `"status":"loading"`) {
+		t.Fatalf("initial API response did not report pending enrichment: %s", body)
 	}
+	eventually(t, time.Second, func() bool {
+		response, requestErr := http.Get(url + "/api/program")
+		if requestErr != nil {
+			return false
+		}
+		defer response.Body.Close()
+		body, readErr := io.ReadAll(response.Body)
+		return readErr == nil && strings.Contains(string(body), "context deadline exceeded")
+	})
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not stop after cancellation")
+	}
+}
+
+func TestServePublishesLocalSnapshotBeforeDelayedSources(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p, err := program.New("local-first", "Local First", repo, "copilot", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := program.Create(p); err != nil {
+		t.Fatal(err)
+	}
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	output := newLineWriter()
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, Options{
+			Slug: p.Slug, Port: 0, Open: false, Out: output,
+			Agents: &controlledAgentLister{release: release, started: started},
+		})
+	}()
+
+	var url string
+	select {
+	case line := <-output.lines:
+		url = strings.TrimSpace(line)
+	case err := <-done:
+		t.Fatalf("server stopped before listening: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("delayed Herdr source blocked URL publication")
+	}
+	response, err := http.Get(url + "/api/program")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var initial programview.Snapshot
+	if err := json.NewDecoder(response.Body).Decode(&initial); err != nil {
+		t.Fatal(err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if initial.SourceHealth.Herdr.Status != "loading" {
+		t.Fatalf("initial Herdr status = %q, want loading", initial.SourceHealth.Herdr.Status)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("background refresh did not start")
+	}
+	close(release)
+	eventually(t, time.Second, func() bool {
+		response, requestErr := http.Get(url + "/api/program")
+		if requestErr != nil {
+			return false
+		}
+		defer response.Body.Close()
+		var snapshot programview.Snapshot
+		return json.NewDecoder(response.Body).Decode(&snapshot) == nil &&
+			snapshot.SourceHealth.Herdr.Status == "ok"
+	})
 
 	cancel()
 	select {

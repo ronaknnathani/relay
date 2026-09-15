@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ronaknnathani/relay/internal/agent"
@@ -105,6 +106,22 @@ func Build(slug string, options Options) (Snapshot, error) {
 	snapshot.DetailItem = detailItem
 
 	options.GitHub = newMemoFetcher(options.GitHub)
+	type agentResult struct {
+		agents []herdr.Agent
+		err    error
+	}
+	var agentsResult <-chan agentResult
+	if options.Agents != nil {
+		channel := make(chan agentResult, 1)
+		agentsResult = channel
+		go func() {
+			agents, err := options.Agents.Agents()
+			channel <- agentResult{agents: agents, err: err}
+		}()
+	}
+	prefetched := prefetchPullRequests(
+		context.Background(), p.Repo, recordedPullRequestRefs(p.Items), options.GitHub,
+	)
 	views, projectWarnings, err := projectViewsForSnapshot(p, options)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load child project views: %w", err)
@@ -131,9 +148,10 @@ func Build(slug string, options Options) (Snapshot, error) {
 
 	agents := []herdr.Agent{}
 	agentsErr := error(nil)
-	if options.Agents != nil {
+	if agentsResult != nil {
 		snapshot.SourceHealth.Herdr.Status = "ok"
-		agents, agentsErr = options.Agents.Agents()
+		result := <-agentsResult
+		agents, agentsErr = result.agents, result.err
 		if agentsErr != nil {
 			addSourceWarning(&snapshot, &snapshot.SourceHealth.Herdr, fmt.Sprintf("list Herdr agents: %v", agentsErr))
 		}
@@ -147,10 +165,70 @@ func Build(slug string, options Options) (Snapshot, error) {
 	}
 	snapshot.Items = buildItems(
 		context.Background(), observed, plan, orphaned, detailItem, limit,
-		options.GitHub, agents, agentsErr, &snapshot,
+		options.GitHub, prefetched, agents, agentsErr, &snapshot,
 	)
 	snapshot.Contracts = buildContracts(programDir, observed.Contracts, selectedContractRefs(observed.Items, detailItem), limit, &snapshot.Warnings)
 	return snapshot, nil
+}
+
+func recordedPullRequestRefs(items []program.WorkItem) []string {
+	seen := make(map[string]bool)
+	refs := make([]string, 0)
+	for _, item := range items {
+		ref := strings.TrimSpace(item.PRRef)
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	return refs
+}
+
+func prefetchPullRequests(
+	ctx context.Context,
+	repo string,
+	refs []string,
+	fetcher Fetcher,
+) map[string]memoResult {
+	results := make(map[string]memoResult, len(refs))
+	if fetcher == nil || len(refs) == 0 {
+		return results
+	}
+	const parallelism = 4
+	jobs := make(chan string)
+	fetched := make(chan struct {
+		ref    string
+		result memoResult
+	})
+	var wait sync.WaitGroup
+	workers := min(parallelism, len(refs))
+	wait.Add(workers)
+	for range workers {
+		go func() {
+			defer wait.Done()
+			for ref := range jobs {
+				pullRequest, err := fetcher.Fetch(ctx, repo, ref)
+				fetched <- struct {
+					ref    string
+					result memoResult
+				}{ref: ref, result: memoResult{pullRequest: pullRequest, err: err}}
+			}
+		}()
+	}
+	go func() {
+		for _, ref := range refs {
+			jobs <- ref
+		}
+		close(jobs)
+		wait.Wait()
+		close(fetched)
+	}()
+	for entry := range fetched {
+		results[entry.ref] = entry.result
+	}
+	return results
 }
 
 // projectViewsForSnapshot resolves child state with the same authoritative
@@ -503,6 +581,7 @@ func buildItems(
 	detailItem string,
 	limit int64,
 	github Fetcher,
+	prefetched map[string]memoResult,
 	agents []herdr.Agent,
 	agentsErr error,
 	snapshot *Snapshot,
@@ -585,7 +664,11 @@ func buildItems(
 			addSourceWarning(snapshot, &snapshot.SourceHealth.Mailbox, fmt.Sprintf("item %s mailbox unavailable: child project %q not found", item.ID, item.ProjectSlug))
 		}
 		if github != nil && dto.RecordedPR != nil {
-			live, err := github.Fetch(ctx, p.Repo, dto.RecordedPR.Ref)
+			result, ok := prefetched[dto.RecordedPR.Ref]
+			if !ok {
+				result.pullRequest, result.err = github.Fetch(ctx, p.Repo, dto.RecordedPR.Ref)
+			}
+			live, err := result.pullRequest, result.err
 			if err != nil {
 				message := fmt.Sprintf("item %s GitHub refresh failed: %v", item.ID, err)
 				dto.Warnings = append(dto.Warnings, message)

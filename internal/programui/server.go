@@ -23,15 +23,16 @@ var programUIHerdrCommandTimeout = 5 * time.Second
 
 // Options configures the foreground local Program UI server.
 type Options struct {
-	Slug        string
-	Port        int
-	Open        bool
-	Out         io.Writer
-	Builder     Builder
-	GitHub      programview.Fetcher
-	Agents      programview.AgentLister
-	Now         func() time.Time
-	OpenBrowser func(string) error
+	Slug         string
+	Port         int
+	Open         bool
+	Out          io.Writer
+	Builder      Builder
+	LocalBuilder Builder
+	GitHub       programview.Fetcher
+	Agents       programview.AgentLister
+	Now          func() time.Time
+	OpenBrowser  func(string) error
 }
 
 // Serve verifies the program, listens on loopback, and blocks until cancellation.
@@ -44,6 +45,7 @@ func Serve(ctx context.Context, options Options) error {
 		now = time.Now
 	}
 	builder := options.Builder
+	localBuilder := options.LocalBuilder
 	if builder == nil {
 		github := options.GitHub
 		if github == nil {
@@ -61,11 +63,26 @@ func Serve(ctx context.Context, options Options) error {
 				Now: now, GitHub: cachedGitHub, Agents: agents, DetailItem: detailItem,
 			})
 		}
+		if localBuilder == nil {
+			localBuilder = func(slug, detailItem string) (programview.Snapshot, error) {
+				return programview.Build(slug, programview.Options{
+					Now: now, GitHub: cachedGitHub, Agents: agents,
+					DetailItem: detailItem, LocalOnly: true,
+				})
+			}
+		}
+	}
+	if localBuilder == nil {
+		localBuilder = builder
 	}
 	cache := newSnapshotCache(snapshotTTL, now, builder)
-	if _, err := cache.Get(options.Slug, ""); err != nil {
+	seed, err := localBuilder(options.Slug, "")
+	if err != nil {
 		return fmt.Errorf("verify program %q: %w", options.Slug, err)
 	}
+	feed := newSnapshotFeed(seed, snapshotTTL, now, func() (programview.Snapshot, error) {
+		return builder(options.Slug, "")
+	})
 	if err := ctx.Err(); err != nil {
 		return nil
 	}
@@ -81,7 +98,7 @@ func Serve(ctx context.Context, options Options) error {
 	}
 	url := "http://127.0.0.1:" + actualPort
 	server := &http.Server{
-		Handler: newHandler(options.Slug, actualPort, cache,
+		Handler: newHandler(options.Slug, actualPort, cache, feed,
 			func(slug string, selector programview.ArtifactSelector) (programview.ArtifactResponse, error) {
 				return programview.LoadArtifact(slug, selector, 0)
 			}),
@@ -91,6 +108,7 @@ func Serve(ctx context.Context, options Options) error {
 	go func() {
 		serveError <- server.Serve(listener)
 	}()
+	feed.Refresh()
 
 	out := options.Out
 	if out == nil {

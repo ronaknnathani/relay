@@ -43,17 +43,23 @@ func NewHandler(options HandlerOptions) http.Handler {
 			return programview.LoadArtifact(slug, selector, 0)
 		}
 	}
-	return newHandler(options.Slug, strconv.Itoa(options.Port), cache, loader)
+	return newHandler(options.Slug, strconv.Itoa(options.Port), cache, nil, loader)
 }
 
-func newHandler(slug, port string, cache *snapshotCache, artifactLoader ArtifactLoader) *handler {
-	return &handler{slug: slug, port: port, cache: cache, artifactLoader: artifactLoader}
+func newHandler(
+	slug, port string,
+	cache *snapshotCache,
+	feed *snapshotFeed,
+	artifactLoader ArtifactLoader,
+) *handler {
+	return &handler{slug: slug, port: port, cache: cache, feed: feed, artifactLoader: artifactLoader}
 }
 
 type handler struct {
 	slug           string
 	port           string
 	cache          *snapshotCache
+	feed           *snapshotFeed
 	artifactLoader ArtifactLoader
 }
 
@@ -114,10 +120,16 @@ func (h *handler) serveProgram(response http.ResponseWriter, request *http.Reque
 		http.Error(response, "invalid item: expected w followed by a positive integer", http.StatusBadRequest)
 		return
 	}
-	snapshot, err := h.cache.Get(h.slug, detailItem)
-	if err != nil {
-		http.Error(response, fmt.Sprintf("build program snapshot: %v", err), http.StatusInternalServerError)
-		return
+	var snapshot programview.Snapshot
+	if detailItem == "" && h.feed != nil {
+		snapshot = h.feed.Get()
+	} else {
+		var err error
+		snapshot, err = h.cache.Get(h.slug, detailItem)
+		if err != nil {
+			http.Error(response, fmt.Sprintf("build program snapshot: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 	response.Header().Set("Content-Type", "application/json; charset=utf-8")
 	response.WriteHeader(http.StatusOK)
