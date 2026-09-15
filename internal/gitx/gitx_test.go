@@ -322,9 +322,10 @@ func TestSanitizeDiagnosticRedactsGitURLUserinfo(t *testing.T) {
 		"remote ftp://ftp-token@example.org/team/repo.git",
 		"remote ssh://ssh-token@git.example.net/team/repo.git",
 		"remote scp-token@git.example.io:team/repo.git",
+		"remote deploy-token@git.example:repo",
 	}, "\n")
 	got := SanitizeDiagnostic(input)
-	for _, secret := range []string{"relay", "secret", "ftp-token", "ssh-token", "scp-token"} {
+	for _, secret := range []string{"relay", "secret", "ftp-token", "ssh-token", "scp-token", "deploy-token"} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("SanitizeDiagnostic(%q) leaked %q in %q", input, secret, got)
 		}
@@ -334,6 +335,7 @@ func TestSanitizeDiagnosticRedactsGitURLUserinfo(t *testing.T) {
 		"ftp://[redacted]@example.org/team/repo.git",
 		"ssh://[redacted]@git.example.net/team/repo.git",
 		"[redacted]@git.example.io:team/repo.git",
+		"[redacted]@git.example:repo",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("SanitizeDiagnostic(%q) = %q, want %q", input, got, want)
@@ -393,9 +395,9 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			want:  "remote: [redacted]@git_alias_1:team/repo.git",
 		},
 		{
-			name:  "unrelated text",
+			name:  "single-component scp path",
 			input: "status ops@example.com:ready",
-			want:  "status ops@example.com:ready",
+			want:  "status [redacted]@example.com:ready",
 		},
 	}
 	for _, test := range tests {

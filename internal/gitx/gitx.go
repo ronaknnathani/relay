@@ -335,7 +335,7 @@ func sanitizeSCPStyleURL(rawURL string) string {
 	if secretStart := strings.IndexAny(path, "?#"); secretStart >= 0 {
 		path = path[:secretStart]
 	}
-	if path == "" || (!strings.Contains(path, "/") && !strings.HasSuffix(path, ".git")) {
+	if path == "" {
 		return rawURL
 	}
 	return "[redacted]@" + hostPath[:pathStart+1] + path
