@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ronaknnathani/relay/internal/config"
 	"github.com/ronaknnathani/relay/internal/gitx"
@@ -121,15 +122,23 @@ func TestCreateProjectWaitsForConcurrentArchiveOfSameSlug(t *testing.T) {
 
 	createResult := make(chan projectCreateResult, 1)
 	createErr := make(chan error, 1)
+	createStarted := make(chan struct{})
 	go func() {
+		close(createStarted)
 		result, err := createProject(projectCreateOpts{
 			task: "replacement project", name: slug, repo: repo,
 		})
 		createResult <- result
 		createErr <- err
 	}()
+	<-createStarted
 
-	close(continueRemoval)
+	select {
+	case err := <-createErr:
+		t.Fatalf("createProject completed while archive held the lifecycle lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+		close(continueRemoval)
+	}
 	if err := <-archiveErr; err != nil {
 		t.Fatalf("archiveProject: %v", err)
 	}
