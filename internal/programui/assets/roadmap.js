@@ -74,16 +74,18 @@
     const initial = document.getElementById("initial-program");
     const snapshot = initial ? JSON.parse(initial.textContent) : null;
     const edges = snapshot && snapshot.graph ? snapshot.graph.edges || [] : [];
-    const base = roadmapContent.getBoundingClientRect();
-    if (base.width === 0 || edges.length === 0) {
+    const width = roadmapContent.clientWidth;
+    if (width === 0 || edges.length === 0) {
       return;
     }
     const boxes = new Map(cards().map((card) => {
-      const box = card.getBoundingClientRect();
+      const stage = card.parentElement;
+      const left = stage.offsetLeft + card.offsetLeft;
+      const top = stage.offsetTop + card.offsetTop;
       return [card.dataset.item, {
-        center: box.left - base.left + box.width / 2,
-        top: box.top - base.top,
-        bottom: box.bottom - base.top,
+        center: left + card.offsetWidth / 2,
+        top,
+        bottom: top + card.offsetHeight,
       }];
     }));
     const paths = [];
@@ -119,9 +121,10 @@
       path.dataset.edgeCount = String(grouped[name].length);
       fragment.append(path);
     });
-    graph.setAttribute("width", String(Math.ceil(base.width)));
-    graph.setAttribute("height", String(Math.ceil(base.height)));
-    graph.setAttribute("viewBox", `0 0 ${Math.ceil(base.width)} ${Math.ceil(base.height)}`);
+    const height = roadmapContent.scrollHeight;
+    graph.setAttribute("width", String(width));
+    graph.setAttribute("height", String(height));
+    graph.setAttribute("viewBox", `0 0 ${width} ${height}`);
     graphEdges.replaceChildren(fragment);
     window.__relayRoadmapConnectorPaths = paths;
   };
