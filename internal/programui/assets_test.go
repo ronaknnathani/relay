@@ -1112,13 +1112,13 @@ func TestScriptKeepsPollingSelectionAndLinkSafety(t *testing.T) {
 	if !found {
 		t.Fatal("app.js is missing renderActiveTab after renderInitial")
 	}
-	if strings.Index(renderInitial, "renderHeader();") > strings.Index(renderInitial, "window.__relayUsableAt") ||
+	if !strings.Contains(renderInitial, `const bootstrappedRoadmap = state.snapshot.schema === "relay.program.roadmap.bootstrap.v1";`) ||
+		!strings.Contains(renderInitial, `state.dirtyTabs.delete("roadmap");`) ||
 		!strings.Contains(renderInitial, `if (state.tab === "roadmap" && !state.selected) {
-    renderActiveTab();
     markUsable();
     return;
   }`) {
-		t.Error("the usable marker must follow the complete header and active-tab render")
+		t.Error("the server-rendered roadmap must remain intact through the usable marker")
 	}
 }
 

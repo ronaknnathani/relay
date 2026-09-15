@@ -128,6 +128,15 @@ type roadmapOverview struct {
 	UnreadMessages int `json:"unread_messages"`
 }
 
+type roadmapBootstrap struct {
+	Schema string                `json:"schema"`
+	Graph  roadmapBootstrapGraph `json:"graph"`
+}
+
+type roadmapBootstrapGraph struct {
+	Edges []programview.GraphEdgeDTO `json:"edges"`
+}
+
 func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	setSecurityHeaders(response.Header())
 	if !h.allowedHost(request.Host) {
@@ -227,9 +236,20 @@ func prepareIndexTemplateData(index, roadmapCore, styles []byte) ([]byte, error)
 
 func renderIndex(index, encoded []byte) ([]byte, error) {
 	var snapshot roadmapSnapshot
+	bootstrap := []byte("null")
 	if !bytes.Equal(encoded, []byte("null")) {
 		if err := json.Unmarshal(encoded, &snapshot); err != nil {
 			return nil, fmt.Errorf("decode roadmap index snapshot: %w", err)
+		}
+		var err error
+		bootstrap, err = json.Marshal(roadmapBootstrap{
+			Schema: "relay.program.roadmap.bootstrap.v1",
+			Graph: roadmapBootstrapGraph{
+				Edges: snapshot.Graph.Edges,
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("encode roadmap index bootstrap: %w", err)
 		}
 	}
 	markup := renderRoadmapMarkup(snapshot)
@@ -242,7 +262,7 @@ func renderIndex(index, encoded []byte) ([]byte, error) {
 	}
 	replacements := map[string]string{
 		roadmapMarkupToken:  string(markup),
-		roadmapJSONToken:    string(encoded),
+		roadmapJSONToken:    string(bootstrap),
 		programSlugToken:    html.EscapeString(snapshot.Program.Slug),
 		programTitleToken:   html.EscapeString(title),
 		programSummaryToken: html.EscapeString(snapshot.Program.Summary),

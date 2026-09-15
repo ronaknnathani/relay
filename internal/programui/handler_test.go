@@ -90,6 +90,11 @@ func TestHandlerRendersMergedProgressBeforeHydration(t *testing.T) {
 	)) {
 		t.Fatal("rendered index does not preserve merged progress")
 	}
+	if !bytes.Contains(response.Body.Bytes(), []byte(`"schema":"relay.program.roadmap.bootstrap.v1"`)) ||
+		bytes.Contains(response.Body.Bytes(), []byte(`"nodes"`)) ||
+		bytes.Contains(response.Body.Bytes(), []byte(`"items"`)) {
+		t.Fatal("rendered index must embed only the lean roadmap bootstrap data")
+	}
 }
 
 func TestHandlerLoadsCurrentRoadmapOutsideDocument(t *testing.T) {

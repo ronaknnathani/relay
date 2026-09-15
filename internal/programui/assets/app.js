@@ -1273,8 +1273,14 @@ function drawConnectorsForCurrentGraph() {
 /* ---------- render orchestration ---------- */
 
 function renderInitial() {
-  renderHeader();
   state.dirtyTabs = new Set(TABS);
+  const bootstrappedRoadmap = state.snapshot.schema === "relay.program.roadmap.bootstrap.v1";
+  if (bootstrappedRoadmap) {
+    state.dirtyTabs.delete("roadmap");
+  } else {
+    renderHeader();
+    renderActiveTab();
+  }
   const markUsable = () => {
     requestAnimationFrame(() => requestAnimationFrame(() => {
       window.__relayUsableAt = performance.now();
@@ -1291,7 +1297,6 @@ function renderInitial() {
     }));
   };
   if (state.tab === "roadmap" && !state.selected) {
-    renderActiveTab();
     markUsable();
     return;
   }
@@ -1561,7 +1566,9 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
       renderInitial();
       window.requestAnimationFrame(() => {
         state.signature = signatureOf(JSON.stringify(snapshot));
-        setSnapshotFeed(snapshot);
+        if (snapshot.schema !== "relay.program.roadmap.bootstrap.v1") {
+          setSnapshotFeed(snapshot);
+        }
         if (state.pendingDrawer && state.selected) {
           withDeferredUI(() => {
             state.pendingDrawer = false;

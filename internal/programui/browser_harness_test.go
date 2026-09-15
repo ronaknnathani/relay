@@ -207,7 +207,7 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 				if (window.__relayCompleteUsableAt > 0 ||
 					(document.querySelector("#app-script") && !window.__relayCoreReady) ||
 					typeof state === "undefined" ||
-					state.snapshot?.graph?.nodes?.length !== 100 ||
+					!state.snapshot ||
 					!window.__relayCompleteGraphAt ||
 					document.querySelector("#program-title")?.textContent !== "Reference Program" ||
 					!document.querySelector("#program-summary")?.textContent ||
