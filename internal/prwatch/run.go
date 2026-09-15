@@ -9,9 +9,10 @@ import (
 	"time"
 )
 
-// maxConsecutiveErrors stops a watcher that cannot observe GitHub at all, so a
-// broken watcher is visibly stopped instead of silently blind.
-const maxConsecutiveErrors = 3
+// maxNonRecoverableErrorsSinceSuccess stops a watcher whose observations keep
+// failing for reasons that require intervention, even when access failures are
+// interleaved.
+const maxNonRecoverableErrorsSinceSuccess = 3
 
 // defaultInterval is how often the watcher wakes internally to compare the
 // clock with the next scheduled check. Waking is silent; only a scheduled check
@@ -138,11 +139,13 @@ func Tick(ctx context.Context, slug string, options Options) (Digest, error) {
 }
 
 // Run holds the watcher singleton lock and observes the project's pull request
-// until it reaches a terminal state, the context is canceled, or observation
-// fails repeatedly. Every start — first or restart — begins with an immediate
-// observation that wakes the owner if the pull request already needs attention,
-// because the watcher asserts nothing locally about what an owner has already
-// done: only the current remote truth decides.
+// until it reaches a terminal state, the context is canceled, or three
+// non-recoverable observations fail before the next complete success.
+// Recoverable GitHub access failures remain scheduled without consuming or
+// resetting that failure budget. Every start — first or restart — begins with
+// an immediate observation that wakes the owner if the pull request already
+// needs attention, because the watcher asserts nothing locally about what an
+// owner has already done: only the current remote truth decides.
 func Run(ctx context.Context, slug string, options Options) (retErr error) {
 	options = normalizedOptions(options)
 	target, err := options.Locate(slug)
@@ -183,6 +186,7 @@ func Run(ctx context.Context, slug string, options Options) (retErr error) {
 		state.DelaySeconds = int64(FastCadence / time.Second)
 		state.NextCheckAt = now.Add(FastCadence).Format(time.RFC3339)
 		state.ConsecutiveErrors = 0
+		state.NonRecoverableErrorsSinceSuccess = 0
 		state.Error = ""
 		state.Warning = ""
 		state.StopReason = ""
@@ -394,6 +398,7 @@ func (r *checkRunner) recordObservation(
 		state.ActionableCount = len(digest.Items)
 		state.AttentionPending = len(digest.Items) > 0
 		state.ConsecutiveErrors = 0
+		state.NonRecoverableErrorsSinceSuccess = 0
 		state.Error = ""
 		state.UpdatedAt = now.Format(time.RFC3339)
 		return state, nil
@@ -518,19 +523,24 @@ func (r *checkRunner) recordClosed(now time.Time, state State) error {
 }
 
 // recordObservationError treats a GitHub failure as an error, never as a quiet
-// no-action. The watcher retries at the fast cadence and stops after three
-// consecutive failures so a blind watcher is visible.
+// no-action. Recoverable GitHub access failures remain scheduled at the fast
+// cadence without changing the non-recoverable budget; three non-recoverable
+// errors before the next successful observation stop it.
 func (r *checkRunner) recordObservationError(now time.Time, cause error) (bool, error) {
 	wrapped := fmt.Errorf(
 		"observe pull request #%d for project %q: %w", r.target.PRNumber, r.slug, cause,
 	)
+	recoverable := isRecoverableGitHubAccessError(cause)
 	state, err := UpdateState(r.slug, func(state State) (State, error) {
 		state.ConsecutiveErrors++
 		state.Error = wrapped.Error()
 		state.DelaySeconds = int64(FastCadence / time.Second)
 		state.NextCheckAt = now.Add(FastCadence).Format(time.RFC3339)
 		state.UpdatedAt = now.Format(time.RFC3339)
-		if state.ConsecutiveErrors >= maxConsecutiveErrors {
+		if !recoverable {
+			state.NonRecoverableErrorsSinceSuccess++
+		}
+		if state.NonRecoverableErrorsSinceSuccess >= maxNonRecoverableErrorsSinceSuccess {
 			state.Status = StatusFailed
 			state.NextCheckAt = ""
 		}
@@ -541,12 +551,15 @@ func (r *checkRunner) recordObservationError(now time.Time, cause error) (bool, 
 	}
 	if state.Status == StatusFailed {
 		failure := r.events.failure(now, fmt.Sprintf(
-			"pr watch failed project=%s after %d consecutive observation errors: %v",
-			r.slug, state.ConsecutiveErrors, cause,
+			"pr watch failed project=%s after %d non-recoverable observation errors since the last success: %v",
+			r.slug, state.NonRecoverableErrorsSinceSuccess, cause,
 		))
 		return true, errors.Join(wrapped, failure)
 	}
-	return false, r.events.retry(now, wrapped.Error(), state.DelaySeconds, state.NextCheckAt)
+	if err := r.events.retry(now, wrapped.Error(), state.DelaySeconds, state.NextCheckAt); err != nil {
+		return true, recordFailure(r.slug, now, err)
+	}
+	return false, nil
 }
 
 // recordFailure records why a watcher stopped when its own events could not be
@@ -554,6 +567,7 @@ func (r *checkRunner) recordObservationError(now time.Time, cause error) (bool, 
 func recordFailure(slug string, now time.Time, cause error) error {
 	_, err := UpdateState(slug, func(state State) (State, error) {
 		state.Status = StatusFailed
+		state.NextCheckAt = ""
 		state.Error = cause.Error()
 		state.UpdatedAt = now.Format(time.RFC3339)
 		return state, nil

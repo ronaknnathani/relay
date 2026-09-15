@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -247,6 +249,231 @@ func TestObserveRetriesThenFails(t *testing.T) {
 	}
 }
 
+func TestObserveClassifiesRecoverableGitHubAccessFailures(t *testing.T) {
+	for name, test := range map[string]struct {
+		failure     error
+		recoverable bool
+	}{
+		"IP allow list denial": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "GraphQL: Although you appear to have the correct authorization credentials, " +
+					"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+					"IP address is not permitted to access this resource. (repository)",
+			},
+			recoverable: true,
+		},
+		"IP allow list denial without GraphQL scope": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "gh: Although you appear to have the correct authorization credentials, " +
+					"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+					"IP address is not permitted to access this resource.",
+			},
+			recoverable: true,
+		},
+		"REST IP allow list denial": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "gh: Although you appear to have the correct authorization credentials, " +
+					"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+					"IP address is not permitted to access this resource. (HTTP 403)",
+			},
+			recoverable: true,
+		},
+		"primary rate limit": {
+			failure:     errors.New("API rate limit exceeded for 192.0.2.1"),
+			recoverable: true,
+		},
+		"REST primary rate limit": {
+			failure: &ghCommandError{
+				args:   "api repos/acme/widgets/pulls/42/reviews",
+				cause:  errors.New("exit status 1"),
+				detail: "gh: API rate limit exceeded for 192.0.2.1. (HTTP 403)",
+			},
+			recoverable: true,
+		},
+		"primary rate limit with retry guidance": {
+			failure: errors.New(
+				"API rate limit exceeded for 192.0.2.1. Please wait a few minutes before you try again.",
+			),
+			recoverable: true,
+		},
+		"primary rate limit already exceeded": {
+			failure: &ghCommandError{
+				args:   "api repos/acme/widgets/pulls/42/reviews",
+				cause:  errors.New("exit status 1"),
+				detail: "GraphQL: API rate limit already exceeded for user ID 134885571.",
+			},
+			recoverable: true,
+		},
+		"secondary rate limit": {
+			failure:     errors.New("You have exceeded a secondary rate limit"),
+			recoverable: true,
+		},
+		"secondary rate limit with retry guidance": {
+			failure: errors.New(
+				"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+			),
+			recoverable: true,
+		},
+		"secondary rate limit with support request ID": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "gh: You have exceeded a secondary rate limit. " +
+					"Please wait a few minutes before you try again. " +
+					"If you reach out to GitHub Support for help, please include the request ID " +
+					"ABCD:1234:EF56 in your message. (HTTP 403)",
+			},
+			recoverable: true,
+		},
+		"REST secondary rate limit": {
+			failure: &ghCommandError{
+				args:   "api repos/acme/widgets/pulls/42/reviews",
+				cause:  errors.New("exit status 1"),
+				detail: "gh: You have exceeded a secondary rate limit. (HTTP 429)",
+			},
+			recoverable: true,
+		},
+		"multiple recognized diagnostics": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "GraphQL: API rate limit already exceeded for user ID 134885571.\n\n" +
+					"GraphQL: Although you appear to have the correct authorization credentials, " +
+					"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+					"IP address is not permitted to access this resource. (repository)",
+			},
+			recoverable: true,
+		},
+		"repository name containing secondary-rate-limit": {
+			failure: errors.New(
+				"GraphQL: Could not resolve to a Repository with the name 'owner/secondary-rate-limit'",
+			),
+		},
+		"repository name reflecting allow-list denial": {
+			failure: errors.New(
+				"GraphQL: Could not resolve to a Repository with the name 'owner/ip-allow-list-denied'",
+			),
+		},
+		"allow list denial with unrelated scope": {
+			failure: errors.New(
+				"gh: Although you appear to have the correct authorization credentials, " +
+					"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+					"IP address is not permitted to access this resource. (organization)",
+			),
+		},
+		"secondary rate limit with unrelated continuation": {
+			failure: errors.New(
+				"You have exceeded a secondary rate limit. Contact your administrator.",
+			),
+		},
+		"rate limit followed by unrelated failure": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "GraphQL: API rate limit already exceeded for user ID 134885571.\n" +
+					"GraphQL: Could not resolve to a Repository with the name 'owner/missing'",
+			},
+		},
+		"secondary rate limit guidance followed by unrelated failure": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "You have exceeded a secondary rate limit. " +
+					"Please wait a few minutes before you try again.\n" +
+					"GraphQL: Could not resolve to a Repository with the name 'owner/missing'",
+			},
+		},
+		"REST IP allow list denial with wrong status": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "gh: Although you appear to have the correct authorization credentials, " +
+					"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+					"IP address is not permitted to access this resource. (HTTP 429)",
+			},
+		},
+		"REST rate limit with wrong status": {
+			failure: &ghCommandError{
+				args:   "api repos/acme/widgets/pulls/42/reviews",
+				cause:  errors.New("exit status 1"),
+				detail: "gh: API rate limit exceeded for 192.0.2.1. (HTTP 401)",
+			},
+		},
+		"REST rate limit followed by unrelated failure": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "gh: API rate limit exceeded for 192.0.2.1. (HTTP 403)\n" +
+					"gh: Bad credentials (HTTP 401)",
+			},
+		},
+		"unrelated failure": {
+			failure: errors.New("HTTP 502"),
+		},
+		"authentication failure": {
+			failure: errors.New("HTTP 401: Bad credentials"),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gh := fullFixtureGH()
+			key := "api repos/acme/widgets/pulls/42/reviews"
+			delete(gh.responses, key)
+			gh.failures[key] = test.failure
+
+			_, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+			if err == nil {
+				t.Fatal("Observe = nil error, want the GitHub failure surfaced")
+			}
+			if !strings.Contains(err.Error(), test.failure.Error()) {
+				t.Errorf("error %q does not carry the gh failure %q", err, test.failure)
+			}
+			if got := isRecoverableGitHubAccessError(err); got != test.recoverable {
+				t.Errorf("isRecoverableGitHubAccessError() = %t, want %t for %v", got, test.recoverable, err)
+			}
+			if got := gh.attempts[key]; got != defaultAttempts {
+				t.Errorf("attempts = %d, want %d", got, defaultAttempts)
+			}
+		})
+	}
+}
+
+func TestCLIRunnerDoesNotClassifyCommandArgumentsAsGitHubErrorDetail(t *testing.T) {
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	if err := os.WriteFile(
+		ghPath,
+		[]byte("#!/bin/sh\nprintf '%s\\n' 'HTTP 401: Bad credentials' >&2\nexit 1\n"),
+		0o755,
+	); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, err := NewCLIRunner(0).Run(
+		context.Background(),
+		t.TempDir(),
+		"api",
+		"repos/acme/api-rate-limit-exceeded",
+	)
+	if err == nil {
+		t.Fatal("Run = nil error, want the gh failure surfaced")
+	}
+	if got := classifyGitHubAccessError(err); isRecoverableGitHubAccessError(got) {
+		t.Fatalf("classifyGitHubAccessError(%v) marked command arguments as recoverable", err)
+	}
+	for _, want := range []string{"api-rate-limit-exceeded", "HTTP 401: Bad credentials"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Run error %q is missing %q", err, want)
+		}
+	}
+}
+
 func TestObserveRecoversFromATransientFailure(t *testing.T) {
 	gh := fullFixtureGH()
 	failing := "api repos/acme/widgets/issues/42/comments"
@@ -276,6 +503,9 @@ func TestObserveStopsOnCanceledContext(t *testing.T) {
 	_, err := fixtureClient(t, fullFixtureGH()).Observe(ctx, 42)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Observe = %v, want context.Canceled", err)
+	}
+	if isRecoverableGitHubAccessError(err) {
+		t.Fatalf("Observe = %v, want cancellation to remain terminal", err)
 	}
 }
 
@@ -451,9 +681,55 @@ func TestObserveAcceptsAnEmptyReviewThreadPage(t *testing.T) {
 	}
 }
 
-// GitHub answers a partially failed GraphQL query with an `errors` list and a
-// zero exit code, so a thread or a check it declined to return would otherwise
-// look like one that does not exist.
+// GraphQL response parsing remains defensive even though current gh versions
+// report responses with an errors list as command failures.
+func TestObserveClassifiesTypedGraphQLRateLimit(t *testing.T) {
+	gh := fullFixtureGH()
+	gh.responses["graphql reviewThreads"] = `{"data":{"repository":{"pullRequest":{"reviewThreads":` +
+		`{"pageInfo":{"hasNextPage":false,"endCursor":"c1"},"nodes":[]}}}},` +
+		`"errors":[{"type":"RATE_LIMITED","message":"Request could not be completed"}]}`
+
+	_, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+	if err == nil {
+		t.Fatal("Observe = nil error, want the partial GraphQL answer reported")
+	}
+	if !isRecoverableGitHubAccessError(err) {
+		t.Fatalf("Observe = %v, want the RATE_LIMITED type classified as recoverable", err)
+	}
+}
+
+func TestObserveClassifiesGraphQLRateLimitMessageFallback(t *testing.T) {
+	gh := fullFixtureGH()
+	gh.responses["graphql checks"] = `{"data":{"repository":{"pullRequest":{"statusCheckRollup":{"nodes":[]}}}},` +
+		`"errors":[{"type":"FORBIDDEN","message":"You have exceeded a secondary rate limit"}]}`
+
+	_, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+	if err == nil {
+		t.Fatal("Observe = nil error, want the partial GraphQL answer reported")
+	}
+	if !isRecoverableGitHubAccessError(err) {
+		t.Fatalf("Observe = %v, want the rate-limit message classified as recoverable", err)
+	}
+}
+
+func TestObserveDoesNotClassifyMixedGraphQLErrorsAsRecoverable(t *testing.T) {
+	gh := fullFixtureGH()
+	gh.responses["graphql reviewThreads"] = `{"data":{"repository":{"pullRequest":{"reviewThreads":` +
+		`{"pageInfo":{"hasNextPage":false,"endCursor":"c1"},"nodes":[]}}}},` +
+		`"errors":[` +
+		`{"type":"RATE_LIMITED","message":"Request could not be completed"},` +
+		`{"type":"FORBIDDEN","message":"Resource not accessible"}` +
+		`]}`
+
+	_, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+	if err == nil {
+		t.Fatal("Observe = nil error, want the partial GraphQL answer reported")
+	}
+	if isRecoverableGitHubAccessError(err) {
+		t.Fatalf("Observe = %v, want mixed GraphQL errors to remain terminal", err)
+	}
+}
+
 func TestObserveRejectsAPartialGraphQLAnswer(t *testing.T) {
 	for name, test := range map[string]struct {
 		key      string
@@ -463,7 +739,7 @@ func TestObserveRejectsAPartialGraphQLAnswer(t *testing.T) {
 			key: "graphql reviewThreads",
 			response: `{"data":{"repository":{"pullRequest":{"reviewThreads":` +
 				`{"pageInfo":{"hasNextPage":false,"endCursor":"c1"},"nodes":[]}}}},` +
-				`"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`,
+				`"errors":[{"type":"FORBIDDEN","message":"Resource not accessible"}]}`,
 		},
 		"checks": {
 			key: "graphql checks",

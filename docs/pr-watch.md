@@ -111,6 +111,16 @@ automatic wakes until the watcher is restarted, because retrying can duplicate t
 - Every watcher process start resets the count to zero and the next check to 15 minutes.
 - An undelivered wake because the owner was missing, duplicated, busy, or unreachable holds the fast
   cadence and spends no scheduled check: the pull request did not get quieter, the delivery failed.
+- After the bounded attempts for one `gh` command are exhausted, an organization IP allow-list denial
+  or a primary or secondary API rate limit keeps the watcher running.
+  These failures retry every 15 minutes until a complete observation succeeds.
+- Recoverable access failures neither increment nor reset the non-recoverable failure budget.
+  Within one watcher run, the budget spans interleaved access failures and resets after a complete
+  successful observation; restarting the watcher also resets it.
+- Relay also defensively treats a GraphQL `RATE_LIMITED` error as recoverable if one reaches the
+  response parser. Current `gh` versions report these GraphQL responses as command failures.
+- That later success clears the latest error and consecutive-error count, then resumes the existing
+  success cadence and attention behavior.
 - The watcher wakes internally every 30 seconds to compare the clock with the next scheduled check.
   Those wakes print nothing.
 
@@ -226,7 +236,7 @@ anchored reply lands — noisy, and the safe direction to be wrong in.
 | merged, standalone or managed | finishes immediately and silently, with no owner wake |
 | closed without merging | wakes the owner with the escalation, then finishes once that wake is *delivered* — an undelivered escalation holds the fast cadence and retries |
 | merged stack front | wakes the orchestrator every check until the orchestrator runs `relay pr watch stop`, because only it knows the front-advance is done |
-| three consecutive observation failures | fails visibly rather than running blind |
+| three non-recoverable observation failures since the last complete success | fails visibly rather than running blind |
 
 A watcher that reached a terminal state releases its lock and its process exits, and prints the
 `relay pr watch stop` command that closes its tab. It never closes its own tab: doing so would race
@@ -304,6 +314,14 @@ watcher comes back at:
 [2026-09-01 01:00:00 -0400] WARN  owner-busy owner=w2 pane=w2:pC status=working fp=1a2b3c4d; attention remains pending, see `relay pr watch status auth-api`
 [2026-09-01 01:00:00 -0400] ERROR observe pull request #42 for project "auth-api": gh: HTTP 500; cadence=15m next=01:15:00
 ```
+
+Every observation failure increments the durable count and records the latest error.
+Failures that leave the watcher running also record the next retry. The third non-recoverable
+failure since the last complete success clears it when the watcher becomes terminal. Human-readable
+`relay pr watch status` prints `Consecutive errors` when that count is nonzero; JSON continues to
+expose `consecutive_errors`, `error`, and `next_check_at`. Recognized IP allow-list and rate-limit
+failures keep emitting the same retry event every 15 minutes instead of becoming terminal. A later
+complete observation clears the latest error and consecutive-error count.
 
 ## Runtime layout
 

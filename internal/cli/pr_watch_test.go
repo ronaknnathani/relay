@@ -738,7 +738,8 @@ func TestPRWatchStatusWorksWithoutHerdr(t *testing.T) {
 		return prwatch.State{
 			Project: slug, Status: prwatch.StatusRunning, Mode: prwatch.ModeStandalone,
 			OwnerSlug: slug, PRNumber: 42, PRState: "OPEN", ScheduledChecks: 3,
-			NextCheckAt: "2026-03-01T09:00:00Z", ActionableCount: 2,
+			NextCheckAt: "2026-03-01T09:00:00Z", ActionableCount: 2, ConsecutiveErrors: 4,
+			Error:              "API rate limit exceeded",
 			CurrentFingerprint: strings.Repeat("a", 64), RelayVersion: version,
 		}, nil
 	}
@@ -751,7 +752,8 @@ func TestPRWatchStatusWorksWithoutHerdr(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("decode %q: %v", out, err)
 	}
-	if got.Status != string(prwatch.StatusRunning) || got.State.ActionableCount != 2 {
+	if got.Status != string(prwatch.StatusRunning) || got.State.ActionableCount != 2 ||
+		got.State.ConsecutiveErrors != 4 {
 		t.Fatalf("status = %+v", got)
 	}
 	if got.Warning != "" {
@@ -762,7 +764,15 @@ func TestPRWatchStatusWorksWithoutHerdr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status text: %v", err)
 	}
-	for _, want := range []string{"PR watch: running", "Owner: demo", "PR: #42 OPEN", "Scheduled checks: 3"} {
+	for _, want := range []string{
+		"PR watch: running",
+		"Owner: demo",
+		"PR: #42 OPEN",
+		"Scheduled checks: 3",
+		"Consecutive errors: 4",
+		"Error: API rate limit exceeded",
+		"Next check: " + localTime("2026-03-01T09:00:00Z"),
+	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("status text %q is missing %q", text, want)
 		}

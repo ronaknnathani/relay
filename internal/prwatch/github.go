@@ -28,6 +28,88 @@ func (f RunnerFunc) Run(ctx context.Context, dir string, args ...string) ([]byte
 	return f(ctx, dir, args...)
 }
 
+type recoverableGitHubAccessError struct {
+	cause error
+}
+
+type ghCommandError struct {
+	args   string
+	cause  error
+	detail string
+}
+
+func (e *ghCommandError) Error() string {
+	if e.detail == "" {
+		return fmt.Sprintf("run gh %s: %v", e.args, e.cause)
+	}
+	return fmt.Sprintf("run gh %s: %v: %s", e.args, e.cause, e.detail)
+}
+
+func (e *ghCommandError) Unwrap() error {
+	return e.cause
+}
+
+func (e *recoverableGitHubAccessError) Error() string {
+	return e.cause.Error()
+}
+
+func (e *recoverableGitHubAccessError) Unwrap() error {
+	return e.cause
+}
+
+var (
+	githubAllowListDiagnosticPattern = regexp.MustCompile(
+		`(?i)^(?:(?:gh|graphql):\s*)?although you appear to have the correct authorization credentials, ` +
+			"the `[^`\r\n]+` organization has an ip allow[ -]?list enabled, and your ip address is " +
+			`not permitted to access this resource\.(?: \(repository\))?(?: \(HTTP 403\))?$`,
+	)
+	githubRateLimitDiagnosticPattern = regexp.MustCompile(
+		`(?i)^(?:(?:gh|graphql):\s*)?(?:` +
+			`api rate limit (?:already )?exceeded(?: for (?:user id [0-9]+|[0-9a-f:.]+))?` +
+			`|you have exceeded a secondary rate limit` +
+			`)(?:\.|\. please wait a few minutes before you try again\.` +
+			`(?: if you reach out to github support for help, please include the request id ` +
+			`[0-9a-z:-]+(?: in your message)?\.)?)?(?: \(HTTP (?:403|429)\))?$`,
+	)
+)
+
+func classifyGitHubAccessError(err error) error {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var accessErr *recoverableGitHubAccessError
+	if errors.As(err, &accessErr) {
+		return err
+	}
+
+	detail := err.Error()
+	var commandErr *ghCommandError
+	if errors.As(err, &commandErr) {
+		detail = commandErr.detail
+	}
+	foundDiagnostic := false
+	for _, line := range strings.Split(detail, "\n") {
+		diagnostic := strings.TrimSpace(line)
+		if diagnostic == "" {
+			continue
+		}
+		foundDiagnostic = true
+		if !githubAllowListDiagnosticPattern.MatchString(diagnostic) &&
+			!githubRateLimitDiagnosticPattern.MatchString(diagnostic) {
+			return err
+		}
+	}
+	if foundDiagnostic {
+		return &recoverableGitHubAccessError{cause: err}
+	}
+	return err
+}
+
+func isRecoverableGitHubAccessError(err error) bool {
+	var accessErr *recoverableGitHubAccessError
+	return errors.As(err, &accessErr)
+}
+
 // GitHub observation bounds. Every call is retried a small number of times
 // because `gh` fails transiently on network and rate-limit errors, and a failed
 // observation is an error rather than a quiet "nothing to do".
@@ -67,10 +149,11 @@ func NewCLIRunner(timeout time.Duration) Runner {
 		}
 		if err != nil {
 			detail := strings.TrimSpace(stderr.String())
-			if detail == "" {
-				return nil, fmt.Errorf("run gh %s: %w", strings.Join(args, " "), err)
+			return nil, &ghCommandError{
+				args:   strings.Join(args, " "),
+				cause:  err,
+				detail: detail,
 			}
-			return nil, fmt.Errorf("run gh %s: %w: %s", strings.Join(args, " "), err, detail)
 		}
 		return stdout.Bytes(), nil
 	})
@@ -314,10 +397,9 @@ const checkQuery = `query($owner:String!,$repo:String!,$number:Int!,$endCursor:S
 }`
 
 // graphQLErrors is the error list a GraphQL response carries when GitHub
-// answers only part of a query. `gh` exits zero for those, so nothing else
-// notices them: a review thread or a check GitHub declined to return would
-// simply be absent, and an absent one is indistinguishable from a quiet pull
-// request. Every response is inspected for them.
+// answers only part of a query. Although current gh versions report these as
+// command failures, every response is still inspected defensively so partial
+// data cannot look like a quiet pull request.
 type graphQLErrors struct {
 	Errors []struct {
 		Type    string `json:"type"`
@@ -330,13 +412,22 @@ func (e graphQLErrors) err(query string) error {
 		return nil
 	}
 	messages := make([]string, 0, len(e.Errors))
+	allRecoverable := true
 	for _, entry := range e.Errors {
-		messages = append(messages, firstNonEmpty(strings.TrimSpace(entry.Message), entry.Type, "unknown error"))
+		message := firstNonEmpty(strings.TrimSpace(entry.Message), entry.Type, "unknown error")
+		messages = append(messages, message)
+		recoverable := strings.EqualFold(strings.TrimSpace(entry.Type), "RATE_LIMITED") ||
+			isRecoverableGitHubAccessError(classifyGitHubAccessError(errors.New(message)))
+		allRecoverable = allRecoverable && recoverable
 	}
-	return fmt.Errorf(
+	err := fmt.Errorf(
 		"gh api graphql answered the %s query with %d error(s): %s",
 		query, len(e.Errors), strings.Join(messages, "; "),
 	)
+	if allRecoverable {
+		return &recoverableGitHubAccessError{cause: err}
+	}
+	return err
 }
 
 // checkPageResponse is one page of the check-context GraphQL query.
@@ -667,7 +758,10 @@ func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
 			c.sleep(c.backoff)
 		}
 	}
-	return nil, fmt.Errorf("gh %s failed after %d attempts: %w", strings.Join(args, " "), attempts, lastErr)
+	return nil, fmt.Errorf(
+		"gh %s failed after %d attempts: %w",
+		strings.Join(args, " "), attempts, classifyGitHubAccessError(lastErr),
+	)
 }
 
 func firstNonEmpty(values ...string) string {

@@ -452,6 +452,100 @@ func TestRestartResetsTheScheduleAndWakesAgain(t *testing.T) {
 	}
 }
 
+func TestRestartResetsNonRecoverableObservationErrorBudget(t *testing.T) {
+	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
+	harness.out.awaitLine(t, "] CHECK ")
+	failure := errors.New("gh: HTTP 500")
+	harness.setObservation(Observation{}, failure)
+	for count := 1; count <= 2; count++ {
+		next, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
+		if err != nil {
+			t.Fatalf("parse next check before error %d: %v", count, err)
+		}
+		harness.setNow(next)
+		harness.tick()
+		harness.err.awaitLine(t, failure.Error())
+	}
+	before := harness.state()
+	if before.Status != StatusRunning ||
+		before.ConsecutiveErrors != 2 ||
+		before.NonRecoverableErrorsSinceSuccess != 2 {
+		t.Fatalf("state before restart = %+v, want two non-recoverable observation errors", before)
+	}
+	harness.stop()
+
+	restartedAt := harness.clock().Add(time.Hour)
+	observeStarted := make(chan struct{}, 1)
+	releaseObservation := make(chan struct{})
+	ticks := make(chan time.Time)
+	out := newSignalWriter()
+	errOut := newSignalWriter()
+	done := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		done <- Run(ctx, harness.slug, Options{
+			Mode:   ModeStandalone,
+			Now:    func() time.Time { return restartedAt },
+			Ticker: func(time.Duration) Ticker { return manualTicker{ticks: ticks} },
+			Locate: func(slug string) (Target, error) {
+				return Target{Slug: slug, Dir: t.TempDir(), PRNumber: 42}, nil
+			},
+			Observe: func(ctx context.Context, _ Target) (Observation, error) {
+				observeStarted <- struct{}{}
+				select {
+				case <-releaseObservation:
+					return Observation{}, failure
+				case <-ctx.Done():
+					return Observation{}, ctx.Err()
+				}
+			},
+			Client: &fakeOwnerClient{},
+			Out:    out,
+			Err:    errOut,
+			PID:    4243,
+		})
+	}()
+
+	select {
+	case <-observeStarted:
+	case err := <-done:
+		t.Fatalf("restarted watcher stopped before observing: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("restarted watcher did not begin its immediate observation")
+	}
+	reset := harness.state()
+	if reset.Status != StatusRunning ||
+		reset.ScheduledChecks != 0 ||
+		reset.ConsecutiveErrors != 0 ||
+		reset.NonRecoverableErrorsSinceSuccess != 0 ||
+		reset.Error != "" {
+		t.Fatalf("state at restart = %+v, want the observation error budget reset before observing", reset)
+	}
+
+	close(releaseObservation)
+	errOut.awaitLine(t, failure.Error())
+	afterFailure := harness.state()
+	if afterFailure.Status != StatusRunning ||
+		afterFailure.ConsecutiveErrors != 1 ||
+		afterFailure.NonRecoverableErrorsSinceSuccess != 1 {
+		t.Errorf("state after the first post-restart failure = %+v, want a fresh error budget", afterFailure)
+	}
+	if want := restartedAt.Add(FastCadence).Format(time.RFC3339); afterFailure.NextCheckAt != want {
+		t.Errorf("next check after the first post-restart failure = %q, want %q", afterFailure.NextCheckAt, want)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run after cancellation: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("restarted watcher did not stop")
+	}
+}
+
 // newWatchHarnessReusingHome restarts a watcher against the runtime state an
 // earlier harness left behind, without re-pointing HOME.
 func newWatchHarnessReusingHome(t *testing.T, previous *watchHarness) *watchHarness {
@@ -671,8 +765,285 @@ func TestObservationErrorsRetryThenFailTheWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadState: %v", err)
 	}
-	if state.Status != StatusFailed || state.ConsecutiveErrors != maxConsecutiveErrors {
-		t.Errorf("state = %+v, want a failed watcher after %d errors", state, maxConsecutiveErrors)
+	if state.Status != StatusFailed ||
+		state.ConsecutiveErrors != maxNonRecoverableErrorsSinceSuccess ||
+		state.NonRecoverableErrorsSinceSuccess != maxNonRecoverableErrorsSinceSuccess {
+		t.Errorf(
+			"state = %+v, want a failed watcher after %d errors",
+			state,
+			maxNonRecoverableErrorsSinceSuccess,
+		)
+	}
+}
+
+func TestRecoverableObservationErrorsRemainRunning(t *testing.T) {
+	modes := []struct {
+		name  string
+		mode  Mode
+		owner string
+	}{
+		{name: "standalone", mode: ModeStandalone},
+		{name: "managed", mode: ModeManaged},
+		{name: "stack", mode: ModeStack, owner: "stack-run"},
+	}
+	failures := []struct {
+		name    string
+		message string
+	}{
+		{name: "rate limit", message: "API rate limit exceeded"},
+		{
+			name: "organization IP allow list",
+			message: "GraphQL: Although you appear to have the correct authorization credentials, " +
+				"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+				"IP address is not permitted to access this resource. (repository)",
+		},
+	}
+	for _, mode := range modes {
+		for _, failure := range failures {
+			t.Run(mode.name+"/"+failure.name, func(t *testing.T) {
+				harness := newWatchHarness(t, mode.mode, mode.owner, quietObservation())
+				harness.out.awaitLine(t, "] CHECK ")
+				harness.setObservation(
+					Observation{},
+					classifyGitHubAccessError(errors.New(failure.message)),
+				)
+
+				next, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
+				if err != nil {
+					t.Fatalf("parse next check: %v", err)
+				}
+				observations := harness.observations()
+				harness.setNow(next.Add(-time.Second))
+				harness.tick()
+				harness.tick()
+				if got := harness.observations(); got != observations {
+					t.Fatalf("observations before next check = %d, want %d", got, observations)
+				}
+
+				for count := 1; count <= maxNonRecoverableErrorsSinceSuccess+1; count++ {
+					if count > 1 {
+						next, err = time.Parse(time.RFC3339, harness.state().NextCheckAt)
+						if err != nil {
+							t.Fatalf("parse next check after error %d: %v", count-1, err)
+						}
+					}
+					harness.setNow(next)
+					harness.tick()
+					harness.err.awaitLine(t, failure.message)
+
+					state := harness.state()
+					if state.Status != StatusRunning {
+						t.Fatalf("state after error %d = %+v, want a running watcher", count, state)
+					}
+					if state.ConsecutiveErrors != count {
+						t.Errorf("consecutive errors = %d, want %d", state.ConsecutiveErrors, count)
+					}
+					if state.NonRecoverableErrorsSinceSuccess != 0 {
+						t.Errorf(
+							"non-recoverable errors since success = %d, want 0",
+							state.NonRecoverableErrorsSinceSuccess,
+						)
+					}
+					if state.DelaySeconds != int64(FastCadence/time.Second) {
+						t.Errorf("delay = %ds, want %ds", state.DelaySeconds, int64(FastCadence/time.Second))
+					}
+					wantNext := next.Add(FastCadence).Format(time.RFC3339)
+					if state.NextCheckAt != wantNext {
+						t.Errorf("next check = %q, want %q", state.NextCheckAt, wantNext)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRecoverableObservationErrorsDoNotConsumeTheTerminalBudget(t *testing.T) {
+	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
+	harness.out.awaitLine(t, "] CHECK ")
+	harness.setObservation(
+		Observation{},
+		classifyGitHubAccessError(errors.New("API rate limit exceeded")),
+	)
+
+	for count := 1; count <= maxNonRecoverableErrorsSinceSuccess+1; count++ {
+		next, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
+		if err != nil {
+			t.Fatalf("parse next check before recoverable error %d: %v", count, err)
+		}
+		harness.setNow(next)
+		harness.tick()
+		harness.err.awaitLine(t, "API rate limit exceeded")
+	}
+
+	harness.setObservation(Observation{}, errors.New("gh: HTTP 500"))
+	next, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
+	if err != nil {
+		t.Fatalf("parse next check before non-recoverable error: %v", err)
+	}
+	harness.setNow(next)
+	harness.tick()
+	harness.err.awaitLine(t, "gh: HTTP 500")
+
+	state := harness.state()
+	if state.Status != StatusRunning {
+		t.Fatalf("state = %+v, want the first non-recoverable error to leave the watcher running", state)
+	}
+	if state.ConsecutiveErrors != maxNonRecoverableErrorsSinceSuccess+2 {
+		t.Errorf("consecutive errors = %d, want all observation errors retained", state.ConsecutiveErrors)
+	}
+	if state.NonRecoverableErrorsSinceSuccess != 1 {
+		t.Errorf(
+			"non-recoverable errors since success = %d, want 1",
+			state.NonRecoverableErrorsSinceSuccess,
+		)
+	}
+	if !strings.Contains(state.Error, "gh: HTTP 500") {
+		t.Errorf("latest error = %q, want the non-recoverable observation error", state.Error)
+	}
+}
+
+func TestRecoverableObservationErrorsDoNotResetTheTerminalBudget(t *testing.T) {
+	withRuntimeHome(t)
+	var clock struct {
+		sync.Mutex
+		now time.Time
+	}
+	clock.now = time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+	now := func() time.Time {
+		clock.Lock()
+		defer clock.Unlock()
+		return clock.now
+	}
+	advance := func(delay time.Duration) {
+		clock.Lock()
+		clock.now = clock.now.Add(delay)
+		clock.Unlock()
+	}
+	ticks := make(chan time.Time)
+	failures := []error{
+		errors.New("gh: HTTP 500"),
+		classifyGitHubAccessError(errors.New("API rate limit exceeded")),
+		errors.New("gh: malformed response"),
+		classifyGitHubAccessError(errors.New(
+			"GraphQL: Although you appear to have the correct authorization credentials, " +
+				"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+				"IP address is not permitted to access this resource. (repository)",
+		)),
+		errors.New("gh: truncated response"),
+	}
+	var attempts int
+	errOut := newSignalWriter()
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(context.Background(), "demo", Options{
+			Mode:   ModeStandalone,
+			Now:    now,
+			Ticker: func(time.Duration) Ticker { return manualTicker{ticks: ticks} },
+			Locate: func(slug string) (Target, error) {
+				return Target{Slug: slug, Dir: t.TempDir(), PRNumber: 42}, nil
+			},
+			Observe: func(context.Context, Target) (Observation, error) {
+				failure := failures[attempts]
+				attempts++
+				return Observation{}, failure
+			},
+			Client: &fakeOwnerClient{},
+			Out:    &strings.Builder{},
+			Err:    errOut,
+		})
+	}()
+
+	for attempt, failure := range failures {
+		if attempt > 0 {
+			advance(FastCadence)
+			select {
+			case ticks <- now():
+			case err := <-done:
+				t.Fatalf("watcher stopped before failure %d: %v", attempt+1, err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("watcher did not consume a tick")
+			}
+		}
+		errOut.awaitLine(t, failure.Error())
+	}
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), failures[len(failures)-1].Error()) {
+			t.Fatalf("Run = %v, want the third non-recoverable observation error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher did not fail after three interleaved non-recoverable observation errors")
+	}
+	state, err := ReadState("demo")
+	if err != nil {
+		t.Fatalf("ReadState: %v", err)
+	}
+	if state.Status != StatusFailed ||
+		state.ConsecutiveErrors != len(failures) ||
+		state.NonRecoverableErrorsSinceSuccess != maxNonRecoverableErrorsSinceSuccess {
+		t.Errorf("state = %+v, want interleaved recoverable failures excluded from the terminal budget", state)
+	}
+}
+
+func TestRecoverableObservationRecovers(t *testing.T) {
+	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
+	harness.out.awaitLine(t, "] CHECK ")
+	harness.setObservation(
+		Observation{},
+		classifyGitHubAccessError(errors.New("API rate limit exceeded")),
+	)
+
+	for count := 1; count <= maxNonRecoverableErrorsSinceSuccess+1; count++ {
+		next, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
+		if err != nil {
+			t.Fatalf("parse next check before error %d: %v", count, err)
+		}
+		harness.setNow(next)
+		harness.tick()
+		harness.err.awaitLine(t, "API rate limit exceeded")
+	}
+
+	harness.setObservation(actionableObservation(), nil)
+	recoveredAt, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
+	if err != nil {
+		t.Fatalf("parse recovery check: %v", err)
+	}
+	harness.setNow(recoveredAt)
+	harness.tick()
+	harness.out.awaitLine(t, "] CHECK ")
+	harness.out.awaitLine(t, "] WAKE  delivered")
+
+	state := harness.state()
+	if state.Status != StatusRunning ||
+		state.ScheduledChecks != 0 ||
+		state.ConsecutiveErrors != 0 ||
+		state.NonRecoverableErrorsSinceSuccess != 0 ||
+		state.Error != "" {
+		t.Errorf("state after recovery = %+v, want a fresh running schedule with the error state cleared", state)
+	}
+	if state.DelaySeconds != int64(FastCadence/time.Second) {
+		t.Errorf(
+			"delay after recovery = %ds, want %ds",
+			state.DelaySeconds,
+			int64(FastCadence/time.Second),
+		)
+	}
+	if wantNext := recoveredAt.Add(FastCadence).Format(time.RFC3339); state.NextCheckAt != wantNext {
+		t.Errorf("next check after recovery = %q, want %q", state.NextCheckAt, wantNext)
+	}
+	prompts := harness.client.promptTexts()
+	if len(prompts) != 1 {
+		t.Fatalf("prompts after recovery = %v, want exactly one owner wake", prompts)
+	}
+	if state.ActionableCount != 1 ||
+		state.LastWakeStatus != string(WakeDelivered) ||
+		state.AttentionPending {
+		t.Errorf("state after recovery = %+v, prompts = %v; want one attention item delivered to the owner",
+			state, prompts)
+	}
+	if !strings.Contains(prompts[0], state.CurrentFingerprint) {
+		t.Errorf("prompt = %q, want the recovered attention fingerprint", prompts[0])
 	}
 }
 
@@ -731,16 +1102,23 @@ func TestTickObservesWithoutMutatingWatcherState(t *testing.T) {
 
 func TestTickReportsObservationFailures(t *testing.T) {
 	withRuntimeHome(t)
+	observeErr := classifyGitHubAccessError(errors.New("API rate limit exceeded"))
 	_, err := Tick(context.Background(), "demo", Options{
 		Locate: func(slug string) (Target, error) {
 			return Target{Slug: slug, Dir: t.TempDir(), PRNumber: 42}, nil
 		},
 		Observe: func(context.Context, Target) (Observation, error) {
-			return Observation{}, errors.New("gh: not authenticated")
+			return Observation{}, observeErr
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "not authenticated") {
+	if err == nil || !strings.Contains(err.Error(), "API rate limit exceeded") {
 		t.Fatalf("Tick = %v, want the observation failure", err)
+	}
+	if !isRecoverableGitHubAccessError(err) {
+		t.Fatalf("Tick = %v, want the typed GitHub failure preserved", err)
+	}
+	if _, stateErr := ReadState("demo"); stateErr == nil {
+		t.Fatal("Tick wrote watcher state after an observation failure")
 	}
 }
 
@@ -1134,5 +1512,41 @@ func TestRunStopsWhenAnEventCannotBeWritten(t *testing.T) {
 				t.Errorf("state = %+v, want the write failure recorded", state)
 			}
 		})
+	}
+}
+
+func TestRunRecordsFailureWhenARecoverableRetryEventCannotBeWritten(t *testing.T) {
+	withRuntimeHome(t)
+	writeErr := errors.New("broken retry writer")
+	err := Run(context.Background(), "broken-retry-writer", Options{
+		Mode: ModeStandalone,
+		Now:  func() time.Time { return time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC) },
+		Locate: func(slug string) (Target, error) {
+			return Target{Slug: slug, Dir: t.TempDir(), PRNumber: 42}, nil
+		},
+		Observe: func(context.Context, Target) (Observation, error) {
+			return Observation{}, classifyGitHubAccessError(errors.New("API rate limit exceeded"))
+		},
+		Client: &fakeOwnerClient{},
+		Out:    &strings.Builder{},
+		Err:    &failingWriter{err: writeErr},
+	})
+	if err == nil {
+		t.Fatal("Run = nil error, want the retry event write failure")
+	}
+	for _, want := range []string{"write pr watch event", writeErr.Error()} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Run error %q is missing %q", err, want)
+		}
+	}
+
+	state, readErr := ReadState("broken-retry-writer")
+	if readErr != nil {
+		t.Fatalf("ReadState: %v", readErr)
+	}
+	if state.Status != StatusFailed ||
+		state.NextCheckAt != "" ||
+		!strings.Contains(state.Error, writeErr.Error()) {
+		t.Errorf("state = %+v, want the retry event write failure persisted", state)
 	}
 }

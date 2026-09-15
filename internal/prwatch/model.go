@@ -213,12 +213,13 @@ type State struct {
 	// WakesSuppressed records an uncertain prompt delivery. Automatic wakes stay
 	// suppressed until the watcher is restarted, because a retry can duplicate
 	// text in the owner's composer.
-	WakesSuppressed   bool   `json:"wakes_suppressed"`
-	ConsecutiveErrors int    `json:"consecutive_errors"`
-	Error             string `json:"error,omitempty"`
-	Warning           string `json:"warning,omitempty"`
-	StopReason        string `json:"stop_reason,omitempty"`
-	UpdatedAt         string `json:"updated_at"`
+	WakesSuppressed                  bool   `json:"wakes_suppressed"`
+	ConsecutiveErrors                int    `json:"consecutive_errors"`
+	NonRecoverableErrorsSinceSuccess int    `json:"non_recoverable_errors_since_success,omitempty"`
+	Error                            string `json:"error,omitempty"`
+	Warning                          string `json:"warning,omitempty"`
+	StopReason                       string `json:"stop_reason,omitempty"`
+	UpdatedAt                        string `json:"updated_at"`
 }
 
 // Cadence delays. Scheduled checks 1-4 run every 15 minutes, 5-6 every 30, and
