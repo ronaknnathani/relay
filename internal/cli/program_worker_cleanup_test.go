@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/herdr"
@@ -1286,7 +1287,7 @@ func TestWorkerCleanupRejectsRewrittenChildRepositoryBeforeSideEffects(t *testin
 	}
 }
 
-func TestWorkerCleanupRefusesLegacyItemWithoutDispatchIdentity(t *testing.T) {
+func TestWorkerCleanupUpgradesLegacyItemDispatchIdentityBeforeCleanup(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
 	path := program.ManifestPath(program.ActiveDir(), p.Slug)
 	loaded, err := program.Load(path)
@@ -1303,16 +1304,243 @@ func TestWorkerCleanupRefusesLegacyItemWithoutDispatchIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installStubWatcherState(t, manifest.Slug, false)
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("worker cleanup: %v", err)
+	}
+	result := decodeCleanupOutput(t, out)
+	if result.Status != cleanupClean || !result.Archived {
+		t.Fatalf("cleanup result = %+v, want successful legacy upgrade and archive", result)
+	}
+	reloaded, err := program.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upgraded, ok := reloaded.Item(item.ID)
+	if !ok {
+		t.Fatal("upgraded item disappeared")
+	}
+	if upgraded.ProjectBranch != manifest.Branch ||
+		upgraded.ProjectWorktree != *manifest.Worktree {
+		t.Fatalf(
+			"upgraded dispatch identity = %q/%q, want %q/%q",
+			upgraded.ProjectBranch, upgraded.ProjectWorktree,
+			manifest.Branch, *manifest.Worktree,
+		)
+	}
+	if pathExists(*manifest.Worktree) || gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("legacy cleanup left the upgraded resources behind")
+	}
+}
+
+func TestWorkerCleanupLegacyUpgradeWaitsForWorkerLifecycleLock(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	path := program.ManifestPath(program.ActiveDir(), p.Slug)
+	clearProgramItemDispatchIdentity(t, path, item.ID)
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	stopped := installStubWatcherState(t, manifest.Slug, false)
+	lock, err := acquireWorkerStartLock(manifest.Slug, "test worker start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+		done <- runErr
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	waiting, err := program.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitingItem, _ := waiting.Item(item.ID)
+	if waitingItem.ProjectBranch != "" || waitingItem.ProjectWorktree != "" || len(*stopped) != 0 {
+		t.Fatal("cleanup repaired metadata or touched the watcher while worker startup held the lifecycle lock")
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("cleanup after lifecycle release: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cleanup did not continue after worker lifecycle release")
+	}
+}
+
+func TestWorkerCleanupLegacyUpgradeRejectsRepositoryMismatchWithoutChangingVictim(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	path := program.ManifestPath(program.ActiveDir(), p.Slug)
+	clearProgramItemDispatchIdentity(t, path, item.ID)
+	victimRepo, err := filepath.EvalSymlinks(newTestRepo(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	victimBranch := "user/legacy-victim"
+	victimWorktree := addArchiveWorktree(t, victimRepo, "legacy-victim", victimBranch)
+	manifest.Repo = victimRepo
+	manifest.Branch = victimBranch
+	manifest.Worktree = &victimWorktree
+	if err := project.Save(
+		project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{}
 	installManagedHerdrFakes(t, client)
 	stopped := installStubWatcherState(t, manifest.Slug, true)
 
 	_, err = runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err == nil || !strings.Contains(err.Error(), "no durable dispatch branch/worktree identity") {
-		t.Fatalf("worker cleanup error = %v, want missing dispatch identity rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "repository identity does not match dispatch") {
+		t.Fatalf("worker cleanup error = %v, want repository mismatch rejection", err)
+	}
+	if len(*stopped) != 0 || len(client.exited) != 0 ||
+		len(client.closedTabs) != 0 || len(client.closedPanes) != 0 {
+		t.Fatalf(
+			"cleanup performed side effects: stopped=%v exited=%v tabs=%v panes=%v",
+			*stopped, client.exited, client.closedTabs, client.closedPanes,
+		)
+	}
+	if !pathExists(victimWorktree) || !gitx.BranchExists(victimRepo, victimBranch) {
+		t.Fatal("cleanup removed legacy mismatch victim resources")
+	}
+	reloaded, loadErr := program.Load(path)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	unchanged, _ := reloaded.Item(item.ID)
+	if unchanged.ProjectBranch != "" || unchanged.ProjectWorktree != "" {
+		t.Fatalf("mismatched legacy identity was persisted: %+v", unchanged)
+	}
+}
+
+func TestWorkerCleanupLegacyUpgradeRejectsMissingManifestIdentityWithoutChangingVictim(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	path := program.ManifestPath(program.ActiveDir(), p.Slug)
+	clearProgramItemDispatchIdentity(t, path, item.ID)
+	manifest.Worktree = nil
+	if err := project.Save(
+		project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{}
+	installManagedHerdrFakes(t, client)
+	stopped := installStubWatcherState(t, manifest.Slug, true)
+
+	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), "manifest has no complete branch/worktree identity") ||
+		!strings.Contains(err.Error(), "Restore manifest branch and worktree metadata") {
+		t.Fatalf("worker cleanup error = %v, want actionable missing manifest identity rejection", err)
+	}
+	if len(*stopped) != 0 || !gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("cleanup changed resources after missing manifest identity")
+	}
+	reloaded, loadErr := program.Load(path)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	unchanged, _ := reloaded.Item(item.ID)
+	if unchanged.ProjectBranch != "" || unchanged.ProjectWorktree != "" {
+		t.Fatalf("missing manifest identity was persisted: %+v", unchanged)
+	}
+}
+
+func TestWorkerCleanupLegacyUpgradeRejectsAmbiguousProjectLocationWithoutChangingVictim(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	path := program.ManifestPath(program.ActiveDir(), p.Slug)
+	clearProgramItemDispatchIdentity(t, path, item.ID)
+	archivedPath := project.ManifestPath(project.ArchivedDir(), manifest.Slug)
+	if err := os.MkdirAll(filepath.Dir(archivedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(archivedPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{}
+	installManagedHerdrFakes(t, client)
+	stopped := installStubWatcherState(t, manifest.Slug, true)
+
+	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), "both active and archived stores") ||
+		!strings.Contains(err.Error(), "resolve the ambiguous metadata") {
+		t.Fatalf("worker cleanup error = %v, want actionable ambiguity rejection", err)
 	}
 	if len(*stopped) != 0 || !pathExists(*manifest.Worktree) ||
 		!gitx.BranchExists(manifest.Repo, manifest.Branch) {
-		t.Fatal("cleanup changed resources without durable dispatch identity")
+		t.Fatal("cleanup changed resources while project location was ambiguous")
+	}
+	reloaded, loadErr := program.Load(path)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	unchanged, _ := reloaded.Item(item.ID)
+	if unchanged.ProjectBranch != "" || unchanged.ProjectWorktree != "" {
+		t.Fatalf("ambiguous project identity was persisted: %+v", unchanged)
+	}
+}
+
+func TestWorkerCleanupLegacyUpgradeSaveFailurePreservesVictim(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	path := program.ManifestPath(program.ActiveDir(), p.Slug)
+	clearProgramItemDispatchIdentity(t, path, item.ID)
+	previous := programWorkerSaveProgram
+	programWorkerSaveProgram = func(string, program.Program) error {
+		return errors.New("injected legacy upgrade save failure")
+	}
+	t.Cleanup(func() { programWorkerSaveProgram = previous })
+	client := &fakeHerdrClient{}
+	installManagedHerdrFakes(t, client)
+	stopped := installStubWatcherState(t, manifest.Slug, true)
+
+	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), "injected legacy upgrade save failure") ||
+		!strings.Contains(err.Error(), "retry") {
+		t.Fatalf("worker cleanup error = %v, want actionable save failure", err)
+	}
+	if len(*stopped) != 0 || len(client.exited) != 0 ||
+		len(client.closedTabs) != 0 || len(client.closedPanes) != 0 {
+		t.Fatalf(
+			"cleanup performed side effects: stopped=%v exited=%v tabs=%v panes=%v",
+			*stopped, client.exited, client.closedTabs, client.closedPanes,
+		)
+	}
+	if !pathExists(*manifest.Worktree) || !gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("cleanup removed resources after legacy upgrade save failure")
+	}
+	reloaded, loadErr := program.Load(path)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	unchanged, _ := reloaded.Item(item.ID)
+	if unchanged.ProjectBranch != "" || unchanged.ProjectWorktree != "" {
+		t.Fatalf("failed legacy identity save changed the item: %+v", unchanged)
+	}
+}
+
+func clearProgramItemDispatchIdentity(t *testing.T, path, itemID string) {
+	t.Helper()
+	loaded, err := program.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range loaded.Items {
+		if loaded.Items[i].ID == itemID {
+			loaded.Items[i].ProjectBranch = ""
+			loaded.Items[i].ProjectWorktree = ""
+		}
+	}
+	if err := program.Save(path, loaded); err != nil {
+		t.Fatal(err)
 	}
 }
 

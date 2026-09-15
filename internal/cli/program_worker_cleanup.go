@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/ronaknnathani/relay/internal/herdr"
@@ -33,7 +34,18 @@ const (
 	cleanupWorkerRunning = "running"
 )
 
-var programWorkerArchiveProject = archiveProjectWithProof
+var (
+	programWorkerArchiveProject = archiveProjectWithProof
+	programWorkerSaveProgram    = program.Save
+)
+
+type programWorkerCleanupTarget struct {
+	program  program.Program
+	item     program.WorkItem
+	manifest project.Manifest
+	proof    archiveProofSnapshot
+	archived bool
+}
 
 type programWorkerCleanupOutput struct {
 	Program          string         `json:"program"`
@@ -88,18 +100,99 @@ func newCmdProgramWorkerCleanup() *cobra.Command {
 // already gone, a tab that is already closed, and a project that is already
 // archived are all successes, so a retry after a partial cleanup finishes the
 // job instead of failing on what it already did.
-func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutput bool) error {
+func runProgramWorkerCleanup(
+	out io.Writer, programSlug, itemID string, jsonOutput bool,
+) (retErr error) {
 	if _, err := requireHerdrPane("relay program worker cleanup"); err != nil {
 		return err
 	}
-	_, p, err := loadActiveProgram(programSlug)
+	_, initialProgram, err := loadActiveProgram(programSlug)
 	if err != nil {
 		return err
 	}
-	item, manifest, proof, archived, err := loadProgramCleanupTarget(p, itemID)
+	if initialProgram.Slug != programSlug {
+		return fmt.Errorf(
+			"cleanup %s/%s: program manifest slug %q does not match requested program %q",
+			programSlug, itemID, initialProgram.Slug, programSlug,
+		)
+	}
+	initialItem, ok := initialProgram.Item(itemID)
+	if !ok {
+		return fmt.Errorf("cleanup %s/%s: item not found", programSlug, itemID)
+	}
+	if initialItem.Status != program.ItemMerged {
+		return fmt.Errorf(
+			"cleanup %s/%s: item status is %q, want merged; cleanup discards the child worktree, so it "+
+				"only ever runs on delivered work",
+			programSlug, itemID, initialItem.Status,
+		)
+	}
+	if initialItem.ProjectSlug == "" {
+		return fmt.Errorf(
+			"cleanup %s/%s: item is not linked to a child project", programSlug, itemID,
+		)
+	}
+	if err := project.ValidateSlug(initialItem.ProjectSlug); err != nil {
+		return fmt.Errorf(
+			"cleanup %s/%s: invalid child project slug: %w", programSlug, itemID, err,
+		)
+	}
+
+	workerLock, err := acquireWorkerStartLock(
+		initialItem.ProjectSlug,
+		fmt.Sprintf("relay program worker cleanup %s %s", programSlug, itemID),
+	)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if releaseErr := workerLock.Release(); releaseErr != nil {
+			retErr = errors.Join(retErr, releaseErr)
+		}
+	}()
+
+	target, err := withProjectLifecycleLock(
+		initialItem.ProjectSlug,
+		func() (programWorkerCleanupTarget, error) {
+			path, p, err := loadActiveProgram(programSlug)
+			if err != nil {
+				return programWorkerCleanupTarget{}, err
+			}
+			if p.Slug != programSlug {
+				return programWorkerCleanupTarget{}, fmt.Errorf(
+					"cleanup %s/%s: program manifest slug %q does not match requested program %q",
+					programSlug, itemID, p.Slug, programSlug,
+				)
+			}
+			lockedItem, ok := p.Item(itemID)
+			if !ok {
+				return programWorkerCleanupTarget{}, fmt.Errorf(
+					"cleanup %s/%s: item disappeared while waiting for its lifecycle lock; "+
+						"resources were preserved, inspect the program before retrying",
+					programSlug, itemID,
+				)
+			}
+			if lockedItem.ProjectSlug != initialItem.ProjectSlug {
+				return programWorkerCleanupTarget{}, fmt.Errorf(
+					"cleanup %s/%s: child project changed from %q to %q while waiting for its "+
+						"lifecycle lock; resources were preserved, retry the cleanup",
+					programSlug, itemID, initialItem.ProjectSlug, lockedItem.ProjectSlug,
+				)
+			}
+			item, manifest, proof, archived, err := loadProgramCleanupTarget(p, itemID, path)
+			if err != nil {
+				return programWorkerCleanupTarget{}, err
+			}
+			return programWorkerCleanupTarget{
+				program: p, item: item, manifest: manifest, proof: proof, archived: archived,
+			}, nil
+		},
+	)
+	if err != nil {
+		return err
+	}
+	p, item := target.program, target.item
+	manifest, proof, archived := target.manifest, target.proof, target.archived
 	result := programWorkerCleanupOutput{
 		Program: p.Slug, Item: item.ID, Project: manifest.Slug,
 		WorkerExit: cleanupWorkerAbsent, Warnings: []string{},
@@ -216,7 +309,7 @@ func failProgramWorkerCleanup(
 // dispatched, in review, blocked, or canceled is refused outright: its work is
 // either unfinished or was never delivered.
 func loadProgramCleanupTarget(
-	p program.Program, itemID string,
+	p program.Program, itemID string, programPath ...string,
 ) (program.WorkItem, project.Manifest, archiveProofSnapshot, bool, error) {
 	item, ok := p.Item(itemID)
 	if !ok {
@@ -241,7 +334,7 @@ func loadProgramCleanupTarget(
 			"cleanup %s/%s: invalid child project slug: %w", p.Slug, itemID, err,
 		)
 	}
-	manifestPath, err := project.Find(item.ProjectSlug)
+	manifestPath, archived, err := findProgramCleanupManifest(item.ProjectSlug)
 	if err != nil {
 		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
 			"cleanup %s/%s: child project %q: %w", p.Slug, itemID, item.ProjectSlug, err,
@@ -271,11 +364,14 @@ func loadProgramCleanupTarget(
 		)
 	}
 	if item.ProjectBranch == "" || item.ProjectWorktree == "" {
-		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
-			"cleanup %s/%s: child project %q has no durable dispatch branch/worktree identity; "+
-				"refusing automatic forced cleanup",
-			p.Slug, itemID, manifest.Slug,
-		)
+		if len(programPath) == 0 {
+			return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+				"cleanup %s/%s: child project %q has no durable dispatch branch/worktree identity; "+
+					"refusing automatic forced cleanup",
+				p.Slug, itemID, manifest.Slug,
+			)
+		}
+		return upgradeLegacyProgramCleanupTarget(programPath[0], p, item, manifest)
 	}
 	worktree := ""
 	if manifest.Worktree != nil {
@@ -289,7 +385,6 @@ func loadProgramCleanupTarget(
 			item.ProjectBranch, item.ProjectWorktree,
 		)
 	}
-	archived := pathWithinDir(manifestPath, project.ArchivedDir())
 	if archived {
 		return item, manifest, archiveProofSnapshot{}, true, nil
 	}
@@ -309,6 +404,117 @@ func loadProgramCleanupTarget(
 		)
 	}
 	return item, manifest, proof, false, nil
+}
+
+func findProgramCleanupManifest(slug string) (string, bool, error) {
+	activePath := project.ManifestPath(project.ActiveDir(), slug)
+	archivedPath := project.ManifestPath(project.ArchivedDir(), slug)
+	activeExists, err := cleanupManifestExists(activePath)
+	if err != nil {
+		return "", false, err
+	}
+	archivedExists, err := cleanupManifestExists(archivedPath)
+	if err != nil {
+		return "", false, err
+	}
+	if activeExists && archivedExists {
+		return "", false, fmt.Errorf(
+			"project is present in both active and archived stores (%s and %s); resolve the ambiguous "+
+				"metadata before retrying",
+			activePath, archivedPath,
+		)
+	}
+	if activeExists {
+		return activePath, false, nil
+	}
+	if archivedExists {
+		return archivedPath, true, nil
+	}
+	return "", false, fmt.Errorf("project not found")
+}
+
+func cleanupManifestExists(path string) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return true, nil
+	} else if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else {
+		return false, fmt.Errorf("inspect manifest %s: %w", path, err)
+	}
+}
+
+func upgradeLegacyProgramCleanupTarget(
+	path string, p program.Program, item program.WorkItem, manifest project.Manifest,
+) (program.WorkItem, project.Manifest, archiveProofSnapshot, bool, error) {
+	worktree := ""
+	if manifest.Worktree != nil {
+		worktree = strings.TrimSpace(*manifest.Worktree)
+	}
+	if strings.TrimSpace(manifest.Branch) == "" || worktree == "" {
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+			"cleanup %s/%s: legacy child project %q manifest has no complete branch/worktree identity; "+
+				"resources were preserved. Restore manifest branch and worktree metadata, then retry",
+			p.Slug, item.ID, manifest.Slug,
+		)
+	}
+	for i := range p.Items {
+		if p.Items[i].ID != item.ID {
+			continue
+		}
+		p.Items[i].ProjectBranch = manifest.Branch
+		p.Items[i].ProjectWorktree = worktree
+		break
+	}
+	if err := p.Validate(); err != nil {
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+			"cleanup %s/%s: validate legacy dispatch identity from child project %q: %w; "+
+				"resources were preserved",
+			p.Slug, item.ID, manifest.Slug, err,
+		)
+	}
+	if err := programWorkerSaveProgram(path, p); err != nil {
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+			"cleanup %s/%s: save legacy dispatch identity for child project %q: %w; "+
+				"resources were preserved, retry the cleanup after fixing the program store",
+			p.Slug, item.ID, manifest.Slug, err,
+		)
+	}
+	stored, err := program.Load(path)
+	if err != nil {
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+			"cleanup %s/%s: reload program after saving legacy dispatch identity: %w; "+
+				"resources were preserved, inspect %s before retrying",
+			p.Slug, item.ID, err, path,
+		)
+	}
+	if stored.Slug != p.Slug {
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+			"cleanup %s/%s: stored program slug %q changed after saving legacy dispatch identity; "+
+				"resources were preserved, inspect %s before retrying",
+			p.Slug, item.ID, stored.Slug, path,
+		)
+	}
+	storedItem, ok := stored.Item(item.ID)
+	if !ok {
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+			"cleanup %s/%s: item disappeared after saving legacy dispatch identity; "+
+				"resources were preserved, inspect %s before retrying",
+			p.Slug, item.ID, path,
+		)
+	}
+	if storedItem.Status != program.ItemMerged ||
+		storedItem.ProjectSlug != manifest.Slug ||
+		storedItem.Repo != manifest.Repo ||
+		stored.Repo != manifest.Repo ||
+		storedItem.ProjectBranch != manifest.Branch ||
+		storedItem.ProjectWorktree != worktree {
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+			"cleanup %s/%s: stored legacy dispatch identity does not exactly match child project %q "+
+				"after save; resources were preserved, inspect %s before retrying",
+			p.Slug, item.ID, manifest.Slug, path,
+		)
+	}
+	return loadProgramCleanupTarget(stored, item.ID)
 }
 
 // stopCleanupWatcher stops the child's pull request watcher and closes its
