@@ -131,7 +131,7 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 
 	head := index[strings.Index(index, "<head>"):strings.Index(index, "</head>")]
 	if !strings.Contains(head, `document.documentElement.dataset.theme=t==="dark"?"dark":"light"`) ||
-		!strings.Contains(head, `window.__relayInitialProgramRequest=fetch("/api/program"`) {
+		!strings.Contains(head, `window.__relayInitialProgramRequest=fetch("/api/program")`) {
 		t.Error("the bootstrap must apply the stored theme and start the initial snapshot before app parsing")
 	}
 
