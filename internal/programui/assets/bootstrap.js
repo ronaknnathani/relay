@@ -95,19 +95,6 @@
   };
   if (snapshot) {
     renderSnapshot(snapshot);
-  } else if (window.__relayRoadmapRequest) {
-    window.__relayRoadmapRequest
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`Program request failed with status ${response.status}`);
-        }
-        return response.clone().json();
-      })
-      .then(renderSnapshot)
-      .catch((error) => {
-        reconnect.hidden = false;
-        reconnect.textContent = error.message || "The initial roadmap failed to load.";
-      });
   }
 
   const cards = () => Array.from(graphNodes.querySelectorAll(".card"));

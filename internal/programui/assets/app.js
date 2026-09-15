@@ -81,7 +81,7 @@ const initialProgramSnapshot = initialProgramElement
   : null;
 const initialProgramRequest = initialProgramSnapshot
   ? null
-  : (window.__relayRoadmapRequest || requestProgram(initialProgramController, "roadmap"));
+  : requestProgram(initialProgramController, "roadmap");
 let deferredUIReady = false;
 let deferredUIPromise = null;
 let deferredStyleReady = false;
