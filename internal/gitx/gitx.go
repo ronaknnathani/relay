@@ -142,6 +142,34 @@ func ForceDeleteBranch(repo, branch string) error {
 	return nil
 }
 
+// ForceDeleteBranchAt removes a branch only when it still points at expectedSHA.
+func ForceDeleteBranchAt(repo, branch, expectedSHA string) error {
+	tip, found, err := LocalBranchTip(repo, branch)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("branch %q disappeared before deletion", branch)
+	}
+	if tip != expectedSHA {
+		return fmt.Errorf("branch %q changed from %s to %s before deletion", branch, expectedSHA, tip)
+	}
+	return ForceDeleteBranch(repo, branch)
+}
+
+// CommitReachable reports whether commit is an ancestor of base.
+func CommitReachable(repo, commit, base string) (bool, error) {
+	_, err := exec.Command("git", "-C", repo, "merge-base", "--is-ancestor", commit, base).Output()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, gitOutputError("git merge-base --is-ancestor "+commit+" "+base, err)
+}
+
 // IsBranchReachable reports whether branch's tip is an ancestor of base's tip.
 // "Safe to delete" semantics — true means deleting branch loses no work.
 func IsBranchReachable(repo, branch, base string) bool {
@@ -152,15 +180,22 @@ func IsBranchReachable(repo, branch, base string) bool {
 // commits are reachable from base. Missing branches and normal non-ancestor
 // results are not errors.
 func WorkMerged(repo, branch, base, startSHA string) (bool, error) {
+	_, merged, err := WorkMergedTip(repo, branch, base, startSHA)
+	return merged, err
+}
+
+// WorkMergedTip reports whether the exact returned branch tip contains work
+// beyond startSHA and is reachable from base.
+func WorkMergedTip(repo, branch, base, startSHA string) (tip string, merged bool, err error) {
 	if startSHA == "" {
-		return false, nil
+		return "", false, nil
 	}
 	startExpression := strings.TrimSpace(startSHA) + "^{commit}"
 	startOutput, err := exec.Command(
 		"git", "-C", repo, "rev-parse", "--verify", "--end-of-options", startExpression,
 	).Output()
 	if err != nil {
-		return false, fmt.Errorf(
+		return "", false, fmt.Errorf(
 			"%w: start_sha %q in %s does not resolve to a commit: %v",
 			ErrInvalidWorkStart, startSHA, repo,
 			gitOutputError("git rev-parse --verify --end-of-options "+startExpression, err),
@@ -170,46 +205,39 @@ func WorkMerged(repo, branch, base, startSHA string) (bool, error) {
 
 	exists, err := localBranchExists(repo, branch)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 	if !exists {
-		return false, nil
+		return "", false, nil
 	}
 	ref := "refs/heads/" + branch
 	out, err := exec.Command("git", "-C", repo, "rev-parse", "--verify", ref+"^{commit}").Output()
 	if err != nil {
-		return false, gitOutputError("git rev-parse --verify "+ref+"^{commit}", err)
+		return "", false, gitOutputError("git rev-parse --verify "+ref+"^{commit}", err)
 	}
 	branchTip := strings.TrimSpace(string(out))
 	_, err = exec.Command(
-		"git", "-C", repo, "merge-base", "--is-ancestor", startCommit, ref,
+		"git", "-C", repo, "merge-base", "--is-ancestor", startCommit, branchTip,
 	).Output()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return false, fmt.Errorf(
+			return branchTip, false, fmt.Errorf(
 				"%w: start_sha %q resolves to %s, which is not an ancestor of branch %q",
 				ErrInvalidWorkStart, startSHA, startCommit, branch,
 			)
 		}
-		return false, fmt.Errorf(
+		return branchTip, false, fmt.Errorf(
 			"%w: verify start_sha %q against branch %q: %v",
 			ErrInvalidWorkStart, startSHA, branch,
-			gitOutputError("git merge-base --is-ancestor "+startCommit+" "+ref, err),
+			gitOutputError("git merge-base --is-ancestor "+startCommit+" "+branchTip, err),
 		)
 	}
 	if branchTip == startCommit {
-		return false, nil
+		return branchTip, false, nil
 	}
-	_, err = exec.Command("git", "-C", repo, "merge-base", "--is-ancestor", ref, base).Output()
-	if err == nil {
-		return true, nil
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-		return false, nil
-	}
-	return false, gitOutputError("git merge-base --is-ancestor "+ref+" "+base, err)
+	reachable, err := CommitReachable(repo, branchTip, base)
+	return branchTip, reachable, err
 }
 
 // IsWorkMerged preserves the conservative boolean interface for existing callers.

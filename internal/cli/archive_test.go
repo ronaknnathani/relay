@@ -159,6 +159,34 @@ func TestArchivePreservesProjectWhenBranchProbeFails(t *testing.T) {
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
 
+func TestArchiveProofRejectsManifestChangeBeforeCleanup(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "manifest-proof-change"
+	branch := "user/manifest-proof-change"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	manifestPath := project.ManifestPath(project.ActiveDir(), slug)
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Title = "changed after proof"
+	if err := project.Save(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = archiveProjectWithProof(decision.proof, true)
+	if err == nil || !strings.Contains(err.Error(), "manifest changed") {
+		t.Fatalf("archiveProjectWithProof error = %v, want stale manifest rejection", err)
+	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
+}
+
 func TestArchiveRollbackCombinesManifestRestoreAndCleanupFailures(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	slug := "rollback-cleanup-failure"
@@ -585,6 +613,45 @@ func TestArchiveReportsBranchStillPresentOnlyAfterDeletionFailure(t *testing.T) 
 	}
 	if !gitx.BranchExists(repo, branch) {
 		t.Fatalf("branch %q was deleted despite being checked out", branch)
+	}
+}
+
+func TestArchiveDoesNotDeleteBranchAdvancedImmediatelyBeforeDeletion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "branch-advanced-before-delete"
+	branch := "user/branch-advanced-before-delete"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	previous := archiveForceDeleteBranchAt
+	var advancedTip string
+	archiveForceDeleteBranchAt = func(repo, branch, expectedSHA string) error {
+		tree := gitOutput(t, repo, "rev-parse", expectedSHA+"^{tree}")
+		cmd := exec.Command("git", "-C", repo, "commit-tree", tree, "-p", expectedSHA, "-m", "late commit")
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=relay", "GIT_AUTHOR_EMAIL=relay@example.com",
+			"GIT_COMMITTER_NAME=relay", "GIT_COMMITTER_EMAIL=relay@example.com",
+		)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("create late commit: %v", err)
+		}
+		advancedTip = strings.TrimSpace(string(out))
+		runArchiveGit(t, repo, "update-ref", "refs/heads/"+branch, advancedTip, expectedSHA)
+		return gitx.ForceDeleteBranchAt(repo, branch, expectedSHA)
+	}
+	t.Cleanup(func() { archiveForceDeleteBranchAt = previous })
+
+	result, err := archiveProject(slug, true)
+	if err != nil {
+		t.Fatalf("archiveProject: %v", err)
+	}
+	if !strings.Contains(result.BranchDeletionWarning, "changed from") {
+		t.Fatalf("branch deletion warning = %q, want changed-tip rejection", result.BranchDeletionWarning)
+	}
+	tip, found, tipErr := gitx.LocalBranchTip(repo, branch)
+	if tipErr != nil || !found || tip != advancedTip {
+		t.Fatalf("branch tip = (%q, %t, %v), want (%q, true, nil)", tip, found, tipErr, advancedTip)
 	}
 }
 

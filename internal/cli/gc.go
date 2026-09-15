@@ -13,7 +13,7 @@ import (
 
 var (
 	errGCCompletedWithErrors = errors.New("relay gc completed with errors")
-	gcArchiveProject         = archiveMergedProject
+	gcArchiveProject         = archiveProjectWithProof
 )
 
 type gcRefreshKey struct {
@@ -94,24 +94,35 @@ func runGC() error {
 			}
 		}
 
-		var merged bool
+		var (
+			merged bool
+			proof  archiveProofSnapshot
+		)
 		var evaluationErr error
 		if base != "" && refreshErr == nil {
 			if m.StartSHA == "" {
 				evaluationErr = fmt.Errorf("project %s has no start_sha", m.Slug)
 			} else {
-				merged, evaluationErr = gitx.WorkMerged(
+				var branchTip string
+				branchTip, merged, evaluationErr = gitx.WorkMergedTip(
 					m.Repo, m.Branch, "refs/remotes/origin/"+base, m.StartSHA,
 				)
 				if merged {
-					evaluationErr = validateGCWorktreeHead(m)
+					proof, evaluationErr = newMergedBranchArchiveProof(
+						m, archiveProofFreshUpstream, branchTip,
+					)
 					merged = evaluationErr == nil
 				}
 			}
 		}
 		var prErr error
 		if !merged && !errors.Is(evaluationErr, gitx.ErrInvalidWorkStart) {
-			merged, prErr = resolveRecordedPullRequestMerge(m, m.Slug)
+			var evidence recordedPullRequestEvidence
+			evidence, prErr = resolveRecordedPullRequestEvidence(m, m.Slug)
+			if evidence.Merged && prErr == nil {
+				proof, prErr = newPullRequestArchiveProof(m, evidence)
+				merged = prErr == nil
+			}
 		}
 		if !merged {
 			if baseErr != nil || refreshErr != nil {
@@ -127,7 +138,7 @@ func runGC() error {
 			continue
 		}
 		fmt.Printf("[relay] Branch %s is merged. Archiving project %s.\n", m.Branch, m.Slug)
-		result, err := gcArchiveProject(m.Slug, true)
+		result, err := gcArchiveProject(proof, true)
 		if err != nil {
 			ui.Warn("archive %s: %s", m.Slug, err)
 			hadErrors = true
@@ -140,33 +151,6 @@ func runGC() error {
 	}
 	if hadErrors {
 		return errGCCompletedWithErrors
-	}
-	return nil
-}
-
-func validateGCWorktreeHead(m project.Manifest) error {
-	if m.Worktree == nil || *m.Worktree == "" {
-		return nil
-	}
-	worktreeHead, found, err := gitx.WorktreeHead(m.Repo, *m.Worktree)
-	if err != nil {
-		return fmt.Errorf("resolve worktree HEAD for project %s: %w", m.Slug, err)
-	}
-	if !found {
-		return nil
-	}
-	branchTip, branchFound, err := gitx.LocalBranchTip(m.Repo, m.Branch)
-	if err != nil {
-		return fmt.Errorf("resolve branch %q tip for project %s: %w", m.Branch, m.Slug, err)
-	}
-	if !branchFound {
-		return fmt.Errorf("resolve branch %q tip for project %s: branch disappeared", m.Branch, m.Slug)
-	}
-	if worktreeHead != branchTip {
-		return fmt.Errorf(
-			"worktree HEAD %s for project %s does not match branch %q tip %s",
-			worktreeHead, m.Slug, m.Branch, branchTip,
-		)
 	}
 	return nil
 }

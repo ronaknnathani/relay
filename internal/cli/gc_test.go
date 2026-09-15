@@ -1100,6 +1100,93 @@ func TestGCBranchProbeFailureReturnsIncomplete(t *testing.T) {
 	}
 }
 
+func TestGCRejectsManifestIdentityChangeAfterMergeProof(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "manifest-race"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	replacement := "user/replacement"
+	runArchiveGit(t, fixture.repo, "branch", replacement, "refs/heads/"+branch)
+	previous := gcArchiveProject
+	gcArchiveProject = func(proof archiveProofSnapshot, force bool) (archiveResult, error) {
+		updateGCManifest(t, proof.Slug, func(manifest *project.Manifest) {
+			manifest.Branch = replacement
+		})
+		return archiveProjectWithProof(proof, force)
+	}
+	t.Cleanup(func() { gcArchiveProject = previous })
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "manifest changed") {
+		t.Fatalf("stderr %q is missing stale manifest proof diagnostic", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) ||
+		!gitx.BranchExists(fixture.repo, replacement) {
+		t.Fatal("GC cleaned up after the manifest identity changed")
+	}
+}
+
+func TestGCRejectsBranchAdvanceAfterMergeProof(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "branch-race"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	previous := gcArchiveProject
+	gcArchiveProject = func(proof archiveProofSnapshot, force bool) (archiveResult, error) {
+		commitArchiveFile(t, worktree, "later.txt", "later\n", "advance after proof")
+		return archiveProjectWithProof(proof, force)
+	}
+	t.Cleanup(func() { gcArchiveProject = previous })
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "branch tip changed") {
+		t.Fatalf("stderr %q is missing stale branch proof diagnostic", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC cleaned up after the branch advanced")
+	}
+}
+
+func TestGCRejectsDetachedWorktreeAdvanceAfterMergeProof(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "worktree-race"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	previous := gcArchiveProject
+	gcArchiveProject = func(proof archiveProofSnapshot, force bool) (archiveResult, error) {
+		runArchiveGit(t, worktree, "checkout", "-q", "--detach")
+		commitArchiveFile(t, worktree, "later.txt", "later\n", "advance detached after proof")
+		return archiveProjectWithProof(proof, force)
+	}
+	t.Cleanup(func() { gcArchiveProject = previous })
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "worktree tip changed") {
+		t.Fatalf("stderr %q is missing stale worktree proof diagnostic", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC cleaned up after the worktree advanced")
+	}
+}
+
 func TestGCArchiveWarningReturnsFailureAfterArchiving(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")
@@ -1108,8 +1195,8 @@ func TestGCArchiveWarningReturnsFailureAfterArchiving(t *testing.T) {
 	mergeGCProjectUpstream(t, fixture, branch)
 
 	previous := gcArchiveProject
-	gcArchiveProject = func(slug string, force bool) (archiveResult, error) {
-		result, err := archiveProject(slug, force)
+	gcArchiveProject = func(proof archiveProofSnapshot, force bool) (archiveResult, error) {
+		result, err := archiveProjectWithProof(proof, force)
 		result.BranchDeletionWarning = "injected branch deletion warning"
 		return result, err
 	}

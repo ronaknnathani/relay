@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -20,33 +21,46 @@ var (
 	loadArchiveRepository       = programview.GitHubRepository
 	saveArchiveManifest         = project.Save
 	archiveBranchExists         = gitx.LocalBranchExists
-	archiveForceDeleteBranch    = gitx.ForceDeleteBranch
+	archiveForceDeleteBranchAt  = gitx.ForceDeleteBranchAt
 	archiveRename               = os.Rename
 	archiveRemoveFile           = os.Remove
 )
 
-func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, error) {
+type recordedPullRequestEvidence struct {
+	Merged  bool
+	HeadSHA string
+}
+
+func resolveRecordedPullRequestEvidence(
+	m project.Manifest, slug string,
+) (recordedPullRequestEvidence, error) {
 	hasPR, ref, err := programview.RecordedPR(m, project.StatePath(slug))
 	if err != nil {
-		return false, fmt.Errorf("resolve recorded pull request for %s: %w", slug, err)
+		return recordedPullRequestEvidence{}, fmt.Errorf(
+			"resolve recorded pull request for %s: %w", slug, err,
+		)
 	}
 	if !hasPR {
-		return false, nil
+		return recordedPullRequestEvidence{}, nil
 	}
 	safeRef := gitx.SanitizeDiagnostic(ref)
 	proof, err := loadArchivePullRequestProof(m.Repo, ref)
 	if err != nil {
-		return false, fmt.Errorf("lookup recorded pull request %s for %s: %w", safeRef, slug, err)
+		return recordedPullRequestEvidence{}, fmt.Errorf(
+			"lookup recorded pull request %s for %s: %w", safeRef, slug, err,
+		)
 	}
 	if proof.State != programview.PRStateMerged {
-		return false, nil
+		return recordedPullRequestEvidence{}, nil
 	}
 	repository, err := loadArchiveRepository(m.Repo)
 	if err != nil {
-		return false, fmt.Errorf("resolve repository for recorded pull request %s for %s: %w", safeRef, slug, err)
+		return recordedPullRequestEvidence{}, fmt.Errorf(
+			"resolve repository for recorded pull request %s for %s: %w", safeRef, slug, err,
+		)
 	}
 	if !strings.EqualFold(proof.Repository, repository) {
-		return false, fmt.Errorf(
+		return recordedPullRequestEvidence{}, fmt.Errorf(
 			"recorded pull request %s for %s belongs to repository %q, want %q",
 			safeRef, slug, proof.Repository, repository,
 		)
@@ -55,24 +69,27 @@ func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, err
 	if base == "" {
 		base, err = gitx.DetectDefaultBranchWithError(m.Repo)
 		if err != nil {
-			return false, fmt.Errorf(
+			return recordedPullRequestEvidence{}, fmt.Errorf(
 				"resolve base branch for recorded pull request %s for %s: %w",
 				safeRef, slug, err,
 			)
 		}
 	}
 	if proof.BaseBranch != base {
-		return false, fmt.Errorf(
+		return recordedPullRequestEvidence{}, fmt.Errorf(
 			"recorded pull request %s for %s base branch %q does not match manifest base branch %q",
 			safeRef, slug, proof.BaseBranch, base,
 		)
 	}
 	branchTip, found, err := gitx.LocalBranchTip(m.Repo, m.Branch)
 	if err != nil {
-		return false, fmt.Errorf("resolve branch %q tip for recorded pull request %s for %s: %w", m.Branch, safeRef, slug, err)
+		return recordedPullRequestEvidence{}, fmt.Errorf(
+			"resolve branch %q tip for recorded pull request %s for %s: %w",
+			m.Branch, safeRef, slug, err,
+		)
 	}
 	if !found && proof.HeadBranch != m.Branch {
-		return false, fmt.Errorf(
+		return recordedPullRequestEvidence{}, fmt.Errorf(
 			"recorded pull request %s for %s head branch %q does not match manifest branch %q",
 			safeRef, slug, proof.HeadBranch, m.Branch,
 		)
@@ -82,28 +99,35 @@ func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, err
 	if m.Worktree != nil && *m.Worktree != "" {
 		worktreeHead, worktreeFound, err = gitx.WorktreeHead(m.Repo, *m.Worktree)
 		if err != nil {
-			return false, fmt.Errorf(
+			return recordedPullRequestEvidence{}, fmt.Errorf(
 				"resolve worktree HEAD for recorded pull request %s for %s: %w",
 				safeRef, slug, err,
 			)
 		}
 	}
 	if (found || worktreeFound) && proof.HeadSHA == "" {
-		return false, fmt.Errorf("recorded pull request %s for %s has no head SHA", safeRef, slug)
+		return recordedPullRequestEvidence{}, fmt.Errorf(
+			"recorded pull request %s for %s has no head SHA", safeRef, slug,
+		)
 	}
 	if found && branchTip != proof.HeadSHA {
-		return false, fmt.Errorf(
+		return recordedPullRequestEvidence{}, fmt.Errorf(
 			"recorded pull request %s for %s head %s does not match branch %q tip %s",
 			safeRef, slug, proof.HeadSHA, m.Branch, branchTip,
 		)
 	}
 	if worktreeFound && worktreeHead != proof.HeadSHA {
-		return false, fmt.Errorf(
+		return recordedPullRequestEvidence{}, fmt.Errorf(
 			"recorded pull request %s for %s head %s does not match worktree HEAD %s",
 			safeRef, slug, proof.HeadSHA, worktreeHead,
 		)
 	}
-	return true, nil
+	return recordedPullRequestEvidence{Merged: true, HeadSHA: proof.HeadSHA}, nil
+}
+
+func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, error) {
+	evidence, err := resolveRecordedPullRequestEvidence(m, slug)
+	return evidence.Merged, err
 }
 
 // recordedPullRequestMerged reports whether the project's recorded pull request
@@ -115,18 +139,20 @@ func recordedPullRequestMerged(m project.Manifest, slug string) bool {
 
 // recordedPullRequestMergeOnce memoizes the detailed lookup so archive asks
 // GitHub at most once per run, and only when the answer is still needed.
-func recordedPullRequestMergeOnce(m project.Manifest, slug string) func() (bool, error) {
+func recordedPullRequestMergeOnce(
+	m project.Manifest, slug string,
+) func() (recordedPullRequestEvidence, error) {
 	var (
 		resolved bool
-		merged   bool
+		evidence recordedPullRequestEvidence
 		err      error
 	)
-	return func() (bool, error) {
+	return func() (recordedPullRequestEvidence, error) {
 		if !resolved {
 			resolved = true
-			merged, err = resolveRecordedPullRequestMerge(m, slug)
+			evidence, err = resolveRecordedPullRequestEvidence(m, slug)
 		}
-		return merged, err
+		return evidence, err
 	}
 }
 
@@ -189,143 +215,391 @@ func renderArchive(out io.Writer, result archiveResult) {
 	fmt.Fprintln(out)
 }
 
-// archiveProject removes a project's worktree, decides its branch's fate, and
-// moves its metadata from active to archived. With force it deliberately
-// discards dirty and untracked files in the worktree and force-deletes an
-// unmerged branch: the caller has already decided that work is finished.
+type archiveProofKind string
+
+const (
+	archiveProofForced        archiveProofKind = "forced"
+	archiveProofReachable     archiveProofKind = "reachable"
+	archiveProofPullRequest   archiveProofKind = "pull-request"
+	archiveProofMissingBranch archiveProofKind = "missing-branch"
+	archiveProofFreshUpstream archiveProofKind = "fresh-upstream"
+)
+
+type archiveProofSnapshot struct {
+	Slug                string
+	Repository          string
+	Branch              string
+	Worktree            string
+	HasWorktree         bool
+	ManifestJSON        string
+	Kind                archiveProofKind
+	BranchPresent       bool
+	ExpectedBranchTip   string
+	WorktreePresent     bool
+	ExpectedWorktreeTip string
+	Merged              bool
+}
+
+type archiveDecision struct {
+	proof    archiveProofSnapshot
+	warnings []string
+}
+
+// archiveProject computes its own proof snapshot at the archive boundary.
 func archiveProject(slug string, force bool) (archiveResult, error) {
-	return archiveProjectWithMergeProof(slug, force, false)
-}
-
-func archiveMergedProject(slug string, force bool) (archiveResult, error) {
-	return archiveProjectWithMergeProof(slug, force, true)
-}
-
-func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archiveResult, error) {
-	srcDir := filepath.Join(project.ActiveDir(), slug)
-	manifestPath := filepath.Join(srcDir, "manifest.json")
+	manifestPath := project.ManifestPath(project.ActiveDir(), slug)
 	m, err := project.Load(manifestPath)
 	if err != nil {
 		return archiveResult{}, fmt.Errorf("project not found in active: %s: %w", slug, err)
 	}
-	result := archiveResult{Slug: slug, Branch: m.Branch, Warnings: []string{}}
-
-	// Decide branch fate up front so we don't tear down the worktree and
-	// then fail on an unmerged branch with no recovery path.
-	branchExists := false
-	if m.Branch != "" {
-		branchExists, err = archiveBranchExists(m.Repo, m.Branch)
-		if err != nil {
-			return archiveResult{}, fmt.Errorf(
-				"inspect branch %q for project %s: %w", m.Branch, slug, err,
-			)
-		}
+	decision, err := decideArchive(m, slug, force)
+	if err != nil {
+		return archiveResult{}, err
 	}
-	var (
-		deleteBranchAfter      bool
-		forceDeleteBranchAfter bool
-		workMerged             = mergeProven
-	)
-	// The recorded pull request is authoritative about merge state and is
-	// resolved lazily, at most once, so a locally merged branch costs no GitHub
-	// call and a branch that is already deleted is still evaluated.
+	result, err := archiveProjectWithProof(decision.proof, force)
+	if err != nil {
+		return archiveResult{}, err
+	}
+	result.Warnings = append(result.Warnings, decision.warnings...)
+	return result, nil
+}
+
+func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision, error) {
+	proof, err := newArchiveProofSnapshot(m, archiveProofForced, false)
+	if err != nil {
+		return archiveDecision{}, err
+	}
 	recordedMerge := recordedPullRequestMergeOnce(m, slug)
-	if branchExists {
+	reachable := false
+	workMerged := false
+	var warnings []string
+	if proof.BranchPresent {
 		base := m.BaseBranch
 		if base == "" {
 			base = gitx.DetectDefaultBranch(m.Repo)
 		}
-		reachable := false
 		if base != "" {
-			if gitx.HasOrigin(m.Repo) && gitx.RevParse(m.Repo, "refs/remotes/origin/"+base) != "" {
-				remoteBaseRef := "refs/remotes/origin/" + base
-				reachable = gitx.IsBranchReachable(m.Repo, "refs/heads/"+m.Branch, remoteBaseRef)
-				workMerged = workMerged || gitx.IsWorkMerged(m.Repo, m.Branch, remoteBaseRef, m.StartSHA)
-			}
-			if !reachable {
-				reachable = gitx.IsBranchReachable(m.Repo, "refs/heads/"+m.Branch, "refs/heads/"+base)
-			}
-			if !workMerged {
-				workMerged = gitx.IsWorkMerged(m.Repo, m.Branch, "refs/heads/"+base, m.StartSHA)
+			for _, baseRef := range []string{
+				"refs/remotes/origin/" + base,
+				"refs/heads/" + base,
+			} {
+				if gitx.RevParse(m.Repo, baseRef) == "" {
+					continue
+				}
+				reachable, err = gitx.CommitReachable(
+					m.Repo, proof.ExpectedBranchTip, baseRef,
+				)
+				if err != nil {
+					return archiveDecision{}, fmt.Errorf(
+						"evaluate branch %q against %s: %w", m.Branch, baseRef, err,
+					)
+				}
+				if !workMerged {
+					tip, merged, mergeErr := gitx.WorkMergedTip(
+						m.Repo, m.Branch, baseRef, m.StartSHA,
+					)
+					if mergeErr != nil {
+						warnings = append(warnings, fmt.Sprintf(
+							"evaluate merged work for branch %q against %s: %s",
+							m.Branch, baseRef, mergeErr,
+						))
+					} else if tip == proof.ExpectedBranchTip {
+						workMerged = merged
+					}
+				}
+				if reachable {
+					break
+				}
 			}
 		}
-		switch {
-		case force:
-			deleteBranchAfter, forceDeleteBranchAfter = true, true
-		case reachable:
-			deleteBranchAfter = true
-		default:
-			// A squashed or rebased merge leaves no local ancestry, so trust
-			// the recorded pull request when its identity matches the branch.
-			pullRequestMerged, err := recordedMerge()
-			if err != nil {
-				return archiveResult{}, fmt.Errorf(
+		if !force && !reachable {
+			evidence, evidenceErr := recordedMerge()
+			if evidenceErr != nil {
+				return archiveDecision{}, fmt.Errorf(
 					"branch %q has unmerged work; re-run with --force to delete it anyway, or merge it first; recorded pull request lookup failed: %w",
-					m.Branch, err,
+					m.Branch, evidenceErr,
 				)
 			}
-			if !pullRequestMerged {
-				return archiveResult{}, fmt.Errorf("branch %q has unmerged work; re-run with --force to delete it anyway, or merge it first", m.Branch)
+			if !evidence.Merged {
+				return archiveDecision{}, fmt.Errorf(
+					"branch %q has unmerged work; re-run with --force to delete it anyway, or merge it first",
+					m.Branch,
+				)
 			}
-			deleteBranchAfter, forceDeleteBranchAfter = true, true
-		}
-	}
-	// A missing local branch is not evidence of abandoned work: the branch is
-	// usually already deleted precisely because its pull request merged.
-	if !workMerged {
-		pullRequestMerged, err := recordedMerge()
-		if err != nil {
-			result.Warnings = append(result.Warnings, err.Error())
+			if err := validatePullRequestProofTips(proof, evidence.HeadSHA); err != nil {
+				return archiveDecision{}, err
+			}
+			proof.Kind = archiveProofPullRequest
+			workMerged = true
+		} else if force {
+			proof.Kind = archiveProofForced
 		} else {
-			workMerged = pullRequestMerged
+			proof.Kind = archiveProofReachable
 		}
+	} else {
+		proof.Kind = archiveProofMissingBranch
 	}
 
+	if !workMerged {
+		evidence, evidenceErr := recordedMerge()
+		if evidenceErr != nil {
+			warnings = append(warnings, evidenceErr.Error())
+		} else if evidence.Merged {
+			if err := validatePullRequestProofTips(proof, evidence.HeadSHA); err != nil {
+				warnings = append(warnings, err.Error())
+			} else {
+				workMerged = true
+				proof.Kind = archiveProofPullRequest
+			}
+		}
+	}
+	proof.Merged = workMerged
+	return archiveDecision{proof: proof, warnings: warnings}, nil
+}
+
+func newArchiveProofSnapshot(
+	m project.Manifest, kind archiveProofKind, merged bool,
+) (archiveProofSnapshot, error) {
+	manifest, err := json.Marshal(m)
+	if err != nil {
+		return archiveProofSnapshot{}, fmt.Errorf("snapshot project %s manifest: %w", m.Slug, err)
+	}
+	proof := archiveProofSnapshot{
+		Slug:         m.Slug,
+		Repository:   m.Repo,
+		Branch:       m.Branch,
+		ManifestJSON: string(manifest),
+		Kind:         kind,
+		Merged:       merged,
+	}
+	if m.Worktree != nil {
+		proof.HasWorktree = true
+		proof.Worktree = *m.Worktree
+	}
+	if m.Branch != "" {
+		proof.BranchPresent, err = archiveBranchExists(m.Repo, m.Branch)
+		if err != nil {
+			return archiveProofSnapshot{}, fmt.Errorf(
+				"inspect branch %q for project %s: %w", m.Branch, m.Slug, err,
+			)
+		}
+		if proof.BranchPresent {
+			var found bool
+			proof.ExpectedBranchTip, found, err = gitx.LocalBranchTip(m.Repo, m.Branch)
+			if err != nil {
+				return archiveProofSnapshot{}, fmt.Errorf(
+					"resolve branch %q tip for project %s: %w", m.Branch, m.Slug, err,
+				)
+			}
+			if !found {
+				return archiveProofSnapshot{}, fmt.Errorf(
+					"branch %q for project %s disappeared during inspection", m.Branch, m.Slug,
+				)
+			}
+		}
+	}
+	if proof.HasWorktree && proof.Worktree != "" {
+		proof.ExpectedWorktreeTip, proof.WorktreePresent, err = gitx.WorktreeHead(
+			m.Repo, proof.Worktree,
+		)
+		if err != nil {
+			return archiveProofSnapshot{}, fmt.Errorf(
+				"resolve worktree HEAD for project %s: %w", m.Slug, err,
+			)
+		}
+	}
+	return proof, nil
+}
+
+func newMergedBranchArchiveProof(
+	m project.Manifest, kind archiveProofKind, expectedTip string,
+) (archiveProofSnapshot, error) {
+	proof, err := newArchiveProofSnapshot(m, kind, true)
+	if err != nil {
+		return archiveProofSnapshot{}, err
+	}
+	if !proof.BranchPresent {
+		return archiveProofSnapshot{}, fmt.Errorf(
+			"branch %q for project %s disappeared after merge proof", m.Branch, m.Slug,
+		)
+	}
+	if proof.ExpectedBranchTip != expectedTip {
+		return archiveProofSnapshot{}, fmt.Errorf(
+			"branch tip changed from %s to %s for project %s after merge proof",
+			expectedTip, proof.ExpectedBranchTip, m.Slug,
+		)
+	}
+	if proof.WorktreePresent && proof.ExpectedWorktreeTip != expectedTip {
+		return archiveProofSnapshot{}, fmt.Errorf(
+			"worktree HEAD %s for project %s does not match branch %q tip %s",
+			proof.ExpectedWorktreeTip, m.Slug, m.Branch, expectedTip,
+		)
+	}
+	return proof, nil
+}
+
+func newPullRequestArchiveProof(
+	m project.Manifest, evidence recordedPullRequestEvidence,
+) (archiveProofSnapshot, error) {
+	proof, err := newArchiveProofSnapshot(m, archiveProofPullRequest, true)
+	if err != nil {
+		return archiveProofSnapshot{}, err
+	}
+	if err := validatePullRequestProofTips(proof, evidence.HeadSHA); err != nil {
+		return archiveProofSnapshot{}, err
+	}
+	return proof, nil
+}
+
+func validatePullRequestProofTips(proof archiveProofSnapshot, expectedTip string) error {
+	if proof.BranchPresent && proof.ExpectedBranchTip != expectedTip {
+		return fmt.Errorf(
+			"recorded pull request head %s does not match branch %q tip %s",
+			expectedTip, proof.Branch, proof.ExpectedBranchTip,
+		)
+	}
+	if proof.WorktreePresent && proof.ExpectedWorktreeTip != expectedTip {
+		return fmt.Errorf(
+			"recorded pull request head %s does not match worktree HEAD %s",
+			expectedTip, proof.ExpectedWorktreeTip,
+		)
+	}
+	return nil
+}
+
+func archiveProjectWithProof(proof archiveProofSnapshot, force bool) (archiveResult, error) {
+	m, err := validateArchiveProof(proof)
+	if err != nil {
+		return archiveResult{}, err
+	}
+	result := archiveResult{
+		Slug: proof.Slug, Branch: proof.Branch, Merged: proof.Merged, Warnings: []string{},
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	m.Status = "archived"
 	m.Archived = &now
-	m.Merged = workMerged
-	result.Merged = workMerged
+	m.Merged = proof.Merged
 
-	dstDir := filepath.Join(project.ArchivedDir(), slug)
+	srcDir := filepath.Join(project.ActiveDir(), proof.Slug)
+	dstDir := filepath.Join(project.ArchivedDir(), proof.Slug)
 	rollbackMetadata, err := stageArchivedProject(srcDir, dstDir, m)
 	if err != nil {
 		return archiveResult{}, err
 	}
 	result.ArchivedPath = dstDir
 
-	if m.Worktree != nil && *m.Worktree != "" {
-		worktree := *m.Worktree
-		result.Worktree = worktree
-		if err := gitx.WorktreeRemove(m.Repo, worktree, force); err != nil {
+	if proof.HasWorktree && proof.Worktree != "" {
+		result.Worktree = proof.Worktree
+		if err := validateArchiveTips(proof); err != nil {
+			if rollbackErr := rollbackMetadata(); rollbackErr != nil {
+				err = fmt.Errorf("%w; rollback archive metadata: %v", err, rollbackErr)
+			}
+			return archiveResult{}, err
+		}
+		if err := gitx.WorktreeRemove(proof.Repository, proof.Worktree, force); err != nil {
 			if rollbackErr := rollbackMetadata(); rollbackErr != nil {
 				err = fmt.Errorf("%w; rollback archive metadata: %v", err, rollbackErr)
 			}
 			if !force {
-				return archiveResult{}, fmt.Errorf("%w\nhint: use --force to remove worktrees with untracked/modified files", err)
+				return archiveResult{}, fmt.Errorf(
+					"%w\nhint: use --force to remove worktrees with untracked/modified files", err,
+				)
 			}
 			return archiveResult{}, err
 		}
 		result.WorktreeRemoved = true
 	}
 
-	if deleteBranchAfter {
-		var branchDeleteErr error
-		if forceDeleteBranchAfter {
-			branchDeleteErr = archiveForceDeleteBranch(m.Repo, m.Branch)
-		} else {
-			branchDeleteErr = gitx.DeleteBranch(m.Repo, m.Branch)
-		}
-		if branchDeleteErr != nil {
+	if proof.BranchPresent {
+		if err := archiveForceDeleteBranchAt(
+			proof.Repository, proof.Branch, proof.ExpectedBranchTip,
+		); err != nil {
 			result.BranchDeletionWarning = fmt.Sprintf(
 				"%s\nhint: delete manually with: %s",
-				branchDeleteErr, manualBranchDeleteCommand(m.Repo, m.Branch),
+				err, manualBranchDeleteCommand(proof.Repository, proof.Branch),
 			)
 		} else {
 			result.BranchDeleted = true
 		}
 	}
 	return result, nil
+}
+
+func validateArchiveProof(proof archiveProofSnapshot) (project.Manifest, error) {
+	if proof.Kind == "" {
+		return project.Manifest{}, fmt.Errorf("archive proof for %s has no proof kind", proof.Slug)
+	}
+	manifestPath := project.ManifestPath(project.ActiveDir(), proof.Slug)
+	m, err := project.Load(manifestPath)
+	if err != nil {
+		return project.Manifest{}, fmt.Errorf(
+			"project not found in active: %s: %w", proof.Slug, err,
+		)
+	}
+	worktree, hasWorktree := "", m.Worktree != nil
+	if hasWorktree {
+		worktree = *m.Worktree
+	}
+	if m.Slug != proof.Slug || m.Repo != proof.Repository || m.Branch != proof.Branch ||
+		hasWorktree != proof.HasWorktree || worktree != proof.Worktree {
+		return project.Manifest{}, fmt.Errorf(
+			"project %s manifest changed after %s proof", proof.Slug, proof.Kind,
+		)
+	}
+	manifest, err := json.Marshal(m)
+	if err != nil {
+		return project.Manifest{}, fmt.Errorf("snapshot project %s manifest: %w", proof.Slug, err)
+	}
+	if string(manifest) != proof.ManifestJSON {
+		return project.Manifest{}, fmt.Errorf(
+			"project %s manifest changed after %s proof", proof.Slug, proof.Kind,
+		)
+	}
+	if err := validateArchiveTips(proof); err != nil {
+		return project.Manifest{}, err
+	}
+	return m, nil
+}
+
+func validateArchiveTips(proof archiveProofSnapshot) error {
+	current, err := newArchiveProofSnapshot(
+		project.Manifest{
+			Slug: proof.Slug, Repo: proof.Repository, Branch: proof.Branch,
+			Worktree: archiveWorktreePointer(proof),
+		},
+		proof.Kind,
+		proof.Merged,
+	)
+	if err != nil {
+		return err
+	}
+	if current.BranchPresent != proof.BranchPresent {
+		return fmt.Errorf("branch presence changed for project %s after %s proof", proof.Slug, proof.Kind)
+	}
+	if proof.BranchPresent && current.ExpectedBranchTip != proof.ExpectedBranchTip {
+		return fmt.Errorf(
+			"branch tip changed from %s to %s for project %s after %s proof",
+			proof.ExpectedBranchTip, current.ExpectedBranchTip, proof.Slug, proof.Kind,
+		)
+	}
+	if current.WorktreePresent != proof.WorktreePresent {
+		return fmt.Errorf("worktree presence changed for project %s after %s proof", proof.Slug, proof.Kind)
+	}
+	if proof.WorktreePresent && current.ExpectedWorktreeTip != proof.ExpectedWorktreeTip {
+		return fmt.Errorf(
+			"worktree tip changed from %s to %s for project %s after %s proof",
+			proof.ExpectedWorktreeTip, current.ExpectedWorktreeTip, proof.Slug, proof.Kind,
+		)
+	}
+	return nil
+}
+
+func archiveWorktreePointer(proof archiveProofSnapshot) *string {
+	if !proof.HasWorktree {
+		return nil
+	}
+	worktree := proof.Worktree
+	return &worktree
 }
 
 func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
@@ -356,7 +630,16 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 	if !branchExists {
 		return result, nil
 	}
-	if err := archiveForceDeleteBranch(m.Repo, m.Branch); err != nil {
+	branchTip, found, err := gitx.LocalBranchTip(m.Repo, m.Branch)
+	if err != nil {
+		return result, fmt.Errorf(
+			"resolve archived branch %q tip for project %s: %w", m.Branch, m.Slug, err,
+		)
+	}
+	if !found {
+		return result, nil
+	}
+	if err := archiveForceDeleteBranchAt(m.Repo, m.Branch, branchTip); err != nil {
 		result.BranchDeletionWarning = fmt.Sprintf(
 			"%s\nhint: delete manually with: %s",
 			err, manualBranchDeleteCommand(m.Repo, m.Branch),

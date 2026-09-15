@@ -900,16 +900,16 @@ func TestWorkerCleanupRetryFinishesArchivedBranchCleanup(t *testing.T) {
 	installManagedHerdrFakes(t, client)
 	installCompletedWatcherState(t, manifest.Slug)
 
-	previousDelete := archiveForceDeleteBranch
+	previousDelete := archiveForceDeleteBranchAt
 	deleteAttempts := 0
-	archiveForceDeleteBranch = func(repo, branch string) error {
+	archiveForceDeleteBranchAt = func(repo, branch, expectedSHA string) error {
 		deleteAttempts++
 		if deleteAttempts == 1 {
 			return errors.New("injected branch deletion failure")
 		}
-		return gitx.ForceDeleteBranch(repo, branch)
+		return gitx.ForceDeleteBranchAt(repo, branch, expectedSHA)
 	}
-	t.Cleanup(func() { archiveForceDeleteBranch = previousDelete })
+	t.Cleanup(func() { archiveForceDeleteBranchAt = previousDelete })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
 	if err != nil {

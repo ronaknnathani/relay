@@ -353,6 +353,28 @@ func TestLocalBranchExistsReturnsGitFailure(t *testing.T) {
 	}
 }
 
+func TestForceDeleteBranchAtRejectsAdvancedBranch(t *testing.T) {
+	repo := initRepo(t)
+	oldTip := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "branch", "feature", oldTip)
+	if err := os.WriteFile(filepath.Join(repo, "later"), []byte("later\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "later")
+	runGit(t, repo, "commit", "-q", "-m", "advance")
+	newTip := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "branch", "-f", "feature", newTip)
+
+	err := ForceDeleteBranchAt(repo, "feature", oldTip)
+	if err == nil || !strings.Contains(err.Error(), "changed from") {
+		t.Fatalf("ForceDeleteBranchAt error = %v, want changed-tip rejection", err)
+	}
+	tip, found, tipErr := LocalBranchTip(repo, "feature")
+	if tipErr != nil || !found || tip != newTip {
+		t.Fatalf("feature tip = (%q, %t, %v), want (%q, true, nil)", tip, found, tipErr, newTip)
+	}
+}
+
 func TestIsWorktreePreservesGitDiagnostic(t *testing.T) {
 	repo := t.TempDir()
 
@@ -567,7 +589,8 @@ func TestWorkMergedReturnsEvaluationError(t *testing.T) {
 	if merged {
 		t.Fatal("WorkMerged = true after evaluation error")
 	}
-	if !strings.Contains(err.Error(), "git merge-base --is-ancestor refs/heads/work missing-base") {
+	if !strings.Contains(err.Error(), "git merge-base --is-ancestor") ||
+		!strings.Contains(err.Error(), "missing-base") {
 		t.Fatalf("WorkMerged error = %q", err)
 	}
 	if IsWorkMerged(repo, "work", "missing-base", start) {
