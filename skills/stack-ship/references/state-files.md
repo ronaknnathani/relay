@@ -7,9 +7,9 @@ history). Worker subagents return structured digests and **do not append to shar
 directly**.
 
 ## `goal.md` — definition of done
-The goal in one paragraph + the **acceptance-criteria checklist**. This is `/goal` and the Phase-3
-verification gate. Criteria must be machine-checkable by a subagent at the end. Tick boxes only when
-a verification subagent confirms them — never on optimism.
+The goal in one paragraph + the **acceptance-criteria checklist**. This is `/goal` and the acceptance
+gate in the `Stop` contract. Criteria must be machine-checkable by a subagent at the end. Tick boxes
+only when a verification subagent confirms them — never on optimism.
 
 ## `plan.md` — the stack
 Ordered PRs (`api → utils → stitch`), each with intent, scope, `depends-on`, branch/base, the
@@ -37,8 +37,8 @@ reverse it. **If a call should have been the author's, it does NOT go here — i
 ## `follow-ups.md` — discovered work, NOT done in this run
 Anything surfaced during implementation that's out of this goal's scope (a pre-existing bug noticed
 in passing, a hardening idea, a latent edge case the current contract doesn't cover). Captured here
-and stopped — **never auto-expanded into the current run** (guardrail 12). At the end, optionally
-file these as todos/issues for the author.
+and stopped — **never auto-expanded into the current run**, as required by the **Keep stack state
+durable and resumable** guardrail. At the end, optionally file these as todos/issues for the author.
 
 ## `questions.md` — the pending-decisions table (the human funnel)
 The single place the author looks to see **what is waiting on them**. It is a **table that shows
@@ -66,7 +66,8 @@ Format:
 Rules:
 - **Open only.** Made decisions never appear here — they drop off the instant they're answered.
 - One row per decision, attributed to the PR + exact location it came from.
-- Mark whether it **blocks** that PR (the rest of the stack keeps moving regardless — guardrail 2).
+- Under the **Never guess an author decision** guardrail, mark whether it **blocks** that PR; the
+  rest of the stack keeps moving regardless.
 - The agent may state its **lean** (recommended option) but must not act on it until the author
   confirms.
 - Funnel ALL subagent questions here so the author is never pinged per-subagent.

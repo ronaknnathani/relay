@@ -344,6 +344,59 @@ func TestRouteClassifyRejectsConflictingAndDuplicateGatePolicies(t *testing.T) {
 	}
 }
 
+func TestRouteClassifyReportsActionableGateFlagErrors(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{
+		"classify", "demo", "--requested-behavior-explicit",
+		"--risk-assessment-complete", "--predicted-size-known",
+		"--predicted-files", "1", "--predicted-lines", "20",
+	}
+	tests := map[string]struct {
+		flags []string
+		want  string
+	}{
+		"missing separator": {
+			flags: []string{"--gate", "test"},
+			want:  `invalid --gate "test": expected id=command`,
+		},
+		"empty id": {
+			flags: []string{"--gate", "=TOKEN=super-secret go test ./..."},
+			want:  `invalid --gate "=<redacted-command>": gate id cannot be empty`,
+		},
+		"empty command": {
+			flags: []string{"--gate", "test= "},
+			want:  `invalid --gate "test= ": gate command cannot be empty`,
+		},
+		"conflicting declarations": {
+			flags: []string{"--gate", "test=go test ./...", "--no-repository-gates"},
+			want:  "--gate and --no-repository-gates cannot be used together",
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := runRoute(t, append(append([]string(nil), base...), test.flags...)...)
+			if err == nil {
+				t.Fatal("invalid gate flags were accepted")
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %q, want actionable detail %q", err, test.want)
+			}
+			if strings.Contains(err.Error(), "super-secret") {
+				t.Fatalf("error exposed raw gate command: %q", err)
+			}
+		})
+	}
+}
+
 func TestRouteRefreshEscalatesStaleEasyEvidenceToIndependentPhases(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := initCLIGitRepo(t)

@@ -1026,6 +1026,39 @@ func TestStateWorkerRejectsOffRouteHelpersForEasyDelivery(t *testing.T) {
 	}
 }
 
+func TestStateWorkerAllowsHelpersForForcedFullEasyDelivery(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route = testRouteDecision(project.RouteEasy)
+	state.Route.ForcedFull = true
+	state.Route.SelectedPhases = append([]string(nil), project.AdaptiveDeliveryPhases...)
+	state.Route.ReviewOwner = project.EvidenceOwnerReview
+	state.Route.ValidationOwner = project.EvidenceOwnerValidate
+	state.Route.Digest, err = project.RouteDigest(*state.Route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runState(t, "worker", "demo", "--task", "extra-review"); err != nil {
+		t.Fatalf("forced-full easy route rejected helper: %v", err)
+	}
+	got, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SubagentCount != 1 {
+		t.Fatalf("subagent count = %d, want 1", got.SubagentCount)
+	}
+}
+
 func testRouteDecision(class string) *project.RouteDecision {
 	selected := append([]string(nil), project.AdaptiveDeliveryPhases...)
 	reviewOwner, validationOwner := "review", "validate"

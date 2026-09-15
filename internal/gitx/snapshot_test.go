@@ -123,19 +123,41 @@ func TestSnapshotTreatsUntrackedNestedRepositoryAsOpaqueIdentity(t *testing.T) {
 	unstaged := mustSnapshot(t, repo, base)
 	assertFingerprintChanged(t, first, unstaged)
 
+	if err := os.WriteFile(filepath.Join(nested, "secret.txt"), []byte("different private content again\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repeatedUnstaged := mustSnapshot(t, repo, base)
+	assertFingerprintChanged(t, unstaged, repeatedUnstaged)
+
 	runGit(t, nested, "add", "secret.txt")
 	staged := mustSnapshot(t, repo, base)
-	assertFingerprintChanged(t, unstaged, staged)
+	assertFingerprintChanged(t, repeatedUnstaged, staged)
+
+	if err := os.WriteFile(filepath.Join(nested, "secret.txt"), []byte("staged plus worktree content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stagedAndUnstaged := mustSnapshot(t, repo, base)
+	assertFingerprintChanged(t, staged, stagedAndUnstaged)
+
+	runGit(t, nested, "add", "secret.txt")
+	restaged := mustSnapshot(t, repo, base)
+	assertFingerprintChanged(t, stagedAndUnstaged, restaged)
 
 	if err := os.WriteFile(filepath.Join(nested, "local.txt"), []byte("untracked private content\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	untracked := mustSnapshot(t, repo, base)
-	assertFingerprintChanged(t, staged, untracked)
+	assertFingerprintChanged(t, restaged, untracked)
+
+	if err := os.WriteFile(filepath.Join(nested, "local.txt"), []byte("different untracked private content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repeatedUntracked := mustSnapshot(t, repo, base)
+	assertFingerprintChanged(t, untracked, repeatedUntracked)
 
 	runGit(t, nested, "commit", "-q", "-m", "nested change")
 	committed := mustSnapshot(t, repo, base)
-	assertFingerprintChanged(t, untracked, committed)
+	assertFingerprintChanged(t, repeatedUntracked, committed)
 }
 
 func TestSnapshotRejectsInvalidRepository(t *testing.T) {

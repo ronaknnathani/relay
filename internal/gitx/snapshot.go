@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -175,26 +176,12 @@ func readUntracked(root, relative string) (untrackedFile, error) {
 		if err != nil || topErr != nil || pathErr != nil || !os.SameFile(topInfo, pathInfo) {
 			return untrackedFile{}, fmt.Errorf("untracked path %s is not a nested Git repository", path)
 		}
-		head, err := gitOutput(path, "rev-parse", "--verify", "HEAD")
+		digest, err := nestedRepositoryDigest(path)
 		if err != nil {
-			head = "unborn"
+			return untrackedFile{}, err
 		}
-		status, err := gitBytes(
-			path,
-			"status",
-			"--porcelain=v1",
-			"-z",
-			"--untracked-files=all",
-		)
-		if err != nil {
-			return untrackedFile{}, fmt.Errorf("read nested Git status %s: %w", path, err)
-		}
-		identity := sha256.New()
-		identity.Write([]byte(strings.TrimSpace(head)))
-		identity.Write([]byte{0})
-		identity.Write(status)
 		return untrackedFile{
-			kind: "nested-git-repository", content: []byte(hex.EncodeToString(identity.Sum(nil))),
+			kind: "nested-git-repository", content: digest,
 		}, nil
 	}
 	if !info.Mode().IsRegular() {
@@ -209,6 +196,107 @@ func readUntracked(root, relative string) (untrackedFile, error) {
 		kind = "regular-executable"
 	}
 	return untrackedFile{kind: kind, content: content, changedLines: contentLineCount(content)}, nil
+}
+
+func nestedRepositoryDigest(repo string) ([]byte, error) {
+	head, err := gitOutput(repo, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		if _, symbolicErr := gitOutput(repo, "symbolic-ref", "-q", "HEAD"); symbolicErr != nil {
+			return nil, fmt.Errorf("resolve nested Git HEAD %s: %w", repo, err)
+		}
+		head = "unborn"
+	}
+
+	identity := sha256.New()
+	identity.Write([]byte("head\x00" + strings.TrimSpace(head) + "\x00index\x00"))
+	if err := writeGitOutput(identity, repo, "ls-files", "--stage", "-z"); err != nil {
+		return nil, fmt.Errorf("read nested Git index %s: %w", repo, err)
+	}
+	identity.Write([]byte("\x00worktree\x00"))
+	if err := writeGitOutput(
+		identity,
+		repo,
+		"diff",
+		"--no-ext-diff",
+		"--binary",
+		"--full-index",
+		"--",
+	); err != nil {
+		return nil, fmt.Errorf("read nested Git worktree %s: %w", repo, err)
+	}
+
+	untrackedRaw, err := gitBytes(repo, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("list nested Git untracked files %s: %w", repo, err)
+	}
+	untracked := splitNUL(untrackedRaw)
+	sort.Strings(untracked)
+	for _, relative := range untracked {
+		kind, digest, err := nestedUntrackedDigest(repo, relative)
+		if err != nil {
+			return nil, err
+		}
+		identity.Write([]byte("\x00untracked\x00" + relative + "\x00" + kind + "\x00"))
+		identity.Write(digest)
+	}
+	return []byte(hex.EncodeToString(identity.Sum(nil))), nil
+}
+
+func nestedUntrackedDigest(root, relative string) (string, []byte, error) {
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	if !pathWithin(path, root) {
+		return "", nil, fmt.Errorf("nested Git untracked path %q escapes repository %s", relative, root)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", nil, fmt.Errorf("inspect nested Git untracked file %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return "", nil, fmt.Errorf("read nested Git untracked symlink %s: %w", path, err)
+		}
+		sum := sha256.Sum256([]byte(target))
+		return "symlink", sum[:], nil
+	}
+	if info.IsDir() {
+		top, err := gitOutput(path, "rev-parse", "--show-toplevel")
+		topInfo, topErr := os.Stat(strings.TrimSpace(top))
+		pathInfo, pathErr := os.Stat(path)
+		if err != nil || topErr != nil || pathErr != nil || !os.SameFile(topInfo, pathInfo) {
+			return "", nil, fmt.Errorf("nested Git untracked path %s is not a repository", path)
+		}
+		digest, err := nestedRepositoryDigest(path)
+		return "nested-git-repository", digest, err
+	}
+	if !info.Mode().IsRegular() {
+		return "", nil, fmt.Errorf("nested Git untracked path %s is not a regular file", path)
+	}
+	objectID, err := gitOutput(root, "hash-object", "--no-filters", "--", relative)
+	if err != nil {
+		return "", nil, fmt.Errorf("hash nested Git untracked file %s: %w", path, err)
+	}
+	kind := "regular"
+	if info.Mode().Perm()&0o111 != 0 {
+		kind = "regular-executable"
+	}
+	return kind, []byte(strings.TrimSpace(objectID)), nil
+}
+
+func writeGitOutput(writer io.Writer, repo string, args ...string) error {
+	command := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	var stderr bytes.Buffer
+	command.Stdout = writer
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return fmt.Errorf(
+			"git %s: %w: %s",
+			strings.Join(args, " "),
+			err,
+			strings.TrimSpace(stderr.String()),
+		)
+	}
+	return nil
 }
 
 func pathWithin(path, root string) bool {

@@ -1,4 +1,4 @@
-# Phase 2 — Monitor the front PR (stack-specific layer)
+# Watch only the front — Stack-specific monitoring
 
 Observation of the front PR is owned by the **`relay pr watch`** runtime, and interpreting one of its
 digests is owned by the read-only **`pr-monitor`** skill (triage → delegate remediation to `pr-fix`
@@ -58,7 +58,7 @@ you again until you stop it.
 ## Cascade (after any content change to a PR with descendants)
 
 Every commit added to a PR can break its descendants. After any push to a PR that has descendants,
-delegate a cascade (guardrails.md #10): for each descendant,
+delegate a cascade under the **Cascade every parent content change** guardrail: for each descendant,
 
 ```bash
 git rebase --onto <new-tip> <old-tip> <descendant>
@@ -68,7 +68,7 @@ git push --force-with-lease origin <descendant>
 
 Verify each descendant's base ref did not collapse to the wrong branch, update the new descendant
 tips in `plan.md`, and append the event with `relay state log <stack-project-slug> "<summary>"`.
-Never edit `state.json` directly. Serialize per branch (guardrails.md #5).
+Never edit `state.json` directly. Serialize per branch under the **One writer per branch** guardrail.
 
 ## Auto-merge across the stack
 

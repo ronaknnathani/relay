@@ -125,6 +125,30 @@ func TestStackStateDocsAvoidHarnessSchedulerState(t *testing.T) {
 	}
 }
 
+func TestStackWorkflowDocsUseStableNamedReferences(t *testing.T) {
+	root := repoRoot(t)
+	files := []string{
+		filepath.Join("skills", "stack-ship", "references", "decomposition.md"),
+		filepath.Join("skills", "stack-ship", "references", "monitor-loop.md"),
+		filepath.Join("skills", "stack-ship", "references", "stacked-mechanics.md"),
+		filepath.Join("skills", "stack-ship", "references", "state-files.md"),
+	}
+	forbidden := []string{
+		"Phase 0", "Phase 2", "Phase-3",
+		"guardrail 2", "guardrail 4", "guardrail 12",
+		"guardrails.md #5", "guardrails.md #10",
+	}
+
+	for _, rel := range files {
+		body := readFile(t, filepath.Join(root, rel))
+		for _, phrase := range forbidden {
+			if strings.Contains(body, phrase) {
+				t.Errorf("%s contains stale numbered reference %q", rel, phrase)
+			}
+		}
+	}
+}
+
 func TestStackShipFallbackIsRuntimeNeutral(t *testing.T) {
 	root := repoRoot(t)
 	files := []string{

@@ -67,7 +67,8 @@ gh api repos/<owner>/<repo>/pulls/<n>/comments/<rootCommentId>/replies \
   -f body="🤖 <agent> on behalf of <author>"$'\n\n'"<message>"
 ```
 Pre-check for a stray PENDING review first (it 422s replies); if one exists, **inspect before
-deleting** (guardrail 4) — only delete if genuinely empty and not the author's draft.
+deleting** under the **Inspect before destructive action** guardrail — only delete if genuinely
+empty and not the author's draft.
 
 ## Detecting all PR-visible feedback
 ```bash

@@ -87,7 +87,10 @@ func newCmdRouteClassify() *cobra.Command {
 				return err
 			}
 			flags.full = flags.full || manifest.DeliveryMode == project.DeliveryModeFull
-			facts := flags.input(snapshot)
+			facts, err := flags.input(snapshot)
+			if err != nil {
+				return err
+			}
 			decision, err := deliveryroute.Classify(facts)
 			if err != nil {
 				return err
@@ -296,10 +299,15 @@ func bindRouteFlags(command *cobra.Command, flags *routeFlags) {
 	command.Flags().StringArrayVar(&flags.risks, "risk", nil, "closed risk trigger (repeatable)")
 }
 
-func (flags routeFlags) input(snapshot project.RepositorySnapshot) project.RouteFacts {
+func (flags routeFlags) input(snapshot project.RepositorySnapshot) (project.RouteFacts, error) {
 	risks := make([]project.RiskTrigger, len(flags.risks))
 	for index, risk := range flags.risks {
 		risks[index] = project.RiskTrigger(risk)
+	}
+	if flags.noRepositoryGates && len(flags.gates) > 0 {
+		return project.RouteFacts{}, fmt.Errorf(
+			"--gate and --no-repository-gates cannot be used together",
+		)
 	}
 	gatePolicy := project.GatePolicy{Mode: project.GatePolicyUnknown}
 	if flags.noRepositoryGates {
@@ -309,19 +317,31 @@ func (flags routeFlags) input(snapshot project.RepositorySnapshot) project.Route
 		gatePolicy.Mode = project.GatePolicyRequired
 		for _, value := range flags.gates {
 			id, command, ok := strings.Cut(value, "=")
-			if !ok || strings.TrimSpace(id) == "" || strings.TrimSpace(command) == "" {
-				gatePolicy = project.GatePolicy{Mode: "invalid"}
-				break
+			if !ok {
+				return project.RouteFacts{}, fmt.Errorf(
+					"invalid --gate %q: expected id=command",
+					value,
+				)
 			}
-			evidence := redactCommand(strings.TrimSpace(id), command, 0)
+			id = strings.TrimSpace(id)
+			if id == "" {
+				return project.RouteFacts{}, fmt.Errorf(
+					"invalid --gate %q: gate id cannot be empty",
+					"=<redacted-command>",
+				)
+			}
+			if strings.TrimSpace(command) == "" {
+				return project.RouteFacts{}, fmt.Errorf(
+					"invalid --gate %q: gate command cannot be empty",
+					value,
+				)
+			}
+			evidence := redactCommand(id, command, 0)
 			gatePolicy.Gates = append(gatePolicy.Gates, project.RequiredGate{
 				ID: evidence.GateID, CommandDigest: evidence.Digest,
 				RedactedDisplay: evidence.Display,
 			})
 		}
-	}
-	if flags.noRepositoryGates && len(flags.gates) > 0 {
-		gatePolicy = project.GatePolicy{Mode: "invalid"}
 	}
 	return project.RouteFacts{
 		RequestedBehaviorExplicit: flags.requestedExplicit,
@@ -342,7 +362,7 @@ func (flags routeFlags) input(snapshot project.RepositorySnapshot) project.Route
 		HistorySensitive:             flags.historySensitive,
 		ChangesRepositoryGuidelines:  flags.changesGuidelines,
 		RiskTriggers:                 risks,
-	}
+	}, nil
 }
 
 func saveRouteDecision(statePath string, state project.WorkflowState, decision project.RouteDecision) error {

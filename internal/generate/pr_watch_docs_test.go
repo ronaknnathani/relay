@@ -49,7 +49,7 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"Two modes — check your input first",
 				"Delegated mode",
 				"Direct mode",
-				"Skip step 1's broad assessment",
+				"Skip the broad assessment in the `Direct assessment` section",
 				"no reassessment loop",
 				"Return a structured result, one entry per supplied item",
 				"`check_run_id`",

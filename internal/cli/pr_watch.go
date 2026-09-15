@@ -560,8 +560,8 @@ func prWatchWorkspaceLabel(slug string) string {
 	return "relay-pr-watch:" + slug
 }
 
-// adoptedWatcherWarning reports an adopted watcher that is watching for someone
-// other than the caller asked for, which a stack retarget must notice.
+// adoptedWatcherWarning reports why an existing watcher's mode or owner prevents
+// the caller from adopting it.
 func adoptedWatcherWarning(slug string, state prwatch.State, mode prwatch.Mode, owner string) string {
 	if state.Mode == mode && state.OwnerSlug == owner {
 		return ""
