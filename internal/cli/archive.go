@@ -312,7 +312,8 @@ func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision
 				}
 			}
 		}
-		if !force && !reachable {
+		switch {
+		case !force && !reachable:
 			evidence, evidenceErr := recordedMerge()
 			if evidenceErr != nil {
 				return archiveDecision{}, fmt.Errorf(
@@ -331,9 +332,9 @@ func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision
 			}
 			proof.Kind = archiveProofPullRequest
 			workMerged = true
-		} else if force {
+		case force:
 			proof.Kind = archiveProofForced
-		} else {
+		default:
 			proof.Kind = archiveProofReachable
 		}
 	} else {
