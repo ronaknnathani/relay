@@ -568,7 +568,7 @@ func urlTokenBoundary(output string, start int) bool {
 	}
 	previous := output[start-1]
 	return !isASCIILetter(previous) &&
-		!(previous >= '0' && previous <= '9') &&
+		(previous < '0' || previous > '9') &&
 		previous != '_'
 }
 
