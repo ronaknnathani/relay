@@ -1505,6 +1505,57 @@ func TestGCArchiveWarningReturnsFailureAfterArchiving(t *testing.T) {
 	}
 }
 
+func TestGCPostStagingFailureRendersArchivedRecovery(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "post-staging-recovery"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+
+	previousSave := saveArchiveManifest
+	saveArchiveManifest = func(path string, manifest project.Manifest) error {
+		if manifest.ArchiveCleanup != nil &&
+			manifest.ArchiveCleanup.BranchState == project.ArchiveCleanupClaimed {
+			return errors.New("injected branch claim persistence failure")
+		}
+		return project.Save(path, manifest)
+	}
+	t.Cleanup(func() { saveArchiveManifest = previousSave })
+
+	stdout, stderr, err := captureGCOutput(t, runGC)
+	saveArchiveManifest = previousSave
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{
+		"Archived cleanup incomplete:",
+		slug,
+		"Worktree removed:",
+		"injected branch claim persistence failure",
+		"relay archive " + slug,
+	} {
+		if !strings.Contains(stdout+"\n"+stderr, want) {
+			t.Fatalf("GC output %q / %q is missing %q", stdout, stderr, want)
+		}
+	}
+	if strings.Contains(stderr, "relay archive "+slug+" --force") {
+		t.Fatalf("stderr %q adds unnecessary --force recovery", stderr)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(filepath.Join(project.ArchivedDir(), slug)) ||
+		pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC post-staging result does not match durable archived state")
+	}
+
+	if err := runArchive(slug, false); err != nil {
+		t.Fatalf("runArchive recovery: %v", err)
+	}
+	if gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("relay archive recovery left the branch behind")
+	}
+}
+
 func TestGCRecordedStateFailureIsActionable(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")

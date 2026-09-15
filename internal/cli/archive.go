@@ -278,9 +278,17 @@ func renderArchive(out io.Writer, result archiveResult) {
 }
 
 func renderArchivedCleanupRetry(out io.Writer, result archiveResult) {
+	renderArchivedCleanupResult(out, result, result.BranchDeletionWarning != "")
+}
+
+func renderArchivedCleanupFailure(out io.Writer, result archiveResult) {
+	renderArchivedCleanupResult(out, result, true)
+}
+
+func renderArchivedCleanupResult(out io.Writer, result archiveResult, incomplete bool) {
 	renderArchiveWarnings(result)
 	fmt.Fprintln(out)
-	if result.BranchDeletionWarning != "" {
+	if incomplete {
 		fmt.Fprintf(
 			out, "  %s %s\n",
 			ui.Color(ui.Yellow, "Archived cleanup incomplete:"), result.Slug,

@@ -143,6 +143,13 @@ func runGC() error {
 		fmt.Printf("[relay] Branch %s is merged. Archiving project %s.\n", m.Branch, m.Slug)
 		result, err := gcArchiveProject(proof, true)
 		if err != nil {
+			if result.ProjectLocation == archiveLocationArchived {
+				renderArchivedCleanupFailure(os.Stdout, result)
+				ui.Warn(
+					"project %s metadata is archived but cleanup is incomplete; retry with: relay archive %s",
+					m.Slug, m.Slug,
+				)
+			}
 			ui.Warn("archive %s: %s", m.Slug, err)
 			hadErrors = true
 			continue
