@@ -37,13 +37,7 @@ func runGC() error {
 	if err != nil {
 		return err
 	}
-	ownership, ownershipIssues := loadProjectResourceOwnershipIndex(loadResults)
-	if len(ownershipIssues) > 0 {
-		for _, issue := range ownershipIssues {
-			ui.Warn("%s", issue)
-		}
-		return errGCCompletedWithErrors
-	}
+	ownership := loadProjectResourceOwnershipIndex(loadResults)
 	refreshErrors := make(map[gcRefreshKey]error)
 	hadErrors := false
 	for _, loadResult := range loadResults {

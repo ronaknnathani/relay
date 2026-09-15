@@ -67,6 +67,24 @@ func CanonicalRepositoryRoot(path string) (string, error) {
 	return root, nil
 }
 
+// CanonicalGitCommonDir returns the canonical Git common directory shared by
+// the repository's linked worktrees.
+func CanonicalGitCommonDir(path string) (string, error) {
+	out, err := exec.Command("git", "-C", path, "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		return "", gitOutputError("git rev-parse --git-common-dir", err)
+	}
+	commonDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(path, commonDir)
+	}
+	commonDir, err = CanonicalPath(commonDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve git common directory %s: %w", commonDir, err)
+	}
+	return commonDir, nil
+}
+
 // CanonicalPath resolves all existing symlinks in path. Missing final
 // components are appended only after their nearest existing ancestor resolves.
 func CanonicalPath(path string) (string, error) {

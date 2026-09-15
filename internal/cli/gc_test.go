@@ -1147,6 +1147,105 @@ func TestGCFailsClosedAfterMalformedAndInvalidCompetingMetadata(t *testing.T) {
 	}
 }
 
+func TestGCContinuesForRepositoryIndependentOfMalformedOwnership(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	blockedRepo := newGCRepoFixture(t, "main")
+	blockedSlug := "blocked-owner"
+	blockedBranch, blockedWorktree := addGCProject(t, blockedRepo, blockedSlug)
+	mergeGCProjectUpstream(t, blockedRepo, blockedBranch)
+
+	malformedSlug := "malformed-owner"
+	malformedDir := filepath.Join(project.ActiveDir(), malformedSlug)
+	if err := os.MkdirAll(malformedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	malformed := `{
+  "slug": "` + malformedSlug + `",
+  "repo": "` + blockedRepo.repo + `",
+  "branch": "` + blockedBranch + `",
+  "worktree": "` + blockedWorktree + `",
+  "status": 42
+}`
+	malformedPath := project.ManifestPath(project.ActiveDir(), malformedSlug)
+	if err := os.WriteFile(malformedPath, []byte(malformed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	eligibleRepo := newGCRepoFixture(t, "main")
+	eligibleSlug := "independent-owner"
+	eligibleBranch, eligibleWorktree := addGCProject(t, eligibleRepo, eligibleSlug)
+	mergeGCProjectUpstream(t, eligibleRepo, eligibleBranch)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{malformedPath, "cannot unmarshal", blockedSlug} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), blockedSlug)) ||
+		!pathExists(blockedWorktree) ||
+		!gitx.BranchExists(blockedRepo.repo, blockedBranch) {
+		t.Fatal("GC changed resources that malformed metadata could claim")
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), eligibleSlug)) ||
+		pathExists(eligibleWorktree) ||
+		gitx.BranchExists(eligibleRepo.repo, eligibleBranch) {
+		t.Fatal("GC did not clean an independent repository")
+	}
+}
+
+func TestGCContinuesForRepositoryIndependentOfCanonicalizationFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	blockedRepo := newGCRepoFixture(t, "main")
+	blockedSlug := "canonical-blocked-owner"
+	blockedBranch, blockedWorktree := addGCProject(t, blockedRepo, blockedSlug)
+	mergeGCProjectUpstream(t, blockedRepo, blockedBranch)
+
+	invalidSlug := "invalid-repository-owner"
+	invalidRepo := filepath.Join(blockedRepo.repo, "nested")
+	if err := os.MkdirAll(invalidRepo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	invalid := project.Manifest{
+		Slug: invalidSlug, Repo: invalidRepo, Branch: blockedBranch, Worktree: &blockedWorktree,
+	}
+	invalidPath := project.ManifestPath(project.ActiveDir(), invalidSlug)
+	if err := os.MkdirAll(filepath.Dir(invalidPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(invalidPath, invalid); err != nil {
+		t.Fatal(err)
+	}
+
+	eligibleRepo := newGCRepoFixture(t, "main")
+	eligibleSlug := "canonical-independent-owner"
+	eligibleBranch, eligibleWorktree := addGCProject(t, eligibleRepo, eligibleSlug)
+	mergeGCProjectUpstream(t, eligibleRepo, eligibleBranch)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{invalidPath, "resolves inside repository root", blockedSlug} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), blockedSlug)) ||
+		!pathExists(blockedWorktree) ||
+		!gitx.BranchExists(blockedRepo.repo, blockedBranch) {
+		t.Fatal("GC changed resources that uncanonicalizable metadata could claim")
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), eligibleSlug)) ||
+		pathExists(eligibleWorktree) ||
+		gitx.BranchExists(eligibleRepo.repo, eligibleBranch) {
+		t.Fatal("GC did not clean a repository independent of canonicalization failure")
+	}
+}
+
 func TestGCRejectsNonNilEmptyWorktreeMetadata(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")

@@ -38,7 +38,7 @@ func Load(path string) (Manifest, error) {
 	}
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
-		return Manifest{}, fmt.Errorf("parse manifest %s: %w", path, err)
+		return m, fmt.Errorf("parse manifest %s: %w", path, err)
 	}
 	return m, nil
 }

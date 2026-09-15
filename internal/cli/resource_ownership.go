@@ -12,6 +12,7 @@ import (
 
 type projectResourceIdentity struct {
 	repository string
+	commonDir  string
 	branch     string
 	worktree   string
 }
@@ -21,38 +22,58 @@ type projectResourceOwner struct {
 	path string
 }
 
+type projectResourceOwnershipIssue struct {
+	owner           projectResourceOwner
+	identity        projectResourceIdentity
+	repositoryScope string
+	commonDirScope  string
+	branchUnknown   bool
+	worktreeUnknown bool
+	global          bool
+	err             error
+}
+
 type projectResourceOwnershipIndex struct {
 	identitiesByPath map[string]projectResourceIdentity
+	issuesByPath     map[string]projectResourceOwnershipIssue
+	issues           []projectResourceOwnershipIssue
 	branchOwners     map[string][]projectResourceOwner
 	worktreeOwners   map[string][]projectResourceOwner
 }
 
 func loadProjectResourceOwnershipIndex(
 	activeResults []project.ManifestLoadResult,
-) (projectResourceOwnershipIndex, []error) {
+) projectResourceOwnershipIndex {
 	index := projectResourceOwnershipIndex{
 		identitiesByPath: make(map[string]projectResourceIdentity),
+		issuesByPath:     make(map[string]projectResourceOwnershipIssue),
 		branchOwners:     make(map[string][]projectResourceOwner),
 		worktreeOwners:   make(map[string][]projectResourceOwner),
 	}
-	var issues []error
 	if activeResults == nil {
 		var err error
 		activeResults, err = project.LoadAllResults(project.ActiveDir())
 		if err != nil {
-			return index, []error{fmt.Errorf("load active resource ownership: %w", err)}
+			index.addIssue(projectResourceOwnershipIssue{
+				owner:  projectResourceOwner{path: project.ActiveDir()},
+				global: true,
+				err:    fmt.Errorf("load active resource ownership: %w", err),
+			})
+			return index
 		}
 	}
 	for _, result := range activeResults {
 		if result.Err != nil {
-			issues = append(issues, fmt.Errorf(
-				"load competing active project metadata %s: %w", result.Path, result.Err,
+			index.addIssue(newProjectResourceOwnershipIssue(
+				result, true, fmt.Errorf(
+					"load competing active project metadata %s: %w", result.Path, result.Err,
+				),
 			))
 			continue
 		}
 		identity, err := canonicalActiveProjectIdentity(result)
 		if err != nil {
-			issues = append(issues, err)
+			index.addIssue(newProjectResourceOwnershipIssue(result, false, err))
 			continue
 		}
 		index.add(result.Manifest.Slug, result.Path, identity)
@@ -60,26 +81,32 @@ func loadProjectResourceOwnershipIndex(
 
 	archivedResults, err := project.LoadAllResults(project.ArchivedDir())
 	if err != nil {
-		issues = append(issues, fmt.Errorf("load archived resource ownership: %w", err))
-		return index, issues
+		index.addIssue(projectResourceOwnershipIssue{
+			owner:  projectResourceOwner{path: project.ArchivedDir()},
+			global: true,
+			err:    fmt.Errorf("load archived resource ownership: %w", err),
+		})
+		return index
 	}
 	for _, result := range archivedResults {
 		if result.Err != nil {
-			issues = append(issues, fmt.Errorf(
-				"load competing archived project metadata %s: %w", result.Path, result.Err,
+			index.addIssue(newProjectResourceOwnershipIssue(
+				result, true, fmt.Errorf(
+					"load competing archived project metadata %s: %w", result.Path, result.Err,
+				),
 			))
 			continue
 		}
 		identity, relevant, err := canonicalArchivedProjectIdentity(result)
 		if err != nil {
-			issues = append(issues, err)
+			index.addIssue(newProjectResourceOwnershipIssue(result, false, err))
 			continue
 		}
 		if relevant {
 			index.add(result.Manifest.Slug, result.Path, identity)
 		}
 	}
-	return index, issues
+	return index
 }
 
 func canonicalActiveProjectIdentity(
@@ -161,6 +188,12 @@ func canonicalProjectResourceIdentity(
 			"canonicalize project ownership %s repository %s: %w", manifestPath, repo, err,
 		)
 	}
+	commonDir, err := gitx.CanonicalGitCommonDir(canonicalRepo)
+	if err != nil {
+		return projectResourceIdentity{}, fmt.Errorf(
+			"canonicalize project ownership %s git common directory: %w", manifestPath, err,
+		)
+	}
 	branchRef, err := gitx.CanonicalBranchRef(canonicalRepo, branch)
 	if err != nil {
 		return projectResourceIdentity{}, fmt.Errorf(
@@ -169,7 +202,8 @@ func canonicalProjectResourceIdentity(
 	}
 	identity := projectResourceIdentity{
 		repository: canonicalRepo,
-		branch:     canonicalRepo + "\x00" + branchRef,
+		commonDir:  commonDir,
+		branch:     commonDir + "\x00" + branchRef,
 	}
 	if strings.TrimSpace(worktree) == "" {
 		if requireWorktree {
@@ -190,6 +224,57 @@ func canonicalProjectResourceIdentity(
 	return identity, nil
 }
 
+func newProjectResourceOwnershipIssue(
+	result project.ManifestLoadResult,
+	incomplete bool,
+	err error,
+) projectResourceOwnershipIssue {
+	m := result.Manifest
+	issue := projectResourceOwnershipIssue{
+		owner: projectResourceOwner{
+			slug: firstNonEmpty(m.Slug, result.Name),
+			path: result.Path,
+		},
+		err: err,
+	}
+	if strings.TrimSpace(m.Repo) != "" {
+		if repository, canonicalErr := gitx.CanonicalPath(m.Repo); canonicalErr == nil {
+			issue.repositoryScope = repository
+		}
+		if commonDir, commonDirErr := gitx.CanonicalGitCommonDir(m.Repo); commonDirErr == nil {
+			issue.commonDirScope = commonDir
+		}
+	}
+	if issue.commonDirScope != "" && strings.TrimSpace(m.Branch) != "" {
+		if branchRef, branchErr := gitx.CanonicalBranchRef(m.Repo, m.Branch); branchErr == nil {
+			issue.identity.branch = issue.commonDirScope + "\x00" + branchRef
+		}
+	}
+	if m.Worktree != nil && strings.TrimSpace(*m.Worktree) != "" {
+		if worktree, worktreeErr := gitx.CanonicalPath(*m.Worktree); worktreeErr == nil {
+			issue.identity.worktree = worktree
+		}
+	}
+	issue.branchUnknown = issue.identity.branch == "" &&
+		(incomplete || strings.TrimSpace(m.Branch) != "")
+	issue.worktreeUnknown = issue.identity.worktree == "" &&
+		(incomplete || m.Worktree != nil)
+	issue.global = issue.identity.branch == "" &&
+		issue.identity.worktree == "" &&
+		issue.repositoryScope == "" &&
+		issue.commonDirScope == ""
+	return issue
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func (index *projectResourceOwnershipIndex) add(
 	slug, path string, identity projectResourceIdentity,
 ) {
@@ -203,7 +288,15 @@ func (index *projectResourceOwnershipIndex) add(
 	}
 }
 
+func (index *projectResourceOwnershipIndex) addIssue(issue projectResourceOwnershipIssue) {
+	index.issuesByPath[issue.owner.path] = issue
+	index.issues = append(index.issues, issue)
+}
+
 func (index projectResourceOwnershipIndex) requireExclusive(path string) error {
+	if issue, ok := index.issuesByPath[path]; ok {
+		return issue.err
+	}
 	identity, ok := index.identitiesByPath[path]
 	if !ok {
 		return fmt.Errorf("project ownership index has no identity for %s", path)
@@ -219,7 +312,32 @@ func (index projectResourceOwnershipIndex) requireExclusive(path string) error {
 			issues = append(issues, duplicateResourceOwnershipError("worktree", owners, path))
 		}
 	}
+	for _, issue := range index.issues {
+		if issue.owner.path == path || !issue.couldConflict(identity) {
+			continue
+		}
+		issues = append(issues, fmt.Errorf(
+			"project ownership issue in %s could conflict with %s: %w",
+			issue.owner.path, path, issue.err,
+		))
+	}
 	return errors.Join(issues...)
+}
+
+func (issue projectResourceOwnershipIssue) couldConflict(
+	identity projectResourceIdentity,
+) bool {
+	if issue.global ||
+		(issue.identity.branch != "" && issue.identity.branch == identity.branch) ||
+		(issue.identity.worktree != "" && issue.identity.worktree == identity.worktree) {
+		return true
+	}
+	sameRepository := issue.repositoryScope != "" &&
+		issue.repositoryScope == identity.repository
+	sameCommonDir := issue.commonDirScope != "" &&
+		issue.commonDirScope == identity.commonDir
+	return (issue.branchUnknown || issue.worktreeUnknown) &&
+		(sameRepository || sameCommonDir)
 }
 
 func duplicateResourceOwnershipError(
@@ -248,13 +366,7 @@ func duplicateResourceOwnershipError(
 func requireExclusiveProjectResources(
 	manifestPath string, activeResults []project.ManifestLoadResult,
 ) error {
-	index, issues := loadProjectResourceOwnershipIndex(activeResults)
-	if len(issues) > 0 {
-		return fmt.Errorf(
-			"cannot prove exclusive project resource ownership: %w",
-			errors.Join(issues...),
-		)
-	}
+	index := loadProjectResourceOwnershipIndex(activeResults)
 	if err := index.requireExclusive(manifestPath); err != nil {
 		return fmt.Errorf("cannot prove exclusive project resource ownership: %w", err)
 	}
