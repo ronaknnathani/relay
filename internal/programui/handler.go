@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-Mn4bxo9tzkD5bpzro8up+ox0uq36P01csr2pwJhJTGc=' 'sha256-nCnP0l3vNllGYTgmepdFwevc5ZUtlIuUnbPCNKzfpvY='; style-src 'self' 'sha256-3n7xJ5R9dlqJ0VeUIhBJfhXw7/pu51DAm1PGmDRgqHY='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-UXIL+j6UmJdVusQ2iRt/3tKDJxuh42y6D1HM1W2MC54=' 'sha256-k1ATKXUA6QTAklpySOoT3wHPUTipOOaf9udDK0Qz0pQ='; style-src 'self' 'sha256-3n7xJ5R9dlqJ0VeUIhBJfhXw7/pu51DAm1PGmDRgqHY='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	appTemplateToken      = "__RELAY_APP__"
 	cssTemplateToken      = "__RELAY_CSS__"
+	snapshotTemplateToken = "__RELAY_SNAPSHOT__"
 )
 
 //go:embed assets/*
@@ -113,7 +114,23 @@ func (h *handler) serveIndex(response http.ResponseWriter, request *http.Request
 		http.Error(response, "read embedded asset assets/app.css", http.StatusInternalServerError)
 		return
 	}
+	var snapshot programview.Snapshot
+	if h.feed != nil {
+		snapshot = h.feed.Get()
+	} else {
+		snapshot, err = h.cache.Get(h.slug, "")
+		if err != nil {
+			http.Error(response, fmt.Sprintf("build program snapshot: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+	snapshotJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		http.Error(response, "encode initial program snapshot", http.StatusInternalServerError)
+		return
+	}
 	index = bytes.Replace(index, []byte(cssTemplateToken), styles, 1)
+	index = bytes.Replace(index, []byte(snapshotTemplateToken), snapshotJSON, 1)
 	index = bytes.Replace(index, []byte(appTemplateToken), script, 1)
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
 	response.WriteHeader(http.StatusOK)
