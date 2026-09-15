@@ -1643,6 +1643,43 @@ func TestGCPreservesResourcesClaimedByDuplicateStandaloneManifest(t *testing.T) 
 	}
 }
 
+func TestGCPreservesDuplicateBranchClaimsAcrossLinkedWorktrees(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "linked-worktree-owner"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+
+	linkedRepo := filepath.Join(t.TempDir(), "linked-repository")
+	runArchiveGit(t, fixture.repo, "worktree", "add", "-q", "--detach", linkedRepo, fixture.startSHA)
+	duplicate := project.Manifest{
+		Slug: "linked-worktree-duplicate", Repo: linkedRepo, Branch: branch,
+	}
+	duplicatePath := project.ManifestPath(project.ActiveDir(), duplicate.Slug)
+	if err := os.MkdirAll(filepath.Dir(duplicatePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(duplicatePath, duplicate); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{slug, duplicate.Slug, "branch", "also claimed"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(filepath.Join(project.ActiveDir(), duplicate.Slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC changed a branch claimed through linked worktree repository paths")
+	}
+}
+
 func TestGCPreservesResourcesClaimedByArchivedPendingCleanup(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")
