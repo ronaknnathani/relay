@@ -1039,7 +1039,6 @@ function decorateTaskCard(card, node, item, lane) {
   status.dataset.lane = lane;
   status.textContent = `${meta.glyph} ${meta.word}`;
   card.children[1].textContent = text(node.title, "Untitled task");
-  card.setAttribute("aria-label", cardLabel(node, item, lane));
   if (item) {
     const dependencyCount = list(item.dependencies).length;
     facts.textContent = [
@@ -1061,16 +1060,6 @@ function decorateTaskCard(card, node, item, lane) {
       flag.hidden = false;
     }
   }
-}
-
-function cardLabel(node, item, lane) {
-  const parts = [`${node.id}, ${statusMeta(lane).word}`, text(node.title)];
-  if (item) {
-    parts.push(`priority ${text(item.priority, "unset")}`);
-    const dependencies = list(item.dependencies);
-    parts.push(dependencies.length ? `depends on ${dependencies.join(", ")}` : "no dependencies");
-  }
-  return parts.filter(Boolean).join(". ");
 }
 
 function onCardKey(event, id) {
