@@ -306,7 +306,7 @@ func (l ghPullRequestLookup) Repository(repo string) (string, error) {
 	}
 	timeoutContext, cancel := context.WithTimeout(context.Background(), githubPRRefTimeout)
 	defer cancel()
-	output, err := l.run(timeoutContext, repo, "gh", "repo", "view", "--json", "nameWithOwner")
+	output, err := l.run(timeoutContext, repo, "gh", "repo", "view", "--json", "nameWithOwner,url")
 	if err != nil {
 		detail := gitx.SanitizeDiagnostic(string(output))
 		if detail == "" {
@@ -316,6 +316,7 @@ func (l ghPullRequestLookup) Repository(repo string) (string, error) {
 	}
 	var response struct {
 		NameWithOwner string `json:"nameWithOwner"`
+		URL           string `json:"url"`
 	}
 	if err := json.Unmarshal(output, &response); err != nil {
 		return "", fmt.Errorf("parse GitHub repository JSON in %s: %w", repo, err)
@@ -323,7 +324,11 @@ func (l ghPullRequestLookup) Repository(repo string) (string, error) {
 	if strings.TrimSpace(response.NameWithOwner) == "" {
 		return "", fmt.Errorf("parse GitHub repository JSON in %s: nameWithOwner is empty", repo)
 	}
-	return strings.TrimSpace(response.NameWithOwner), nil
+	identity, err := repositoryIdentity(response.URL, response.NameWithOwner)
+	if err != nil {
+		return "", fmt.Errorf("parse GitHub repository JSON in %s: %w", repo, err)
+	}
+	return identity, nil
 }
 
 func pullRequestRepository(rawURL string) (string, error) {
@@ -338,7 +343,35 @@ func pullRequestRepository(rawURL string) (string, error) {
 			gitx.SanitizeDiagnostic(rawURL),
 		)
 	}
-	return segments[0] + "/" + strings.TrimSuffix(segments[1], ".git"), nil
+	return repositoryIdentity(rawURL, segments[0]+"/"+strings.TrimSuffix(segments[1], ".git"))
+}
+
+func repositoryIdentity(rawURL, nameWithOwner string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return "", fmt.Errorf("parse URL %q: %w", gitx.SanitizeDiagnostic(rawURL), err)
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host == "" {
+		return "", fmt.Errorf("URL %q has no host", gitx.SanitizeDiagnostic(rawURL))
+	}
+	nameWithOwner = strings.Trim(strings.TrimSpace(nameWithOwner), "/")
+	nameParts := strings.Split(nameWithOwner, "/")
+	if len(nameParts) != 2 || nameParts[0] == "" || nameParts[1] == "" {
+		return "", fmt.Errorf("repository name %q is not owner/repository", nameWithOwner)
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) < 2 {
+		return "", fmt.Errorf("URL %q has no owner/repository path", gitx.SanitizeDiagnostic(rawURL))
+	}
+	urlName := segments[0] + "/" + strings.TrimSuffix(segments[1], ".git")
+	if !strings.EqualFold(urlName, nameWithOwner) {
+		return "", fmt.Errorf(
+			"URL %q identifies repository %q, want %q",
+			gitx.SanitizeDiagnostic(rawURL), urlName, nameWithOwner,
+		)
+	}
+	return host + "/" + urlName, nil
 }
 
 // fetchPRState reads one recorded pull request. Referencing the pull request

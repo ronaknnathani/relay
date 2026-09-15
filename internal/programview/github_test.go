@@ -37,6 +37,36 @@ func TestPullRequestNumber(t *testing.T) {
 	}
 }
 
+func TestPullRequestRepositoryIncludesCanonicalHost(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "github.com",
+			url:  "https://GitHub.COM/acme/widgets/pull/42",
+			want: "github.com/acme/widgets",
+		},
+		{
+			name: "enterprise",
+			url:  "https://GitHub.Example/acme/widgets/pull/42",
+			want: "github.example/acme/widgets",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := pullRequestRepository(test.url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("pullRequestRepository(%q) = %q, want %q", test.url, got, test.want)
+			}
+		})
+	}
+}
+
 func TestGHPRIndexLoaderQueriesOnlyRecordedReferences(t *testing.T) {
 	var mutex sync.Mutex
 	commands := [][]string{}
@@ -254,7 +284,7 @@ func TestGHPullRequestLookupReturnsRepositoryAndHead(t *testing.T) {
 	}
 	if proof != (PullRequestProof{
 		State:      PRStateMerged,
-		Repository: "acme/widgets",
+		Repository: "github.example/acme/widgets",
 		HeadBranch: "user/verified-pr",
 		HeadSHA:    "abc123",
 	}) {
@@ -308,11 +338,14 @@ func TestGHPullRequestLookupReturnsRepositoryName(t *testing.T) {
 		hasOrigin: func(string) bool { return true },
 		lookPath:  func(string) (string, error) { return "/usr/bin/gh", nil },
 		run: func(_ context.Context, dir, name string, args ...string) ([]byte, error) {
-			wantArgs := []string{"repo", "view", "--json", "nameWithOwner"}
+			wantArgs := []string{"repo", "view", "--json", "nameWithOwner,url"}
 			if dir != "/repo" || name != "gh" || !reflect.DeepEqual(args, wantArgs) {
 				t.Fatalf("command = dir %q name %q args %v", dir, name, args)
 			}
-			return []byte(`{"nameWithOwner":"acme/widgets"}`), nil
+			return []byte(`{
+				"nameWithOwner":"acme/widgets",
+				"url":"https://github.example/acme/widgets"
+			}`), nil
 		},
 	}
 
@@ -320,8 +353,8 @@ func TestGHPullRequestLookupReturnsRepositoryName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repository != "acme/widgets" {
-		t.Fatalf("repository = %q, want acme/widgets", repository)
+	if repository != "github.example/acme/widgets" {
+		t.Fatalf("repository = %q, want github.example/acme/widgets", repository)
 	}
 }
 

@@ -258,12 +258,12 @@ func TestGCKeepsMergedPullRequestWhenDeletedBranchNameDoesNotMatch(t *testing.T)
 	loadArchivePullRequestProof = func(string, string) (programview.PullRequestProof, error) {
 		return programview.PullRequestProof{
 			State:      programview.PRStateMerged,
-			Repository: "acme/widgets",
+			Repository: "github.com/acme/widgets",
 			HeadBranch: "user/another-branch",
 		}, nil
 	}
 	loadArchiveRepository = func(string) (string, error) {
-		return "acme/widgets", nil
+		return "github.com/acme/widgets", nil
 	}
 	t.Cleanup(func() {
 		loadArchivePullRequestProof = previousProof
@@ -286,22 +286,34 @@ func TestGCKeepsMergedPullRequestWhenDeletedBranchNameDoesNotMatch(t *testing.T)
 
 func TestGCKeepsMergedPullRequestWithMismatchedProof(t *testing.T) {
 	tests := []struct {
-		name       string
-		repository string
-		headSHA    func(gcRepoFixture, string) string
-		wantError  string
+		name            string
+		repository      string
+		localRepository string
+		headSHA         func(gcRepoFixture, string) string
+		wantError       string
 	}{
 		{
-			name:       "different repository",
-			repository: "acme/other",
+			name:            "different host",
+			repository:      "github.example/acme/widgets",
+			localRepository: "github.com/acme/widgets",
 			headSHA: func(fixture gcRepoFixture, branch string) string {
 				return gitx.RevParse(fixture.repo, "refs/heads/"+branch)
 			},
 			wantError: "repository",
 		},
 		{
-			name:       "different branch head",
-			repository: "acme/widgets",
+			name:            "different repository",
+			repository:      "github.com/acme/other",
+			localRepository: "github.com/acme/widgets",
+			headSHA: func(fixture gcRepoFixture, branch string) string {
+				return gitx.RevParse(fixture.repo, "refs/heads/"+branch)
+			},
+			wantError: "repository",
+		},
+		{
+			name:            "different branch head",
+			repository:      "github.com/acme/widgets",
+			localRepository: "github.com/acme/widgets",
 			headSHA: func(fixture gcRepoFixture, _ string) string {
 				return fixture.startSHA
 			},
@@ -325,7 +337,7 @@ func TestGCKeepsMergedPullRequestWithMismatchedProof(t *testing.T) {
 				}, nil
 			}
 			loadArchiveRepository = func(string) (string, error) {
-				return "acme/widgets", nil
+				return test.localRepository, nil
 			}
 			t.Cleanup(func() {
 				loadArchivePullRequestProof = previousProof
