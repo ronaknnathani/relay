@@ -574,7 +574,7 @@ func TestScriptItemIDRegexMatchesTheServerContract(t *testing.T) {
 		"const ITEM_ID = /^w[1-9][0-9]*$/;",
 		"const MAX_ITEM_ID = 32;",
 		"decoded.length <= MAX_ITEM_ID && ITEM_ID.test(decoded)",
-		"ITEM_ID.test(state.selected) ? `?item=${encodeURIComponent(state.selected)}` : \"\"",
+		`query.set("item", selector.item)`,
 	})
 	if strings.Contains(script, "[A-Za-z0-9_.:-]{1,64}") {
 		t.Error("app.js still accepts hash IDs the API rejects with 400")
@@ -894,7 +894,6 @@ func TestStylesDropBlueprintChromeAndBroadMotion(t *testing.T) {
 	script := readAsset(t, "assets/app.js")
 	requireAbsent(t, "app.js", script, []string{
 		`behavior: "smooth"`,
-		"requestAnimationFrame",
 	})
 }
 
@@ -965,7 +964,14 @@ func TestScriptKeepsPollingSelectionAndLinkSafety(t *testing.T) {
 	script := readAsset(t, "assets/app.js")
 	requireContains(t, "app.js", script, []string{
 		"/api/program",
+		"/api/artifact",
 		"AbortController",
+		"programGeneration",
+		"artifactGeneration",
+		"artifactCache",
+		"renderActiveTab",
+		"DocumentFragment",
+		"requestAnimationFrame",
 		"const BACKOFF = [3000, 6000, 12000]",
 		"const POLL_INTERVAL = 3000",
 		"setTimeout(",
@@ -1011,6 +1017,9 @@ func TestScriptDerivesTheDisplayTitleAndDeduplicatesWarnings(t *testing.T) {
 	}
 	if strings.Contains(script, "text(program.title, \"Untitled program\");\n  document.title") {
 		t.Error("the raw program title must not become the page heading")
+	}
+	if strings.Contains(script, "`?item=${encodeURIComponent(state.selected)}`") {
+		t.Error("program polling must not request selected-item snapshots")
 	}
 
 	index := readAsset(t, "assets/index.html")

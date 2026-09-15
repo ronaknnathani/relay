@@ -88,6 +88,13 @@ const state = {
   statuses: new Set(),
   programFile: "goal.md",
   artifactByItem: new Map(),
+  contractByItem: new Map(),
+  artifactSelection: new Map(),
+  artifactCache: new Map(),
+  artifactController: null,
+  artifactGeneration: 0,
+  programGeneration: 0,
+  dirtyTabs: new Set(TABS),
   cards: new Map(),
   drawerOpen: false,
   drawerReturn: null,
@@ -806,9 +813,7 @@ function selectTab(name, options) {
     panel.hidden = key !== tab;
   });
   writeHash();
-  if (tab === "roadmap") {
-    renderRoadmap();
-  }
+  renderActiveTab();
   if (options && options.focus) {
     const button = dom.tabs.find((entry) => entry.dataset.tab === tab);
     if (button) {
@@ -904,6 +909,7 @@ function renderRoadmap() {
   const stages = stageLists(graph, nodes);
   const hasSelection = Boolean(selectedItem());
   let position = 0;
+  const fragment = new DocumentFragment();
   stages.forEach((ids, index) => {
     const stage = make("div", "stage");
     stage.dataset.stage = String(index);
@@ -918,10 +924,14 @@ function renderRoadmap() {
       row.append(card);
     });
     stage.append(row);
-    dom.graphNodes.append(stage);
+    fragment.append(stage);
   });
-
-  drawConnectors(list(graph.edges));
+  dom.graphNodes.append(fragment);
+  window.requestAnimationFrame(() => {
+    if (state.tab === "roadmap") {
+      drawConnectorsForCurrentGraph();
+    }
+  });
 }
 
 function stageLists(graph, nodes) {
@@ -1248,7 +1258,9 @@ function renderLedger() {
     return;
   }
   dom.ledgerEmpty.hidden = true;
-  visible.forEach((item) => dom.ledgerRows.append(ledgerRow(item)));
+  const fragment = new DocumentFragment();
+  visible.forEach((item) => fragment.append(ledgerRow(item)));
+  dom.ledgerRows.append(fragment);
 }
 
 function ledgerRow(item) {
@@ -1966,14 +1978,39 @@ function itemContractSection(item) {
   }
   const section = detailSection("Contracts");
   const all = list(snapshotOf().contracts);
+  let selected = state.contractByItem.get(item.id);
+  if (!selected || refs.indexOf(selected) === -1) {
+    selected = refs[0];
+    state.contractByItem.set(item.id, selected);
+  }
+  const nav = make("div", "link-row");
   refs.forEach((ref) => {
     const contract = all.find((entry) => entry.ref === ref);
     if (!contract) {
-      section.append(make("p", "muted", `${ref} · not published`));
+      nav.append(make("span", "muted", `${ref} · not published`));
       return;
     }
-    section.append(contractCard(contract, true));
+    const button = make("button", "link-button", ref);
+    button.type = "button";
+    button.dataset.focusKey = `contract:${item.id}:${ref}`;
+    button.setAttribute("aria-current",
+      currentArtifactKey(item.id) === artifactCacheKey({ kind: "contract", ref }) ? "true" : "false");
+    button.addEventListener("click", () => {
+      state.contractByItem.set(item.id, ref);
+      state.artifactSelection.set(item.id, { kind: "contract", ref });
+      renderDetail();
+      restoreFocus(`contract:${item.id}:${ref}`);
+    });
+    nav.append(button);
   });
+  section.append(nav);
+  const contract = all.find((entry) => entry.ref === selected);
+  if (contract) {
+    section.append(contractCard(contract, false));
+    if (currentArtifactKey(item.id) === artifactCacheKey({ kind: "contract", ref: selected })) {
+      appendArtifactContent(section, { kind: "contract", ref: selected }, contract.artifact || {});
+    }
+  }
   return section;
 }
 
@@ -1990,18 +2027,25 @@ function artifactSection(item) {
     selected = present.length > 0 ? present[0].name : artifacts[0].name;
     state.artifactByItem.set(item.id, selected);
   }
+  if (!state.artifactSelection.has(item.id)) {
+    state.artifactSelection.set(item.id, { kind: "task", item: item.id, name: selected });
+  }
 
   const nav = make("div", "link-row");
   artifacts.forEach((artifact) => {
     const button = make("button", "link-button", artifact.name);
     button.type = "button";
     button.dataset.focusKey = `art:${item.id}:${artifact.name}`;
-    button.setAttribute("aria-current", artifact.name === selected ? "true" : "false");
+    button.setAttribute("aria-current",
+      currentArtifactKey(item.id) === artifactCacheKey({ kind: "task", item: item.id, name: artifact.name })
+        ? "true"
+        : "false");
     if (!artifact.present) {
       button.title = "Not written yet";
     }
     button.addEventListener("click", () => {
       state.artifactByItem.set(item.id, artifact.name);
+      state.artifactSelection.set(item.id, { kind: "task", item: item.id, name: artifact.name });
       renderDetail();
       restoreFocus(`art:${item.id}:${artifact.name}`);
     });
@@ -2015,30 +2059,168 @@ function artifactSection(item) {
     section.append(emptyNote("That file is not part of this task."));
     return section;
   }
-  if (!artifact.present) {
+  const selector = { kind: "task", item: item.id, name: selected };
+  if (currentArtifactKey(item.id) === artifactCacheKey(selector)) {
+    appendArtifactContent(section, selector, artifact);
+  }
+  return section;
+}
+
+function artifactCacheKey(selector) {
+  return selector.kind === "task"
+    ? `task:${selector.item}:${selector.name}`
+    : `contract:${selector.ref}`;
+}
+
+function currentArtifactKey(itemID) {
+  const selector = state.artifactSelection.get(itemID);
+  return selector ? artifactCacheKey(selector) : "";
+}
+
+function artifactURL(selector) {
+  const query = new URLSearchParams({ kind: selector.kind });
+  if (selector.kind === "task") {
+    query.set("item", selector.item);
+    query.set("name", selector.name);
+  } else {
+    query.set("ref", selector.ref);
+  }
+  return `/api/artifact?${query.toString()}`;
+}
+
+function appendArtifactContent(section, selector, metadata) {
+  const key = artifactCacheKey(selector);
+  const entry = state.artifactCache.get(key);
+  if (!entry) {
+    section.append(emptyNote(`Loading ${metadata.name || selector.ref}…`));
+    loadArtifact(selector, false);
+    return;
+  }
+  if (entry.loading && !entry.envelope) {
+    section.append(emptyNote(`Loading ${metadata.name || selector.ref}…`));
+    return;
+  }
+  const envelope = entry.envelope;
+  const artifact = envelope ? envelope.artifact || metadata : metadata;
+  if (entry.error) {
+    section.append(make("p", "banner banner--warn", entry.error));
+  }
+  if (!envelope) {
+    section.append(emptyNote("Content is unavailable."));
+    return;
+  }
+  if (envelope.state === "missing") {
     section.append(emptyNote(
-      ARTIFACT_HINTS[artifact.name] || "The worker writes this file when the workflow reaches that phase.",
+      ARTIFACT_HINTS[artifact.name] || `${artifact.name || selector.ref} has not been written yet.`,
     ));
-    return section;
+    return;
   }
-  if (typeof artifact.text !== "string") {
-    section.append(emptyNote(
-      `${artifact.name} exists (${formatSize(artifact.size)}) but its text is only loaded for the selected task.`,
-    ));
-    return section;
+  if (envelope.state === "empty") {
+    section.append(emptyNote(`${artifact.name || selector.ref} exists but is empty.`));
+    return;
   }
-  if (!artifact.text.trim()) {
-    section.append(emptyNote(`${artifact.name} exists but is empty.`));
-    return section;
+  if (typeof artifact.text === "string") {
+    section.append(make("pre", "artifact-text", artifact.text));
   }
-  section.append(make("pre", "artifact-text", artifact.text));
   section.append(make("p", "muted",
-    [artifact.path, formatSize(artifact.size), `updated ${formatRelative(artifact.updated_at)}`].join(" · ")));
-  if (artifact.truncated) {
+    [artifact.path, formatSize(artifact.size), artifact.updated_at
+      ? `updated ${formatRelative(artifact.updated_at)}`
+      : ""].filter(Boolean).join(" · ")));
+  if (envelope.state === "truncated" || artifact.truncated) {
     section.append(make("p", "banner banner--warn",
       "This file was truncated for display. Open it on disk to read the rest."));
   }
-  return section;
+}
+
+function loadCurrentArtifact(revalidate) {
+  const item = selectedItem();
+  if (!item || !state.drawerOpen) {
+    return;
+  }
+  let selector = state.artifactSelection.get(item.id);
+  if (!selector) {
+    const artifacts = list(item.artifacts);
+    const first = artifacts.find((artifact) => artifact.present) || artifacts[0];
+    if (!first) {
+      return;
+    }
+    selector = { kind: "task", item: item.id, name: first.name };
+    state.artifactSelection.set(item.id, selector);
+  }
+  loadArtifact(selector, revalidate);
+}
+
+async function loadArtifact(selector, revalidate) {
+  const key = artifactCacheKey(selector);
+  const existing = state.artifactCache.get(key);
+  if (existing && (existing.loading || (!revalidate && existing.envelope))) {
+    return;
+  }
+  if (state.artifactController) {
+    state.artifactController.abort();
+  }
+  const controller = new AbortController();
+  const generation = ++state.artifactGeneration;
+  state.artifactController = controller;
+  state.artifactCache.set(key, {
+    envelope: existing && existing.envelope,
+    etag: existing && existing.etag,
+    loading: true,
+    error: "",
+  });
+  const headers = { Accept: "application/json" };
+  if (existing && existing.etag) {
+    headers["If-None-Match"] = existing.etag;
+  }
+  try {
+    const response = await fetch(artifactURL(selector), {
+      cache: "no-cache", signal: controller.signal, headers,
+    });
+    if (generation !== state.artifactGeneration || !artifactMatchesSelection(selector)) {
+      return;
+    }
+    if (response.status === 304 && existing && existing.envelope) {
+      state.artifactCache.set(key, {
+        envelope: existing.envelope, etag: existing.etag, loading: false, error: "",
+      });
+      renderDetail();
+      return;
+    }
+    const envelope = await response.json();
+    if (generation !== state.artifactGeneration || !artifactMatchesSelection(selector)) {
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(envelope.error || `Artifact request failed with status ${response.status}`);
+    }
+    state.artifactCache.set(key, {
+      envelope, etag: response.headers.get("ETag") || "", loading: false, error: "",
+    });
+    renderDetail();
+  } catch (error) {
+    if (controller.signal.aborted || generation !== state.artifactGeneration ||
+        !artifactMatchesSelection(selector)) {
+      return;
+    }
+    state.artifactCache.set(key, {
+      envelope: existing && existing.envelope,
+      etag: existing && existing.etag,
+      loading: false,
+      error: error.message || "Artifact content could not be loaded.",
+    });
+    renderDetail();
+  } finally {
+    if (state.artifactController === controller) {
+      state.artifactController = null;
+    }
+  }
+}
+
+function artifactMatchesSelection(selector) {
+  if (!state.drawerOpen || state.selected !== (selector.item || state.selected)) {
+    return false;
+  }
+  return currentArtifactKey(state.selected) === artifactCacheKey(selector);
 }
 
 function itemWarningSection(item) {
@@ -2197,18 +2379,32 @@ function render() {
   const focusKey = captureFocus();
   const scroll = captureScroll();
   renderHeader();
-  renderRoadmap();
-  updateStatusFilters();
-  renderLedger();
-  renderDecisions();
-  renderGoal();
-  renderContracts();
-  renderWarnings();
+  state.dirtyTabs = new Set(TABS);
+  renderActiveTab();
   if (state.drawerOpen) {
     renderDetail();
   }
   restoreFocus(focusKey);
   restoreScroll(scroll);
+}
+
+function renderActiveTab() {
+  if (!state.dirtyTabs.has(state.tab)) {
+    return;
+  }
+  if (state.tab === "roadmap") {
+    renderRoadmap();
+  } else if (state.tab === "tasks") {
+    updateStatusFilters();
+    renderLedger();
+  } else if (state.tab === "decisions") {
+    renderDecisions();
+  } else if (state.tab === "goal") {
+    renderGoal();
+    renderContracts();
+    renderWarnings();
+  }
+  state.dirtyTabs.delete(state.tab);
 }
 
 /* ---------- selection and hash ---------- */
@@ -2286,8 +2482,8 @@ function selectItem(id) {
   if (state.drawerOpen) {
     renderDetail();
   }
-  if (changed) {
-    poll();
+  if (changed && state.drawerOpen) {
+    loadCurrentArtifact(false);
   }
 }
 
@@ -2460,7 +2656,7 @@ function bindControls() {
 /* ---------- polling ---------- */
 
 let pollTimer = null;
-let inFlight = null;
+let programController = null;
 
 function schedule(delay) {
   if (pollTimer !== null) {
@@ -2477,16 +2673,14 @@ function signatureOf(body) {
 }
 
 async function poll() {
-  if (inFlight) {
-    inFlight.abort();
+  if (programController) {
+    programController.abort();
   }
   const controller = new AbortController();
-  inFlight = controller;
-  /* Only ask for detail the API will accept; anything else drops back to the
-     base snapshot instead of failing every poll with 400. */
-  const query = ITEM_ID.test(state.selected) ? `?item=${encodeURIComponent(state.selected)}` : "";
+  const generation = ++state.programGeneration;
+  programController = controller;
   try {
-    const response = await fetch(`/api/program${query}`, {
+    const response = await fetch("/api/program", {
       cache: "no-store",
       signal: controller.signal,
       headers: { Accept: "application/json" },
@@ -2496,6 +2690,9 @@ async function poll() {
     }
     const body = await response.text();
     const snapshot = JSON.parse(body);
+    if (generation !== state.programGeneration) {
+      return;
+    }
     state.failures = 0;
     hideReconnect();
     setFeed(true, "Live · every 3s");
@@ -2511,6 +2708,7 @@ async function poll() {
       state.pendingDrawer = false;
       openDrawer(true);
     }
+    loadCurrentArtifact(true);
     schedule(POLL_INTERVAL);
   } catch (error) {
     if (controller.signal.aborted) {
@@ -2525,8 +2723,8 @@ async function poll() {
     );
     schedule(delay);
   } finally {
-    if (inFlight === controller) {
-      inFlight = null;
+    if (programController === controller) {
+      programController = null;
     }
   }
 }
