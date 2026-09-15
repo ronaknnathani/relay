@@ -129,7 +129,10 @@ func runProgramDispatch(out io.Writer, programSlug, itemID string, opts programD
 		return nil
 	}
 	fmt.Fprintf(out, "Launching %s...\n", created.agent.Name())
-	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s. Mode: full.", childSlug, defaultWorkflow)
+	systemPrompt := fmt.Sprintf(
+		"Active relay project: %s. Workflow: %s. Delivery mode: %s.",
+		childSlug, defaultWorkflow, deliveryModeForPrompt(created.manifest.DeliveryMode),
+	)
 	launchOpts := relayLaunchOptions(
 		created.worktreeDir,
 		created.projectDir,
@@ -463,7 +466,10 @@ Dependency IDs: %s
 
 %s
 These contracts define architecture and constraints, not a line-level implementation plan.
-You own clarify and plan and must perform both independently within the binding contracts.
+Run adaptive delivery route-first. Perform clarification and planning only when the persisted route
+selects those phases. If planning is selected, send the required plan-review message below and stop
+for the response before implementation. If planning is skipped, do not synthesize that handoff.
+You remain responsible for repository delivery within the binding contracts.
 
 ## Escalation
 

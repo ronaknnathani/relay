@@ -30,6 +30,7 @@ func Execute() error {
 type rootFlags struct {
 	noColor  bool
 	quick    bool
+	full     bool
 	noLaunch bool
 	name     string
 	agent    string
@@ -58,7 +59,7 @@ func newRootCmd() *cobra.Command {
 				// If the user passed any of them with no task, they meant to
 				// create one — surface that as a usage error rather than
 				// silently listing status.
-				if flags.quick || flags.noLaunch || flags.name != "" || flags.reclaim {
+				if flags.quick || flags.full || flags.noLaunch || flags.name != "" || flags.reclaim {
 					return fmt.Errorf("usage: relay \"<task description>\"")
 				}
 				return runStatus(statusOpts{})
@@ -67,6 +68,7 @@ func newRootCmd() *cobra.Command {
 				task:     strings.Join(args, " "),
 				name:     flags.name,
 				quick:    flags.quick,
+				full:     flags.full,
 				noLaunch: flags.noLaunch,
 				agent:    flags.agent,
 				workflow: flags.workflow,
@@ -76,7 +78,8 @@ func newRootCmd() *cobra.Command {
 	}
 	cmd.PersistentFlags().BoolVar(&flags.noColor, "no-color", false, "disable colored output")
 	// Local (not persistent): these belong to the implicit "new project" form.
-	cmd.Flags().BoolVar(&flags.quick, "quick", false, "skip brainstorming (when creating a new project)")
+	cmd.Flags().BoolVar(&flags.quick, "quick", false, "deprecated alias for adaptive delivery")
+	cmd.Flags().BoolVar(&flags.full, "full", false, "force the full delivery workflow")
 	cmd.Flags().BoolVar(&flags.noLaunch, "no-launch", false, "create project but don't launch the coding agent")
 	cmd.Flags().StringVarP(&flags.name, "name", "n", "", "custom project slug")
 	cmd.Flags().StringVar(&flags.agent, "agent", "", "coding agent to launch (default from config)")
@@ -84,7 +87,7 @@ func newRootCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&flags.reclaim, "reclaim", false, "reclaim leftover branch/worktree from an interrupted setup without prompting")
 
 	cmd.AddCommand(
-		newCmdNew(flags),
+		newCmdNew(),
 		newCmdResume(),
 		newCmdStatus(),
 		newCmdUpdate(),
@@ -95,6 +98,7 @@ func newRootCmd() *cobra.Command {
 		newCmdSetup(),
 		newCmdGenerate(),
 		newCmdState(),
+		newCmdRoute(),
 		newCmdConfig(),
 		newCmdProgram(),
 		newCmdPR(),

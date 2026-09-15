@@ -1,221 +1,175 @@
 ---
 name: deliver-pr
-description: Deliver one change end to end as a single pull request — clarify → plan → implement → simplify → review → validate → open-pr — resuming from wherever it left off. Use to take a task from intent to an open, mergeable PR with each phase run as a focused sub-agent. This is the default workflow the binary launches when you create a new project (`relay "<task>"`).
+description: Deliver one change end to end as a single pull request using route-first, risk-proportional phases, conservative escalation, fresh review/validation evidence, and resumable project state.
 ---
 
 # Deliver PR
 
-Drive one change from a task to an open PR by orchestrating the foundation skills, one phase at a time,
-with durable resumable state. You are a **router, not a worker**: you read state, dispatch the next
-phase as a sub-agent, record the result, and move on. You do not do the phase work yourself, and you
-stay context-light — you read digests and state, never file dumps.
+Coordinate one change to an open PR. You route work and consume structured digests; phase workers own
+their implementation. `route` and `open-pr` run inline. Selected middle phases run as focused
+sub-agents when available.
 
-## Session goal
+## Goal and managed assignment
 
-In every agent harness, set `/goal` to the user's requested outcome. The `deliver-pr` workflow is the
-execution method, not the goal. Keep `task.md`, requirements, and `relay state` as the durable
-definition and progress record across resumes.
+Set `/goal` to the user's requested outcome; this workflow is the execution method, not the goal.
+Bind the invocation argument to `$SLUG`.
 
-## Managed assignment — before state routing
-
-Bind the invocation argument to `$SLUG`, then check
-`$HOME/.relay/projects/active/$SLUG/assignment.md`. If it exists, read it completely before asking
-`relay state` for the next phase. This is a managed program worker: the assignment's contracts and
-escalation commands are binding, while the worker still owns independent `clarify` and `plan` work.
-Bind the exact `Program:` and `Work item:` values from the assignment to `$PROGRAM` and `$ITEM`, then
-run and read:
+If `$HOME/.relay/projects/active/$SLUG/assignment.md` exists, read it fully and bind its `Program:` and
+`Work item:` to `$PROGRAM` and `$ITEM`. Before routing and at every phase boundary, run:
 
 ```bash
 relay program message inbox <program> <item> --json
 ```
 
-Use the exact program and item from the assignment in place of the placeholders. Act on every unread
-decision, feedback, or instruction before state routing. Acknowledge each message only after its
-requested action or resulting state/artifact update is durable:
+Act on unread decisions, feedback, or instructions, then acknowledge each only after its action is
+durable:
 
 ```bash
 relay program message ack <program> <item> <inbox-id>
 ```
 
-An open-PR grant instruction is the exception: keep it unread until `open-pr` succeeds and the PR is
-recorded. If `open-pr` fails, do not acknowledge the grant.
+Keep an open-PR grant unread until the PR opens successfully. Never run `relay program decision open`.
+A feedback message for an existing PR means make the change on the branch and pull request you already have,
+not create another PR. After merge, the tech lead stops the watcher, sends `/exit`, and
+the worktree is force-removed.
 
-A `feedback` message about a change the CEO asked for on your open pull request is work, not review
-chatter: make the change on the branch and pull request you already have. Never open a second pull
-request for this item and never start unrelated work from it. Acknowledge it once the change is
-pushed.
+Managed child sessions always run under Herdr. If readiness fails, report Relay's exact instructions
+and stop; a PR closed without merging requires a fresh grant and replacement PR. A standalone project
+has no Herdr requirement.
 
-After your pull request merges, the tech lead retires this session: it stops the pull request watcher
-and sends `/exit`. Exiting on `/exit` is the expected end of a managed run, so leave nothing
-uncommitted you still need — the child worktree is force-removed once the session is gone.
+## Resume and initialize
 
-Herdr notification is only a payload-free doorbell and may be lost, so this inbox check is mandatory
-even when no prompt arrived. Managed child sessions always run under Herdr: if `relay resume` reports
-a Herdr readiness failure, report its exact setup or start instructions and stop instead of working
-outside Herdr. If `assignment.md` does not exist, this is a standalone project: follow the standalone
-path below exactly as before, with no Herdr requirement.
+Start with `relay state next "$SLUG"`. If state exists, resume its recorded order. In particular, a
+legacy seven-phase state has no `route`; do not insert phases, rewrite artifacts, or reclassify it.
+Run that legacy order with its existing `set`/`advance` contract.
 
-## Resume-first — always start here
-
-`<slug>` is the argument this skill was invoked with — bind it to `$SLUG` before anything else. Every
-invocation (first run or resume) then begins by asking the binary where this run is. State is owned by
-`relay state`; never hand-edit it.
+If state is absent, initialize the adaptive order:
 
 ```bash
-PHASE=$(relay state next "$SLUG" 2>/dev/null)
-if [ $? -ne 0 ]; then                       # no state yet → first run: initialize, then ask again
-  relay state init "$SLUG" --workflow deliver-pr \
-    --phases "clarify,plan,implement,simplify,review,validate,open-pr"
-  PHASE=$(relay state next "$SLUG")
-fi
+relay state init "$SLUG" --workflow deliver-pr \
+  --phases "route,clarify,plan,implement,simplify,review,validate,open-pr"
 ```
 
-Never assume a fresh start: an interrupted run returns its in-progress phase and continues it. When
-`relay state next` prints empty, every phase is done — go to **Done**.
+Never hand-edit `state.json` or `progress.md`.
 
-## The phase pipeline
+## Route first
 
-Each phase is a foundation skill. Run the one `relay state next` reports, in this order:
-
-| Phase | Skill | Consumes | Produces |
-|---|---|---|---|
-| clarify | `clarify` | the task | requirements + acceptance criteria |
-| plan | `plan` | requirements | a blueprint + phased build sequence |
-| implement | `implement` | the plan | code + tests, green (commits as it goes) |
-| simplify | `simplify` | the diff | a cleaner diff, behavior unchanged |
-| review | `review` (report mode) | the diff + criteria | a severity-ranked findings report |
-| validate | `validate` | the diff + criteria | a pass verdict on the repo's gates |
-| open-pr | `open-pr` | the committed branch | an open PR |
-
-## Per-phase loop (the router contract)
-
-For the phase `relay state next` reported:
-
-1. For a managed assignment, run and process
-   `relay program message inbox <program> <item> --json` again at the top of every loop. Use the exact
-   program and item from `assignment.md`, and acknowledge each message only after its action is
-   durable.
-2. If `PHASE` is `open-pr` and this is a managed assignment:
-   - Inspect `relay program message outbox <program> <item> --json`. If an unread `pr-open` request
-     exists and no grant-approved inbox instruction exists, stop without sending another request.
-   - If neither a request nor grant-approved instruction exists, send exactly one `pr-open` message
-     using the assignment's command and stop.
-   - Only after reading the tech lead's grant-approved inbox instruction, leave that message unread and
-     run
-     the exact `relay program can-open-pr <program> <item>` command from `assignment.md`. If it fails,
-     keep `open-pr` pending and stop. If it passes, continue to the `open-pr` phase.
-   - If a previously recorded pull request was closed without merging, Relay clears the stale reference
-     during `program tick`. Request a fresh `pr-open` grant and open a replacement pull request through
-     the same gate; never reopen or reuse the closed reference yourself.
-3. `relay state set "$SLUG" "$PHASE" in-progress`
-4. **Dispatch a sub-agent** (when available; otherwise run inline) to run the `$PHASE` skill on this
-   project. Hand it the task and the **upstream artifact only** — not your own conclusions. It does the
-   work and returns a **structured digest**: what it produced, the artifact path, test/gate results,
-   and any blocking question — never a file dump.
-5. **On a blocking author-decision** (the sub-agent surfaces a real design/scope choice it shouldn't
-   guess): surface it to the author (use an interactive prompt when available; otherwise write it to
-   `questions.md` in the project dir, alongside `task.md`/`notes.md`, and stop). Do not advance. Resume
-   when the author answers. For a managed assignment, never prompt the worker or write
-   `questions.md`: run the exact `relay program message send <program> <item> --kind
-   question|conflict --body ...` command from `assignment.md`, then stop. Contract, scope,
-   dependency, and risk conflicts stop the affected work; tech lead-worker conflicts escalate to the CEO.
-   Never run `relay program decision open` or otherwise write program state.
-6. **On success:** for a managed `open-pr`, first verify the PR is open and recorded, then acknowledge
-   the grant-approved inbox message. Never acknowledge it after a failed `open-pr`. Next run
-   `relay state log "$SLUG" "$PHASE done: <one-line digest>"`, then
-   `PHASE=$(relay state advance "$SLUG")` — this marks the current phase done and prints the next one.
-   If `PHASE` is empty, go to **Done**; otherwise loop back to step 1 with the new `PHASE`.
-
-## Phase gates (where judgment applies)
-
-- **After `plan`:** if the design left genuine ambiguity, get author sign-off on the plan before
-  `implement`; otherwise proceed with the smallest-change default and log the call. In managed mode,
-  run the assignment's exact
-  `relay program message send <program> <item> --kind plan --body "<describe the plan and requested review>"`
-  command and stop instead of requesting interactive approval. Standalone behavior is unchanged.
-- **review → address:** run `review` in report mode. By the time `review` runs, `implement` and
-  `simplify` are already marked done, so addressing findings means **reopening** the owning phase — the
-  CLI allows a backward move. While `review` returns Critical or Important findings:
-  `relay state set "$SLUG" implement in-progress` (or `simplify`), dispatch a sub-agent scoped to those
-  findings, `relay state set "$SLUG" implement done`, then re-dispatch `review`. The `review` phase
-  stays in-progress throughout — use explicit `set`, not `advance`, for the reopened phase. Suggestions
-  are non-blocking. Only `advance` out of `review` once it is clean of Critical/Important.
-- **No merge gate here.** `deliver-pr` ends at an *open* PR. Watching CI, handling review comments, and
-  merging belong to `pr-monitor` / `stack-ship` — not this skill.
-
-## Delegation contract
-
-Every sub-agent prompt: name the worktree/branch, give it the task + the one upstream artifact, demand
-a structured digest back (not prose, not file contents), and tell it to surface a blocking question
-rather than guess. Keep yourself blind to file dumps — you route on digests and `relay state`.
-
-## After the PR is open — hand it to the watcher
-
-`deliver-pr` still **ends at an open PR**. The watcher is a follow-on service, not another phase: it
-observes the PR and wakes this project's session when it needs attention, so nobody has to poll.
-
-Once `open-pr` succeeded and the PR is recorded (`relay state pr`), start or adopt it:
+For a new adaptive run, mark routing inline, invoke the `route` skill once, and finish it:
 
 ```bash
-relay pr watch start "$SLUG"                  # standalone project
-relay pr watch start "$SLUG" --mode managed   # managed program worker (owner is this worker, never the tech lead)
+relay state dispatch "$SLUG" route --inline
+# run route inline; it invokes relay route classify and writes route.md
+relay state finish "$SLUG" route done --artifact route.md --outcome material
 ```
 
-`start` requires Herdr and adopts an already-running watcher, so running it twice is safe. It wakes
-**one exact live session** — the pane whose Relay title names this project, which is this session.
+The route command durably marks unselected phases `skipped` with reasons. A forced-full manifest
+selects all eight phases. A stack-candidate remains a conservative single-PR run while reporting the
+`stack-ship` recommendation; never switch workflow ownership implicitly.
 
-`start` **refuses before it creates anything** unless exactly one live session carries that identity:
-zero owners or two owners means a watcher would either hand its work to nobody or not know whom to
-wake, so no tab and no process are created. `--mode managed` additionally verifies this project really
-is a program work item — a readable `assignment.md`, and a program work item that names this project
-back — before creating anything.
+## Adaptive phase loop
 
-**A watcher-start failure must never fail the delivery.** The PR is open and recorded; that is the
-phase's outcome. Report the exact failure as an actionable warning and say that `/pr-monitor` can be
-run manually instead — it works with no watcher and no Herdr, via `relay pr watch tick <slug> --json`.
+Ask `relay state next "$SLUG"` after every state change.
 
-Two cases where you deliberately do **not** start one:
+- **Selected worker phase:** run `relay state dispatch "$SLUG" "$PHASE"` and capture its JSON
+  `dispatch_token`. Dispatch exactly that skill with the task, route revision/digest, token, and fresh
+  upstream artifact, then record its structured result with
+  `relay state finish`. Give workers the worktree/branch and require an artifact path, material/no-op
+  outcome, checks, and blocking question; never ask for file dumps.
+- **Other subagents:** on non-easy routes, record helpers not represented by a phase dispatch with
+  `relay state worker "$SLUG" --task "<purpose>"`. An easy route launches no off-route helper; stale
+  inputs require route refresh and escalation before more discovery.
+- **`route`:** always inline. Reclassify from fresh facts after mutations; use
+  `relay route refresh "$SLUG"` only when the changed snapshot cannot be fully reassessed, which
+  conservatively leaves the easy path.
+- **`open-pr`:** always inline. It consumes the shared commit/rebase contracts and must not launch
+  another review.
 
-- **A standalone run with no Herdr pane.** It cannot host a watcher. Say so and point at the manual
-  `/pr-monitor` fallback. Nothing else about the standalone path changes.
-- **Running as a `stack-ship` sub-agent.** The surrounding pane belongs to the stack orchestrator, not
-  to this project, so no live session is titled for this project and a watcher started here would wake
-  nobody. `start` refuses before creating a tab, so no orphan watcher can exist; treat that refusal as
-  a skip with a warning and let the orchestrator start the front watcher itself with
-  `--mode stack --owner <stack-slug>`.
+An easy route therefore has exactly two selected delivery phases and phase dispatches after routing:
+`implement -> open-pr`, with one handoff. It qualifies only when current task and repository facts
+satisfy every easy-path rule, including an exact required gate set or verified no-gates state.
+Routing performs any needed exploration inline; while the route remains easy, do not launch helper,
+`clarify`, `plan`, `simplify`, `review`, or `validate` workers. `implement` applies every selected
+review lens itself and records review and exact-gate evidence for the exact final snapshot.
+Relay rejects unselected, out-of-order, already terminal, or duplicate active dispatches before
+changing state. Only the current blocked or escalated selected phase may be redispatched.
 
-## Done
+When a worker surfaces a genuine author decision, mark the phase `blocked` with a reason and stop. In
+managed mode send the assignment's exact `question|conflict` message and never prompt the worker or
+write `questions.md`. Otherwise surface the question or write `questions.md` in a non-interactive
+session.
 
-When `relay state next "$SLUG"` is empty, run a final check that the PR is open and its acceptance
-criteria are met, then **stop**. Report the PR URL (recorded via `relay state pr`) and whether a
-watcher is running for it. Newly discovered out-of-scope work goes to follow-ups, not into this run —
-do not expand scope or start the next change.
+For a selected managed planning phase, use
+`relay program message send <program> <item> --kind plan --body "<summary and review request>"` and
+stop for the program response.
+
+## Evidence and failure routing
+
+`implement` owns targeted red/green checks. On easy routes it also performs the proportional
+correctness/criteria/scope/clarity review, runs the repository's final required gates, and records
+both passing evidence records for the exact final snapshot. Other routes keep independent `review`
+and `validate` owners.
+
+The `implement`, `review`, and `validate` skills own their evidence formats and failure details.
+Critical or Important findings and failed gates must be recorded before the coordinator escalates
+and returns work to implementation. After a fix, refresh the route and rerun only evidence made stale
+by the mutation; never advance to `open-pr` from failed or blocked evidence.
+Blocked evidence retains its category and reason on the canonical evidence owner so the coordinator
+can resolve authentication, tooling, or input failures without routing them to implementation as
+code defects.
+
+If actual scope crosses the easy limit, any closed risk appears, or previously recorded easy
+evidence becomes stale, `relay route refresh` escalates and reopens independent `review` and
+`validate`. Do not replace those owners with new implement-owned evidence after escalation.
+Every new dispatch by a canonical owner invalidates that owner's earlier evidence before work starts.
+
+Before inline `open-pr`, require both commands to succeed for the current snapshot:
+
+```bash
+relay state evidence fresh "$SLUG" review
+relay state evidence fresh "$SLUG" validation
+```
+
+Any mutation makes old evidence stale. `open-pr` performs no second review.
+`relay state dispatch "$SLUG" open-pr --inline` independently enforces the same route, snapshot,
+selected-role, exact-gate, and canonical-owner evidence contract.
+
+## Managed open-PR gate
+
+Before managed `open-pr`, inspect
+`relay program message outbox <program> <item> --json`. Send at most one `pr-open` request. After a
+grant arrives, keep it unread, run the exact
+`relay program can-open-pr <program> <item>` command from the assignment, and proceed only if it
+passes. Acknowledge the grant only after the open PR is verified and recorded with `relay state pr`.
+
+## Watcher handoff and completion
+
+After the PR opens, run exactly one watcher command. If the project has a managed-program
+`assignment.md`, use managed mode; otherwise use standalone mode:
+
+```bash
+# standalone project only
+relay pr watch start "$SLUG"
+
+# managed program child only
+relay pr watch start "$SLUG" --mode managed
+```
+
+Never try both modes. The watcher belongs to the worker, never the tech lead. `start` adopts an already-running watcher and
+refuses before it creates anything unless ownership is unambiguous. Watcher startup failure must never fail the delivery;
+report a warning and point to manual `/pr-monitor`. A `stack-ship` sub-agent must
+not start a project watcher because the surrounding pane is not the project owner.
+
+While the current-route `open-pr` dispatch is still active, record the verified PR with
+`relay state pr`, then finish `open-pr` with its material outcome. Both commands reject stale
+evidence or a superseded dispatch. Stop when `relay state next` prints empty. Report the PR URL,
+route class, worker count, and watcher status. Do not merge, poll CI, or expand scope.
 
 ## Red flags
 
-- Doing a phase's work yourself instead of dispatching it (you are a router).
-- Reading file contents into your own context instead of routing on digests.
-- Hand-editing `state.json`/`progress.md` instead of using `relay state`.
-- Advancing past `review` with Critical/Important findings unaddressed.
-- Guessing an author decision instead of surfacing it and pausing.
-- Skipping the managed inbox check because no Herdr doorbell arrived.
-- Calling `program decision open`, prompting the worker, or writing `questions.md` in managed mode.
-- Sending duplicate `pr-open` requests instead of checking the unread worker outbox.
-- Acknowledging an open-PR grant before the PR is successfully opened and recorded.
-- Assuming a fresh start instead of resuming from `relay state next`.
-- Failing the delivery because `relay pr watch start` failed — the open, recorded PR is the outcome.
-- Starting a watcher from inside a `stack-ship` sub-agent, where it would wake nobody.
-- Merging, or watching CI yourself — that is the watcher plus `pr-monitor`/`stack-ship`, not `deliver-pr`.
-
-## Verification checklist
-
-- [ ] Managed runs checked the durable inbox before state routing and at every phase loop.
-- [ ] Managed messages were acknowledged only after their actions became durable.
-- [ ] Managed `open-pr` sent at most one pending request and kept its grant unread until PR success.
-- [ ] Started from `relay state next` (initialized state only if absent) — never assumed a fresh run.
-- [ ] Each phase ran as a delegated sub-agent that returned a digest; state advanced via `relay state`.
-- [ ] `plan` got author sign-off when the design was ambiguous.
-- [ ] `review` ran and every Critical/Important finding was addressed before `validate`.
-- [ ] `validate` passed on the repo's own gates before `open-pr`.
-- [ ] After `open-pr`, `relay pr watch start` ran once (or was skipped with a stated reason), and any failure was reported as a warning rather than failing the delivery.
-- [ ] Ended at an open PR with its URL recorded; stopped without expanding scope or merging.
+- Reclassifying or rewriting a legacy seven-phase state.
+- Dispatching a skipped phase or adding an off-route easy-path worker.
+- Repeating broad exploration while its snapshot is fresh.
+- Guessing a decision, masking a failed gate, or keeping an easy route after new risk.
+- Opening a PR with stale/missing review or validation evidence.
+- Acknowledging a managed grant before PR success.
+- Treating watcher startup as part of the open-PR success condition.

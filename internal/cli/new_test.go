@@ -187,6 +187,78 @@ func TestCreateProjectRejectsAnyArchivedMetadataDirectory(t *testing.T) {
 	}
 }
 
+func TestRunNewPersistsForcedFullDeliveryMode(t *testing.T) {
+	repo := newTestRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(repo)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/", DefaultAgent: "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runNew(newOpts{task: "full task", name: "full", full: true, noLaunch: true}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), "full"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.DeliveryMode != project.DeliveryModeFull {
+		t.Fatalf("delivery mode = %q, want full", manifest.DeliveryMode)
+	}
+}
+
+func TestRunNewQuickAliasPersistsAdaptiveDeliveryMode(t *testing.T) {
+	repo := newTestRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(repo)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/", DefaultAgent: "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runNew(newOpts{task: "quick task", name: "quick", quick: true, noLaunch: true}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), "quick"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.DeliveryMode != project.DeliveryModeAdaptive {
+		t.Fatalf("delivery mode = %q, want adaptive", manifest.DeliveryMode)
+	}
+}
+
+func TestFreshStackProjectCanLogProgressWithoutWorkflowState(t *testing.T) {
+	repo := newTestRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(repo)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/", DefaultAgent: "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runNew(newOpts{
+		task: "stack task", name: "stack", workflow: "stack-ship", noLaunch: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runState(t, "log", "stack", "planned first child"); err != nil {
+		t.Fatalf("fresh stack progress log: %v", err)
+	}
+	data, err := os.ReadFile(project.ProgressPath("stack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "planned first child") {
+		t.Fatalf("progress = %q", data)
+	}
+}
+
 func TestReclaimLeftoversRemovesBranchWorktreeAndDir(t *testing.T) {
 	repo := newTestRepo(t)
 	worktreeDir := filepath.Join(repo, ".worktrees", "wt")

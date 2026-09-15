@@ -13,10 +13,11 @@ artifact to `plan`. It does **not** design the implementation and does **not** i
 
 ## Process
 
-1. **Resolve from the codebase before asking.** If a question's answer is discoverable in the code —
-   how a thing currently works, what the existing convention is, where an integration point lives —
-   call `explore` (dispatch a sub-agent when available; otherwise do it inline) and find it. Only ask
-   the user what you genuinely cannot determine. Bothering them with a discoverable fact erodes trust.
+1. **Reuse exploration before asking.** Consume a fresh `exploration.md` when its repository snapshot
+   fingerprint is current. Do not repeat broad discovery or ask a question already answered by the
+   request, repository, assignment, requirements, or artifact. If the artifact is stale, run one
+   replacement exploration; otherwise explore only a genuinely missing narrow fact. Only ask the user
+   what the available evidence cannot determine.
 2. **Form an explicit hypothesis of the whole task.** Write down, for yourself, the outcome you think
    they want and the success criteria you'd accept. This is what you'll test against the stop
    condition — and it makes your questions sharper.
@@ -95,6 +96,7 @@ pull back to the outcome.
 ## Verification checklist
 
 - [ ] Every discoverable fact was resolved via `explore`, not asked of the user.
+- [ ] A fresh exploration artifact was reused, or one replacement exploration was recorded when stale.
 - [ ] Questions were asked one at a time, each with a visible GUESS and a recommended default.
 - [ ] The coverage checklist was walked; each dimension is settled or listed under Open assumptions.
 - [ ] Every Success criterion is testable/checkable — no vague adjectives.

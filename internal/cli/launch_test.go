@@ -101,6 +101,7 @@ func TestRunNewLaunchesWorkflowGoal(t *testing.T) {
 		name:     "demo",
 		agent:    "copilot",
 		workflow: "stack-ship",
+		full:     true,
 	}); err != nil {
 		t.Fatalf("runNew: %v", err)
 	}
@@ -112,7 +113,7 @@ func TestRunNewLaunchesWorkflowGoal(t *testing.T) {
 	want := agent.LaunchOptions{
 		Worktree:       filepath.Join(repoRoot, ".worktrees", "test_demo"),
 		ProjectDir:     filepath.Join(home, ".relay", "projects", "active", "demo"),
-		SystemPrompt:   "Active relay project: demo. Workflow: stack-ship. Mode: full.",
+		SystemPrompt:   "Active relay project: demo. Workflow: stack-ship. Delivery mode: full.",
 		SessionName:    "relay:demo",
 		Command:        "stack-ship",
 		CommandArgs:    "demo",
@@ -225,7 +226,7 @@ func TestRunResumeLaunchesWorkflowGoal(t *testing.T) {
 	want := agent.LaunchOptions{
 		Worktree:       worktree,
 		ProjectDir:     projectDir,
-		SystemPrompt:   "Active relay project: demo. Workflow: deliver-pr.",
+		SystemPrompt:   "Active relay project: demo. Workflow: deliver-pr. Delivery mode: legacy.",
 		SessionName:    "relay:demo",
 		Command:        "deliver-pr",
 		CommandArgs:    "demo",

@@ -27,14 +27,16 @@ func runDashboard() error {
 	if repo == "" {
 		return fmt.Errorf("could not determine repo location from binary path")
 	}
-	active, err := project.LoadAll(project.ActiveDir())
+	active, warnings, err := project.LoadAllEffective(project.ActiveDir())
 	if err != nil {
 		return err
 	}
-	archived, err := project.LoadAll(project.ArchivedDir())
+	warnProjectLoads(warnings)
+	archived, warnings, err := project.LoadAllEffective(project.ArchivedDir())
 	if err != nil {
 		return err
 	}
+	warnProjectLoads(warnings)
 	if err := dashboard.Write(repo, active, archived); err != nil {
 		return err
 	}

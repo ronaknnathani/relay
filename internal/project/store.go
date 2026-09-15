@@ -71,6 +71,23 @@ func Find(slug string) (string, error) {
 	return "", fmt.Errorf("project not found: %s", slug)
 }
 
+// FindState searches active then archived for an existing state file.
+func FindState(slug string) (string, error) {
+	active := StatePath(slug)
+	if _, err := os.Stat(active); err == nil {
+		return active, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("inspect active state %s: %w", active, err)
+	}
+	archived := filepath.Join(ArchivedDir(), slug, "state.json")
+	if _, err := os.Stat(archived); err == nil {
+		return archived, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("inspect archived state %s: %w", archived, err)
+	}
+	return "", fmt.Errorf("state not found %s: %w", slug, fs.ErrNotExist)
+}
+
 // ManifestLoadResult reports the manifest or load error for one project directory.
 type ManifestLoadResult struct {
 	Name     string
@@ -143,4 +160,43 @@ func LoadAll(dir string) ([]Manifest, error) {
 		manifests = append(manifests, result.Manifest)
 	}
 	return manifests, nil
+}
+
+// LoadAllEffective reads every project by its enumerated directory identity,
+// returning per-project warnings without hiding healthy projects.
+func LoadAllEffective(dir string) ([]Manifest, []error, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, nil
+		}
+		return nil, nil, fmt.Errorf("read dir %s: %w", dir, err)
+	}
+	var manifests []Manifest
+	var warnings []error
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		path := ManifestPath(dir, entry.Name())
+		manifest, err := Load(path)
+		if err != nil {
+			warnings = append(warnings, fmt.Errorf("load project directory %q: %w", entry.Name(), err))
+			continue
+		}
+		if manifest.Slug != entry.Name() {
+			warnings = append(warnings, fmt.Errorf(
+				"load project directory %q: manifest slug %q does not match directory",
+				entry.Name(), manifest.Slug,
+			))
+			continue
+		}
+		effective, err := LoadEffective(path)
+		if err != nil {
+			warnings = append(warnings, fmt.Errorf("load effective project %q: %w", entry.Name(), err))
+			continue
+		}
+		manifests = append(manifests, effective)
+	}
+	return manifests, warnings, nil
 }

@@ -159,7 +159,9 @@ func TestProgramDispatchCreatesManagedChildWithoutLaunch(t *testing.T) {
 		"relay program message send governance " + item.ID + ` --kind pr-open --body "<request an open-PR capacity grant>"`,
 		"Do not send another pr-open request while one is unread",
 		"acknowledge the grant inbox message only after open-pr succeeds",
-		"clarify", "plan", "tech lead", "CEO",
+		"route-first", "clarification and planning only when the persisted route",
+		"If planning is selected", "If planning is skipped",
+		"tech lead", "CEO",
 	} {
 		if !strings.Contains(string(assignment), want) {
 			t.Errorf("assignment missing %q:\n%s", want, assignment)
@@ -167,6 +169,9 @@ func TestProgramDispatchCreatesManagedChildWithoutLaunch(t *testing.T) {
 	}
 	if strings.Contains(string(assignment), "program decision open") {
 		t.Fatalf("assignment allows worker program state writes:\n%s", assignment)
+	}
+	if strings.Contains(string(assignment), "must perform both independently") {
+		t.Fatalf("assignment still requires unconditional clarify and plan:\n%s", assignment)
 	}
 	for _, relative := range []string{
 		"mail/inbox",
@@ -503,7 +508,7 @@ func TestProgramDispatchLaunchesDeliverPRWithOverrideAfterPersistence(t *testing
 	want := agent.LaunchOptions{
 		Worktree:       filepath.Join(p.Repo, ".worktrees", "test_"+childSlug),
 		ProjectDir:     filepath.Join(home, ".relay", "projects", "active", childSlug),
-		SystemPrompt:   "Active relay project: " + childSlug + ". Workflow: deliver-pr. Mode: full.",
+		SystemPrompt:   "Active relay project: " + childSlug + ". Workflow: deliver-pr. Delivery mode: adaptive.",
 		SessionName:    "relay:" + childSlug,
 		Command:        "deliver-pr",
 		CommandArgs:    childSlug,
@@ -512,6 +517,15 @@ func TestProgramDispatchLaunchesDeliverPRWithOverrideAfterPersistence(t *testing
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("launch options:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestDeliveryModeForPromptDefaultsLegacy(t *testing.T) {
+	if got := deliveryModeForPrompt(""); got != "legacy" {
+		t.Fatalf("empty delivery mode = %q, want legacy", got)
+	}
+	if got := deliveryModeForPrompt(project.DeliveryModeAdaptive); got != project.DeliveryModeAdaptive {
+		t.Fatalf("adaptive delivery mode = %q", got)
 	}
 }
 

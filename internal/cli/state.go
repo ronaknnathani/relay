@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 
 	"github.com/ronaknnathani/relay/internal/project"
@@ -26,8 +27,13 @@ func newCmdState() *cobra.Command {
 		newCmdStateNext(),
 		newCmdStateCurrent(),
 		newCmdStateSet(),
+		newCmdStateDispatch(),
+		newCmdStateWorker(),
+		newCmdStateFinish(),
+		newCmdStateEvidence(),
 		newCmdStateAdvance(),
 		newCmdStatePR(),
+		newCmdStateFinal(),
 		newCmdStateLog(),
 	)
 	return cmd
@@ -48,14 +54,28 @@ func splitPhases(s string) []string {
 // loadState validates the slug, then reads its state, mapping a missing file to
 // an actionable error that points the caller at `relay state init`.
 func loadState(slug string) (project.WorkflowState, error) {
-	if err := project.ValidateSlug(slug); err != nil {
-		return project.WorkflowState{}, err
-	}
-	ws, err := project.LoadState(project.StatePath(slug))
-	if errors.Is(err, fs.ErrNotExist) {
-		return ws, fmt.Errorf("no state for %q (run `relay state init %s` first)", slug, slug)
-	}
+	ws, _, err := loadStateAt(slug)
 	return ws, err
+}
+
+func loadStateAt(slug string) (project.WorkflowState, string, error) {
+	if err := project.ValidateSlug(slug); err != nil {
+		return project.WorkflowState{}, "", err
+	}
+	path, err := project.FindState(slug)
+	if errors.Is(err, fs.ErrNotExist) {
+		return project.WorkflowState{}, "", fmt.Errorf(
+			"no state for %q (run `relay state init %s` first)", slug, slug,
+		)
+	}
+	if err != nil {
+		return project.WorkflowState{}, "", err
+	}
+	ws, err := project.LoadState(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return ws, "", fmt.Errorf("no state for %q (run `relay state init %s` first)", slug, slug)
+	}
+	return ws, path, err
 }
 
 func newCmdStateInit() *cobra.Command {
@@ -140,14 +160,19 @@ func newCmdStateSet() *cobra.Command {
 		Args:  cobra.ExactArgs(3),
 		RunE: func(_ *cobra.Command, args []string) error {
 			slug, phase, status := args[0], args[1], args[2]
-			ws, err := loadState(slug)
+			ws, statePath, err := loadStateAt(slug)
 			if err != nil {
 				return err
+			}
+			if phase == "open-pr" && status == project.PhaseDone {
+				if err := validateAdaptiveOpenPRSuccess(slug, ws); err != nil {
+					return err
+				}
 			}
 			if err := ws.SetPhase(phase, status, artifact, task); err != nil {
 				return err
 			}
-			return project.SaveState(project.StatePath(slug), ws)
+			return project.SaveState(statePath, ws)
 		},
 	}
 	cmd.Flags().StringVar(&artifact, "artifact", "", "artifact the phase produced (e.g. plan.md)")
@@ -162,15 +187,24 @@ func newCmdStateAdvance() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			slug := args[0]
-			ws, err := loadState(slug)
+			ws, statePath, err := loadStateAt(slug)
 			if err != nil {
 				return err
+			}
+			current := ws.Current()
+			if err := ws.ValidateAdaptiveFinish(current, project.PhaseDone); err != nil {
+				return err
+			}
+			if current == "open-pr" {
+				if err := validateAdaptiveOpenPRCompletion(slug, ws); err != nil {
+					return err
+				}
 			}
 			next, err := ws.Advance()
 			if err != nil {
 				return err
 			}
-			if err := project.SaveState(project.StatePath(slug), ws); err != nil {
+			if err := project.SaveState(statePath, ws); err != nil {
 				return err
 			}
 			fmt.Println(next)
@@ -188,16 +222,67 @@ func newCmdStatePR() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			slug := args[0]
-			ws, err := loadState(slug)
+			ws, statePath, err := loadStateAt(slug)
 			if err != nil {
 				return err
 			}
-			ws.SetPR(number, url)
-			return project.SaveState(project.StatePath(slug), ws)
+			if ws.UsesAdaptiveDelivery() {
+				if number <= 0 || strings.TrimSpace(url) == "" {
+					return fmt.Errorf("adaptive PR recording requires --number and --url together")
+				}
+				if err := validateAdaptiveOpenPRSuccess(slug, ws); err != nil {
+					return err
+				}
+				ws.PR = project.PRRef{Number: number, URL: url}
+			} else {
+				ws.SetPR(number, url)
+				if ws.PR.Number <= 0 || strings.TrimSpace(ws.PR.URL) == "" {
+					ws.FinalResult = nil
+					return project.SaveState(statePath, ws)
+				}
+			}
+			result := project.FinalResult{
+				Status: "opened", PRNumber: ws.PR.Number, PRURL: ws.PR.URL,
+			}
+			if err := project.ValidateFinalResult(result); err != nil {
+				return err
+			}
+			ws.FinalResult = &result
+			return project.SaveState(statePath, ws)
 		},
 	}
 	cmd.Flags().IntVar(&number, "number", 0, "PR number")
 	cmd.Flags().StringVar(&url, "url", "", "PR url")
+	return cmd
+}
+
+func newCmdStateFinal() *cobra.Command {
+	var reason string
+	cmd := &cobra.Command{
+		Use:   "final <slug> <opened|blocked|failed>",
+		Short: "Record the final delivery result",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(_ *cobra.Command, args []string) error {
+			ws, statePath, err := loadStateAt(args[0])
+			if err != nil {
+				return err
+			}
+			result := project.FinalResult{
+				Status: args[1], PRNumber: ws.PR.Number, PRURL: ws.PR.URL, Reason: reason,
+			}
+			if err := project.ValidateFinalResult(result); err != nil {
+				return err
+			}
+			if result.Status == "opened" {
+				if err := validateAdaptiveOpenPRSuccess(args[0], ws); err != nil {
+					return err
+				}
+			}
+			ws.FinalResult = &result
+			return project.SaveState(statePath, ws)
+		},
+	}
+	cmd.Flags().StringVar(&reason, "reason", "", "required reason for blocked or failed delivery")
 	return cmd
 }
 
@@ -211,8 +296,12 @@ func newCmdStateLog() *cobra.Command {
 			if err := project.ValidateSlug(slug); err != nil {
 				return err
 			}
+			manifestPath, err := project.Find(slug)
+			if err != nil {
+				return err
+			}
 			msg := strings.Join(args[1:], " ")
-			return project.AppendProgress(project.ProgressPath(slug), msg)
+			return project.AppendProgress(filepath.Join(filepath.Dir(manifestPath), "progress.md"), msg)
 		},
 	}
 }

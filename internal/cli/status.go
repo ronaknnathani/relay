@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,16 +53,19 @@ func runStatus(opts statusOpts) error {
 }
 
 func runList(showArchived, showAll, jsonOutput bool) error {
-	active, err := project.LoadAll(project.ActiveDir())
+	active, warnings, err := project.LoadAllEffective(project.ActiveDir())
 	if err != nil {
 		return err
 	}
+	warnProjectLoads(warnings)
 	var archived []project.Manifest
 	if showArchived || showAll || jsonOutput {
-		archived, err = project.LoadAll(project.ArchivedDir())
+		var archivedWarnings []error
+		archived, archivedWarnings, err = project.LoadAllEffective(project.ArchivedDir())
 		if err != nil {
 			return err
 		}
+		warnProjectLoads(archivedWarnings)
 	}
 
 	if jsonOutput {
@@ -85,22 +90,23 @@ func runList(showArchived, showAll, jsonOutput bool) error {
 	return nil
 }
 
+func warnProjectLoads(warnings []error) {
+	for _, warning := range warnings {
+		ui.Warn("%s", warning)
+	}
+}
+
 func runDetail(slug string, jsonOutput bool) error {
 	path, err := project.Find(slug)
 	if err != nil {
 		return err
 	}
-	if jsonOutput {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read manifest %s: %w", path, err)
-		}
-		fmt.Print(string(data))
-		return nil
-	}
-	m, err := project.Load(path)
+	m, err := project.LoadEffective(path)
 	if err != nil {
 		return err
+	}
+	if jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(m)
 	}
 
 	fmt.Println()
@@ -131,6 +137,28 @@ func runDetail(slug string, jsonOutput bool) error {
 	}
 	if m.Archived != nil {
 		ui.PrintField("Archived", *m.Archived)
+	}
+	state, stateErr := project.LoadState(filepath.Join(filepath.Dir(path), "state.json"))
+	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
+		return stateErr
+	}
+	if stateErr == nil {
+		if state.Route != nil {
+			ui.PrintField("Route", state.Route.Class)
+			ui.PrintField("Subagents", fmt.Sprintf("%d", state.SubagentCount))
+		}
+		fmt.Println()
+		for _, name := range state.Order {
+			phase := state.Phases[name]
+			detail := phase.Status
+			if phase.Outcome != "" {
+				detail += " (" + phase.Outcome + ")"
+			}
+			if phase.Reason != "" {
+				detail += ": " + phase.Reason
+			}
+			ui.PrintField("Phase "+name, detail)
+		}
 	}
 	fmt.Println()
 	ui.PrintField("Phases completed", strings.Join(m.PhasesCompleted, ", "))

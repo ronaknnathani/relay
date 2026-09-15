@@ -1,12 +1,13 @@
 # Phase 2 — Monitor the front PR (stack-specific layer)
 
 Observation of the front PR is owned by the **`relay pr watch`** runtime, and interpreting one of its
-digests is owned by the **`pr-monitor`** skill (triage → delegate remediation to `pr-fix` → re-arm
-auto-merge → re-observe → exit). This file covers only what the **stack** adds.
+digests is owned by the read-only **`pr-monitor`** skill (triage → delegate remediation to `pr-fix`
+→ re-observe → exit). The stack orchestrator owns any approved auto-merge mutation after the monitor
+reports readiness. This file covers only what the **stack** adds.
 
 > Throughout, `master` denotes the repository's **default branch**; substitute the real default
-> (`main`, etc.) in the commands below. `pr-monitor` arms auto-merge only on a default-branch PR — the
-> stack's front PR is exactly that.
+> (`main`, etc.) in the commands below. Only the stack orchestrator may arm approved auto-merge, and
+> only for the default-branch front PR.
 
 ## Point the watcher at the front PR, with yourself as the owner
 
@@ -26,6 +27,9 @@ because the surrounding pane is yours, not the project's.
 When the watcher wakes you, run `pr-monitor` **once** for the fingerprint it names. Because a `pr-fix`
 push can break descendants, require that run to report the front PR's `old-tip → new-tip` whenever it
 pushed, and run the **cascade** below before anything else.
+If the result for `auto-merge-not-armed` is `ready-for-owner`, verify `watcher_mode=stack` and
+`owner_slug=<stack-orchestrator-slug>`, then let the orchestrator arm auto-merge. Do not send that
+mutation back to `pr-fix`.
 
 ## Front-advance (when the front PR merges)
 
@@ -62,12 +66,13 @@ git rebase --onto <new-tip> <old-tip> <descendant>
 git push --force-with-lease origin <descendant>
 ```
 
-Verify each descendant's base ref did not collapse to the wrong branch, and record the new descendant
-tips in `state.json` + `progress.md`. Serialize per branch (guardrails.md #5).
+Verify each descendant's base ref did not collapse to the wrong branch, update the new descendant
+tips in `plan.md`, and append the event with `relay state log <stack-project-slug> "<summary>"`.
+Never edit `state.json` directly. Serialize per branch (guardrails.md #5).
 
 ## Auto-merge across the stack
 
-`pr-monitor` arms auto-merge only on a `master`-based PR, so in a stack **only the front PR** is ever
-armed; descendants wait their turn. As each PR merges, front-advance promotes the next one and it
-becomes eligible. See [stacked-mechanics.md](stacked-mechanics.md) for the `--onto` rebase, freshness
-rebases, and transient-401 retry details.
+Only the stack orchestrator arms auto-merge, and only on a `master`-based front PR after a read-only
+`pr-monitor` result reports readiness. Descendants wait their turn. As each PR merges, front-advance
+promotes the next one and it becomes eligible. See [stacked-mechanics.md](stacked-mechanics.md) for
+the `--onto` rebase, freshness rebases, and transient-401 retry details.

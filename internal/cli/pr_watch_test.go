@@ -618,7 +618,7 @@ func TestPRWatchStartValidatesManagedInvariantsBeforeCreatingATab(t *testing.T) 
 	}
 }
 
-func TestPRWatchStartAdoptsARunningWatcherAndWarnsOnADifferentTarget(t *testing.T) {
+func TestPRWatchStartAdoptsOnlyAMatchingRunningWatcher(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("HERDR_ENV", "1")
 	t.Setenv("HERDR_WORKSPACE_ID", "workspace-1")
@@ -647,16 +647,9 @@ func TestPRWatchStartAdoptsARunningWatcherAndWarnsOnADifferentTarget(t *testing.
 		t.Fatalf("adoption created tabs: %+v", client.created)
 	}
 
-	out, err = runPRCommand(t, "watch", "start", "demo", "--mode", "stack", "--owner", "stack-run", "--json")
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	var retarget prWatchStartOutput
-	if err := json.Unmarshal([]byte(out), &retarget); err != nil {
-		t.Fatalf("decode %q: %v", out, err)
-	}
-	if !strings.Contains(retarget.Warning, "relay pr watch stop demo") {
-		t.Errorf("warning = %q, want the stop command for a differently targeted watcher", retarget.Warning)
+	_, err = runPRCommand(t, "watch", "start", "demo", "--mode", "stack", "--owner", "stack-run", "--json")
+	if err == nil || !strings.Contains(err.Error(), "relay pr watch stop demo") {
+		t.Fatalf("mismatched adoption error = %v, want explicit stop requirement", err)
 	}
 }
 

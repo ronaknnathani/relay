@@ -44,7 +44,12 @@ Use these terms so downstream skills that act on this map share one language:
    invariants, error/validation paths, configuration, and the build/test commands that exercise this
    area — each with a `file:line`. **Identify and cite these commands; do not run them** — a build or
    test can mutate state (codegen, dependency installs, caches, network), which this skill must not.
-6. **Close with the essential-files list** (see below) — the compact handoff artifact. Dispatch a
+6. **Bind the report to the repository.** Before the first route exists, obtain the snapshot with
+   `relay route snapshot "$SLUG"`; this command does not require prior classification. Record its
+   fingerprint, a scoped task and requirements input digest, and the relevant files whose content
+   supports the report. The artifact is fresh only while both the repository fingerprint and exact
+   scoped task/requirements inputs are unchanged; never claim freshness from timestamps alone.
+7. **Close with the essential-files list** (see below) — the compact handoff artifact. Dispatch a
    sub-agent per independent entry point or area when sub-agents are available; otherwise trace each
    inline, one at a time.
 
@@ -54,6 +59,20 @@ Use these terms so downstream skills that act on this map share one language:
   over prose whenever one exists.
 - Mark every claim you could not confirm in the code as **(unverified)**, and say what would confirm it.
   Never present an inference as a fact.
+
+## `exploration.md` contract
+
+Write one reusable `exploration.md` containing:
+
+- repository snapshot fingerprint;
+- scoped question, scoped task and requirements input digest, and cited findings;
+- relevant files (the paths whose changes invalidate reuse);
+- build/test commands discovered but not run;
+- uncertainty and the essential-files list.
+
+Downstream phases reuse this artifact only while its repository fingerprint and scoped input digest
+are current. If either is stale, replace it with one new exploration; do not layer a second report
+onto stale findings.
 
 ## Essential files (required closing artifact)
 
@@ -85,4 +104,5 @@ topic, each with a one-line why and the seam or role it plays:
 - [ ] Every claim has a `file:line` or is tagged **(unverified)**.
 - [ ] Seams are named, and deep vs. shallow modules are distinguished in the shared vocabulary.
 - [ ] The report closes with a tight essential-files list (the load-bearing few, not an inventory).
+- [ ] `exploration.md` records repository and scoped task/requirements freshness inputs.
 - [ ] Nothing was modified — no files written beyond this report, no mutating commands run.

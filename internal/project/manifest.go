@@ -15,6 +15,7 @@ type Manifest struct {
 	Worktree        *string              `json:"worktree"`
 	Status          string               `json:"status"`
 	Workflow        string               `json:"workflow,omitempty"`
+	DeliveryMode    string               `json:"delivery_mode,omitempty"`
 	Program         string               `json:"program,omitempty"`
 	ProgramItem     string               `json:"program_item,omitempty"`
 	Merged          bool                 `json:"merged,omitempty"`

@@ -1,0 +1,84 @@
+---
+name: route
+description: Classify a Relay delivery as easy, standard, high-risk, or stack-candidate from normalized task and repository facts, persist selected/skipped phases, and escalate conservatively when evidence changes.
+---
+
+# Route
+
+Classify delivery work; do not implement it. Bind the project slug to `$SLUG`, read `task.md`,
+`manifest.json`, and any existing fresh exploration artifact, then gather only the normalized facts
+accepted by `relay route classify`.
+
+## First classification
+
+Obtain the initial snapshot with `relay route snapshot "$SLUG"` before exploration; it does not
+require a persisted route. Use at most one broad repository exploration for that snapshot. Reuse task, assignment,
+requirements, and repository facts instead of asking routine questions they already answer. Record:
+whether requested behavior is explicit; unresolved product/design decisions; the exact required
+repository gate set or an explicit verified no-gates result;
+whether every closed risk was evaluated; whether predicted file/line counts were explicitly estimated;
+the predicted counts; stack decomposition and rationale; requested full/simplify behavior;
+duplication/generated-churn/review-cleanup signals; and only these risk triggers:
+`public-contract`, `persistence-migration`, `auth-security`, `concurrency-distributed`,
+`dependency-build-release`, `generated-artifact`, `destructive-operation`,
+`unresolved-review-ci`, `failed-gate`. Also record normalized change surfaces for tests,
+documentation/comments, type design, history-sensitive compatibility, and repository guidelines so
+the existing specialist lenses are reachable without adding another review phase.
+
+Invoke the deterministic policy; never reproduce or override its matrix in prose:
+
+```bash
+relay route classify "$SLUG" \
+  --requested-behavior-explicit \
+  [--gate <id>="<exact command>" ... | --no-repository-gates] \
+  --risk-assessment-complete \
+  --predicted-size-known \
+  --predicted-files <count> \
+  --predicted-lines <count> \
+  [--unresolved-decision] [--full] [--simplify] \
+  [--stack-decomposition --stack-rationale "<reason>"] \
+  [--duplication] [--generated-churn] [--review-cleanup] \
+  [--changes-tests] [--changes-documentation-comments] [--changes-type-design] \
+  [--history-sensitive] [--changes-repository-guidelines] \
+  [--risk <closed-trigger> ...]
+```
+
+Use a stable, descriptive ID for each gate. Relay stores only each ID, a redacted display, and the
+SHA-256 digest of the exact command. `--no-repository-gates` is valid only after checking the
+repository's manifest, scripts, Makefile, and CI and finding no relevant gate. Omit
+`--risk-assessment-complete` or `--predicted-size-known` when that work was not done. A completed
+risk assessment is bound to the snapshot fingerprint captured by classification; a changed snapshot
+clears it. Missing safety or size facts, an unknown gate policy, or conflicting gate flags produce
+the standard route or an error, never easy. Write `route.md` with the returned
+class, selected/skipped phases and reasons,
+review roles, review owner, validation owner, gate IDs, snapshot fingerprint, and any stack recommendation. Do not include
+transcript text, command output, secrets, or file contents.
+
+## Refresh and escalation
+
+After implementation mutations, repeat the full classification against the new snapshot so the risk
+assessment, exact gate policy, and size facts match the actual diff. If that reassessment is unavailable, run:
+
+```bash
+relay route refresh "$SLUG"
+```
+
+This measures the actual diff, invalidates the old risk assessment and snapshot-bound evidence,
+conservatively leaves the easy path, reopens independent `review` and `validate` when selected, and
+never downgrades automatically. When new uncertainty, meaningful scope
+growth, a Critical/Important finding, a failed gate, a risk trigger, or a stack boundary appears,
+record it explicitly:
+
+```bash
+relay route escalate "$SLUG" <standard|high-risk|stack-candidate> \
+  --reason "<specific evidence>" [--risk <closed-trigger>]
+```
+
+Never convert a stack-candidate to `stack-ship`; report the recommendation and continue with the
+conservative single-PR route unless the caller explicitly chose stack ownership.
+
+## Return
+
+Return only a compact digest: class, forced-full status, selected phases, skipped phases with reasons,
+review roles, review owner, validation owner, snapshot file/line counts, escalation reasons, route
+artifact path, and any blocking decision. Never return file contents or restate the policy.

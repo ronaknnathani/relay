@@ -158,11 +158,8 @@ func promptForValidSourceDir(stdin io.Reader, stdout io.Writer) (string, error) 
 	}
 }
 
-// retiredSkills names skills Relay used to install and no longer ships. The
-// managed-program role was renamed from `cto` to `tl`, so a stale `cto` link
-// would keep resolving to a generated package Relay no longer regenerates and
-// would offer the agent two rival entry points for the same role.
-var retiredSkills = []string{"cto"}
+// retiredSkills names skills Relay used to install and no longer ships.
+var retiredSkills = []string{"cto", "relay-status", "relay-archive", "todo"}
 
 func removeRetiredSkills(a agent.Agent, syncOpts agent.SkillSyncOptions) error {
 	for _, name := range retiredSkills {

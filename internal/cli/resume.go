@@ -28,7 +28,7 @@ func runResume(slug string) error {
 	if err != nil {
 		return err
 	}
-	m, err := project.Load(path)
+	m, err := project.LoadEffective(path)
 	if err != nil {
 		return err
 	}
@@ -64,9 +64,17 @@ func runResume(slug string) error {
 	fmt.Printf("  %s\n", ui.Color(ui.Dim, fmt.Sprintf("Launching %s…", a.Name())))
 	fmt.Println()
 
-	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s.", slug, cmd)
+	deliveryMode := deliveryModeForPrompt(m.DeliveryMode)
+	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s. Delivery mode: %s.", slug, cmd, deliveryMode)
 	o := relayLaunchOptions(*m.Worktree, filepath.Dir(path), systemPrompt, slug, cmd, m.Title, cfg.PermissionModeFor(a.Name()))
 	return launchAgent(a, o)
+}
+
+func deliveryModeForPrompt(mode string) string {
+	if mode == "" {
+		return "legacy"
+	}
+	return mode
 }
 
 // guardManagedHerdrResume enforces the managed-session contract: every managed

@@ -15,12 +15,11 @@ downstream). It does not invoke either.
 
 ## Process
 
-1. **Ground in the codebase first.** Read the clarified artifact (`clarify`'s requirements + success
-   criteria), then call `explore` (dispatch a sub-agent when available; otherwise inline) and consume
-   its **essential-files list and `file:line` citations** as the starting set for the existing
-   patterns, conventions, and integration points this work touches. Cite each finding as
-   `path/to/file.ext:line` — the blueprint
-   is built on what's actually there, not what you assume.
+1. **Ground in existing evidence first.** Read the clarified artifact and consume a fresh `exploration.md`,
+   including its repository snapshot fingerprint, relevant files, essential-files
+   list, and `file:line` citations. Do not repeat broad discovery while it is fresh. If the artifact
+   is stale, request one replacement exploration; otherwise investigate only a narrow missing fact.
+   Cite each blueprint finding as `path/to/file.ext:line`.
 2. **Decide the architecture and commit.** Survey the realistic approaches, then pick **ONE** and
    write the decision plus a one-paragraph rationale grounded in the patterns from step 1. Do not
    hedge with "Option A or B" — a plan is a decision. Record approaches you rejected in one line each
@@ -77,6 +76,7 @@ independent subsystems, or has "and" in the title — each of those is two tasks
 ## Verification checklist
 
 - [ ] Every blueprint finding cites `file:line` from a real `explore` of the codebase.
+- [ ] A fresh exploration artifact was reused, or exactly one replacement exploration was requested when stale.
 - [ ] Exactly one architecture approach is chosen, with a grounded rationale — no hedging.
 - [ ] Test seams are chosen up front and captured in a **Testing Decisions** section.
 - [ ] The Implementation Map lists every create/modify/test action with an exact path.

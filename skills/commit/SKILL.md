@@ -1,29 +1,25 @@
 ---
 name: commit
-description: Create a single well-formed git commit from the working changes, following the repo's AGENTS.md and recent commit-message conventions. Use when the caller wants only to commit — not push and not open a PR (for that, use `open-pr`).
+description: Create one well-formed commit from intended working changes, with safe branch/staging/secret checks and repository-style authorship metadata. Does not push or open a PR.
 ---
 
 # Commit
 
-Create a single git commit for the current changes.
+This is the authoritative commit contract used by standalone commits and delivery workflows.
 
-## Gather context
+1. Read repository and global `AGENTS.md` guidance. Inspect `git status --short`,
+   `git diff HEAD`, `git branch --show-current`, the dynamically detected default branch, and recent
+   commit subjects.
+2. Refuse to commit on the default branch. If invoked from a delivery workflow, create/use its
+   configured feature branch; otherwise report the exact blocker.
+3. Separate intended work from unrelated user changes. Stage specific files with
+   `git add -- <paths...>`; never use `git add .`, `git add -A`, or stage a path not inspected.
+4. Inspect the staged diff for credentials, tokens, private keys, generated noise, and unintended
+   files. Stop on possible secrets rather than committing them.
+5. Match the repository's recent message style. Lead with the meaningful change; add a body only when
+   it explains why. Keep unrelated refactors in a separate commit.
+6. End with the runtime-required `Co-authored-by` trailer identifying the actual automated agent/model,
+   then run `git commit`.
+7. Re-read `git status --short` and report the commit SHA plus any intentionally uncommitted paths.
 
-First inspect the working tree. Run these read-only commands and read their output:
-
-- `git status` — what is staged and unstaged
-- `git diff HEAD` — the full staged and unstaged diff
-- `git branch --show-current` — the current branch
-- `git log --oneline -10` — recent commit message style to match
-
-## Create the commit
-
-Based on the changes above, create one commit:
-
-1. Stage the relevant files with `git add <specific-files>` (stage the files this change touches, not unrelated work).
-2. Read `<repo>/AGENTS.md` and `~/.config/agents/AGENTS.md` if present, then write a clear, concise commit message that matches those preferences and the repository's existing style. Lead with what changed and why.
-3. End the commit message with a `Co-authored-by` trailer for the actual model/agent currently doing the work. Use the runtime-provided model identity when available, and the agent's verified no-reply identity for the email. Never hardcode a model name.
-
-4. Commit with `git commit`.
-
-Use only `git add`, `git status`, and `git commit`. Do not push, do not run other tools, and do not take any other action.
+Do not push, rebase, open a PR, discard changes, or amend unless the caller explicitly requested it.

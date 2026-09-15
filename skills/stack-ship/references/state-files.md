@@ -4,8 +4,7 @@ All run state lives in a per-goal project dir (`~/.relay/projects/active/<goal-s
 orchestrator is the canonical state writer: it updates these the instant something happens, so any
 tick/restart is idempotent and the orchestrator's own context can stay lean (it reads digests, not
 history). Worker subagents return structured digests and **do not append to shared state files
-directly**. If a delegated loop controller owns a tick, it assumes the same singleton state-writer
-role for that tick.
+directly**.
 
 ## `goal.md` — definition of done
 The goal in one paragraph + the **acceptance-criteria checklist**. This is `/goal` and the Phase-3
@@ -16,61 +15,18 @@ a verification subagent confirms them — never on optimism.
 Ordered PRs (`api → utils → stitch`), each with intent, scope, `depends-on`, branch/base, the
 acceptance criteria it satisfies, and review-shape. Update bases as PRs merge and retarget.
 
-## `state.json` — machine-readable run state
-The exact state the monitor and restart paths need: runtime capabilities, monitor mode, repo, author,
-front PR, loop id if any, next tick time if any, PR numbers, branch/base refs,
-parent/descendant links, current tips, last seen review/comment activity, pending decision ids, and
-status for each PR (`planned | building | open | paused | merged | stopped`). Markdown is for humans;
-`state.json` is for idempotent orchestration.
-
-Example shape:
-
-```json
-{
-  "goalSlug": "stable-pod-identity",
-  "repo": "owner/repo",
-  "author": "@author",
-  "runtime": {
-    "name": "example-runtime",
-    "goalMode": "file",
-    "monitorMode": "monitor-tick",
-    "hasNativeGoal": false,
-    "hasNativeLoop": false,
-    "scheduler": null,
-    "lastTickAt": "2025-01-12T16:30:00Z",
-    "nextTickAfter": "2025-01-12T16:45:00Z"
-  },
-  "frontPr": 412,
-  "loop": null,
-  "prs": [
-    {
-      "id": "api-surface",
-      "number": 412,
-      "branch": "feature/stable-pod-identity-api",
-      "base": "master",
-      "parent": null,
-      "dependsOn": [],
-      "tip": "abc123",
-      "status": "open",
-      "criteria": ["api"]
-    }
-  ],
-  "comments": {
-    "review-thread:PRRT_kwDO...": {
-      "updatedAt": "2025-01-12T16:20:00Z",
-      "lastAgentReplyAt": "2025-01-12T16:25:00Z",
-      "status": "answered"
-    }
-  },
-  "decisions": [{"id": "d1", "pr": 412, "thread": "PRRT_kwDO...", "status": "open"}]
-}
-```
+## `state.json` — canonical Relay workflow state
+`state.json` is owned and validated by the Relay CLI. Never hand-edit it or define a stack-specific
+competing schema. Use `relay state`, `relay route`, and `relay pr watch` commands for durable workflow,
+evidence, PR, final-result, and watcher state. Keep stack topology, parent/base relationships, and
+acceptance-criteria mapping in `plan.md`; read live watcher details from
+`relay pr watch status <front-project-slug> --json`.
 
 ## `progress.md` — append-only log
 One line per material event: PR opened (tip/base), commit pushed (hash), rebase/cascade (old→new
 tips), comment addressed (thread id), decision opened/closed, auto-merge armed/fired, PR merged,
-front PR explicitly retargeted, native loop started/torn down, monitor tick completed/next tick set.
-Convert relative dates to absolute. This is what a restarted orchestrator reads to know where it is.
+front PR explicitly retargeted, and monitor event handled. Convert relative dates to absolute. This
+is what a restarted orchestrator reads to know where it is.
 
 ## `tradeoffs.md` — decisions, assumptions, deferrals the agent made
 Every non-obvious call the agent made *on its own authority* (decomposition choices, conflict
@@ -120,12 +76,10 @@ Rules:
 
 ## Invariants
 - Write before you continue: never hold a decision/commit/answer only in context.
-- The orchestrator (or singleton loop controller for a tick) is the only shared-state writer; worker
-  subagents return digests and never edit these files directly.
-- Update `state.json` and the human-readable Markdown together so they never disagree.
-- Never lose harness capability information. Record and use native `/goal` and `/loop`. If no native
-  recurring command or approved scheduler exists, record `monitorMode: "monitor-tick"` and make a
-  normal resume/invocation run one tick automatically.
+- The orchestrator is the only shared-state writer; worker subagents return digests and never edit
+  these files directly.
+- Mutate `state.json` only through Relay commands; update the human-readable stack artifacts after the
+  command succeeds so they never disagree.
 - One concept per file; never put state in the orchestrator's prose.
 - These files + the live PRs/branches fully reconstruct the run. If they don't, you're keeping state
   in your head — fix that.

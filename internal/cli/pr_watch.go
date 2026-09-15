@@ -302,7 +302,7 @@ func startPRWatcher(
 }
 
 // adoptRunningPRWatcher reports the watcher process that already observes this
-// project, warning when it was started for a different owner.
+// project. Mode or owner mismatches are refused; workspace drift is warned.
 func adoptRunningPRWatcher(
 	slug string, mode prwatch.Mode, owner, workspaceID string,
 ) (prWatchStartOutput, error) {
@@ -310,7 +310,10 @@ func adoptRunningPRWatcher(
 	if err != nil {
 		return prWatchStartOutput{}, err
 	}
-	warning := adoptedWatcherWarning(slug, state, mode, owner)
+	if mismatch := adoptedWatcherWarning(slug, state, mode, owner); mismatch != "" {
+		return prWatchStartOutput{}, errors.New(mismatch)
+	}
+	var warning string
 	incomplete := state.WorkspaceID == "" || state.WorkspaceID != workspaceID
 	if incomplete {
 		recordedWorkspace := state.WorkspaceID

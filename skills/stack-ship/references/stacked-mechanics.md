@@ -44,10 +44,9 @@ check; force-push; cascade descendants. Conclusion of the stale check is typical
 - Arm **only** when base is `master`: `gh pr merge <n> --auto` (NO `--squash` if a **merge queue**
   owns the strategy — that flag is rejected; "already queued to merge" = armed, queue owns it).
 - Auto-merge silently turns **OFF** after force-pushes and after CHANGES_REQUESTED→APPROVED.
-  **Re-verify and re-arm every tick** when the PR is approved + clean.
+  **Re-verify and re-arm after each relevant watcher event** when the PR is approved + clean.
 - As each PR merges to master, explicitly advance the next PR with the procedure above. Only after it
-  is verified base=`master` should auto-merge be armed and native loop monitoring started, or the
-  next monitor tick recorded for a runtime without native loops.
+  is verified base=`master` should auto-merge be armed and its stack watcher started.
 - Never `gh pr merge` to merge-now, never self-approve, never dismiss a review to unblock.
 
 ## Resolve a review thread (GraphQL — REST can't)

@@ -11,8 +11,51 @@ import (
 
 // coreSkills are foundation skills that must always render into the package.
 var coreSkills = []string{
-	"explore", "clarify", "plan", "implement", "simplify", "review",
+	"route", "explore", "clarify", "plan", "implement", "simplify", "review",
 	"validate", "commit", "rebase", "open-pr", "pr-fix",
+}
+
+func TestRouteSkillUsesDeterministicClassifier(t *testing.T) {
+	for _, agentName := range []string{"claude", "copilot", "codex"} {
+		t.Run(agentName, func(t *testing.T) {
+			_, out := generateAgent(t, agentName)
+			body := readFile(t, filepath.Join(out, "skills", "route", "SKILL.md"))
+			for _, want := range []string{
+				"at most one broad repository exploration",
+				"relay route classify",
+				"relay route refresh",
+				"relay route escalate",
+				"never downgrades automatically",
+			} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s route skill missing %q", agentName, want)
+				}
+			}
+		})
+	}
+}
+
+func TestExplorationArtifactIsSnapshotBoundAndReusable(t *testing.T) {
+	root := repoRoot(t)
+	checks := map[string][]string{
+		filepath.Join("skills", "explore", "SKILL.md"): {
+			"repository snapshot fingerprint", "relevant files", "exploration.md",
+		},
+		filepath.Join("skills", "clarify", "SKILL.md"): {
+			"fresh `exploration.md`", "Do not repeat broad discovery", "replacement exploration",
+		},
+		filepath.Join("skills", "plan", "SKILL.md"): {
+			"fresh `exploration.md`", "Do not repeat broad discovery", "replacement exploration",
+		},
+	}
+	for path, required := range checks {
+		body := readFile(t, filepath.Join(root, path))
+		for _, want := range required {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s missing exploration contract %q", path, want)
+			}
+		}
+	}
 }
 
 // repoRoot returns the module root (two levels up from internal/generate).
@@ -72,36 +115,13 @@ func TestClaudePackageMatchesSource(t *testing.T) {
 	assertNoUnexpectedFiles(t, out, expectedSkillFiles(src, ".claude-plugin/plugin.json"))
 }
 
-func TestGeneratedRecurringCommands(t *testing.T) {
-	tests := []struct {
-		name      string
-		generate  func(*testing.T) (string, string)
-		want      string
-		forbidden string
-	}{
-		{name: "copilot", generate: generateCopilot, want: "/every", forbidden: "/loop"},
-		{name: "claude", generate: generateClaude, want: "/loop", forbidden: "/every"},
-		{name: "codex", generate: generateCodex, want: "/loop", forbidden: "/every"},
-	}
-	// pr-monitor is deliberately absent: it no longer runs a recurring loop, so
-	// it names no recurring command for the generator to translate.
-	files := []string{
-		filepath.Join("skills", "stack-ship", "references", "state-files.md"),
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, out := tt.generate(t)
-			for _, rel := range files {
-				body := readFile(t, filepath.Join(out, rel))
-				if !strings.Contains(body, tt.want) {
-					t.Errorf("%s does not contain %q", rel, tt.want)
-				}
-				if strings.Contains(body, tt.forbidden) {
-					t.Errorf("%s contains forbidden command %q", rel, tt.forbidden)
-				}
-			}
-		})
+func TestStackStateDocsAvoidHarnessSchedulerState(t *testing.T) {
+	root := repoRoot(t)
+	body := readFile(t, filepath.Join(root, "skills", "stack-ship", "references", "state-files.md"))
+	for _, obsolete := range []string{"/loop", "/every", "monitorMode", "next tick set"} {
+		if strings.Contains(body, obsolete) {
+			t.Errorf("stack state docs contain obsolete scheduler state %q", obsolete)
+		}
 	}
 }
 
@@ -169,6 +189,35 @@ func TestDeliverPRGoalGuidanceIsGeneratedForEveryHarness(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDeliverPRUsesAdaptiveRoutingAndLegacyResume(t *testing.T) {
+	root := repoRoot(t)
+	body := readFile(t, filepath.Join(root, "skills", "deliver-pr", "SKILL.md"))
+	for _, want := range []string{
+		`--phases "route,clarify,plan,implement,simplify,review,validate,open-pr"`,
+		`relay state dispatch "$SLUG" route --inline`,
+		`relay route refresh "$SLUG"`,
+		"legacy seven-phase state",
+		"exact required gate set",
+		"exactly two selected delivery phases",
+		"one handoff",
+		"relay state evidence fresh",
+		"open-pr` performs no second review",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("deliver-pr missing adaptive contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"clarify → plan → implement → simplify → review → validate → open-pr",
+		"Each phase ran as a delegated sub-agent",
+		"two delivery workers",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("deliver-pr retains fixed-pipeline contract %q", forbidden)
+		}
 	}
 }
 

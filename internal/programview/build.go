@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ronaknnathani/relay/internal/agent"
+	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/mailbox"
 	"github.com/ronaknnathani/relay/internal/patrollock"
@@ -898,22 +899,67 @@ func childDTO(manifest project.Manifest, childDir string, archived bool, warning
 		}
 		return child
 	}
-	phases := make([]WorkflowPhaseDTO, 0, len(state.Order))
-	current := ""
+	workflow := &WorkflowStateDTO{
+		Workflow: state.Workflow, Order: nonNilStrings(state.Order),
+		Phases:        make([]WorkflowPhaseDTO, 0, len(state.Order)),
+		SubagentCount: state.SubagentCount, UpdatedAt: state.Updated,
+	}
 	for _, name := range state.Order {
 		phase := state.Phases[name]
-		phases = append(phases, WorkflowPhaseDTO{
+		workflow.Phases = append(workflow.Phases, WorkflowPhaseDTO{
 			Name: name, Status: phase.Status, Artifact: phase.Artifact, Task: phase.Task,
+			Reason: phase.Reason, Outcome: phase.Outcome,
+			StartedAt: phase.StartedAt, EndedAt: phase.EndedAt,
 		})
-		if current == "" && phase.Status != project.PhaseDone {
-			current = name
+		if workflow.CurrentPhase == "" &&
+			phase.Status != project.PhaseDone && phase.Status != project.PhaseSkipped {
+			workflow.CurrentPhase = name
 		}
 	}
-	child.Workflow = &WorkflowStateDTO{
-		Workflow: state.Workflow, CurrentPhase: current, Order: nonNilStrings(state.Order),
-		Phases: phases, UpdatedAt: state.Updated,
+	if state.Route != nil {
+		workflow.RouteClass = state.Route.Class
+		hasEvidence := state.Evidence.Review != nil || state.Evidence.Validation != nil
+		if !hasEvidence || archived || !child.Manifest.WorktreePresent {
+			child.Workflow = workflow
+			return child
+		}
+		current, err := childRepositorySnapshot(manifest)
+		if err != nil {
+			*warnings = append(*warnings, fmt.Sprintf(
+				"compute current workflow snapshot for project %q: %v",
+				manifest.Slug, err,
+			))
+		} else {
+			workflow.ReviewFresh = state.Evidence.Review != nil &&
+				state.Evidence.Review.FreshForReviewRoute(
+					current, *state.Route, state.Route.ReviewRoles, state.Route.EffectiveReviewOwner(),
+				)
+			workflow.ValidationFresh = state.Evidence.Validation != nil &&
+				state.Evidence.Validation.FreshForValidationRoute(
+					current, *state.Route, state.Route.ValidationOwner,
+				)
+		}
 	}
+	child.Workflow = workflow
 	return child
+}
+
+func childRepositorySnapshot(manifest project.Manifest) (project.RepositorySnapshot, error) {
+	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {
+		return project.RepositorySnapshot{}, fmt.Errorf("project has no worktree")
+	}
+	base := manifest.StartSHA
+	if base == "" {
+		base = manifest.BaseBranch
+	}
+	snapshot, err := gitx.Snapshot(*manifest.Worktree, base)
+	if err != nil {
+		return project.RepositorySnapshot{}, err
+	}
+	return project.RepositorySnapshot{
+		BaseSHA: snapshot.BaseSHA, HeadSHA: snapshot.HeadSHA, Fingerprint: snapshot.Fingerprint,
+		FileCount: snapshot.FileCount, ChangedLines: snapshot.ChangedLines,
+	}, nil
 }
 
 // worktreePresent reports whether a child's recorded checkout still exists.
