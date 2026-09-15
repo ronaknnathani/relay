@@ -671,13 +671,19 @@ func TestObservationErrorsRetryThenFailTheWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadState: %v", err)
 	}
-	if state.Status != StatusFailed || state.ConsecutiveErrors != maxConsecutiveErrors {
-		t.Errorf("state = %+v, want a failed watcher after %d errors", state, maxConsecutiveErrors)
+	if state.Status != StatusFailed ||
+		state.ConsecutiveErrors != maxNonRecoverableErrorsSinceSuccess ||
+		state.NonRecoverableErrorsSinceSuccess != maxNonRecoverableErrorsSinceSuccess {
+		t.Errorf(
+			"state = %+v, want a failed watcher after %d errors",
+			state,
+			maxNonRecoverableErrorsSinceSuccess,
+		)
 	}
 }
 
 func TestRecoverableObservationErrorsRemainRunning(t *testing.T) {
-	for _, test := range []struct {
+	modes := []struct {
 		name  string
 		mode  Mode
 		owner string
@@ -685,54 +691,200 @@ func TestRecoverableObservationErrorsRemainRunning(t *testing.T) {
 		{name: "standalone", mode: ModeStandalone},
 		{name: "managed", mode: ModeManaged},
 		{name: "stack", mode: ModeStack, owner: "stack-run"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			harness := newWatchHarness(t, test.mode, test.owner, quietObservation())
-			harness.out.awaitLine(t, "] CHECK ")
-			harness.setObservation(
-				Observation{},
-				classifyGitHubAccessError(errors.New("API rate limit exceeded")),
-			)
+	}
+	failures := []struct {
+		name    string
+		message string
+	}{
+		{name: "rate limit", message: "API rate limit exceeded"},
+		{
+			name:    "organization IP allow list",
+			message: "The IP address is not permitted by the organization IP allow list",
+		},
+	}
+	for _, mode := range modes {
+		for _, failure := range failures {
+			t.Run(mode.name+"/"+failure.name, func(t *testing.T) {
+				harness := newWatchHarness(t, mode.mode, mode.owner, quietObservation())
+				harness.out.awaitLine(t, "] CHECK ")
+				harness.setObservation(
+					Observation{},
+					classifyGitHubAccessError(errors.New(failure.message)),
+				)
 
-			next, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
-			if err != nil {
-				t.Fatalf("parse next check: %v", err)
-			}
-			observations := harness.observations()
-			harness.setNow(next.Add(-time.Second))
-			harness.tick()
-			harness.tick()
-			if got := harness.observations(); got != observations {
-				t.Fatalf("observations before next check = %d, want %d", got, observations)
-			}
+				next, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
+				if err != nil {
+					t.Fatalf("parse next check: %v", err)
+				}
+				observations := harness.observations()
+				harness.setNow(next.Add(-time.Second))
+				harness.tick()
+				harness.tick()
+				if got := harness.observations(); got != observations {
+					t.Fatalf("observations before next check = %d, want %d", got, observations)
+				}
 
-			for count := 1; count <= maxConsecutiveErrors+1; count++ {
-				if count > 1 {
-					next, err = time.Parse(time.RFC3339, harness.state().NextCheckAt)
-					if err != nil {
-						t.Fatalf("parse next check after error %d: %v", count-1, err)
+				for count := 1; count <= maxNonRecoverableErrorsSinceSuccess+1; count++ {
+					if count > 1 {
+						next, err = time.Parse(time.RFC3339, harness.state().NextCheckAt)
+						if err != nil {
+							t.Fatalf("parse next check after error %d: %v", count-1, err)
+						}
+					}
+					harness.setNow(next)
+					harness.tick()
+					harness.err.awaitLine(t, failure.message)
+
+					state := harness.state()
+					if state.Status != StatusRunning {
+						t.Fatalf("state after error %d = %+v, want a running watcher", count, state)
+					}
+					if state.ConsecutiveErrors != count {
+						t.Errorf("consecutive errors = %d, want %d", state.ConsecutiveErrors, count)
+					}
+					if state.NonRecoverableErrorsSinceSuccess != 0 {
+						t.Errorf(
+							"non-recoverable errors since success = %d, want 0",
+							state.NonRecoverableErrorsSinceSuccess,
+						)
+					}
+					if state.DelaySeconds != int64(FastCadence/time.Second) {
+						t.Errorf("delay = %ds, want %ds", state.DelaySeconds, int64(FastCadence/time.Second))
+					}
+					wantNext := next.Add(FastCadence).Format(time.RFC3339)
+					if state.NextCheckAt != wantNext {
+						t.Errorf("next check = %q, want %q", state.NextCheckAt, wantNext)
 					}
 				}
-				harness.setNow(next)
-				harness.tick()
-				harness.err.awaitLine(t, "API rate limit exceeded")
+			})
+		}
+	}
+}
 
-				state := harness.state()
-				if state.Status != StatusRunning {
-					t.Fatalf("state after error %d = %+v, want a running watcher", count, state)
-				}
-				if state.ConsecutiveErrors != count {
-					t.Errorf("consecutive errors = %d, want %d", state.ConsecutiveErrors, count)
-				}
-				if state.DelaySeconds != int64(FastCadence/time.Second) {
-					t.Errorf("delay = %ds, want %ds", state.DelaySeconds, int64(FastCadence/time.Second))
-				}
-				wantNext := next.Add(FastCadence).Format(time.RFC3339)
-				if state.NextCheckAt != wantNext {
-					t.Errorf("next check = %q, want %q", state.NextCheckAt, wantNext)
-				}
-			}
+func TestRecoverableObservationErrorsDoNotConsumeTheTerminalBudget(t *testing.T) {
+	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
+	harness.out.awaitLine(t, "] CHECK ")
+	harness.setObservation(
+		Observation{},
+		classifyGitHubAccessError(errors.New("API rate limit exceeded")),
+	)
+
+	for count := 1; count <= maxNonRecoverableErrorsSinceSuccess+1; count++ {
+		next, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
+		if err != nil {
+			t.Fatalf("parse next check before recoverable error %d: %v", count, err)
+		}
+		harness.setNow(next)
+		harness.tick()
+		harness.err.awaitLine(t, "API rate limit exceeded")
+	}
+
+	harness.setObservation(Observation{}, errors.New("gh: HTTP 500"))
+	next, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
+	if err != nil {
+		t.Fatalf("parse next check before non-recoverable error: %v", err)
+	}
+	harness.setNow(next)
+	harness.tick()
+	harness.err.awaitLine(t, "gh: HTTP 500")
+
+	state := harness.state()
+	if state.Status != StatusRunning {
+		t.Fatalf("state = %+v, want the first non-recoverable error to leave the watcher running", state)
+	}
+	if state.ConsecutiveErrors != maxNonRecoverableErrorsSinceSuccess+2 {
+		t.Errorf("consecutive errors = %d, want all observation errors retained", state.ConsecutiveErrors)
+	}
+	if state.NonRecoverableErrorsSinceSuccess != 1 {
+		t.Errorf(
+			"non-recoverable errors since success = %d, want 1",
+			state.NonRecoverableErrorsSinceSuccess,
+		)
+	}
+	if !strings.Contains(state.Error, "gh: HTTP 500") {
+		t.Errorf("latest error = %q, want the non-recoverable observation error", state.Error)
+	}
+}
+
+func TestRecoverableObservationErrorsDoNotResetTheTerminalBudget(t *testing.T) {
+	withRuntimeHome(t)
+	var clock struct {
+		sync.Mutex
+		now time.Time
+	}
+	clock.now = time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+	now := func() time.Time {
+		clock.Lock()
+		defer clock.Unlock()
+		return clock.now
+	}
+	advance := func(delay time.Duration) {
+		clock.Lock()
+		clock.now = clock.now.Add(delay)
+		clock.Unlock()
+	}
+	ticks := make(chan time.Time)
+	failures := []error{
+		errors.New("gh: HTTP 500"),
+		classifyGitHubAccessError(errors.New("API rate limit exceeded")),
+		errors.New("gh: malformed response"),
+		classifyGitHubAccessError(errors.New(
+			"The IP address is not permitted by the organization IP allow list",
+		)),
+		errors.New("gh: truncated response"),
+	}
+	var attempts int
+	errOut := newSignalWriter()
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(context.Background(), "demo", Options{
+			Mode:   ModeStandalone,
+			Now:    now,
+			Ticker: func(time.Duration) Ticker { return manualTicker{ticks: ticks} },
+			Locate: func(slug string) (Target, error) {
+				return Target{Slug: slug, Dir: t.TempDir(), PRNumber: 42}, nil
+			},
+			Observe: func(context.Context, Target) (Observation, error) {
+				failure := failures[attempts]
+				attempts++
+				return Observation{}, failure
+			},
+			Client: &fakeOwnerClient{},
+			Out:    &strings.Builder{},
+			Err:    errOut,
 		})
+	}()
+
+	for attempt, failure := range failures {
+		if attempt > 0 {
+			advance(FastCadence)
+			select {
+			case ticks <- now():
+			case err := <-done:
+				t.Fatalf("watcher stopped before failure %d: %v", attempt+1, err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("watcher did not consume a tick")
+			}
+		}
+		errOut.awaitLine(t, failure.Error())
+	}
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), failures[len(failures)-1].Error()) {
+			t.Fatalf("Run = %v, want the third non-recoverable observation error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher did not fail after three interleaved non-recoverable observation errors")
+	}
+	state, err := ReadState("demo")
+	if err != nil {
+		t.Fatalf("ReadState: %v", err)
+	}
+	if state.Status != StatusFailed ||
+		state.ConsecutiveErrors != len(failures) ||
+		state.NonRecoverableErrorsSinceSuccess != maxNonRecoverableErrorsSinceSuccess {
+		t.Errorf("state = %+v, want interleaved recoverable failures excluded from the terminal budget", state)
 	}
 }
 
@@ -744,7 +896,7 @@ func TestRecoverableObservationRecovers(t *testing.T) {
 		classifyGitHubAccessError(errors.New("API rate limit exceeded")),
 	)
 
-	for count := 1; count <= maxConsecutiveErrors+1; count++ {
+	for count := 1; count <= maxNonRecoverableErrorsSinceSuccess+1; count++ {
 		next, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
 		if err != nil {
 			t.Fatalf("parse next check before error %d: %v", count, err)
@@ -764,7 +916,10 @@ func TestRecoverableObservationRecovers(t *testing.T) {
 	harness.out.awaitLine(t, "] CHECK ")
 
 	state := harness.state()
-	if state.Status != StatusRunning || state.ConsecutiveErrors != 0 || state.Error != "" {
+	if state.Status != StatusRunning ||
+		state.ConsecutiveErrors != 0 ||
+		state.NonRecoverableErrorsSinceSuccess != 0 ||
+		state.Error != "" {
 		t.Errorf("state after recovery = %+v, want the error state cleared", state)
 	}
 	wantDelay := CadenceFor(state.ScheduledChecks + 1)
@@ -1241,5 +1396,41 @@ func TestRunStopsWhenAnEventCannotBeWritten(t *testing.T) {
 				t.Errorf("state = %+v, want the write failure recorded", state)
 			}
 		})
+	}
+}
+
+func TestRunRecordsFailureWhenARecoverableRetryEventCannotBeWritten(t *testing.T) {
+	withRuntimeHome(t)
+	writeErr := errors.New("broken retry writer")
+	err := Run(context.Background(), "broken-retry-writer", Options{
+		Mode: ModeStandalone,
+		Now:  func() time.Time { return time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC) },
+		Locate: func(slug string) (Target, error) {
+			return Target{Slug: slug, Dir: t.TempDir(), PRNumber: 42}, nil
+		},
+		Observe: func(context.Context, Target) (Observation, error) {
+			return Observation{}, classifyGitHubAccessError(errors.New("API rate limit exceeded"))
+		},
+		Client: &fakeOwnerClient{},
+		Out:    &strings.Builder{},
+		Err:    &failingWriter{err: writeErr},
+	})
+	if err == nil {
+		t.Fatal("Run = nil error, want the retry event write failure")
+	}
+	for _, want := range []string{"write pr watch event", writeErr.Error()} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Run error %q is missing %q", err, want)
+		}
+	}
+
+	state, readErr := ReadState("broken-retry-writer")
+	if readErr != nil {
+		t.Fatalf("ReadState: %v", readErr)
+	}
+	if state.Status != StatusFailed ||
+		state.NextCheckAt != "" ||
+		!strings.Contains(state.Error, writeErr.Error()) {
+		t.Errorf("state = %+v, want the retry event write failure persisted", state)
 	}
 }

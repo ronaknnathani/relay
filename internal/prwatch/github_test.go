@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -294,6 +296,37 @@ func TestObserveClassifiesRecoverableGitHubAccessFailures(t *testing.T) {
 	}
 }
 
+func TestCLIRunnerDoesNotClassifyCommandArgumentsAsGitHubErrorDetail(t *testing.T) {
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	if err := os.WriteFile(
+		ghPath,
+		[]byte("#!/bin/sh\nprintf '%s\\n' 'HTTP 401: Bad credentials' >&2\nexit 1\n"),
+		0o755,
+	); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, err := NewCLIRunner(time.Second).Run(
+		context.Background(),
+		t.TempDir(),
+		"api",
+		"repos/acme/api-rate-limit-exceeded",
+	)
+	if err == nil {
+		t.Fatal("Run = nil error, want the gh failure surfaced")
+	}
+	if got := classifyGitHubAccessError(err); isRecoverableGitHubAccessError(got) {
+		t.Fatalf("classifyGitHubAccessError(%v) marked command arguments as recoverable", err)
+	}
+	for _, want := range []string{"api-rate-limit-exceeded", "HTTP 401: Bad credentials"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Run error %q is missing %q", err, want)
+		}
+	}
+}
+
 func TestObserveRecoversFromATransientFailure(t *testing.T) {
 	gh := fullFixtureGH()
 	failing := "api repos/acme/widgets/issues/42/comments"
@@ -504,6 +537,53 @@ func TestObserveAcceptsAnEmptyReviewThreadPage(t *testing.T) {
 // GitHub answers a partially failed GraphQL query with an `errors` list and a
 // zero exit code, so a thread or a check it declined to return would otherwise
 // look like one that does not exist.
+func TestObserveClassifiesTypedGraphQLRateLimit(t *testing.T) {
+	gh := fullFixtureGH()
+	gh.responses["graphql reviewThreads"] = `{"data":{"repository":{"pullRequest":{"reviewThreads":` +
+		`{"pageInfo":{"hasNextPage":false,"endCursor":"c1"},"nodes":[]}}}},` +
+		`"errors":[{"type":"RATE_LIMITED","message":"Request could not be completed"}]}`
+
+	_, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+	if err == nil {
+		t.Fatal("Observe = nil error, want the partial GraphQL answer reported")
+	}
+	if !isRecoverableGitHubAccessError(err) {
+		t.Fatalf("Observe = %v, want the RATE_LIMITED type classified as recoverable", err)
+	}
+}
+
+func TestObserveClassifiesGraphQLRateLimitMessageFallback(t *testing.T) {
+	gh := fullFixtureGH()
+	gh.responses["graphql checks"] = `{"data":{"repository":{"pullRequest":{"statusCheckRollup":{"nodes":[]}}}},` +
+		`"errors":[{"type":"FORBIDDEN","message":"You have exceeded a secondary rate limit"}]}`
+
+	_, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+	if err == nil {
+		t.Fatal("Observe = nil error, want the partial GraphQL answer reported")
+	}
+	if !isRecoverableGitHubAccessError(err) {
+		t.Fatalf("Observe = %v, want the rate-limit message classified as recoverable", err)
+	}
+}
+
+func TestObserveDoesNotClassifyMixedGraphQLErrorsAsRecoverable(t *testing.T) {
+	gh := fullFixtureGH()
+	gh.responses["graphql reviewThreads"] = `{"data":{"repository":{"pullRequest":{"reviewThreads":` +
+		`{"pageInfo":{"hasNextPage":false,"endCursor":"c1"},"nodes":[]}}}},` +
+		`"errors":[` +
+		`{"type":"RATE_LIMITED","message":"Request could not be completed"},` +
+		`{"type":"FORBIDDEN","message":"Resource not accessible"}` +
+		`]}`
+
+	_, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+	if err == nil {
+		t.Fatal("Observe = nil error, want the partial GraphQL answer reported")
+	}
+	if isRecoverableGitHubAccessError(err) {
+		t.Fatalf("Observe = %v, want mixed GraphQL errors to remain terminal", err)
+	}
+}
+
 func TestObserveRejectsAPartialGraphQLAnswer(t *testing.T) {
 	for name, test := range map[string]struct {
 		key      string
@@ -513,7 +593,7 @@ func TestObserveRejectsAPartialGraphQLAnswer(t *testing.T) {
 			key: "graphql reviewThreads",
 			response: `{"data":{"repository":{"pullRequest":{"reviewThreads":` +
 				`{"pageInfo":{"hasNextPage":false,"endCursor":"c1"},"nodes":[]}}}},` +
-				`"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`,
+				`"errors":[{"type":"FORBIDDEN","message":"Resource not accessible"}]}`,
 		},
 		"checks": {
 			key: "graphql checks",
@@ -531,9 +611,6 @@ func TestObserveRejectsAPartialGraphQLAnswer(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "error(s)") {
 				t.Errorf("error %q does not name the GraphQL errors", err)
-			}
-			if got := isRecoverableGitHubAccessError(err); got != (name == "review threads") {
-				t.Errorf("isRecoverableGitHubAccessError() = %t, want %t for %v", got, name == "review threads", err)
 			}
 		})
 	}

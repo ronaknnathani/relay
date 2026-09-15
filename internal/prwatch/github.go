@@ -28,23 +28,32 @@ func (f RunnerFunc) Run(ctx context.Context, dir string, args ...string) ([]byte
 	return f(ctx, dir, args...)
 }
 
-type githubAccessErrorKind string
-
-const (
-	githubAccessErrorIPAllowList githubAccessErrorKind = "ip_allow_list"
-	githubAccessErrorRateLimit   githubAccessErrorKind = "rate_limit"
-)
-
-type githubAccessError struct {
-	kind  githubAccessErrorKind
+type recoverableGitHubAccessError struct {
 	cause error
 }
 
-func (e *githubAccessError) Error() string {
+type ghCommandError struct {
+	args   string
+	cause  error
+	detail string
+}
+
+func (e *ghCommandError) Error() string {
+	if e.detail == "" {
+		return fmt.Sprintf("run gh %s: %v", e.args, e.cause)
+	}
+	return fmt.Sprintf("run gh %s: %v: %s", e.args, e.cause, e.detail)
+}
+
+func (e *ghCommandError) Unwrap() error {
+	return e.cause
+}
+
+func (e *recoverableGitHubAccessError) Error() string {
 	return e.cause.Error()
 }
 
-func (e *githubAccessError) Unwrap() error {
+func (e *recoverableGitHubAccessError) Unwrap() error {
 	return e.cause
 }
 
@@ -52,28 +61,33 @@ func classifyGitHubAccessError(err error) error {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	var accessErr *githubAccessError
+	var accessErr *recoverableGitHubAccessError
 	if errors.As(err, &accessErr) {
 		return err
 	}
 
-	message := strings.ToLower(strings.ReplaceAll(err.Error(), "-", " "))
+	detail := err.Error()
+	var commandErr *ghCommandError
+	if errors.As(err, &commandErr) {
+		detail = commandErr.detail
+	}
+	message := strings.ToLower(strings.ReplaceAll(detail, "-", " "))
 	switch {
 	case (strings.Contains(message, "ip allow list") || strings.Contains(message, "ip allowlist")) &&
 		(strings.Contains(message, "not permitted") ||
 			strings.Contains(message, "not allowed") ||
 			strings.Contains(message, "denied")):
-		return &githubAccessError{kind: githubAccessErrorIPAllowList, cause: err}
+		return &recoverableGitHubAccessError{cause: err}
 	case strings.Contains(message, "api rate limit exceeded"),
 		strings.Contains(message, "secondary rate limit"):
-		return &githubAccessError{kind: githubAccessErrorRateLimit, cause: err}
+		return &recoverableGitHubAccessError{cause: err}
 	default:
 		return err
 	}
 }
 
 func isRecoverableGitHubAccessError(err error) bool {
-	var accessErr *githubAccessError
+	var accessErr *recoverableGitHubAccessError
 	return errors.As(err, &accessErr)
 }
 
@@ -116,10 +130,11 @@ func NewCLIRunner(timeout time.Duration) Runner {
 		}
 		if err != nil {
 			detail := strings.TrimSpace(stderr.String())
-			if detail == "" {
-				return nil, fmt.Errorf("run gh %s: %w", strings.Join(args, " "), err)
+			return nil, &ghCommandError{
+				args:   strings.Join(args, " "),
+				cause:  err,
+				detail: detail,
 			}
-			return nil, fmt.Errorf("run gh %s: %w: %s", strings.Join(args, " "), err, detail)
 		}
 		return stdout.Bytes(), nil
 	})
@@ -379,19 +394,22 @@ func (e graphQLErrors) err(query string) error {
 		return nil
 	}
 	messages := make([]string, 0, len(e.Errors))
-	rateLimited := false
+	allRecoverable := true
 	for _, entry := range e.Errors {
-		messages = append(messages, firstNonEmpty(strings.TrimSpace(entry.Message), entry.Type, "unknown error"))
-		rateLimited = rateLimited || strings.EqualFold(strings.TrimSpace(entry.Type), "RATE_LIMITED")
+		message := firstNonEmpty(strings.TrimSpace(entry.Message), entry.Type, "unknown error")
+		messages = append(messages, message)
+		recoverable := strings.EqualFold(strings.TrimSpace(entry.Type), "RATE_LIMITED") ||
+			isRecoverableGitHubAccessError(classifyGitHubAccessError(errors.New(message)))
+		allRecoverable = allRecoverable && recoverable
 	}
 	err := fmt.Errorf(
 		"gh api graphql answered the %s query with %d error(s): %s",
 		query, len(e.Errors), strings.Join(messages, "; "),
 	)
-	if rateLimited {
-		return &githubAccessError{kind: githubAccessErrorRateLimit, cause: err}
+	if allRecoverable {
+		return &recoverableGitHubAccessError{cause: err}
 	}
-	return classifyGitHubAccessError(err)
+	return err
 }
 
 // checkPageResponse is one page of the check-context GraphQL query.
