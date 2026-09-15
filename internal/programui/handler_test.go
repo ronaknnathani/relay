@@ -42,6 +42,39 @@ func TestHandlerCachesRenderedIndex(t *testing.T) {
 	}
 }
 
+func TestHandlerRefreshesEmbeddedRoadmapProjection(t *testing.T) {
+	now := time.Date(2026, 9, 15, 16, 0, 0, 0, time.UTC)
+	seed := programview.Snapshot{
+		Schema:  programview.SchemaVersion,
+		Program: programview.ProgramDTO{Title: "Seed roadmap"},
+		Items:   []programview.ItemDTO{},
+	}
+	updated := seed
+	updated.Program.Title = "Updated roadmap"
+	feed := newSnapshotFeed(seed, time.Minute, func() time.Time { return now }, func() (programview.Snapshot, error) {
+		return updated, nil
+	})
+	handler := newHandler("relay-v1", "4321", newSnapshotCache(time.Minute, nil, nil), feed, nil)
+
+	feed.Refresh()
+	eventually(t, time.Second, func() bool {
+		return bytes.Contains(feed.roadmapResponse(), []byte("Updated roadmap"))
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "http://localhost:4321/", nil)
+	request.Host = "localhost:4321"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET index status = %d: %s", response.Code, response.Body.String())
+	}
+	if bytes.Contains(response.Body.Bytes(), []byte("Seed roadmap")) ||
+		!bytes.Contains(response.Body.Bytes(), []byte("Updated roadmap")) {
+		t.Fatal("rendered index did not use the feed's current roadmap projection")
+	}
+}
+
 func TestHandlerRoadmapViewKeepsOnlyInitialUIData(t *testing.T) {
 	handler := NewHandler(HandlerOptions{
 		Slug: "relay-v1",
@@ -97,6 +130,10 @@ func TestHandlerRoadmapViewKeepsOnlyInitialUIData(t *testing.T) {
 	node := payload["graph"].(map[string]any)["nodes"].([]any)[0].(map[string]any)
 	if node["priority"] != "P0" || node["dependency_count"] != float64(1) {
 		t.Fatalf("roadmap node = %#v", node)
+	}
+	dependencies := node["dependencies"].([]any)
+	if len(dependencies) != 1 || dependencies[0] != "w0" {
+		t.Fatalf("roadmap node dependencies = %#v", dependencies)
 	}
 }
 

@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	contentSecurityPolicy  = "default-src 'self'; script-src 'self' 'sha256-UXIL+j6UmJdVusQ2iRt/3tKDJxuh42y6D1HM1W2MC54=' 'sha256-+pn1476Cb9QcdZ8587Lzy5K3YliKq8dBuNchMMhir6w='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy  = "default-src 'self'; script-src 'self' 'sha256-UXIL+j6UmJdVusQ2iRt/3tKDJxuh42y6D1HM1W2MC54=' 'sha256-nq+HP9Kvhsa7qwFfZ6cZ2ifZEqWqebxrZBzvQNZU1Fk='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	bootstrapTemplateToken = "__RELAY_BOOTSTRAP__"
 	roadmapTemplateToken   = "__RELAY_INITIAL_ROADMAP__"
 )
@@ -64,10 +64,10 @@ func newHandler(
 	if feed != nil {
 		roadmap = feed.roadmapResponse()
 	}
-	index, indexErr := prepareIndex(roadmap)
+	index, indexErr := prepareIndexTemplate()
 	return &handler{
 		slug: slug, port: port, cache: cache, feed: feed, artifactLoader: artifactLoader,
-		index: index, indexErr: indexErr,
+		indexTemplate: index, initialRoadmap: roadmap, indexErr: indexErr,
 	}
 }
 
@@ -77,7 +77,8 @@ type handler struct {
 	cache          *snapshotCache
 	feed           *snapshotFeed
 	artifactLoader ArtifactLoader
-	index          []byte
+	indexTemplate  []byte
+	initialRoadmap []byte
 	indexErr       error
 }
 
@@ -103,15 +104,16 @@ type roadmapGraph struct {
 }
 
 type roadmapNode struct {
-	ID              string `json:"id"`
-	Title           string `json:"title"`
-	Lane            string `json:"lane"`
-	Layer           int    `json:"layer"`
-	Priority        string `json:"priority"`
-	DependencyCount int    `json:"dependency_count"`
-	PRNumber        int    `json:"pr_number,omitempty"`
-	Ready           bool   `json:"ready"`
-	Orphaned        bool   `json:"orphaned"`
+	ID              string   `json:"id"`
+	Title           string   `json:"title"`
+	Lane            string   `json:"lane"`
+	Layer           int      `json:"layer"`
+	Priority        string   `json:"priority"`
+	DependencyCount int      `json:"dependency_count"`
+	Dependencies    []string `json:"dependencies"`
+	PRNumber        int      `json:"pr_number,omitempty"`
+	Ready           bool     `json:"ready"`
+	Orphaned        bool     `json:"orphaned"`
 }
 
 type roadmapOverview struct {
@@ -157,18 +159,23 @@ func (h *handler) serveIndex(response http.ResponseWriter, request *http.Request
 		http.Error(response, h.indexErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	response.Header().Set("Content-Length", strconv.Itoa(len(h.index)))
+	roadmap := h.initialRoadmap
+	if h.feed != nil {
+		roadmap = h.feed.roadmapResponse()
+	}
+	index := bytes.Replace(h.indexTemplate, []byte(roadmapTemplateToken), roadmap, 1)
+	response.Header().Set("Content-Length", strconv.Itoa(len(index)))
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
 	response.WriteHeader(http.StatusOK)
 	if request.Method == http.MethodHead {
 		return
 	}
-	if _, err := response.Write(h.index); err != nil {
+	if _, err := response.Write(index); err != nil {
 		return
 	}
 }
 
-func prepareIndex(roadmap []byte) ([]byte, error) {
+func prepareIndexTemplate() ([]byte, error) {
 	index, err := fs.ReadFile(embeddedAssets, "assets/index.min.html")
 	if err != nil {
 		return nil, fmt.Errorf("read embedded asset assets/index.min.html: %w", err)
@@ -178,7 +185,6 @@ func prepareIndex(roadmap []byte) ([]byte, error) {
 		return nil, fmt.Errorf("read embedded asset assets/bootstrap.min.js: %w", err)
 	}
 	index = bytes.Replace(index, []byte(bootstrapTemplateToken), bootstrap, 1)
-	index = bytes.Replace(index, []byte(roadmapTemplateToken), roadmap, 1)
 	return index, nil
 }
 
@@ -311,7 +317,8 @@ func newRoadmapSnapshot(snapshot programview.Snapshot) roadmapSnapshot {
 		result.Graph.Nodes = append(result.Graph.Nodes, roadmapNode{
 			ID: node.ID, Title: node.Title, Lane: node.Lane, Layer: node.Layer,
 			Priority: item.Priority, DependencyCount: len(item.Dependencies),
-			PRNumber: prNumber, Ready: item.Ready, Orphaned: item.Orphaned,
+			Dependencies: append([]string(nil), item.Dependencies...),
+			PRNumber:     prNumber, Ready: item.Ready, Orphaned: item.Orphaned,
 		})
 	}
 	return result

@@ -30,7 +30,7 @@
     setText("task-total", count(progress.total));
     setText(
       "progress-counts",
-      `${count(progress.completed)} of ${count(progress.total)} complete`,
+      `${count(progress.merged)} of ${count(progress.total)} merged`,
     );
     setText(
       "roadmap-note",

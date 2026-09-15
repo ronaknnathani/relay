@@ -203,6 +203,56 @@ func TestServeDefaultHerdrListerTimesOutInsteadOfHanging(t *testing.T) {
 	}
 }
 
+func TestServeTreatsMissingHerdrAsUnavailable(t *testing.T) {
+	fixture := newReferenceProgramFixture(t)
+	t.Setenv("PATH", t.TempDir())
+	output := newLineWriter()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, Options{
+			Slug: fixture.program.Slug, Port: 0, Open: false, Out: output,
+			GitHub: &controlledFetcher{},
+		})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("program UI did not stop")
+		}
+	})
+
+	url := waitForProgramURL(t, output, done)
+	eventually(t, 2*time.Second, func() bool {
+		response, err := http.Get(url + "/api/program")
+		if err != nil {
+			return false
+		}
+		defer response.Body.Close()
+		var snapshot programview.Snapshot
+		if json.NewDecoder(response.Body).Decode(&snapshot) != nil {
+			return false
+		}
+		if snapshot.SourceHealth.Herdr.Status != "unavailable" ||
+			len(snapshot.SourceHealth.Herdr.Warnings) != 0 {
+			return false
+		}
+		for _, item := range snapshot.Items {
+			for _, warning := range item.Warnings {
+				if strings.Contains(warning, "Herdr unavailable") {
+					return false
+				}
+			}
+		}
+		return snapshot.Refresh.Status == "fresh"
+	})
+}
+
 func TestServePublishesLocalSnapshotBeforeDelayedSources(t *testing.T) {
 	fixture := newReferenceProgramFixture(t)
 	p := fixture.program

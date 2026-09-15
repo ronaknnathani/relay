@@ -839,7 +839,7 @@ function renderRoadmap() {
       : "Loading the program…";
     dom.roadmapScroll.hidden = true;
     dom.graph.setAttribute("aria-label", "Dependency flow: no work items yet.");
-    return;
+    return true;
   }
   if (!dom.roadmapEmpty.hidden) {
     dom.roadmapEmpty.hidden = true;
@@ -899,13 +899,14 @@ function renderRoadmap() {
         drawConnectorsForCurrentGraph();
       }
     });
-    return;
+    return true;
   }
   const finish = () => {
     if (generation !== state.roadmapRenderGeneration || state.tab !== "roadmap") {
       return;
     }
     if (renderBatch(ROADMAP_RENDER_BATCH)) {
+      state.dirtyTabs.delete("roadmap");
       window.requestAnimationFrame(() => {
         if (generation === state.roadmapRenderGeneration && state.tab === "roadmap") {
           drawConnectorsForCurrentGraph();
@@ -916,6 +917,7 @@ function renderRoadmap() {
     window.requestAnimationFrame(finish);
   };
   window.setTimeout(() => window.requestAnimationFrame(finish), 50);
+  return false;
 }
 
 function renderRoadmapSummary(graph, plan, nodes) {
@@ -1033,6 +1035,20 @@ function decorateTaskCard(card, node, item, lane) {
     content += `\n${facts}`;
   }
   card.textContent = content;
+  card.setAttribute("aria-label", taskCardLabel(node, item, lane));
+}
+
+function taskCardLabel(node, item, lane) {
+  const details = item || node;
+  const dependencies = item
+    ? list(item.dependencies)
+    : list(node.dependencies);
+  const dependencyLabel = dependencies.length > 0
+    ? `Dependencies: ${dependencies.join(", ")}`
+    : "No dependencies";
+  return `Task ${node.id}: ${text(node.title, "Untitled task")}. ` +
+    `Status ${statusMeta(lane).word}. Priority ${text(details && details.priority, "unknown")}. ` +
+    `${dependencyLabel}.`;
 }
 
 function onCardKey(event, id) {
@@ -1278,7 +1294,10 @@ function renderActiveTab() {
     return;
   }
   if (state.tab === "roadmap") {
-    renderRoadmap();
+    if (renderRoadmap()) {
+      state.dirtyTabs.delete(state.tab);
+    }
+    return;
   } else if (state.tab === "tasks") {
     if (dom.statusFilters.childElementCount === 0) {
       buildStatusFilters();

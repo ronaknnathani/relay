@@ -244,6 +244,82 @@ func TestBrowserShowsSixSecondExternalRefreshProvenance(t *testing.T) {
 	}
 }
 
+func TestBrowserRoadmapResumesAfterTabSwitch(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	fixture := newReferenceProgramFixture(t)
+	output := newLineWriter()
+	serverContext, cancelServer := context.WithCancel(context.Background())
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- Serve(serverContext, Options{
+			Slug: fixture.program.Slug, Port: 0, Open: false, Out: output,
+			GitHub: &controlledFetcher{},
+			Agents: &controlledAgentLister{},
+		})
+	}()
+	t.Cleanup(func() {
+		cancelServer()
+		select {
+		case err := <-serverDone:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("program UI did not stop")
+		}
+	})
+	url := waitForProgramURL(t, output, serverDone)
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+
+	if err := chromedp.Run(browser,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(`
+				const relayAnimationFrame = window.requestAnimationFrame.bind(window);
+				window.requestAnimationFrame = (callback) =>
+					relayAnimationFrame((timestamp) => setTimeout(() => callback(timestamp), 100));
+			`).Do(ctx)
+			return err
+		}),
+		chromedp.Navigate(url),
+		chromedp.Poll(`typeof selectTab === "function" &&
+			typeof deferredUIReady !== "undefined" &&
+			deferredUIReady &&
+			document.querySelectorAll(".card").length === 2`, nil),
+		chromedp.Evaluate(`selectTab("tasks")`, nil),
+		chromedp.Poll(`document.querySelector("#panel-tasks").hidden === false`, nil),
+		chromedp.Evaluate(`selectTab("roadmap")`, nil),
+		chromedp.Poll(`document.querySelectorAll(".card").length === 100 &&
+			document.querySelectorAll("#graph-edges .edge").length === 200`, nil),
+	); err != nil {
+		t.Fatalf("resume roadmap render: %v", err)
+	}
+	var label string
+	if err := chromedp.Run(browser, chromedp.AttributeValue(
+		`.card[data-item="w3"]`, "aria-label", &label, nil,
+	)); err != nil {
+		t.Fatal(err)
+	}
+	want := "Task w3: Reference task 003. Status Dispatched. Priority P1. Dependencies: w2, w1."
+	if label != want {
+		t.Fatalf("task card accessible name = %q, want %q", label, want)
+	}
+}
+
 func TestBrowserRetainsAndRecoversEachExternalSource(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")

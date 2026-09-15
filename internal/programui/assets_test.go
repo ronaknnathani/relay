@@ -199,6 +199,32 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	}
 }
 
+func TestRoadmapCardsKeepOneVisibleMetadataLineAndExplicitNames(t *testing.T) {
+	script := readAsset(t, "assets/app.js")
+	styles := readAsset(t, "assets/app.css")
+	requireContains(t, "app.js", script, []string{
+		`card.setAttribute("aria-label", taskCardLabel(node, item, lane))`,
+		`function taskCardLabel(node, item, lane)`,
+		`Dependencies: ${dependencies.join(", ")}`,
+		`No dependencies`,
+	})
+	requireAbsent(t, "app.css", styles, []string{
+		"content: attr(data-meta)",
+	})
+}
+
+func TestBootstrapUsesMergedProgress(t *testing.T) {
+	bootstrap := readAsset(t, "assets/bootstrap.js")
+	requireContains(t, "bootstrap.js", bootstrap, []string{
+		"count(progress.merged)",
+		"merged",
+	})
+	requireAbsent(t, "bootstrap.js", bootstrap, []string{
+		"count(progress.completed)",
+		" complete`",
+	})
+}
+
 func TestIndexExposesFourTabsAndDefaultsToRoadmap(t *testing.T) {
 	index := readAsset(t, "assets/index.html")
 	requireContains(t, "index.html", index, []string{
