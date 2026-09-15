@@ -581,12 +581,6 @@ function renderHeaderIdentity() {
   }
 }
 
-function renderHeaderTitle() {
-  const program = programOf();
-  dom.title.textContent = text(program.display_title) ||
-    truncate(text(program.title, "Untitled program"), 72);
-}
-
 function renderHeaderDetails() {
   const program = programOf();
   const programState = text(program.state, "unknown");
@@ -971,71 +965,7 @@ function renderRoadmap() {
     fragment.append(stage);
   });
   dom.graphNodes.append(fragment);
-  window.requestAnimationFrame(() => {
-    if (state.tab === "roadmap") {
-      drawConnectorsForCurrentGraph();
-    }
-  });
-}
-
-function renderFastRoadmap() {
-  const nodes = list((snapshotOf().graph || {}).nodes);
-  state.cards.clear();
-  dom.graphEdges.replaceChildren();
-  if (nodes.length === 0) {
-    renderRoadmap();
-    return;
-  }
-  dom.roadmapEmpty.hidden = true;
-  dom.roadmapScroll.hidden = false;
-  const stage = make("div", "stage");
-  const row = make("div", "stage__row");
-  nodes.forEach((node) => {
-    const card = cardTemplate.cloneNode(true);
-    card.dataset.item = node.id;
-    card.firstElementChild.textContent = text(node.title, "Untitled task");
-    state.cards.set(node.id, card);
-    row.append(card);
-  });
-  stage.append(row);
-  dom.graphNodes.replaceChildren(stage);
-}
-
-function upgradeFastRoadmap() {
-  const graph = snapshotOf().graph || {};
-  const nodes = list(graph.nodes);
-  const nodesByID = new Map(nodes.map((node) => [node.id, node]));
-  const fragment = new DocumentFragment();
-  let position = 0;
-  stageLists(graph, nodes).forEach((ids, index) => {
-    const stage = make("div", "stage");
-    stage.dataset.stage = String(index);
-    stage.append(make("p", "stage__label", `Stage ${index + 1} · ${plural(ids.length, "task")}`));
-    const row = make("div", "stage__row");
-    ids.forEach((id) => {
-      const card = state.cards.get(id);
-      const node = nodesByID.get(id);
-      if (!card || !node) {
-        return;
-      }
-      card.dataset.lane = text(node.lane, "pending");
-      card.dataset.focusKey = `card:${node.id}`;
-      card.dataset.selected = id === state.selected ? "true" : "false";
-      card.dataset.stage = String(index);
-      card.setAttribute("tabindex", state.selected
-        ? (id === state.selected ? "0" : "-1")
-        : (position === 0 ? "0" : "-1"));
-      position += 1;
-      decorateTaskCard(card, node, itemByID(id), text(node.lane, "pending"));
-      row.append(card);
-    });
-    stage.append(row);
-    fragment.append(stage);
-  });
-  dom.graphNodes.replaceChildren(fragment);
-  renderRoadmapSummary(graph, planOf(), nodes);
-  state.dirtyTabs.delete("roadmap");
-  window.requestAnimationFrame(drawConnectorsForCurrentGraph);
+  drawConnectorsForCurrentGraph();
 }
 
 function renderRoadmapSummary(graph, plan, nodes) {
@@ -2537,21 +2467,9 @@ function render() {
 }
 
 function renderInitial() {
-  renderHeaderTitle();
+  renderHeader();
   state.dirtyTabs = new Set(TABS);
-  if (state.tab === "roadmap") {
-    renderFastRoadmap();
-  } else {
-    renderActiveTab();
-  }
-  window.requestAnimationFrame(() => {
-    renderHeader();
-    if (state.tab === "roadmap") {
-      upgradeFastRoadmap();
-    } else {
-      renderActiveTab();
-    }
-  });
+  renderActiveTab();
 }
 
 function renderActiveTab() {
