@@ -45,15 +45,21 @@ func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, err
 			ref, slug, proof.Repository, repository,
 		)
 	}
-	if proof.HeadSHA == "" {
-		return false, fmt.Errorf("recorded pull request %s for %s has no head SHA", ref, slug)
-	}
 	branchTip, found, err := gitx.LocalBranchTip(m.Repo, m.Branch)
 	if err != nil {
 		return false, fmt.Errorf("resolve branch %q tip for recorded pull request %s for %s: %w", m.Branch, ref, slug, err)
 	}
 	if !found {
-		return false, fmt.Errorf("cannot verify recorded pull request %s for %s: branch %q does not exist", ref, slug, m.Branch)
+		if proof.HeadBranch != m.Branch {
+			return false, fmt.Errorf(
+				"recorded pull request %s for %s head branch %q does not match manifest branch %q",
+				ref, slug, proof.HeadBranch, m.Branch,
+			)
+		}
+		return true, nil
+	}
+	if proof.HeadSHA == "" {
+		return false, fmt.Errorf("recorded pull request %s for %s has no head SHA", ref, slug)
 	}
 	if branchTip != proof.HeadSHA {
 		return false, fmt.Errorf(
@@ -71,18 +77,20 @@ func recordedPullRequestMerged(m project.Manifest, slug string) bool {
 	return merged
 }
 
-// recordedPullRequestMergedOnce memoizes recordedPullRequestMerged so archive
-// asks GitHub at most once per run, and only when the answer is still needed.
-func recordedPullRequestMergedOnce(m project.Manifest, slug string) func() bool {
+// recordedPullRequestMergeOnce memoizes the detailed lookup so archive asks
+// GitHub at most once per run, and only when the answer is still needed.
+func recordedPullRequestMergeOnce(m project.Manifest, slug string) func() (bool, error) {
 	var (
 		resolved bool
 		merged   bool
+		err      error
 	)
-	return func() bool {
+	return func() (bool, error) {
 		if !resolved {
-			resolved, merged = true, recordedPullRequestMerged(m, slug)
+			resolved = true
+			merged, err = resolveRecordedPullRequestMerge(m, slug)
 		}
-		return merged
+		return merged, err
 	}
 }
 
@@ -172,7 +180,7 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 	// The recorded pull request is authoritative about merge state and is
 	// resolved lazily, at most once, so a locally merged branch costs no GitHub
 	// call and a branch that is already deleted is still evaluated.
-	recordedMerged := recordedPullRequestMergedOnce(m, slug)
+	recordedMerge := recordedPullRequestMergeOnce(m, slug)
 	if m.Branch != "" && gitx.BranchExists(m.Repo, m.Branch) {
 		base := m.BaseBranch
 		if base == "" {
@@ -191,23 +199,36 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 				workMerged = gitx.IsWorkMerged(m.Repo, m.Branch, base, m.StartSHA)
 			}
 		}
-		// A squashed or rebased merge leaves no local ancestry, so trust the
-		// recorded pull request when GitHub reports it merged.
-		pullRequestMerged := !workMerged && recordedMerged()
 		switch {
 		case force:
 			deleteBranchAfter, forceDeleteBranchAfter = true, true
 		case reachable:
 			deleteBranchAfter = true
-		case pullRequestMerged:
-			deleteBranchAfter, forceDeleteBranchAfter = true, true
 		default:
-			return archiveResult{}, fmt.Errorf("branch %q has unmerged work; re-run with --force to delete it anyway, or merge it first", m.Branch)
+			// A squashed or rebased merge leaves no local ancestry, so trust
+			// the recorded pull request when its identity matches the branch.
+			pullRequestMerged, err := recordedMerge()
+			if err != nil {
+				return archiveResult{}, err
+			}
+			if !pullRequestMerged {
+				return archiveResult{}, fmt.Errorf("branch %q has unmerged work; re-run with --force to delete it anyway, or merge it first", m.Branch)
+			}
+			deleteBranchAfter, forceDeleteBranchAfter = true, true
 		}
 	}
 	// A missing local branch is not evidence of abandoned work: the branch is
 	// usually already deleted precisely because its pull request merged.
-	workMerged = workMerged || recordedMerged()
+	if !workMerged {
+		pullRequestMerged, err := recordedMerge()
+		if err != nil {
+			if !force {
+				return archiveResult{}, err
+			}
+		} else {
+			workMerged = pullRequestMerged
+		}
+	}
 
 	if m.Worktree != nil && *m.Worktree != "" {
 		worktree := *m.Worktree

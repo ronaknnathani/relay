@@ -256,7 +256,7 @@ func TestArchiveStillProtectsUnmergedPullRequest(t *testing.T) {
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
 
-func TestArchiveDoesNotRecordMergedPullRequestWhenTheLocalBranchIsGone(t *testing.T) {
+func TestArchiveRecordsMergedPullRequestWhenTheLocalBranchIsGone(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
 	slug := "deleted-branch-work"
@@ -275,14 +275,41 @@ func TestArchiveDoesNotRecordMergedPullRequestWhenTheLocalBranchIsGone(t *testin
 		t.Fatalf("runArchive with a deleted local branch: %v", err)
 	}
 	archived := loadArchivedManifest(t, slug)
-	if archived.Merged {
-		t.Fatal("archive recorded an unverifiable pull request as merged")
+	if !archived.Merged {
+		t.Fatal("archive did not record the branch-matched pull request as merged")
 	}
 	if archived.Status != "archived" {
 		t.Fatalf("archived status = %q, want archived", archived.Status)
 	}
 	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
 		t.Fatal("an orphan active project directory was left behind")
+	}
+}
+
+func TestArchivePreservesProjectWhenDeletedBranchProofFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "deleted-branch-proof-error"
+	branch := "user/deleted-branch-proof-error"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "merged\n", "merged work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	recordArchiveManifestPR(t, slug, 408)
+	installArchivePRLookupError(t, errors.New("GitHub unavailable"))
+	runArchiveGit(t, repo, "worktree", "remove", "--force", worktree)
+	runArchiveGit(t, repo, "branch", "-D", branch)
+
+	_, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	})
+	if err == nil || !strings.Contains(err.Error(), "GitHub unavailable") {
+		t.Fatalf("runArchive error = %v, want proof lookup failure", err)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("archive removed project metadata after proof lookup failed")
+	}
+	if pathExists(filepath.Join(project.ArchivedDir(), slug)) {
+		t.Fatal("archive created archived metadata after proof lookup failed")
 	}
 }
 
@@ -453,6 +480,7 @@ func installArchivePRIndex(t *testing.T, states map[string]programview.PRState) 
 		proofs[ref] = programview.PullRequestProof{
 			State:      state,
 			Repository: "acme/widgets",
+			HeadBranch: manifest.Branch,
 			HeadSHA:    gitx.RevParse(manifest.Repo, "refs/heads/"+manifest.Branch),
 		}
 	}

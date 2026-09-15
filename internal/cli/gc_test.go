@@ -174,7 +174,7 @@ func TestGCArchivesMergedPullRequestWithMatchingBranchTip(t *testing.T) {
 	}
 }
 
-func TestGCKeepsMergedPullRequestWhenBranchTipIsUnavailable(t *testing.T) {
+func TestGCArchivesMergedPullRequestWhenLocalBranchIsDeleted(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")
 	slug := "pr-deleted-branch"
@@ -185,14 +185,51 @@ func TestGCKeepsMergedPullRequestWhenBranchTipIsUnavailable(t *testing.T) {
 	runArchiveGit(t, fixture.repo, "branch", "-D", branch)
 
 	_, stderr, err := captureGCOutput(t, runGC)
+	if err != nil {
+		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("GC left the deleted-branch merged-PR project active")
+	}
+	if archived := loadArchivedManifest(t, slug); !archived.Merged {
+		t.Fatal("GC did not record the deleted-branch project as merged")
+	}
+}
+
+func TestGCKeepsMergedPullRequestWhenDeletedBranchNameDoesNotMatch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "pr-deleted-branch-mismatch"
+	branch, worktree := addGCProject(t, fixture, slug)
+	recordArchiveManifestPR(t, slug, 709)
+	previousProof := loadArchivePullRequestProof
+	previousRepository := loadArchiveRepository
+	loadArchivePullRequestProof = func(string, string) (programview.PullRequestProof, error) {
+		return programview.PullRequestProof{
+			State:      programview.PRStateMerged,
+			Repository: "acme/widgets",
+			HeadBranch: "user/another-branch",
+		}, nil
+	}
+	loadArchiveRepository = func(string) (string, error) {
+		return "acme/widgets", nil
+	}
+	t.Cleanup(func() {
+		loadArchivePullRequestProof = previousProof
+		loadArchiveRepository = previousRepository
+	})
+	runArchiveGit(t, fixture.repo, "worktree", "remove", "--force", worktree)
+	runArchiveGit(t, fixture.repo, "branch", "-D", branch)
+
+	_, stderr, err := captureGCOutput(t, runGC)
 	if !errors.Is(err, errGCCompletedWithErrors) {
 		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
 	}
-	if !strings.Contains(stderr, "branch "+`"`+branch+`"`+" does not exist") {
-		t.Fatalf("stderr %q is missing the unverifiable branch diagnostic", stderr)
+	if !strings.Contains(stderr, "does not match manifest branch") {
+		t.Fatalf("stderr %q is missing the branch mismatch diagnostic", stderr)
 	}
 	if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
-		t.Fatal("GC removed a project whose merged PR could not be bound to a branch tip")
+		t.Fatal("GC removed a project whose pull request head branch did not match")
 	}
 }
 

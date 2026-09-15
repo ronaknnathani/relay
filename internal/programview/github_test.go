@@ -242,6 +242,7 @@ func TestGHPullRequestLookupReturnsRepositoryAndHead(t *testing.T) {
 			return []byte(`{
 				"state":"MERGED",
 				"url":"https://github.example/acme/widgets/pull/42",
+				"headRefName":"user/verified-pr",
 				"headRefOid":"abc123"
 			}`), nil
 		},
@@ -254,11 +255,12 @@ func TestGHPullRequestLookupReturnsRepositoryAndHead(t *testing.T) {
 	if proof != (PullRequestProof{
 		State:      PRStateMerged,
 		Repository: "acme/widgets",
+		HeadBranch: "user/verified-pr",
 		HeadSHA:    "abc123",
 	}) {
 		t.Fatalf("proof = %+v", proof)
 	}
-	wantArgs := []string{"pr", "view", "#42", "--json", "state,url,headRefOid"}
+	wantArgs := []string{"pr", "view", "#42", "--json", "state,url,headRefName,headRefOid"}
 	if !reflect.DeepEqual(gotArgs, wantArgs) {
 		t.Fatalf("args = %v, want %v", gotArgs, wantArgs)
 	}

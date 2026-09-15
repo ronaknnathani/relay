@@ -48,6 +48,7 @@ type PRIndexLoader func(repo string, refs []string) PRIndex
 type PullRequestProof struct {
 	State      PRState
 	Repository string
+	HeadBranch string
 	HeadSHA    string
 }
 
@@ -263,7 +264,7 @@ func (l ghPullRequestLookup) Lookup(repo, ref string) (PullRequestProof, error) 
 	timeoutContext, cancel := context.WithTimeout(context.Background(), githubPRRefTimeout)
 	defer cancel()
 	output, err := l.run(
-		timeoutContext, repo, "gh", "pr", "view", ref, "--json", "state,url,headRefOid",
+		timeoutContext, repo, "gh", "pr", "view", ref, "--json", "state,url,headRefName,headRefOid",
 	)
 	if err != nil {
 		detail := strings.TrimSpace(string(output))
@@ -273,9 +274,10 @@ func (l ghPullRequestLookup) Lookup(repo, ref string) (PullRequestProof, error) 
 		return PullRequestProof{}, fmt.Errorf("view pull request %q in %s: %w: %s", ref, repo, err, detail)
 	}
 	var response struct {
-		State      string `json:"state"`
-		URL        string `json:"url"`
-		HeadRefOID string `json:"headRefOid"`
+		State       string `json:"state"`
+		URL         string `json:"url"`
+		HeadRefName string `json:"headRefName"`
+		HeadRefOID  string `json:"headRefOid"`
 	}
 	if err := json.Unmarshal(output, &response); err != nil {
 		return PullRequestProof{}, fmt.Errorf("parse pull request %q JSON: %w", ref, err)
@@ -291,6 +293,7 @@ func (l ghPullRequestLookup) Lookup(repo, ref string) (PullRequestProof, error) 
 	return PullRequestProof{
 		State:      state,
 		Repository: repository,
+		HeadBranch: strings.TrimSpace(response.HeadRefName),
 		HeadSHA:    strings.TrimSpace(response.HeadRefOID),
 	}, nil
 }
@@ -450,14 +453,8 @@ type GHFetcher struct {
 	run GHCommandRunner
 }
 
-// GitHubPRIndex resolves authoritative lifecycle state for the supplied
-// recorded pull request references, returning nil when GitHub is unavailable.
-func GitHubPRIndex(repo string, refs []string) PRIndex {
-	return githubPRIndexForRefs(repo, refs)
-}
-
 // GitHubPullRequestProof resolves one pull request with repository and head
-// commit metadata. Lookup failures are returned to callers.
+// identity metadata. Lookup failures are returned to callers.
 func GitHubPullRequestProof(repo, ref string) (PullRequestProof, error) {
 	return ghPullRequestLookup{
 		hasOrigin: gitx.HasOrigin,
