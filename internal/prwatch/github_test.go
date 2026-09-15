@@ -320,6 +320,17 @@ func TestObserveClassifiesRecoverableGitHubAccessFailures(t *testing.T) {
 			),
 			recoverable: true,
 		},
+		"secondary rate limit with support request ID": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "gh: You have exceeded a secondary rate limit. " +
+					"Please wait a few minutes before you try again. " +
+					"If you reach out to GitHub Support for help, please include the request ID " +
+					"ABCD:1234:EF56 in your message. (HTTP 403)",
+			},
+			recoverable: true,
+		},
 		"REST secondary rate limit": {
 			failure: &ghCommandError{
 				args:   "api repos/acme/widgets/pulls/42/reviews",

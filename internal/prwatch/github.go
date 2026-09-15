@@ -67,7 +67,9 @@ var (
 		`(?i)^(?:(?:gh|graphql):\s*)?(?:` +
 			`api rate limit (?:already )?exceeded(?: for (?:user id [0-9]+|[0-9a-f:.]+))?` +
 			`|you have exceeded a secondary rate limit` +
-			`)(?:\.|\. please wait a few minutes before you try again\.)?(?: \(HTTP (?:403|429)\))?$`,
+			`)(?:\.|\. please wait a few minutes before you try again\.` +
+			`(?: if you reach out to github support for help, please include the request id ` +
+			`[0-9a-z:-]+(?: in your message)?\.)?)?(?: \(HTTP (?:403|429)\))?$`,
 	)
 )
 
