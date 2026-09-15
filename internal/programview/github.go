@@ -401,14 +401,14 @@ func normalizePullRequestReference(ref, repository string) (string, error) {
 		if !strings.EqualFold(refRepository, repository) {
 			return "", fmt.Errorf(
 				"pull request URL belongs to repository %q, want %q",
-				refRepository, repository,
+				sanitizeRepositoryValue(refRepository), sanitizeRepositoryValue(repository),
 			)
 		}
 		return strconv.Itoa(number), nil
 	}
 	return "", fmt.Errorf(
 		"reference must be #<positive-number> or a canonical pull request URL for %s",
-		repository,
+		sanitizeRepositoryValue(repository),
 	)
 }
 
@@ -442,6 +442,7 @@ func gitHubRepositoryFromRemote(rawURL string) (string, error) {
 	if !ok || host == "" || repoPath == "" {
 		return "", fmt.Errorf("origin URL %q is not a supported GitHub remote URL", gitx.SanitizeDiagnostic(trimmed))
 	}
+	repoPath = stripURLSuffix(repoPath)
 	return repositoryIdentity("ssh://"+host+"/"+repoPath, strings.TrimSuffix(strings.Trim(repoPath, "/"), ".git"))
 }
 
@@ -457,7 +458,10 @@ func repositoryIdentity(rawURL, nameWithOwner string) (string, error) {
 	nameWithOwner = strings.Trim(strings.TrimSpace(nameWithOwner), "/")
 	nameParts := strings.Split(nameWithOwner, "/")
 	if len(nameParts) != 2 || nameParts[0] == "" || nameParts[1] == "" {
-		return "", fmt.Errorf("repository name %q is not owner/repository", nameWithOwner)
+		return "", fmt.Errorf(
+			"repository name %q is not owner/repository",
+			sanitizeRepositoryValue(nameWithOwner),
+		)
 	}
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if len(segments) < 2 {
@@ -467,10 +471,23 @@ func repositoryIdentity(rawURL, nameWithOwner string) (string, error) {
 	if !strings.EqualFold(urlName, nameWithOwner) {
 		return "", fmt.Errorf(
 			"URL %q identifies repository %q, want %q",
-			gitx.SanitizeDiagnostic(rawURL), urlName, nameWithOwner,
+			gitx.SanitizeDiagnostic(rawURL),
+			sanitizeRepositoryValue(urlName),
+			sanitizeRepositoryValue(nameWithOwner),
 		)
 	}
 	return host + "/" + urlName, nil
+}
+
+func stripURLSuffix(value string) string {
+	if suffix := strings.IndexAny(value, "?#"); suffix >= 0 {
+		return value[:suffix]
+	}
+	return value
+}
+
+func sanitizeRepositoryValue(value string) string {
+	return gitx.SanitizeDiagnostic(stripURLSuffix(value))
 }
 
 // fetchPRState reads one recorded pull request. Referencing the pull request

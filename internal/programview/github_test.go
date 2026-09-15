@@ -494,6 +494,43 @@ func TestGHPullRequestLookupReturnsRepositoryName(t *testing.T) {
 	}
 }
 
+func TestGHPullRequestLookupStripsSCPQueryAndFragmentFromRepositoryName(t *testing.T) {
+	lookup := ghPullRequestLookup{
+		originURL: func(string) (string, error) {
+			return "git@github.example:acme/widgets.git?access_token=query-secret#fragment-secret", nil
+		},
+	}
+
+	repository, err := lookup.Repository("/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository != "github.example/acme/widgets" {
+		t.Fatalf("repository = %q, want github.example/acme/widgets", repository)
+	}
+}
+
+func TestGHPullRequestLookupSanitizesRemoteDerivedValidationErrors(t *testing.T) {
+	lookup := ghPullRequestLookup{
+		originURL: func(string) (string, error) {
+			return "git@github.example:acme/widgets/extra.git?access_token=query-secret#fragment-secret", nil
+		},
+	}
+
+	_, err := lookup.Repository("/repo")
+	if err == nil {
+		t.Fatal("Repository error = nil")
+	}
+	for _, secret := range []string{"git@", "access_token", "query-secret", "fragment-secret"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("Repository error %q leaked %q", err, secret)
+		}
+	}
+	if !strings.Contains(err.Error(), "repository name") {
+		t.Fatalf("Repository error %q is missing repository validation context", err)
+	}
+}
+
 func TestGHPullRequestLookupRepositoryPreservesOriginFailure(t *testing.T) {
 	lookup := ghPullRequestLookup{
 		originURL: func(string) (string, error) {
