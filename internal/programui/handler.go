@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-llHS69LA8z65U2AUE5fQgFCDCqi6crU9WmOdVRc9Zew='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-llHS69LA8z65U2AUE5fQgFCDCqi6crU9WmOdVRc9Zew='; style-src 'self' 'sha256-sFjzPlb7DHQxv9AeEeQQGyXy9yFz9+Q4st0U32GXoDI='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	roadmapCoreToken      = "__RELAY_ROADMAP_CORE__"
+	cssTemplateToken      = "__RELAY_CSS__"
 	roadmapMarkupToken    = "__RELAY_ROADMAP_MARKUP__"
 	programSlugToken      = "__RELAY_PROGRAM_SLUG__"
 	programTitleToken     = "__RELAY_PROGRAM_TITLE__"
@@ -194,6 +195,11 @@ func prepareIndexTemplate() ([]byte, error) {
 		return nil, fmt.Errorf("read embedded asset assets/roadmap.min.js: %w", err)
 	}
 	index = bytes.Replace(index, []byte(roadmapCoreToken), roadmapCore, 1)
+	styles, err := fs.ReadFile(embeddedAssets, "assets/app.min.css")
+	if err != nil {
+		return nil, fmt.Errorf("read embedded asset assets/app.min.css: %w", err)
+	}
+	index = bytes.Replace(index, []byte(cssTemplateToken), styles, 1)
 	return index, nil
 }
 
