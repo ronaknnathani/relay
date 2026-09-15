@@ -13,7 +13,12 @@ import (
 	"strings"
 )
 
-var httpURLPattern = regexp.MustCompile(`(?i)https?://[^\s'"<>]+`)
+var (
+	gitURLPattern     = regexp.MustCompile(`(?i)(?:file|ftp|ftps|git|https?|ssh)://[^\s'"<>]+`)
+	scpLikeURLPattern = regexp.MustCompile(
+		`(?i)\b[^\s'"<>/@:]+@(?:\[[0-9a-f:.]+\]|[a-z0-9][a-z0-9.-]*):[^\s'"<>]+`,
+	)
+)
 
 // RepoRoot returns the absolute path to the top-level directory of the
 // current git repository, or an empty string and an error if cwd is not
@@ -75,7 +80,7 @@ func BranchExists(repo, branch string) bool {
 func DeleteBranch(repo, branch string) error {
 	out, err := exec.Command("git", "-C", repo, "branch", "-d", branch).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git branch -d %s: %w\n%s", branch, err, strings.TrimSpace(string(out)))
+		return gitCommandError("git branch -d "+branch, err, out)
 	}
 	return nil
 }
@@ -84,7 +89,7 @@ func DeleteBranch(repo, branch string) error {
 func ForceDeleteBranch(repo, branch string) error {
 	out, err := exec.Command("git", "-C", repo, "branch", "-D", branch).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git branch -D %s: %w\n%s", branch, err, strings.TrimSpace(string(out)))
+		return gitCommandError("git branch -D "+branch, err, out)
 	}
 	return nil
 }
@@ -148,7 +153,7 @@ func localBranchExists(repo, branch string) (bool, error) {
 }
 
 func gitCommandError(command string, err error, output []byte) error {
-	diagnostic := sanitizeGitDiagnostic(string(output))
+	diagnostic := SanitizeDiagnostic(string(output))
 	if diagnostic == "" {
 		return fmt.Errorf("%s: %w", command, err)
 	}
@@ -179,16 +184,19 @@ func DetectDefaultBranch(repo string) string {
 func Fetch(repo, branch string) (string, error) {
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branch, branch)
 	out, err := exec.Command("git", "-C", repo, "fetch", "origin", refspec).CombinedOutput()
-	diagnostic := sanitizeGitDiagnostic(string(out))
+	diagnostic := SanitizeDiagnostic(string(out))
 	if err != nil {
 		return diagnostic, fmt.Errorf("git fetch origin %s: %w", branch, err)
 	}
 	return diagnostic, nil
 }
 
-func sanitizeGitDiagnostic(output string) string {
+// SanitizeDiagnostic removes secret-bearing URL components from subprocess
+// output while preserving the host, path, and surrounding diagnostic.
+func SanitizeDiagnostic(output string) string {
 	output = strings.TrimSpace(output)
-	return httpURLPattern.ReplaceAllStringFunc(output, sanitizeGitDiagnosticURL)
+	output = gitURLPattern.ReplaceAllStringFunc(output, sanitizeGitDiagnosticURL)
+	return scpLikeURLPattern.ReplaceAllStringFunc(output, sanitizeSCPStyleURL)
 }
 
 func sanitizeGitDiagnosticURL(rawURL string) string {
@@ -211,11 +219,22 @@ func sanitizeGitDiagnosticURL(rawURL string) string {
 	return rawURL
 }
 
+func sanitizeSCPStyleURL(rawURL string) string {
+	if secretStart := strings.IndexAny(rawURL, "?#"); secretStart >= 0 {
+		rawURL = rawURL[:secretStart]
+	}
+	userinfoEnd := strings.LastIndexByte(rawURL, '@')
+	if userinfoEnd < 0 {
+		return rawURL
+	}
+	return "[redacted]" + rawURL[userinfoEnd:]
+}
+
 // WorktreeAdd creates a new worktree at dir on a new branch, started from startPoint.
 func WorktreeAdd(repo, dir, branch, startPoint string) error {
 	out, err := exec.Command("git", "-C", repo, "worktree", "add", dir, "-b", branch, startPoint).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git worktree add %s: %w\n%s", dir, err, strings.TrimSpace(string(out)))
+		return gitCommandError("git worktree add "+dir, err, out)
 	}
 	return nil
 }
@@ -274,7 +293,7 @@ func WorktreeRemove(repo, dir string, force bool) error {
 			return fmt.Errorf("remove leftover worktree dir %s: %w", dir, rmErr)
 		}
 		if out, pruneErr := exec.Command("git", "-C", repo, "worktree", "prune").CombinedOutput(); pruneErr != nil {
-			return fmt.Errorf("git worktree prune: %w\n%s", pruneErr, strings.TrimSpace(string(out)))
+			return gitCommandError("git worktree prune", pruneErr, out)
 		}
 		return nil
 	}
@@ -285,7 +304,7 @@ func WorktreeRemove(repo, dir string, force bool) error {
 	args = append(args, dir)
 	out, err := exec.Command("git", args...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git worktree remove %s: %w\n%s", dir, err, strings.TrimSpace(string(out)))
+		return gitCommandError("git worktree remove "+dir, err, out)
 	}
 	return nil
 }

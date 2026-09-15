@@ -267,19 +267,36 @@ func TestGHPullRequestLookupReturnsRepositoryAndHead(t *testing.T) {
 }
 
 func TestGHPullRequestLookupReturnsCommandFailure(t *testing.T) {
+	ref := "https://ref-user:ref-secret@example.com/acme/widgets/pull/42?ref_token=query-secret#fragment-secret"
 	lookup := ghPullRequestLookup{
 		hasOrigin: func(string) bool { return true },
 		lookPath:  func(string) (string, error) { return "/usr/bin/gh", nil },
 		run: func(context.Context, string, string, ...string) ([]byte, error) {
-			return []byte("authentication failed"), errors.New("exit status 1")
+			return []byte(
+				"authentication failed for ssh://gh-token@git.example.com/acme/widgets.git" +
+					"?access_token=diagnostic-secret#scope",
+			), errors.New("exit status 1")
 		},
 	}
 
-	_, err := lookup.Lookup("/repo", "#42")
+	_, err := lookup.Lookup("/repo", ref)
 	if err == nil {
 		t.Fatal("Lookup error = nil")
 	}
-	for _, want := range []string{"#42", "/repo", "authentication failed"} {
+	for _, secret := range []string{
+		"ref-user", "ref-secret", "query-secret", "fragment-secret",
+		"gh-token", "diagnostic-secret", "access_token",
+	} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("Lookup error %q leaked %q", err, secret)
+		}
+	}
+	for _, want := range []string{
+		"https://[redacted]@example.com/acme/widgets/pull/42",
+		"ssh://[redacted]@git.example.com/acme/widgets.git",
+		"/repo",
+		"authentication failed",
+	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("Lookup error %q is missing %q", err, want)
 		}
@@ -305,6 +322,38 @@ func TestGHPullRequestLookupReturnsRepositoryName(t *testing.T) {
 	}
 	if repository != "acme/widgets" {
 		t.Fatalf("repository = %q, want acme/widgets", repository)
+	}
+}
+
+func TestGHPullRequestLookupRepositorySanitizesCommandFailure(t *testing.T) {
+	lookup := ghPullRequestLookup{
+		hasOrigin: func(string) bool { return true },
+		lookPath:  func(string) (string, error) { return "/usr/bin/gh", nil },
+		run: func(context.Context, string, string, ...string) ([]byte, error) {
+			return []byte(
+				"authentication failed for ftp://gh-user:gh-secret@example.com/acme/widgets.git" +
+					"?access_token=query-secret#scope",
+			), errors.New("exit status 1")
+		},
+	}
+
+	_, err := lookup.Repository("/repo")
+	if err == nil {
+		t.Fatal("Repository error = nil")
+	}
+	for _, secret := range []string{"gh-user", "gh-secret", "query-secret", "access_token"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("Repository error %q leaked %q", err, secret)
+		}
+	}
+	for _, want := range []string{
+		"ftp://[redacted]@example.com/acme/widgets.git",
+		"/repo",
+		"authentication failed",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Repository error %q is missing %q", err, want)
+		}
 	}
 }
 

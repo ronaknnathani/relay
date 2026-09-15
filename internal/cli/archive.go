@@ -28,43 +28,44 @@ func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, err
 	if !hasPR {
 		return false, nil
 	}
+	safeRef := gitx.SanitizeDiagnostic(ref)
 	proof, err := loadArchivePullRequestProof(m.Repo, ref)
 	if err != nil {
-		return false, fmt.Errorf("lookup recorded pull request %s for %s: %w", ref, slug, err)
+		return false, fmt.Errorf("lookup recorded pull request %s for %s: %w", safeRef, slug, err)
 	}
 	if proof.State != programview.PRStateMerged {
 		return false, nil
 	}
 	repository, err := loadArchiveRepository(m.Repo)
 	if err != nil {
-		return false, fmt.Errorf("resolve repository for recorded pull request %s for %s: %w", ref, slug, err)
+		return false, fmt.Errorf("resolve repository for recorded pull request %s for %s: %w", safeRef, slug, err)
 	}
 	if !strings.EqualFold(proof.Repository, repository) {
 		return false, fmt.Errorf(
 			"recorded pull request %s for %s belongs to repository %q, want %q",
-			ref, slug, proof.Repository, repository,
+			safeRef, slug, proof.Repository, repository,
 		)
 	}
 	branchTip, found, err := gitx.LocalBranchTip(m.Repo, m.Branch)
 	if err != nil {
-		return false, fmt.Errorf("resolve branch %q tip for recorded pull request %s for %s: %w", m.Branch, ref, slug, err)
+		return false, fmt.Errorf("resolve branch %q tip for recorded pull request %s for %s: %w", m.Branch, safeRef, slug, err)
 	}
 	if !found {
 		if proof.HeadBranch != m.Branch {
 			return false, fmt.Errorf(
 				"recorded pull request %s for %s head branch %q does not match manifest branch %q",
-				ref, slug, proof.HeadBranch, m.Branch,
+				safeRef, slug, proof.HeadBranch, m.Branch,
 			)
 		}
 		return true, nil
 	}
 	if proof.HeadSHA == "" {
-		return false, fmt.Errorf("recorded pull request %s for %s has no head SHA", ref, slug)
+		return false, fmt.Errorf("recorded pull request %s for %s has no head SHA", safeRef, slug)
 	}
 	if branchTip != proof.HeadSHA {
 		return false, fmt.Errorf(
 			"recorded pull request %s for %s head %s does not match branch %q tip %s",
-			ref, slug, proof.HeadSHA, m.Branch, branchTip,
+			safeRef, slug, proof.HeadSHA, m.Branch, branchTip,
 		)
 	}
 	return true, nil

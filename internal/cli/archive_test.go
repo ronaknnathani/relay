@@ -294,7 +294,10 @@ func TestArchiveWarnsAndContinuesWhenDeletedBranchProofFails(t *testing.T) {
 	worktree := addArchiveWorktree(t, repo, slug, branch)
 	commitArchiveFile(t, worktree, "feature.txt", "merged\n", "merged work")
 	writeArchiveManifest(t, slug, repo, branch, worktree)
-	recordArchiveManifestPR(t, slug, 408)
+	ref := "https://ref-user:ref-secret@example.com/acme/widgets/pull/408?access_token=query-secret#fragment-secret"
+	updateGCManifest(t, slug, func(manifest *project.Manifest) {
+		manifest.PR = project.PRInfo{URL: &ref}
+	})
 	installArchivePRLookupError(t, errors.New("GitHub unavailable"))
 	runArchiveGit(t, repo, "worktree", "remove", "--force", worktree)
 	runArchiveGit(t, repo, "branch", "-D", branch)
@@ -305,8 +308,18 @@ func TestArchiveWarnsAndContinuesWhenDeletedBranchProofFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runArchive with unavailable proof lookup: %v", err)
 	}
-	if !strings.Contains(stderr, "GitHub unavailable") {
-		t.Fatalf("stderr %q is missing proof lookup warning", stderr)
+	for _, secret := range []string{"ref-user", "ref-secret", "query-secret", "fragment-secret", "access_token"} {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr %q leaked %q", stderr, secret)
+		}
+	}
+	for _, want := range []string{
+		"GitHub unavailable",
+		"https://[redacted]@example.com/acme/widgets/pull/408",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
 	}
 	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
 		t.Fatal("archive left project metadata active after proof lookup failed")

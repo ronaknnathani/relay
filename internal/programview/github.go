@@ -44,7 +44,8 @@ type PRIndex interface {
 type PRIndexLoader func(repo string, refs []string) PRIndex
 
 // PullRequestProof contains the GitHub fields needed to bind a merged pull
-// request to a specific repository and commit.
+// request to an existing local branch by repository and head SHA, or to a
+// deleted local branch by repository and head branch name.
 type PullRequestProof struct {
 	State      PRState
 	Repository string
@@ -257,7 +258,8 @@ func positiveNumber(value string) (int, bool) {
 // Lookup resolves one pull request and returns the repository and head commit
 // needed to verify that it belongs to the local project branch.
 func (l ghPullRequestLookup) Lookup(repo, ref string) (PullRequestProof, error) {
-	if err := l.validate(repo, fmt.Sprintf("lookup pull request %q", ref)); err != nil {
+	safeRef := gitx.SanitizeDiagnostic(ref)
+	if err := l.validate(repo, fmt.Sprintf("lookup pull request %q", safeRef)); err != nil {
 		return PullRequestProof{}, err
 	}
 
@@ -267,11 +269,11 @@ func (l ghPullRequestLookup) Lookup(repo, ref string) (PullRequestProof, error) 
 		timeoutContext, repo, "gh", "pr", "view", ref, "--json", "state,url,headRefName,headRefOid",
 	)
 	if err != nil {
-		detail := strings.TrimSpace(string(output))
+		detail := gitx.SanitizeDiagnostic(string(output))
 		if detail == "" {
-			return PullRequestProof{}, fmt.Errorf("view pull request %q in %s: %w", ref, repo, err)
+			return PullRequestProof{}, fmt.Errorf("view pull request %q in %s: %w", safeRef, repo, err)
 		}
-		return PullRequestProof{}, fmt.Errorf("view pull request %q in %s: %w: %s", ref, repo, err, detail)
+		return PullRequestProof{}, fmt.Errorf("view pull request %q in %s: %w: %s", safeRef, repo, err, detail)
 	}
 	var response struct {
 		State       string `json:"state"`
@@ -280,15 +282,15 @@ func (l ghPullRequestLookup) Lookup(repo, ref string) (PullRequestProof, error) 
 		HeadRefOID  string `json:"headRefOid"`
 	}
 	if err := json.Unmarshal(output, &response); err != nil {
-		return PullRequestProof{}, fmt.Errorf("parse pull request %q JSON: %w", ref, err)
+		return PullRequestProof{}, fmt.Errorf("parse pull request %q JSON: %w", safeRef, err)
 	}
 	state, ok := parsePRState(response.State)
 	if !ok {
-		return PullRequestProof{}, fmt.Errorf("parse pull request %q JSON: unknown state %q", ref, response.State)
+		return PullRequestProof{}, fmt.Errorf("parse pull request %q JSON: unknown state %q", safeRef, response.State)
 	}
 	repository, err := pullRequestRepository(response.URL)
 	if err != nil {
-		return PullRequestProof{}, fmt.Errorf("parse pull request %q repository: %w", ref, err)
+		return PullRequestProof{}, fmt.Errorf("parse pull request %q repository: %w", safeRef, err)
 	}
 	return PullRequestProof{
 		State:      state,
@@ -306,7 +308,7 @@ func (l ghPullRequestLookup) Repository(repo string) (string, error) {
 	defer cancel()
 	output, err := l.run(timeoutContext, repo, "gh", "repo", "view", "--json", "nameWithOwner")
 	if err != nil {
-		detail := strings.TrimSpace(string(output))
+		detail := gitx.SanitizeDiagnostic(string(output))
 		if detail == "" {
 			return "", fmt.Errorf("resolve GitHub repository in %s: %w", repo, err)
 		}
@@ -327,11 +329,14 @@ func (l ghPullRequestLookup) Repository(repo string) (string, error) {
 func pullRequestRepository(rawURL string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
-		return "", fmt.Errorf("parse URL %q: %w", rawURL, err)
+		return "", fmt.Errorf("parse URL %q: %w", gitx.SanitizeDiagnostic(rawURL), err)
 	}
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if len(segments) < 4 || segments[0] == "" || segments[1] == "" || segments[2] != "pull" {
-		return "", fmt.Errorf("URL %q does not identify a pull request repository", rawURL)
+		return "", fmt.Errorf(
+			"URL %q does not identify a pull request repository",
+			gitx.SanitizeDiagnostic(rawURL),
+		)
 	}
 	return segments[0] + "/" + strings.TrimSuffix(segments[1], ".git"), nil
 }
@@ -339,15 +344,16 @@ func pullRequestRepository(rawURL string) (string, error) {
 // fetchPRState reads one recorded pull request. Referencing the pull request
 // directly keeps repositories with long histories correct.
 func fetchPRState(ctx context.Context, repo, ref string, runner GHCommandRunner) (PRState, string, int, error) {
+	safeRef := gitx.SanitizeDiagnostic(ref)
 	timeoutContext, cancel := context.WithTimeout(ctx, githubPRRefTimeout)
 	defer cancel()
 	output, err := runner(timeoutContext, repo, "gh", "pr", "view", ref, "--json", "number,state,url")
 	if err != nil {
-		detail := strings.TrimSpace(string(output))
+		detail := gitx.SanitizeDiagnostic(string(output))
 		if detail == "" {
-			return "", "", 0, fmt.Errorf("view pull request %q in %s: %w", ref, repo, err)
+			return "", "", 0, fmt.Errorf("view pull request %q in %s: %w", safeRef, repo, err)
 		}
-		return "", "", 0, fmt.Errorf("view pull request %q in %s: %w: %s", ref, repo, err, detail)
+		return "", "", 0, fmt.Errorf("view pull request %q in %s: %w: %s", safeRef, repo, err, detail)
 	}
 	var response struct {
 		Number int    `json:"number"`
@@ -355,11 +361,11 @@ func fetchPRState(ctx context.Context, repo, ref string, runner GHCommandRunner)
 		URL    string `json:"url"`
 	}
 	if err := json.Unmarshal(output, &response); err != nil {
-		return "", "", 0, fmt.Errorf("parse pull request %q JSON: %w", ref, err)
+		return "", "", 0, fmt.Errorf("parse pull request %q JSON: %w", safeRef, err)
 	}
 	state, ok := parsePRState(response.State)
 	if !ok {
-		return "", "", 0, fmt.Errorf("parse pull request %q JSON: unknown state %q", ref, response.State)
+		return "", "", 0, fmt.Errorf("parse pull request %q JSON: unknown state %q", safeRef, response.State)
 	}
 	return state, response.URL, response.Number, nil
 }
@@ -502,6 +508,7 @@ func (f *GHFetcher) Fetch(ctx context.Context, repo, ref string) (PullRequestDTO
 	if f == nil || f.run == nil {
 		return PullRequestDTO{}, fmt.Errorf("GitHub command runner is not configured")
 	}
+	safeRef := gitx.SanitizeDiagnostic(ref)
 	timeoutContext, cancel := context.WithTimeout(ctx, githubTimeout)
 	defer cancel()
 	output, err := f.run(
@@ -512,11 +519,11 @@ func (f *GHFetcher) Fetch(ctx context.Context, repo, ref string) (PullRequestDTO
 		"number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup,title,updatedAt",
 	)
 	if err != nil {
-		detail := strings.TrimSpace(string(output))
+		detail := gitx.SanitizeDiagnostic(string(output))
 		if detail == "" {
-			return PullRequestDTO{}, fmt.Errorf("fetch pull request %q in %s: %w", ref, repo, err)
+			return PullRequestDTO{}, fmt.Errorf("fetch pull request %q in %s: %w", safeRef, repo, err)
 		}
-		return PullRequestDTO{}, fmt.Errorf("fetch pull request %q in %s: %w: %s", ref, repo, err, detail)
+		return PullRequestDTO{}, fmt.Errorf("fetch pull request %q in %s: %w: %s", safeRef, repo, err, detail)
 	}
 	var response struct {
 		Number            int              `json:"number"`
@@ -530,7 +537,7 @@ func (f *GHFetcher) Fetch(ctx context.Context, repo, ref string) (PullRequestDTO
 		UpdatedAt         string           `json:"updatedAt"`
 	}
 	if err := json.Unmarshal(output, &response); err != nil {
-		return PullRequestDTO{}, fmt.Errorf("parse pull request %q JSON: %w", ref, err)
+		return PullRequestDTO{}, fmt.Errorf("parse pull request %q JSON: %w", safeRef, err)
 	}
 	return PullRequestDTO{
 		Number:         response.Number,

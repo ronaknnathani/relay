@@ -381,6 +381,31 @@ func TestGCPullRequestLookupFailureIsActionable(t *testing.T) {
 	}
 }
 
+func TestGCKeepsDeletedBranchWhenPullRequestLookupFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "deleted-branch-lookup-failure"
+	branch, worktree := addGCProject(t, fixture, slug)
+	recordArchiveManifestPR(t, slug, 710)
+	installArchivePRLookupError(t, errors.New("GitHub unavailable"))
+	runArchiveGit(t, fixture.repo, "worktree", "remove", "--force", worktree)
+	runArchiveGit(t, fixture.repo, "branch", "-D", branch)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "GitHub unavailable") {
+		t.Fatalf("stderr %q is missing the pull request lookup failure", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("GC removed a deleted-branch project after its pull request lookup failed")
+	}
+	if pathExists(filepath.Join(project.ArchivedDir(), slug)) {
+		t.Fatal("GC archived a deleted-branch project after its pull request lookup failed")
+	}
+}
+
 func TestGCMissingStartSHARequiresMergedPullRequest(t *testing.T) {
 	for _, mergedPR := range []bool{false, true} {
 		name := "unproven"
@@ -637,30 +662,33 @@ func TestGCSkipsManifestlessDirectories(t *testing.T) {
 func TestGCContinuesAfterArchiveFailure(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	failingRepo := newGCRepoFixture(t, "main")
-	failingBranch, _ := addGCProject(t, failingRepo, "a-archive-failure")
+	failingSlug := "a-archive-failure"
+	failingBranch, _ := addGCProject(t, failingRepo, failingSlug)
 	mergeGCProjectUpstream(t, failingRepo, failingBranch)
+	collisionDir := filepath.Join(project.ArchivedDir(), failingSlug)
+	if err := os.MkdirAll(collisionDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	collisionMarker := filepath.Join(collisionDir, "existing")
+	if err := os.WriteFile(collisionMarker, []byte("keep\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	successRepo := newGCRepoFixture(t, "main")
 	successBranch, _ := addGCProject(t, successRepo, "z-archive-success")
 	mergeGCProjectUpstream(t, successRepo, successBranch)
-
-	previous := gcArchiveProject
-	gcArchiveProject = func(slug string, force bool) (archiveResult, error) {
-		if slug == "a-archive-failure" {
-			return archiveResult{}, errors.New("injected cleanup failure")
-		}
-		return archiveProject(slug, force)
-	}
-	t.Cleanup(func() { gcArchiveProject = previous })
 
 	_, stderr, err := captureGCOutput(t, runGC)
 	if !errors.Is(err, errGCCompletedWithErrors) {
 		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
 	}
-	if !strings.Contains(stderr, "archive a-archive-failure: injected cleanup failure") {
+	if !strings.Contains(stderr, "archive a-archive-failure: move project to archived") {
 		t.Fatalf("stderr %q is missing archive failure", stderr)
 	}
-	if !pathExists(filepath.Join(project.ActiveDir(), "a-archive-failure")) {
+	if !pathExists(filepath.Join(project.ActiveDir(), failingSlug)) {
 		t.Fatal("failed archive project was removed")
+	}
+	if !pathExists(collisionMarker) {
+		t.Fatal("archive destination collision was overwritten")
 	}
 	if pathExists(filepath.Join(project.ActiveDir(), "z-archive-success")) {
 		t.Fatal("GC did not continue after archive failure")

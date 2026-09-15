@@ -121,37 +121,84 @@ func TestFetchReplacesStaleRemoteTrackingRefWithoutLocalBase(t *testing.T) {
 	}
 }
 
-func TestSanitizeGitDiagnosticRedactsHTTPUserinfo(t *testing.T) {
-	input := "fatal: unable to access 'https://relay:secret@example.com/repo.git/': denied\n" +
-		"remote https://token@example.org/other.git"
-	got := sanitizeGitDiagnostic(input)
-	for _, secret := range []string{"relay", "secret", "token"} {
+func TestSanitizeDiagnosticRedactsGitURLUserinfo(t *testing.T) {
+	input := strings.Join([]string{
+		"fatal: unable to access 'https://relay:secret@example.com/repo.git/': denied",
+		"remote ftp://ftp-token@example.org/team/repo.git",
+		"remote ssh://ssh-token@git.example.net/team/repo.git",
+		"remote scp-token@git.example.io:team/repo.git",
+	}, "\n")
+	got := SanitizeDiagnostic(input)
+	for _, secret := range []string{"relay", "secret", "ftp-token", "ssh-token", "scp-token"} {
 		if strings.Contains(got, secret) {
-			t.Fatalf("sanitizeGitDiagnostic(%q) leaked %q in %q", input, secret, got)
+			t.Fatalf("SanitizeDiagnostic(%q) leaked %q in %q", input, secret, got)
 		}
 	}
-	for _, want := range []string{"https://[redacted]@example.com/repo.git", "https://[redacted]@example.org/other.git"} {
+	for _, want := range []string{
+		"https://[redacted]@example.com/repo.git",
+		"ftp://[redacted]@example.org/team/repo.git",
+		"ssh://[redacted]@git.example.net/team/repo.git",
+		"[redacted]@git.example.io:team/repo.git",
+	} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("sanitizeGitDiagnostic(%q) = %q, want %q", input, got, want)
+			t.Fatalf("SanitizeDiagnostic(%q) = %q, want %q", input, got, want)
 		}
 	}
 }
 
-func TestSanitizeGitDiagnosticRedactsHTTPQuery(t *testing.T) {
-	input := "fatal: unable to access 'https://example.com/repo.git?access_token=secret&mode=read': denied"
-	want := "fatal: unable to access 'https://example.com/repo.git': denied"
-
-	if got := sanitizeGitDiagnostic(input); got != want {
-		t.Fatalf("sanitizeGitDiagnostic(%q) = %q, want %q", input, got, want)
+func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "https",
+			input: "fatal: unable to access 'https://example.com/repo.git?access_token=secret#scope': denied",
+			want:  "fatal: unable to access 'https://example.com/repo.git': denied",
+		},
+		{
+			name:  "http",
+			input: "remote: http://example.com/team/repo.git?token=secret#scope",
+			want:  "remote: http://example.com/team/repo.git",
+		},
+		{
+			name:  "ftp",
+			input: "remote: ftp://example.org/team/repo.git?password=secret#scope",
+			want:  "remote: ftp://example.org/team/repo.git",
+		},
+		{
+			name:  "ftps",
+			input: "remote: ftps://example.org/team/repo.git?password=secret#scope",
+			want:  "remote: ftps://example.org/team/repo.git",
+		},
+		{
+			name:  "git",
+			input: "remote: git://git.example.net/team/repo.git?token=secret#scope",
+			want:  "remote: git://git.example.net/team/repo.git",
+		},
+		{
+			name:  "ssh",
+			input: "remote: ssh://git.example.net/team/repo.git?identity=secret#scope",
+			want:  "remote: ssh://git.example.net/team/repo.git",
+		},
+		{
+			name:  "file",
+			input: "remote: file:///tmp/repo.git?credential=secret#scope",
+			want:  "remote: file:///tmp/repo.git",
+		},
+		{
+			name:  "scp-like ssh",
+			input: "remote: git@git.example.io:team/repo.git?identity=secret#scope",
+			want:  "remote: [redacted]@git.example.io:team/repo.git",
+		},
 	}
-}
-
-func TestSanitizeGitDiagnosticRedactsHTTPFragment(t *testing.T) {
-	input := "remote: repository https://example.org/team/repo.git#credential=secret was rejected"
-	want := "remote: repository https://example.org/team/repo.git was rejected"
-
-	if got := sanitizeGitDiagnostic(input); got != want {
-		t.Fatalf("sanitizeGitDiagnostic(%q) = %q, want %q", input, got, want)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := SanitizeDiagnostic(test.input); got != test.want {
+				t.Fatalf("SanitizeDiagnostic(%q) = %q, want %q", test.input, got, test.want)
+			}
+		})
 	}
 }
 
