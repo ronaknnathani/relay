@@ -189,7 +189,7 @@ func newReferenceProgramFixture(t *testing.T) referenceProgramFixture {
 				case "task.md":
 					content = []byte{}
 				case "assignment.md":
-					content = []byte(strings.Repeat("a", 128*1024))
+					content = []byte(strings.Repeat("\n", 128*1024))
 				case "plan.md":
 					content = []byte(strings.Repeat("p", 128*1024+1))
 				}

@@ -2,10 +2,12 @@ package programui
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -214,37 +216,51 @@ func TestHandlerServesOneArtifactWithETagAndStatusMapping(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet,
 		"http://localhost:4321/api/artifact?kind=task&item=w1&name=assignment.md", nil)
 	request.Host = "localhost:4321"
+	request.Header.Set("Accept-Encoding", "gzip")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("artifact status = %d: %s", response.Code, response.Body.String())
 	}
 	if response.Header().Get("Content-Security-Policy") == "" ||
-		response.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+		response.Header().Get("Content-Type") != "application/json; charset=utf-8" ||
+		response.Header().Get("Content-Encoding") != "gzip" {
 		t.Fatalf("artifact headers = %v", response.Header())
 	}
 	etag := response.Header().Get("ETag")
 	if etag == "" {
 		t.Fatal("artifact ETag is empty")
 	}
+	if response.Body.Len() > 192*1024 {
+		t.Fatalf("artifact response bytes = %d, want <= %d", response.Body.Len(), 192*1024)
+	}
+	reader, err := gzip.NewReader(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
 	var envelope programview.ArtifactResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+	if err := json.Unmarshal(decoded, &envelope); err != nil {
 		t.Fatal(err)
 	}
 	if envelope.State != programview.ArtifactStateLoaded ||
 		envelope.Artifact.Text == nil || len(*envelope.Artifact.Text) != 128*1024 {
 		t.Fatalf("artifact response = %+v", envelope)
 	}
-	if response.Body.Len() > 192*1024 {
-		t.Fatalf("artifact response bytes = %d, want <= %d", response.Body.Len(), 192*1024)
-	}
-	if strings.Contains(response.Body.String(), strings.Repeat("p", 1024)) {
+	if strings.Contains(string(decoded), strings.Repeat("p", 1024)) {
 		t.Fatal("artifact response included an unrequested file body")
 	}
 
 	request = httptest.NewRequest(http.MethodGet,
 		"http://localhost:4321/api/artifact?kind=task&item=w1&name=assignment.md", nil)
 	request.Host = "localhost:4321"
+	request.Header.Set("Accept-Encoding", "gzip")
 	request.Header.Set("If-None-Match", etag)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -407,9 +423,13 @@ func TestAgentCacheTTLStaleFallbackAndRecovery(t *testing.T) {
 	})
 	cache := newAgentCache(lister, 12*time.Second, func() time.Time { return now })
 
-	first, err := cache.Agents()
+	firstResult, err := cache.AgentsWithProvenance()
 	if err != nil {
 		t.Fatal(err)
+	}
+	first := firstResult.Agents
+	if firstResult.Stale || firstResult.FetchedAt == "" {
+		t.Fatalf("fresh agent provenance = %+v", firstResult)
 	}
 	now = now.Add(10 * time.Second)
 	if _, err := cache.Agents(); err != nil {
@@ -419,12 +439,17 @@ func TestAgentCacheTTLStaleFallbackAndRecovery(t *testing.T) {
 		t.Fatalf("fresh cache calls = %d", calls)
 	}
 	now = now.Add(3 * time.Second)
-	stale, err := cache.Agents()
+	staleResult, err := cache.AgentsWithProvenance()
 	if err == nil || !strings.Contains(err.Error(), "refresh failed") {
 		t.Fatalf("stale refresh error = %v", err)
 	}
+	stale := staleResult.Agents
 	if calls != 2 || len(stale) != 1 || stale[0].PaneID != first[0].PaneID {
 		t.Fatalf("stale refresh = calls %d, first %+v, stale %+v", calls, first, stale)
+	}
+	if !staleResult.Stale || staleResult.FetchedAt != firstResult.FetchedAt ||
+		staleResult.StaleReason != "refresh failed" {
+		t.Fatalf("stale agent provenance = %+v, want fetched_at %q", staleResult, firstResult.FetchedAt)
 	}
 	recovered, err := cache.Agents()
 	if err != nil {

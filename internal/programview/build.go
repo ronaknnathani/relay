@@ -49,6 +49,18 @@ type AgentLister interface {
 	Agents() ([]herdr.Agent, error)
 }
 
+// AgentSnapshot carries worker data together with cache provenance.
+type AgentSnapshot struct {
+	Agents      []herdr.Agent
+	Stale       bool
+	FetchedAt   string
+	StaleReason string
+}
+
+type agentProvenanceLister interface {
+	AgentsWithProvenance() (AgentSnapshot, error)
+}
+
 // Options supplies optional snapshot detail and external sources.
 type Options struct {
 	Now    func() time.Time
@@ -108,16 +120,16 @@ func Build(slug string, options Options) (Snapshot, error) {
 
 	options.GitHub = newMemoFetcher(options.GitHub)
 	type agentResult struct {
-		agents []herdr.Agent
-		err    error
+		snapshot AgentSnapshot
+		err      error
 	}
 	var agentsResult <-chan agentResult
 	if options.Agents != nil {
 		channel := make(chan agentResult, 1)
 		agentsResult = channel
 		go func() {
-			agents, err := options.Agents.Agents()
-			channel <- agentResult{agents: agents, err: err}
+			agentSnapshot, err := listAgents(options.Agents, generatedAt)
+			channel <- agentResult{snapshot: agentSnapshot, err: err}
 		}()
 	}
 	prefetched := prefetchPullRequests(
@@ -148,11 +160,15 @@ func Build(slug string, options Options) (Snapshot, error) {
 	snapshot.OpenDecisions, snapshot.ResolvedDecisions = decisionLists(observed.Decisions)
 
 	var agents []herdr.Agent
+	var agentSnapshot AgentSnapshot
 	var agentsErr error
 	if agentsResult != nil {
 		snapshot.SourceHealth.Herdr.Status = "ok"
 		result := <-agentsResult
-		agents, agentsErr = result.agents, result.err
+		agentSnapshot, agentsErr = result.snapshot, result.err
+		agents = agentSnapshot.Agents
+		snapshot.SourceHealth.Herdr.Stale = agentSnapshot.Stale
+		snapshot.SourceHealth.Herdr.FetchedAt = agentSnapshot.FetchedAt
 		if agentsErr != nil {
 			addSourceWarning(&snapshot, &snapshot.SourceHealth.Herdr, fmt.Sprintf("list Herdr agents: %v", agentsErr))
 		}
@@ -166,13 +182,28 @@ func Build(slug string, options Options) (Snapshot, error) {
 	}
 	snapshot.Items = buildItems(
 		context.Background(), observed, plan, orphaned, detailItem, limit,
-		true, options.GitHub, prefetched, agents, agentsErr, &snapshot,
+		true, options.GitHub, prefetched, agents, agentSnapshot, agentsErr, &snapshot,
 	)
 	snapshot.Contracts = buildContracts(
 		programDir, observed.Contracts, selectedContractRefs(observed.Items, detailItem),
 		limit, &snapshot.Warnings,
 	)
 	return snapshot, nil
+}
+
+func listAgents(lister AgentLister, generatedAt time.Time) (AgentSnapshot, error) {
+	if provenance, ok := lister.(agentProvenanceLister); ok {
+		return provenance.AgentsWithProvenance()
+	}
+	agents, err := lister.Agents()
+	result := AgentSnapshot{Agents: agents}
+	if err == nil {
+		result.FetchedAt = generatedAt.Format(time.RFC3339Nano)
+	} else if len(agents) > 0 {
+		result.Stale = true
+		result.StaleReason = err.Error()
+	}
+	return result, err
 }
 
 func recordedPullRequestRefs(items []program.WorkItem) []string {
@@ -591,6 +622,7 @@ func buildItems(
 	github Fetcher,
 	prefetched map[string]memoResult,
 	agents []herdr.Agent,
+	agentSnapshot AgentSnapshot,
 	agentsErr error,
 	snapshot *Snapshot,
 ) []ItemDTO {
@@ -623,7 +655,7 @@ func buildItems(
 				built[index] = builtItem{
 					dto: buildItem(
 						ctx, p, items[index], ready, reasons, dependents, orphaned,
-						detailItem, limit, includeArtifacts, github, prefetched, agents, agentsErr,
+						detailItem, limit, includeArtifacts, github, prefetched, agents, agentSnapshot, agentsErr,
 						&itemSnapshot,
 					),
 					snapshot: itemSnapshot,
@@ -646,6 +678,7 @@ func buildItems(
 		for _, warning := range item.snapshot.SourceHealth.GitHub.Warnings {
 			addSourceWarning(snapshot, &snapshot.SourceHealth.GitHub, warning)
 		}
+		mergeSourceProvenance(&snapshot.SourceHealth.GitHub, item.snapshot.SourceHealth.GitHub)
 	}
 	return result
 }
@@ -664,6 +697,7 @@ func buildItem(
 	github Fetcher,
 	prefetched map[string]memoResult,
 	agents []herdr.Agent,
+	agentSnapshot AgentSnapshot,
 	agentsErr error,
 	snapshot *Snapshot,
 ) ItemDTO {
@@ -734,7 +768,7 @@ func buildItem(
 			worktree = *manifest.Worktree
 		}
 		if agent, ok := herdr.FindLiveWorker(agents, manifest.Slug, manifest.Repo, worktree); ok {
-			dto.Worker = workerDTO(agent)
+			dto.Worker = workerDTO(agent, agentSnapshot)
 		}
 	} else if item.PRRef != "" {
 		dto.RecordedPR = pullRequestFromRef(item.PRRef)
@@ -750,6 +784,8 @@ func buildItem(
 			result.pullRequest, result.err = github.Fetch(ctx, p.Repo, dto.RecordedPR.Ref)
 		}
 		live, err := result.pullRequest, result.err
+		snapshot.SourceHealth.GitHub.FetchedAt = live.FetchedAt
+		snapshot.SourceHealth.GitHub.Stale = live.Stale
 		if err != nil {
 			message := fmt.Sprintf("item %s GitHub refresh failed: %v", item.ID, err)
 			dto.Warnings = append(dto.Warnings, message)
@@ -991,12 +1027,13 @@ func pullRequestFromRef(ref string) *PullRequestDTO {
 	return result
 }
 
-func workerDTO(agent herdr.Agent) *WorkerDTO {
+func workerDTO(agent herdr.Agent, provenance AgentSnapshot) *WorkerDTO {
 	return &WorkerDTO{
 		Status: string(agent.Status), PaneID: agent.PaneID, TabID: agent.TabID,
 		WorkspaceID: agent.WorkspaceID, TerminalTitle: agent.TerminalTitle,
 		CWD: agent.CWD, ForegroundCWD: agent.ForegroundCWD,
-		NativeSessionID: agent.NativeSessionID,
+		NativeSessionID: agent.NativeSessionID, Stale: provenance.Stale,
+		FetchedAt: provenance.FetchedAt, StaleReason: provenance.StaleReason,
 	}
 }
 
@@ -1051,6 +1088,13 @@ func addSourceWarning(snapshot *Snapshot, source *SourceDTO, warning string) {
 	source.Status = "degraded"
 	source.Warnings = append(source.Warnings, warning)
 	snapshot.Warnings = append(snapshot.Warnings, warning)
+}
+
+func mergeSourceProvenance(target *SourceDTO, source SourceDTO) {
+	target.Stale = target.Stale || source.Stale
+	if source.FetchedAt > target.FetchedAt {
+		target.FetchedAt = source.FetchedAt
+	}
 }
 
 func numberedID(id string) int {

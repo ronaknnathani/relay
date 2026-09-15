@@ -407,6 +407,19 @@ func (f agentListerFunc) Agents() ([]herdr.Agent, error) {
 	return f()
 }
 
+type provenanceAgentLister struct {
+	result AgentSnapshot
+	err    error
+}
+
+func (l provenanceAgentLister) Agents() ([]herdr.Agent, error) {
+	return l.result.Agents, l.err
+}
+
+func (l provenanceAgentLister) AgentsWithProvenance() (AgentSnapshot, error) {
+	return l.result, l.err
+}
+
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -490,11 +503,12 @@ func TestBuildUsesStalePRAndReportsDegradedSources(t *testing.T) {
 				Stale: true, FetchedAt: at, StaleReason: "gh unavailable",
 			}, errors.New("gh unavailable")
 		}),
-		Agents: agentListerFunc(func() ([]herdr.Agent, error) {
-			return []herdr.Agent{{
+		Agents: provenanceAgentLister{
+			result: AgentSnapshot{Agents: []herdr.Agent{{
 				Status: herdr.StatusWorking, PaneID: "pane-stale", CWD: worktree,
-			}}, errors.New("herdr unavailable")
-		}),
+			}}, Stale: true, FetchedAt: at, StaleReason: "herdr unavailable"},
+			err: errors.New("herdr unavailable"),
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -504,14 +518,18 @@ func TestBuildUsesStalePRAndReportsDegradedSources(t *testing.T) {
 		item.LivePR == nil || !item.LivePR.Stale || item.LivePR.FetchedAt != at {
 		t.Fatalf("PR provenance = recorded %+v live %+v", item.RecordedPR, item.LivePR)
 	}
-	if item.Worker == nil || item.Worker.PaneID != "pane-stale" {
+	if item.Worker == nil || item.Worker.PaneID != "pane-stale" ||
+		!item.Worker.Stale || item.Worker.FetchedAt != at ||
+		item.Worker.StaleReason != "herdr unavailable" {
 		t.Fatalf("stale Herdr worker = %+v", item.Worker)
 	}
 	if artifactText(item.Artifacts[0]) != "12345" || !item.Artifacts[0].Truncated {
 		t.Fatalf("truncated artifact = %+v", item.Artifacts[0])
 	}
 	if got.SourceHealth.GitHub.Status != "degraded" ||
+		!got.SourceHealth.GitHub.Stale || got.SourceHealth.GitHub.FetchedAt != at ||
 		got.SourceHealth.Herdr.Status != "degraded" ||
+		!got.SourceHealth.Herdr.Stale || got.SourceHealth.Herdr.FetchedAt != at ||
 		got.SourceHealth.Mailbox.Status != "degraded" {
 		t.Fatalf("source health = %+v", got.SourceHealth)
 	}

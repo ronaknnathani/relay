@@ -50,7 +50,7 @@ func (f *snapshotFeed) roadmapResponse() []byte {
 	}
 	if f.refreshing {
 		snapshot := f.snapshot
-		snapshot.Refresh = programview.RefreshDTO{Status: "refreshing"}
+		snapshot.Refresh.Refreshing = true
 		return encodeRoadmapSnapshot(snapshot)
 	}
 	return f.roadmap
@@ -69,7 +69,7 @@ func (f *snapshotFeed) response() (programview.Snapshot, []byte, []byte) {
 	}
 	snapshot := f.snapshot
 	if f.refreshing {
-		snapshot.Refresh = programview.RefreshDTO{Status: "refreshing"}
+		snapshot.Refresh.Refreshing = true
 		return snapshot, nil, nil
 	}
 	return snapshot, f.encoded, f.compressed

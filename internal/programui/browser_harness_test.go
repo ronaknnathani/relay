@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"debug/buildinfo"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -23,33 +25,45 @@ import (
 )
 
 const (
-	performanceRuns         = 40
-	performanceFixture      = "reference-program-v1"
-	performanceHarness      = "complete-roadmap-v5"
-	performanceSourceCommit = "RELAY_PERF_SOURCE_COMMIT"
+	performanceRuns    = 40
+	performanceFixture = "reference-program-v1"
+	performanceHarness = "complete-roadmap-v6"
 )
 
 type performanceReport struct {
-	Mode            string               `json:"mode"`
-	GeneratedAt     string               `json:"generated_at"`
-	SourceCommit    string               `json:"source_commit"`
-	BinarySHA256    string               `json:"binary_sha256"`
-	FixtureVersion  string               `json:"fixture_version"`
-	HarnessVersion  string               `json:"harness_version"`
-	ChromiumVersion string               `json:"chromium_version"`
-	Samples         map[string][]float64 `json:"samples"`
-	Percentiles     map[string]float64   `json:"p95"`
+	Mode            string                 `json:"mode"`
+	GeneratedAt     string                 `json:"generated_at"`
+	SourceCommit    string                 `json:"source_commit"`
+	BinaryRevision  string                 `json:"binary_revision"`
+	BinaryModified  bool                   `json:"binary_modified"`
+	BinarySHA256    string                 `json:"binary_sha256"`
+	FixtureVersion  string                 `json:"fixture_version"`
+	HarnessVersion  string                 `json:"harness_version"`
+	ChromiumVersion string                 `json:"chromium_version"`
+	Environment     performanceEnvironment `json:"environment"`
+	Samples         map[string][]float64   `json:"samples"`
+	P50             map[string]float64     `json:"p50"`
+	P95             map[string]float64     `json:"p95"`
+}
+
+type performanceEnvironment struct {
+	MachineID  string `json:"machine_id"`
+	OS         string `json:"os"`
+	Arch       string `json:"arch"`
+	CPU        string `json:"cpu"`
+	LogicalCPU int    `json:"logical_cpu"`
+	GoVersion  string `json:"go_version"`
 }
 
 type browserSample struct {
 	ProcessStartToURL  float64
 	NavigationToUsable float64
-	InitialAPITTFB     float64
-	InitialAPITotal    float64
-	InitialAPIBytes    float64
+	DocumentTTFB       float64
+	DocumentTotal      float64
+	DocumentBytes      float64
 	ClickToDrawer      float64
 	ClickToFileContent float64
-	IncrementalBytes   float64
+	ArtifactBytes      float64
 	MaxLongTask        float64
 	TotalBlockingTime  float64
 	UnchangedReopen    float64
@@ -85,12 +99,16 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 	}
 	report := performanceReport{
 		Mode: mode, GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		SourceCommit: performanceCommit(t), BinarySHA256: fileSHA256(t, binary),
+		BinarySHA256:   fileSHA256(t, binary),
 		FixtureVersion: performanceFixture, HarnessVersion: performanceHarness,
 		ChromiumVersion: chromeVersion(t, chrome),
+		Environment:     currentPerformanceEnvironment(t),
 		Samples:         map[string][]float64{},
-		Percentiles:     map[string]float64{},
+		P50:             map[string]float64{},
+		P95:             map[string]float64{},
 	}
+	report.BinaryRevision, report.BinaryModified = binaryVCS(t, binary)
+	report.SourceCommit = report.BinaryRevision
 	for run := 0; run <= performanceRuns; run++ {
 		tab, cancelTab := chromedp.NewContext(browser)
 		installPerformanceObserver(t, tab)
@@ -102,7 +120,8 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 		appendPerformanceSample(report.Samples, sample)
 	}
 	for name, samples := range report.Samples {
-		report.Percentiles[name] = percentile(samples, 0.95)
+		report.P50[name] = percentile(samples, 0.50)
+		report.P95[name] = percentile(samples, 0.95)
 	}
 	return report
 }
@@ -112,17 +131,20 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 	if err := chromedp.Run(tab, chromedp.ActionFunc(func(ctx context.Context) error {
 		_, err := page.AddScriptToEvaluateOnNewDocument(`
 			window.__relayLongTasks = [];
-			window.__relayUsableAt = 0;
 			window.__relayCompleteUsableAt = 0;
 			new PerformanceObserver((list) => {
 				for (const entry of list.getEntries()) {
-					window.__relayLongTasks.push(entry.duration);
+					window.__relayLongTasks.push({
+						startTime: entry.startTime,
+						duration: entry.duration
+					});
 				}
 			}).observe({type: "longtask", buffered: true});
 			const relayUsable = () => {
 				const cards = Array.from(document.querySelectorAll(".card"));
 				const refresh = document.querySelector("#refresh");
 				const roadmapTab = document.querySelector("#tab-roadmap");
+				const tasksTab = document.querySelector("#tab-tasks");
 				if (window.__relayCompleteUsableAt > 0 ||
 					document.querySelector("#program-title")?.textContent !== "Reference Program" ||
 					!document.querySelector("#program-summary")?.textContent ||
@@ -136,12 +158,33 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 					!document.querySelector("#graph")?.getAttribute("aria-label")?.includes(
 						"100 tasks, 200 dependency links") ||
 					!refresh || refresh.disabled ||
-					!roadmapTab || roadmapTab.getAttribute("aria-selected") !== "true") {
+					!roadmapTab || !tasksTab) {
 					return;
 				}
-				window.__relayCompleteUsableAt =
-					window.__relayUsableAt > 0 ? window.__relayUsableAt : performance.now();
-				relayObserver.disconnect();
+				if (!window.__relayUsabilityProbe) {
+					window.__relayUsabilityProbe = "tasks";
+					tasksTab.click();
+					return;
+				}
+				if (window.__relayUsabilityProbe === "tasks" &&
+					tasksTab.getAttribute("aria-selected") === "true" &&
+					document.querySelector("#panel-tasks")?.hidden === false) {
+					window.__relayUsabilityProbe = "roadmap";
+					roadmapTab.click();
+					return;
+				}
+				if (window.__relayUsabilityProbe === "roadmap" &&
+					roadmapTab.getAttribute("aria-selected") === "true" &&
+					document.querySelector("#panel-roadmap")?.hidden === false) {
+					window.__relayUsabilityProbe = "paint";
+					requestAnimationFrame(() => requestAnimationFrame(() => {
+						if (roadmapTab.getAttribute("aria-selected") === "true" &&
+							document.querySelector("#panel-roadmap")?.hidden === false) {
+							window.__relayCompleteUsableAt = performance.now();
+							relayObserver.disconnect();
+						}
+					}));
+				}
 			};
 			const relayObserver = new MutationObserver(relayUsable);
 			relayObserver.observe(document, {
@@ -207,23 +250,23 @@ func measureBrowserRun(
 		navigationToUsable = durationMilliseconds(time.Since(navigationStarted))
 	}
 
-	var initial resourceTiming
+	var documentTiming resourceTiming
 	if err := chromedp.Run(tab, chromedp.Evaluate(`
 		(() => {
-			const entries = performance.getEntriesByType("resource")
-				.filter((entry) => new URL(entry.name).pathname === "/api/program");
-			const entry = entries[entries.length - 1];
+			const entry = performance.getEntriesByType("navigation")[0];
 			return entry ? {
 				ttfb: entry.responseStart - entry.startTime,
 				total: entry.responseEnd - entry.startTime,
 				bytes: entry.encodedBodySize
 			} : {ttfb: 0, total: 0, bytes: 0};
 		})()
-	`, &initial)); err != nil {
-		t.Fatalf("read initial API timing: %v", err)
+	`, &documentTiming)); err != nil {
+		t.Fatalf("read initial document timing: %v", err)
 	}
 
-	beforeBytes := resourceBytes(t, tab)
+	if err := chromedp.Run(tab, chromedp.Evaluate(`performance.clearResourceTimings()`, nil)); err != nil {
+		t.Fatalf("clear resource timings before artifact request: %v", err)
+	}
 	drawerStarted := time.Now()
 	if err := chromedp.Run(tab,
 		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
@@ -245,10 +288,24 @@ func measureBrowserRun(
 		t.Fatalf("wait for selected artifact: %v", err)
 	}
 	clickToFileContent := durationMilliseconds(time.Since(drawerStarted))
-	if want := strings.Repeat("a", 128*1024); artifactText != want {
+	if want := strings.Repeat("\n", 128*1024); artifactText != want {
 		t.Fatalf("selected artifact content differs from deterministic fixture")
 	}
-	incrementalBytes := resourceBytes(t, tab) - beforeBytes
+	var artifactResource resourceTiming
+	if err := chromedp.Run(tab, chromedp.Evaluate(`
+		(() => {
+			const entries = performance.getEntriesByType("resource")
+				.filter((entry) => new URL(entry.name).pathname === "/api/artifact");
+			const entry = entries[entries.length - 1];
+			return entry ? {
+				ttfb: entry.responseStart - entry.startTime,
+				total: entry.responseEnd - entry.startTime,
+				bytes: entry.encodedBodySize
+			} : {ttfb: 0, total: 0, bytes: 0};
+		})()
+	`, &artifactResource)); err != nil {
+		t.Fatalf("read artifact response timing: %v", err)
+	}
 
 	if err := chromedp.Run(tab,
 		chromedp.Evaluate(`document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}))`, nil),
@@ -267,16 +324,22 @@ func measureBrowserRun(
 	}
 	unchangedReopen := durationMilliseconds(time.Since(reopenStarted))
 
-	var longTasks []float64
+	var longTasks []struct {
+		StartTime float64 `json:"startTime"`
+		Duration  float64 `json:"duration"`
+	}
 	if err := chromedp.Run(tab, chromedp.Evaluate(`window.__relayLongTasks || []`, &longTasks)); err != nil {
 		t.Fatalf("read long tasks: %v", err)
 	}
 	maxLongTask := 0.0
 	totalBlockingTime := 0.0
-	for _, duration := range longTasks {
-		maxLongTask = math.Max(maxLongTask, duration)
-		if duration > 50 {
-			totalBlockingTime += duration - 50
+	for _, task := range longTasks {
+		if task.StartTime > navigationToUsable {
+			continue
+		}
+		maxLongTask = math.Max(maxLongTask, task.Duration)
+		if task.Duration > 50 {
+			totalBlockingTime += task.Duration - 50
 		}
 	}
 
@@ -297,9 +360,9 @@ func measureBrowserRun(
 	}
 	return browserSample{
 		ProcessStartToURL: processStartToURL, NavigationToUsable: navigationToUsable,
-		InitialAPITTFB: initial.TTFB, InitialAPITotal: initial.Total,
-		InitialAPIBytes: initial.Bytes, ClickToDrawer: clickToDrawer,
-		ClickToFileContent: clickToFileContent, IncrementalBytes: incrementalBytes,
+		DocumentTTFB: documentTiming.TTFB, DocumentTotal: documentTiming.Total,
+		DocumentBytes: documentTiming.Bytes, ClickToDrawer: clickToDrawer,
+		ClickToFileContent: clickToFileContent, ArtifactBytes: artifactResource.Bytes,
 		MaxLongTask: maxLongTask, TotalBlockingTime: totalBlockingTime,
 		UnchangedReopen: unchangedReopen,
 	}
@@ -322,18 +385,6 @@ func waitForProgramURL(t *testing.T, output *lineWriter, serverDone <-chan error
 		t.Fatal("program UI did not publish URL")
 	}
 	return ""
-}
-
-func resourceBytes(t *testing.T, ctx context.Context) float64 {
-	t.Helper()
-	var bytes float64
-	if err := chromedp.Run(ctx, chromedp.Evaluate(`
-		performance.getEntriesByType("resource")
-			.reduce((sum, entry) => sum + entry.encodedBodySize, 0)
-	`, &bytes)); err != nil {
-		t.Fatalf("read resource bytes: %v", err)
-	}
-	return bytes
 }
 
 func waitForBrowserCondition(expression string) chromedp.Action {
@@ -365,7 +416,10 @@ func waitForBrowserCondition(expression string) chromedp.Action {
 func buildRelayForPerformance(t *testing.T) string {
 	t.Helper()
 	binary := filepath.Join(t.TempDir(), "relay")
-	command := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", binary, "./cmd/relay")
+	command := exec.Command(
+		"go", "build", "-buildvcs=true", "-trimpath", "-ldflags=-s -w",
+		"-o", binary, "./cmd/relay",
+	)
 	command.Dir = filepath.Join("..", "..")
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -421,12 +475,12 @@ func appendPerformanceSample(samples map[string][]float64, sample browserSample)
 	values := map[string]float64{
 		"process_start_to_url_ms":  sample.ProcessStartToURL,
 		"navigation_to_usable_ms":  sample.NavigationToUsable,
-		"initial_api_ttfb_ms":      sample.InitialAPITTFB,
-		"initial_api_total_ms":     sample.InitialAPITotal,
-		"initial_api_bytes":        sample.InitialAPIBytes,
+		"document_ttfb_ms":         sample.DocumentTTFB,
+		"document_total_ms":        sample.DocumentTotal,
+		"document_bytes":           sample.DocumentBytes,
 		"click_to_drawer_ms":       sample.ClickToDrawer,
 		"click_to_file_content_ms": sample.ClickToFileContent,
-		"incremental_bytes":        sample.IncrementalBytes,
+		"artifact_response_bytes":  sample.ArtifactBytes,
 		"max_long_task_ms":         sample.MaxLongTask,
 		"total_blocking_time_ms":   sample.TotalBlockingTime,
 		"unchanged_reopen_ms":      sample.UnchangedReopen,
@@ -470,33 +524,81 @@ func verifyPerformanceReport(t *testing.T, report performanceReport, baselinePat
 	); err != nil {
 		t.Fatal(err)
 	}
+	if err := validatePerformancePercentiles(report, performanceRuns); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePerformancePercentiles(baseline, performanceRuns); err != nil {
+		t.Fatalf("baseline report: %v", err)
+	}
 	budgets := map[string]float64{
 		"navigation_to_usable_ms":  1000,
 		"click_to_drawer_ms":       100,
 		"click_to_file_content_ms": 500,
 		"unchanged_reopen_ms":      100,
-		"initial_api_bytes":        1024 * 1024,
-		"incremental_bytes":        192 * 1024,
+		"document_bytes":           1024 * 1024,
+		"artifact_response_bytes":  192 * 1024,
 		"max_long_task_ms":         100,
 		"total_blocking_time_ms":   200,
 	}
 	for name, budget := range budgets {
-		if got := report.Percentiles[name]; got > budget {
+		if got := report.P95[name]; got > budget {
 			t.Errorf("%s p95 = %.2f, want <= %.2f", name, got, budget)
 		}
 	}
-	baselineNavigation := baseline.Percentiles["navigation_to_usable_ms"]
-	if baselineNavigation <= 0 {
-		t.Fatal("baseline navigation_to_usable_ms p95 is missing")
+	for _, quantile := range []struct {
+		name     string
+		report   map[string]float64
+		baseline map[string]float64
+	}{
+		{name: "p50", report: report.P50, baseline: baseline.P50},
+		{name: "p95", report: report.P95, baseline: baseline.P95},
+	} {
+		baselineNavigation := quantile.baseline["navigation_to_usable_ms"]
+		if baselineNavigation <= 0 {
+			t.Errorf("baseline navigation_to_usable_ms %s is missing", quantile.name)
+			continue
+		}
+		if got := quantile.report["navigation_to_usable_ms"]; got > baselineNavigation*0.5 {
+			t.Errorf(
+				"navigation_to_usable_ms %s = %.2f, want <= 50%% of baseline %.2f",
+				quantile.name, got, baselineNavigation,
+			)
+		}
 	}
-	if got := report.Percentiles["navigation_to_usable_ms"]; got > baselineNavigation*0.5 {
-		t.Errorf("navigation_to_usable_ms p95 = %.2f, want <= 50%% of baseline %.2f", got, baselineNavigation)
+	for _, required := range []string{"document_bytes", "artifact_response_bytes"} {
+		if report.P50[required] <= 0 || report.P95[required] <= 0 {
+			t.Errorf("%s exact resource measurements are missing", required)
+		}
 	}
 	for name, samples := range report.Samples {
 		if len(samples) != performanceRuns {
 			t.Errorf("%s samples = %d, want %d", name, len(samples), performanceRuns)
 		}
 	}
+}
+
+func validatePerformancePercentiles(report performanceReport, sampleCount int) error {
+	for name, samples := range report.Samples {
+		if len(samples) != sampleCount {
+			return fmt.Errorf("%s samples = %d, want %d", name, len(samples), sampleCount)
+		}
+		for _, quantile := range []struct {
+			name  string
+			value float64
+			want  float64
+		}{
+			{name: "p50", value: report.P50[name], want: percentile(samples, 0.50)},
+			{name: "p95", value: report.P95[name], want: percentile(samples, 0.95)},
+		} {
+			if math.Abs(quantile.value-quantile.want) > 0.001 {
+				return fmt.Errorf(
+					"%s %s = %.3f, recomputed %.3f",
+					name, quantile.name, quantile.value, quantile.want,
+				)
+			}
+		}
+	}
+	return nil
 }
 
 func validatePerformanceMetadata(
@@ -514,6 +616,20 @@ func validatePerformanceMetadata(
 		return fmt.Errorf("performance source commit = %q, want current HEAD %q", report.SourceCommit, currentCommit)
 	case baseline.SourceCommit != baselineCommit:
 		return fmt.Errorf("baseline source commit = %q, want origin/main %q", baseline.SourceCommit, baselineCommit)
+	case report.BinaryRevision != report.SourceCommit:
+		return fmt.Errorf(
+			"performance binary revision = %q, want source commit %q",
+			report.BinaryRevision, report.SourceCommit,
+		)
+	case baseline.BinaryRevision != baseline.SourceCommit:
+		return fmt.Errorf(
+			"baseline binary revision = %q, want source commit %q",
+			baseline.BinaryRevision, baseline.SourceCommit,
+		)
+	case report.BinaryModified:
+		return errors.New("performance binary was built from a dirty worktree")
+	case baseline.BinaryModified:
+		return errors.New("baseline binary was built from a dirty worktree")
 	case report.BinarySHA256 == "":
 		return errors.New("performance binary SHA-256 is missing")
 	case baseline.BinarySHA256 == "":
@@ -541,17 +657,56 @@ func validatePerformanceMetadata(
 			"Chromium versions differ: current %q baseline %q",
 			report.ChromiumVersion, baseline.ChromiumVersion,
 		)
+	case report.Environment != baseline.Environment:
+		return fmt.Errorf(
+			"performance environments differ: current %+v baseline %+v",
+			report.Environment, baseline.Environment,
+		)
 	default:
 		return nil
 	}
 }
 
-func performanceCommit(t *testing.T) string {
+func binaryVCS(t *testing.T, path string) (string, bool) {
 	t.Helper()
-	if commit := strings.TrimSpace(os.Getenv(performanceSourceCommit)); commit != "" {
-		return repositoryCommit(t, commit)
+	info, err := buildinfo.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read build info from performance binary %s: %v", path, err)
 	}
-	return repositoryCommit(t, "HEAD")
+	revision := ""
+	modified := false
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			modified = setting.Value == "true"
+		}
+	}
+	if revision == "" {
+		t.Fatalf("performance binary %s has no embedded VCS revision", path)
+	}
+	return revision, modified
+}
+
+func currentPerformanceEnvironment(t *testing.T) performanceEnvironment {
+	t.Helper()
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("read performance host name: %v", err)
+	}
+	cpu := goruntime.GOARCH
+	if goruntime.GOOS == "darwin" {
+		if output, commandErr := exec.Command("sysctl", "-n", "machdep.cpu.brand_string").CombinedOutput(); commandErr == nil && strings.TrimSpace(string(output)) != "" {
+			cpu = strings.TrimSpace(string(output))
+		}
+	}
+	machineDigest := sha256.Sum256([]byte(hostname))
+	return performanceEnvironment{
+		MachineID: fmt.Sprintf("%x", machineDigest[:8]),
+		OS:        goruntime.GOOS, Arch: goruntime.GOARCH, CPU: cpu,
+		LogicalCPU: goruntime.NumCPU(), GoVersion: goruntime.Version(),
+	}
 }
 
 func repositoryCommit(t *testing.T, ref string) string {

@@ -3,6 +3,7 @@ package programui
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"embed"
 	"encoding/json"
@@ -19,7 +20,7 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-UXIL+j6UmJdVusQ2iRt/3tKDJxuh42y6D1HM1W2MC54=' 'sha256-J1omuzOIlvYcBmnBVe+vHGy0MFgtJtj8sm59Y/WLWlk='; style-src 'self' 'sha256-LZsfRK6oQ7rdqoRqAydX8hz9pr9+LkYZGbCNUL9y7VI='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-UXIL+j6UmJdVusQ2iRt/3tKDJxuh42y6D1HM1W2MC54=' 'sha256-ODOOmgbhkiE3lP+ddStXfYY1WTW2tN1ibyKkJR+Mgsg='; style-src 'self' 'sha256-LZsfRK6oQ7rdqoRqAydX8hz9pr9+LkYZGbCNUL9y7VI='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	appTemplateToken      = "__RELAY_APP__"
 	cssTemplateToken      = "__RELAY_CSS__"
 	roadmapTemplateToken  = "__RELAY_INITIAL_ROADMAP__"
@@ -404,6 +405,22 @@ func (h *handler) writeArtifactJSON(
 		return
 	}
 	response.Header().Set("Content-Type", "application/json; charset=utf-8")
+	payload := data
+	if strings.Contains(request.Header.Get("Accept-Encoding"), "gzip") {
+		var compressed bytes.Buffer
+		writer := gzip.NewWriter(&compressed)
+		if _, err := writer.Write(data); err != nil {
+			http.Error(response, fmt.Sprintf("compress artifact response: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if err := writer.Close(); err != nil {
+			http.Error(response, fmt.Sprintf("finish artifact response compression: %v", err), http.StatusInternalServerError)
+			return
+		}
+		payload = compressed.Bytes()
+		response.Header().Set("Content-Encoding", "gzip")
+		response.Header().Set("Vary", "Accept-Encoding")
+	}
 	if status == http.StatusOK {
 		etag := fmt.Sprintf(`"%x"`, sha256.Sum256(data))
 		response.Header().Set("ETag", etag)
@@ -416,7 +433,7 @@ func (h *handler) writeArtifactJSON(
 	if request.Method == http.MethodHead {
 		return
 	}
-	if _, err := response.Write(data); err != nil {
+	if _, err := response.Write(payload); err != nil {
 		return
 	}
 }

@@ -32,15 +32,21 @@ func TestProgramUIPerformance(t *testing.T) {
 }
 
 func TestValidatePerformanceMetadata(t *testing.T) {
+	environment := performanceEnvironment{
+		MachineID: "machine", OS: "darwin", Arch: "arm64", CPU: "test",
+		LogicalCPU: 8, GoVersion: "go1.25",
+	}
 	valid := performanceReport{
-		Mode: "verify", SourceCommit: "after", BinarySHA256: "after-binary",
+		Mode: "verify", SourceCommit: "after", BinaryRevision: "after",
+		BinarySHA256:   "after-binary",
 		FixtureVersion: performanceFixture, HarnessVersion: performanceHarness,
-		ChromiumVersion: "Chromium 140",
+		ChromiumVersion: "Chromium 140", Environment: environment,
 	}
 	baseline := performanceReport{
-		Mode: "baseline", SourceCommit: "main", BinarySHA256: "main-binary",
+		Mode: "baseline", SourceCommit: "main", BinaryRevision: "main",
+		BinarySHA256:   "main-binary",
 		FixtureVersion: performanceFixture, HarnessVersion: performanceHarness,
-		ChromiumVersion: "Chromium 140",
+		ChromiumVersion: "Chromium 140", Environment: environment,
 	}
 	if err := validatePerformanceMetadata(valid, baseline, "after", "main"); err != nil {
 		t.Fatal(err)
@@ -56,6 +62,20 @@ func TestValidatePerformanceMetadata(t *testing.T) {
 				baseline.SourceCommit = "unknown"
 			},
 			want: "baseline source commit",
+		},
+		{
+			name: "binary revision",
+			mutate: func(report *performanceReport, _ *performanceReport) {
+				report.BinaryRevision = "other"
+			},
+			want: "performance binary revision",
+		},
+		{
+			name: "dirty binary",
+			mutate: func(report *performanceReport, _ *performanceReport) {
+				report.BinaryModified = true
+			},
+			want: "dirty worktree",
 		},
 		{
 			name: "binary",
@@ -85,6 +105,13 @@ func TestValidatePerformanceMetadata(t *testing.T) {
 			},
 			want: "Chromium versions differ",
 		},
+		{
+			name: "environment",
+			mutate: func(report *performanceReport, _ *performanceReport) {
+				report.Environment.LogicalCPU++
+			},
+			want: "performance environments differ",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			report := valid
@@ -95,5 +122,21 @@ func TestValidatePerformanceMetadata(t *testing.T) {
 				t.Fatalf("validation error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestValidatePerformancePercentiles(t *testing.T) {
+	report := performanceReport{
+		Samples: map[string][]float64{"navigation_to_usable_ms": {1, 2, 3, 4}},
+		P50:     map[string]float64{"navigation_to_usable_ms": 2},
+		P95:     map[string]float64{"navigation_to_usable_ms": 4},
+	}
+	if err := validatePerformancePercentiles(report, 4); err != nil {
+		t.Fatal(err)
+	}
+	report.P50["navigation_to_usable_ms"] = 1
+	if err := validatePerformancePercentiles(report, 4); err == nil ||
+		!strings.Contains(err.Error(), "p50") {
+		t.Fatalf("percentile validation error = %v, want p50 mismatch", err)
 	}
 }

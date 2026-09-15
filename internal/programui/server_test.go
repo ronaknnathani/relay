@@ -416,7 +416,7 @@ func TestServeRetainsAndRecoversEachExternalSource(t *testing.T) {
 			})
 
 			phase.Store(2)
-			nowNanos.Store(initialNow.Add(16 * time.Second).UnixNano())
+			nowNanos.Store(initialNow.Add(19 * time.Second).UnixNano())
 			_ = getProgramSnapshot(t, url)
 			eventually(t, 2*time.Second, func() bool {
 				recovered := getProgramSnapshot(t, url)

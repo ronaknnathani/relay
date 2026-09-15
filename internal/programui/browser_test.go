@@ -15,11 +15,145 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/programview"
 )
+
+func TestBrowserHydratesAndPollsWhenDeferredBundleFails(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	seed := browserTestSnapshot()
+	seed.Items[0].Worker = nil
+	full := browserTestSnapshot()
+	full.Items[0].Worker = &programview.WorkerDTO{Status: "working", PaneID: "pane-live"}
+	full.SourceHealth.GitHub.Status = "ok"
+	full.SourceHealth.Herdr.Status = "ok"
+	updated := full
+	updated.Progress.Total = 7
+
+	initialNow := time.Date(2026, 9, 14, 20, 0, 0, 0, time.UTC)
+	var nowNanos atomic.Int64
+	nowNanos.Store(initialNow.UnixNano())
+	now := func() time.Time { return time.Unix(0, nowNanos.Load()).UTC() }
+	var phase atomic.Int32
+	var builds atomic.Int32
+	output := newLineWriter()
+	serverContext, cancelServer := context.WithCancel(context.Background())
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- Serve(serverContext, Options{
+			Slug: "browser-test", Port: 0, Open: false, Out: output, Now: now,
+			LocalBuilder: func(string, string) (programview.Snapshot, error) {
+				return seed, nil
+			},
+			Builder: func(string, string) (programview.Snapshot, error) {
+				builds.Add(1)
+				if phase.Load() == 0 {
+					return full, nil
+				}
+				return updated, nil
+			},
+		})
+	}()
+	t.Cleanup(func() {
+		cancelServer()
+		select {
+		case err := <-serverDone:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("program UI did not stop")
+		}
+	})
+	url := waitForProgramURL(t, output, serverDone)
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+	if err := chromedp.Run(browser,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(`
+				window.__relayErrors = [];
+				window.addEventListener("error", (event) => window.__relayErrors.push(event.message));
+				window.addEventListener("unhandledrejection", (event) =>
+					window.__relayErrors.push(String(event.reason)));
+			`).Do(ctx)
+			return err
+		}),
+		network.Enable(),
+		network.SetBlockedURLs([]string{"*app-deferred.css", "*app-deferred.js"}),
+		chromedp.Navigate(url),
+		chromedp.Poll(`document.querySelector("#reconnect").textContent.includes(
+			"Click Refresh to retry")`, nil),
+	); err != nil {
+		t.Fatalf("deferred bundle error state: %v", err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Poll(
+			`document.querySelector("#worker-count").textContent === "1"`,
+			nil,
+			chromedp.WithPollingTimeout(8*time.Second),
+		),
+	); err != nil {
+		var diagnostic string
+		_ = chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+			worker: document.querySelector("#worker-count")?.textContent,
+			feed: document.querySelector("#feed-state")?.textContent,
+			reconnect: document.querySelector("#reconnect")?.textContent,
+			schema: state.snapshot?.schema,
+			items: state.itemsByID.size,
+			errors: window.__relayErrors,
+			resources: performance.getEntriesByType("resource").map((entry) => new URL(entry.name).pathname)
+		})`, &diagnostic))
+		t.Fatalf("full snapshot hydration after deferred failure: %v: %s", err, diagnostic)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`
+			window.__relayKeyboardPrevented = [
+				!document.querySelector('[role="tablist"]').dispatchEvent(
+					new KeyboardEvent("keydown", {key: "ArrowRight", bubbles: true, cancelable: true})),
+				!document.querySelector(".card").dispatchEvent(
+					new KeyboardEvent("keydown", {key: " ", bubbles: true, cancelable: true})),
+				!document.body.dispatchEvent(
+					new KeyboardEvent("keydown", {key: "ArrowDown", bubbles: true, cancelable: true}))
+			].every(Boolean);
+			document.querySelector("#theme-toggle").click();
+		`, nil),
+		chromedp.Poll(`window.__relayKeyboardPrevented === true &&
+			document.documentElement.dataset.theme === "dark"`, nil),
+	); err != nil {
+		t.Fatalf("bootstrap controls after deferred failure: %v", err)
+	}
+
+	phase.Store(1)
+	nowNanos.Store(initialNow.Add(6 * time.Second).UnixNano())
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+		chromedp.Poll(`document.querySelector("#task-total").textContent === "7"`, nil),
+		chromedp.Poll(`document.querySelector("#reconnect").textContent.includes(
+			"Click Refresh to retry")`, nil),
+	); err != nil {
+		t.Fatalf("polling after deferred bundle failure: %v", err)
+	}
+	if builds.Load() < 2 {
+		t.Fatalf("snapshot builds = %d, want at least 2", builds.Load())
+	}
+}
 
 func TestBrowserShowsSixSecondExternalRefreshProvenance(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
@@ -190,15 +324,44 @@ func TestBrowserRetainsAndRecoversEachExternalSource(t *testing.T) {
 			browser, cancelTimeout := context.WithTimeout(browser, 20*time.Second)
 			defer cancelTimeout()
 			if err := chromedp.Run(browser,
+				chromedp.ActionFunc(func(ctx context.Context) error {
+					_, err := page.AddScriptToEvaluateOnNewDocument(`
+						window.__relayErrors = [];
+						window.addEventListener("error", (event) => window.__relayErrors.push(event.message));
+						window.addEventListener("unhandledrejection", (event) =>
+							window.__relayErrors.push(String(event.reason)));
+					`).Do(ctx)
+					return err
+				}),
 				chromedp.Navigate(url),
 				chromedp.Poll(`document.querySelector("#feed-state").textContent === "Live · every 3s" &&
 					document.querySelector(".card[data-item='w1']").dataset.meta.includes("PR #42") &&
 					document.querySelector("#worker-count").textContent === "1"`, nil),
-				chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
-				chromedp.Poll(`document.querySelector("#detail-body").textContent.includes("Initial PR") &&
-					document.querySelector("#detail-body").textContent.includes("pane-initial")`, nil),
 			); err != nil {
-				t.Fatalf("initial %s snapshot: %v", source, err)
+				t.Fatalf("initial %s summary: %v", source, err)
+			}
+			if err := chromedp.Run(browser,
+				chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+				chromedp.Poll(
+					`document.querySelector("#detail-body").textContent.includes("Initial PR") &&
+						document.querySelector("#detail-body").textContent.includes("pane-initial")`,
+					nil,
+					chromedp.WithPollingTimeout(8*time.Second),
+				),
+			); err != nil {
+				var diagnostic string
+				_ = chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+					drawer: document.querySelector("#drawer")?.dataset.state,
+					detail: document.querySelector("#detail-body")?.textContent,
+					feed: document.querySelector("#feed-state")?.textContent,
+					schema: state.snapshot?.schema,
+					items: state.itemsByID.size,
+					deferred: deferredUIReady,
+					selected: state.selected,
+					drawerOpen: state.drawerOpen,
+					errors: window.__relayErrors
+				})`, &diagnostic))
+				t.Fatalf("initial %s detail: %v: %s", source, err, diagnostic)
 			}
 
 			phase.Store(1)
@@ -230,7 +393,7 @@ func TestBrowserRetainsAndRecoversEachExternalSource(t *testing.T) {
 			}
 
 			phase.Store(2)
-			nowNanos.Store(initialNow.Add(16 * time.Second).UnixNano())
+			nowNanos.Store(initialNow.Add(19 * time.Second).UnixNano())
 			if err := chromedp.Run(browser,
 				chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
 				chromedp.Poll(`document.querySelector("#feed-state").textContent === "Live · every 3s" &&
@@ -295,6 +458,11 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 			value = ""
 			state = programview.ArtifactStateEmpty
 		case "notes.md":
+			if call > 1 {
+				return programview.ArtifactResponse{
+					State: programview.ArtifactStateError, Error: "notes refresh failed",
+				}, errors.New("notes refresh failed")
+			}
 			value = ""
 			state = programview.ArtifactStateMissing
 		case "plan.md":
@@ -502,6 +670,17 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 		}
 	}
 	if err := chromedp.Run(browser,
+		chromedp.Click(`button[data-focus-key="art:w2:notes.md"]`, chromedp.ByQuery),
+		chromedp.Poll(`document.querySelector("#section-files").textContent.includes(
+			"notes refresh failed") &&
+			document.querySelector("#section-files").textContent.includes(
+				"Last successful check found notes.md missing; current state is unknown.") &&
+			!document.querySelector("#section-files").textContent.includes(
+				"The worker appends notes")`, nil),
+	); err != nil {
+		t.Fatalf("failed missing-artifact revalidation: %v", err)
+	}
+	if err := chromedp.Run(browser,
 		chromedp.Click(`button[data-focus-key="art:w2:assignment.md"]`, chromedp.ByQuery),
 		chromedp.Poll(`Array.from(document.querySelectorAll(".artifact-text"))
 			.some((node) => node.textContent === "w2:assignment.md:before-refresh")`, nil),
@@ -587,6 +766,7 @@ func TestBrowserRejectsUnabortableStaleArtifactResponses(t *testing.T) {
 			window.__relayPendingArtifacts = {};
 			window.__relayCompletedArtifacts = {};
 			window.__relayReleaseArtifacts = {};
+			window.__relayArtifactCalls = {};
 			window.fetch = (input, options) => {
 				const url = new URL(typeof input === "string" ? input : input.url, window.location.href);
 				if (url.pathname !== "/api/artifact") {
@@ -595,6 +775,8 @@ func TestBrowserRejectsUnabortableStaleArtifactResponses(t *testing.T) {
 				const item = url.searchParams.get("item");
 				const name = url.searchParams.get("name");
 				const key = item + ":" + name;
+				const call = (window.__relayArtifactCalls[key] || 0) + 1;
+				window.__relayArtifactCalls[key] = call;
 				const body = JSON.stringify({
 					state: "loaded",
 					artifact: {
@@ -604,7 +786,7 @@ func TestBrowserRejectsUnabortableStaleArtifactResponses(t *testing.T) {
 						size: key.length,
 						updated_at: "",
 						truncated: false,
-						text: key
+						text: key + ":" + call
 					}
 				});
 				const response = () => new Response(body, {
@@ -614,11 +796,12 @@ func TestBrowserRejectsUnabortableStaleArtifactResponses(t *testing.T) {
 				if (key !== "w1:assignment.md" && key !== "w2:task.md") {
 					return Promise.resolve(response());
 				}
-				window.__relayPendingArtifacts[key] = true;
+				window.__relayPendingArtifacts[key] = call;
+				window.__relayReleaseArtifacts[key] = window.__relayReleaseArtifacts[key] || {};
 				return new Promise((resolve) => {
-					window.__relayReleaseArtifacts[key] = () => resolve(response());
+					window.__relayReleaseArtifacts[key][call] = () => resolve(response());
 				}).then((value) => {
-					window.__relayCompletedArtifacts[key] = true;
+					window.__relayCompletedArtifacts[key] = call;
 					return value;
 				});
 			};
@@ -633,23 +816,33 @@ func TestBrowserRejectsUnabortableStaleArtifactResponses(t *testing.T) {
 		chromedp.Navigate(url),
 		chromedp.Poll(`document.querySelectorAll(".card").length === 2`, nil),
 		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
-		chromedp.Poll(`window.__relayPendingArtifacts["w1:assignment.md"] === true`, nil),
+		chromedp.Poll(`window.__relayPendingArtifacts["w1:assignment.md"] === 1`, nil),
 		chromedp.Evaluate(
 			`document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}))`, nil,
 		),
 		chromedp.Poll(`document.querySelector("#drawer").hidden === true`, nil),
 		chromedp.Evaluate(`document.querySelector('.card[data-item="w2"]').click()`, nil),
-		chromedp.Poll(`document.querySelector(".artifact-text")?.textContent === "w2:assignment.md"`, nil),
-		chromedp.Evaluate(`window.__relayReleaseArtifacts["w1:assignment.md"]()`, nil),
-		chromedp.Poll(`window.__relayCompletedArtifacts["w1:assignment.md"] === true`, nil),
-		chromedp.Poll(`document.querySelector(".artifact-text")?.textContent === "w2:assignment.md"`, nil),
+		chromedp.Poll(`document.querySelector(".artifact-text")?.textContent === "w2:assignment.md:1"`, nil),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+		chromedp.Poll(`window.__relayPendingArtifacts["w1:assignment.md"] === 2`, nil),
+		chromedp.Evaluate(`window.__relayReleaseArtifacts["w1:assignment.md"][2]()`, nil),
+		chromedp.Poll(`document.querySelector(".artifact-text")?.textContent === "w1:assignment.md:2"`, nil),
+		chromedp.Evaluate(`window.__relayReleaseArtifacts["w1:assignment.md"][1]()`, nil),
+		chromedp.Poll(`window.__relayCompletedArtifacts["w1:assignment.md"] === 1`, nil),
+		chromedp.Poll(`document.querySelector(".artifact-text")?.textContent === "w1:assignment.md:2"`, nil),
+		chromedp.Evaluate(
+			`document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}))`, nil,
+		),
+		chromedp.Poll(`document.querySelector("#drawer").hidden === true`, nil),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w2"]').click()`, nil),
+		chromedp.Poll(`document.querySelector(".artifact-text")?.textContent === "w2:assignment.md:2"`, nil),
 		chromedp.Click(`button[data-focus-key="art:w2:task.md"]`, chromedp.ByQuery),
-		chromedp.Poll(`window.__relayPendingArtifacts["w2:task.md"] === true`, nil),
+		chromedp.Poll(`window.__relayPendingArtifacts["w2:task.md"] === 1`, nil),
 		chromedp.Click(`button[data-focus-key="art:w2:plan.md"]`, chromedp.ByQuery),
-		chromedp.Poll(`document.querySelector(".artifact-text")?.textContent === "w2:plan.md"`, nil),
-		chromedp.Evaluate(`window.__relayReleaseArtifacts["w2:task.md"]()`, nil),
-		chromedp.Poll(`window.__relayCompletedArtifacts["w2:task.md"] === true`, nil),
-		chromedp.Poll(`document.querySelector(".artifact-text")?.textContent === "w2:plan.md"`, nil),
+		chromedp.Poll(`document.querySelector(".artifact-text")?.textContent === "w2:plan.md:1"`, nil),
+		chromedp.Evaluate(`window.__relayReleaseArtifacts["w2:task.md"][1]()`, nil),
+		chromedp.Poll(`window.__relayCompletedArtifacts["w2:task.md"] === 1`, nil),
+		chromedp.Poll(`document.querySelector(".artifact-text")?.textContent === "w2:plan.md:1"`, nil),
 	); err != nil {
 		t.Fatalf("stale artifact ordering: %v", err)
 	}
@@ -701,6 +894,15 @@ func TestBrowserKeepsPendingArtifactSelectionValidAfterMetadataRefresh(t *testin
 	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
 	defer cancelTimeout()
 	if err := chromedp.Run(browser,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(`
+				window.__relayErrors = [];
+				window.addEventListener("error", (event) => window.__relayErrors.push(event.message));
+				window.addEventListener("unhandledrejection", (event) =>
+					window.__relayErrors.push(String(event.reason)));
+			`).Do(ctx)
+			return err
+		}),
 		chromedp.Navigate(url),
 		chromedp.Poll(`document.querySelectorAll(".card").length === 2`, nil),
 		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
@@ -729,6 +931,99 @@ func TestBrowserKeepsPendingArtifactSelectionValidAfterMetadataRefresh(t *testin
 		chromedp.Poll(`document.querySelector(".artifact-text")?.textContent === "w1:assignment.md"`, nil),
 	); err != nil {
 		t.Fatalf("metadata refresh selection: %v", err)
+	}
+}
+
+func TestBrowserReconcilesRemovedContractSelection(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	initial := browserTestSnapshot()
+	initial.Items[0].Contracts = []string{"a@v1", "b@v1"}
+	initial.Contracts = []programview.ContractDTO{
+		{Ref: "a@v1", Name: "a", Version: 1, Artifact: programview.ArtifactDTO{Name: "a.md", Path: "a.md"}},
+		{Ref: "b@v1", Name: "b", Version: 1, Artifact: programview.ArtifactDTO{Name: "b.md", Path: "b.md"}},
+	}
+	updated := initial
+	updated.Items = append([]programview.ItemDTO(nil), initial.Items...)
+	updated.Items[0].Contracts = []string{"a@v1"}
+	updated.Contracts = initial.Contracts[:1]
+
+	now := time.Date(2026, 9, 14, 20, 0, 0, 0, time.UTC)
+	var builds atomic.Int32
+	url := startBrowserTestHandler(t, HandlerOptions{
+		Slug: "browser-test",
+		Now:  func() time.Time { return now },
+		Builder: func(_ string, _ string) (programview.Snapshot, error) {
+			if builds.Add(1) == 1 {
+				return initial, nil
+			}
+			return updated, nil
+		},
+		ArtifactLoader: func(_ string, selector programview.ArtifactSelector) (programview.ArtifactResponse, error) {
+			value := selector.Ref
+			return programview.ArtifactResponse{
+				State: programview.ArtifactStateLoaded,
+				Artifact: programview.ArtifactDTO{
+					Name: selector.Ref + ".md", Path: selector.Ref + ".md",
+					Present: true, Size: int64(len(value)), Text: &value,
+				},
+			}, nil
+		},
+	})
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+	if err := chromedp.Run(browser,
+		chromedp.Navigate(url),
+		chromedp.Poll(`document.querySelectorAll(".card").length === 2`, nil),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+	); err != nil {
+		t.Fatalf("open contract task: %v", err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Click(`button[data-focus-key="contract:w1:b@v1"]`, chromedp.ByQuery),
+		chromedp.Poll(
+			`document.querySelector(".artifact-text")?.textContent === "b@v1"`,
+			nil,
+			chromedp.WithPollingTimeout(8*time.Second),
+		),
+	); err != nil {
+		var diagnostic string
+		_ = chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+			buttons: Array.from(document.querySelectorAll("[data-focus-key]"), (node) => node.dataset.focusKey),
+			detail: document.querySelector("#detail-body")?.textContent,
+			schema: state.snapshot?.schema,
+			items: state.itemsByID.size,
+			selected: state.selected,
+			drawer: state.drawerOpen,
+			deferred: deferredUIReady,
+			errors: window.__relayErrors
+		})`, &diagnostic))
+		t.Fatalf("select contract before refresh: %v: %s", err, diagnostic)
+	}
+
+	now = now.Add(3 * time.Second)
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+		chromedp.Poll(`document.querySelector(
+			'button[data-focus-key="contract:w1:a@v1"]').getAttribute("aria-current") === "true"`, nil),
+		chromedp.Poll(`document.querySelector(".artifact-text")?.textContent === "a@v1"`, nil),
+		chromedp.Poll(`document.querySelector(
+			'button[data-focus-key="contract:w1:b@v1"]') === null`, nil),
+	); err != nil {
+		t.Fatalf("removed contract reconciliation: %v", err)
 	}
 }
 

@@ -25,8 +25,9 @@ type Snapshot struct {
 
 // RefreshDTO reports whether a snapshot is current or retained during a refresh.
 type RefreshDTO struct {
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
+	Status     string `json:"status"`
+	Error      string `json:"error,omitempty"`
+	Refreshing bool   `json:"refreshing"`
 }
 
 // PatrolDTO contains the read-only adaptive patrol runtime summary.
@@ -276,6 +277,9 @@ type WorkerDTO struct {
 	CWD             string `json:"cwd"`
 	ForegroundCWD   string `json:"foreground_cwd"`
 	NativeSessionID string `json:"native_session_id"`
+	Stale           bool   `json:"stale"`
+	FetchedAt       string `json:"fetched_at"`
+	StaleReason     string `json:"stale_reason"`
 }
 
 // MailboxDTO contains unread child mailbox counts and the exact unread message
@@ -361,6 +365,8 @@ type SourceHealthDTO struct {
 
 // SourceDTO reports one source status and warnings.
 type SourceDTO struct {
-	Status   string   `json:"status"`
-	Warnings []string `json:"warnings"`
+	Status    string   `json:"status"`
+	Warnings  []string `json:"warnings"`
+	Stale     bool     `json:"stale"`
+	FetchedAt string   `json:"fetched_at"`
 }

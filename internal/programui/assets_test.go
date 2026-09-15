@@ -1076,6 +1076,65 @@ func TestScriptKeepsPollingSelectionAndLinkSafety(t *testing.T) {
 	}
 }
 
+func TestDeferredBundleFailureDoesNotGateSnapshotHydration(t *testing.T) {
+	script := readAsset(t, "assets/app.js")
+	requireContains(t, "app.js", script, []string{
+		"new Promise((resolve, reject) =>",
+		"deferredUIPromise = null",
+		"Click Refresh to retry",
+		"loadFullSnapshot();",
+		"loadDeferredUI().catch",
+		"state.bundleError",
+	})
+	_, renderInitial, found := strings.Cut(script, "function renderInitial()")
+	if !found {
+		t.Fatal("app.js is missing renderInitial")
+	}
+	renderInitial, _, found = strings.Cut(renderInitial, "function renderActiveTab()")
+	if !found {
+		t.Fatal("app.js is missing renderActiveTab after renderInitial")
+	}
+	if strings.Index(renderInitial, "loadFullSnapshot();") >
+		strings.Index(renderInitial, "loadDeferredUI().catch") {
+		t.Error("full snapshot hydration must start before deferred bundle loading")
+	}
+}
+
+func TestExternalSourceStateIsRenderedAsNonAuthoritative(t *testing.T) {
+	script := readScriptAssets(t)
+	requireContains(t, "app.js", script, []string{
+		`herdr.status === "loading"`,
+		`dom.workerCount.textContent = "—"`,
+		`Awaiting Herdr`,
+		`worker.stale`,
+		`last-known worker`,
+		`refresh.refreshing`,
+		`Refreshing · last update`,
+		`Retrying · last refresh failed`,
+		`sourceHealthDegraded(snapshot)`,
+		`"Updated · source data degraded"`,
+	})
+}
+
+func TestKeyboardAndArtifactStateTransitionsAreRaceSafe(t *testing.T) {
+	script := readScriptAssets(t)
+	requireContains(t, "app.js", script, []string{
+		"tabKeyHandled(event)",
+		"cardKeyHandled(event)",
+		"globalKeyHandled(event)",
+		"event.preventDefault();",
+		`status: "loading"`,
+		`status: "ready"`,
+		`status: "stale"`,
+		`status: "error"`,
+		"lastValid",
+		"current.controller === state.artifactController",
+		"reconcileArtifactSelection(item)",
+		"Last successful check found",
+		"current state is unknown",
+	})
+}
+
 func TestScriptDerivesTheDisplayTitleAndDeduplicatesWarnings(t *testing.T) {
 	script := readScriptAssets(t)
 	requireContains(t, "app.js", script, []string{

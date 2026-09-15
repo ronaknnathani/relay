@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	snapshotTTL        = 2 * time.Second
+	snapshotTTL        = 5 * time.Second
 	githubTTL          = 12 * time.Second
 	initialRefreshWait = 500 * time.Millisecond
 )

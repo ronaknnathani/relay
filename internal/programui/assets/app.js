@@ -66,6 +66,8 @@ const state = {
   copyTimer: null,
   failures: 0,
   live: false,
+  bundleError: "",
+  pollError: "",
 };
 
 const initialProgramController = new AbortController();
@@ -78,60 +80,93 @@ const initialProgramRequest = initialProgramSnapshot
   : requestProgram(initialProgramController, "roadmap");
 let deferredUIReady = false;
 let deferredUIPromise = null;
+let deferredStyleReady = false;
+let deferredStylePromise = null;
+let deferredScriptReady = false;
+let deferredScriptPromise = null;
 let fullSnapshotPromise = null;
+
+function loadDeferredStyle() {
+  if (deferredStyleReady) {
+    return Promise.resolve();
+  }
+  if (deferredStylePromise) {
+    return deferredStylePromise;
+  }
+  deferredStylePromise = new Promise((resolve, reject) => {
+    const styles = document.createElement("link");
+    styles.rel = "stylesheet";
+    styles.href = "/app-deferred.css";
+    styles.onload = () => {
+      deferredStyleReady = true;
+      resolve();
+    };
+    styles.onerror = () => {
+      styles.remove();
+      deferredStylePromise = null;
+      reject(new Error("Deferred stylesheet failed to load."));
+    };
+    document.head.append(styles);
+  });
+  return deferredStylePromise;
+}
+
+function loadDeferredScript() {
+  if (deferredScriptReady) {
+    return Promise.resolve();
+  }
+  if (deferredScriptPromise) {
+    return deferredScriptPromise;
+  }
+  deferredScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "/app-deferred.js";
+    script.onload = () => {
+      deferredScriptReady = true;
+      resolve();
+    };
+    script.onerror = () => {
+      script.remove();
+      deferredScriptPromise = null;
+      reject(new Error("Deferred script failed to load."));
+    };
+    document.head.append(script);
+  });
+  return deferredScriptPromise;
+}
 
 function loadDeferredUI() {
   if (deferredUIReady) {
-    return Promise.resolve(true);
+    return Promise.resolve();
   }
   if (deferredUIPromise) {
     return deferredUIPromise;
   }
-  deferredUIPromise = new Promise((resolve) => {
-    let remaining = 2;
-    let failed = false;
-    const loaded = () => {
-      remaining -= 1;
-      if (remaining === 0 && !failed) {
-        deferredUIReady = true;
-        ensureDeferredDom();
-        resolve(true);
-      }
-    };
-    const failedToLoad = () => {
-      if (failed) {
-        return;
-      }
-      failed = true;
-      deferredUIPromise = null;
-      showReconnect("Cannot load task details and secondary views. Reload Relay to retry.");
-      resolve(false);
-    };
-    const styles = document.createElement("link");
-    styles.rel = "stylesheet";
-    styles.href = "/app-deferred.css";
-    styles.onload = loaded;
-    styles.onerror = failedToLoad;
-    const script = document.createElement("script");
-    script.src = "/app-deferred.js";
-    script.onload = loaded;
-    script.onerror = failedToLoad;
-    document.head.append(styles, script);
+  deferredUIPromise = Promise.all([loadDeferredStyle(), loadDeferredScript()]).then(() => {
+    deferredUIReady = true;
+    state.bundleError = "";
+    renderReconnect();
+    ensureDeferredDom();
+  }).catch((error) => {
+    deferredUIPromise = null;
+    state.bundleError =
+      `${error.message || "Deferred interface failed to load."} Click Refresh to retry.`;
+    renderReconnect();
+    throw error;
   });
   return deferredUIPromise;
 }
 
 function withDeferredUI(action) {
-  loadDeferredUI().then((uiReady) => {
-    if (!uiReady) {
-      return;
-    }
-    loadFullSnapshot().then((snapshotReady) => {
+  loadFullSnapshot();
+  loadDeferredUI()
+    .then(loadFullSnapshot)
+    .then((snapshotReady) => {
       if (snapshotReady) {
         action();
       }
-    });
-  });
+    })
+    .catch(() => {});
 }
 
 function loadFullSnapshot() {
@@ -477,31 +512,38 @@ function renderOverview() {
     ? "Nothing waiting on you"
     : `${plural(openDecisions, "answer")} needed`;
 
-  let workers = overview.workers;
-  let active = overview.active_workers;
-  let unread = overview.unread_messages;
-  if (!Number.isFinite(workers) || !Number.isFinite(active) || !Number.isFinite(unread)) {
-    workers = 0;
-    active = 0;
-    unread = 0;
-    for (const item of items()) {
-      if (item.worker) {
-        workers += 1;
-        if (item.worker.status === "working") {
-          active += 1;
+  const health = snapshotOf().source_health || {};
+  const herdr = health.herdr || {};
+  if (herdr.status === "loading") {
+    dom.workerCount.textContent = "—";
+    dom.workerNote.textContent = "Awaiting Herdr · worker count unknown";
+  } else {
+    let workers = overview.workers;
+    let active = overview.active_workers;
+    let unread = overview.unread_messages;
+    if (!Number.isFinite(workers) || !Number.isFinite(active) || !Number.isFinite(unread)) {
+      workers = 0;
+      active = 0;
+      unread = 0;
+      for (const item of items()) {
+        if (item.worker) {
+          workers += 1;
+          if (item.worker.status === "working") {
+            active += 1;
+          }
+        }
+        const mailbox = item.mailbox || {};
+        if (mailbox.available) {
+          unread += count(mailbox.inbox) + count(mailbox.outbox);
         }
       }
-      const mailbox = item.mailbox || {};
-      if (mailbox.available) {
-        unread += count(mailbox.inbox) + count(mailbox.outbox);
-      }
     }
+    dom.workerCount.textContent = String(workers);
+    dom.workerNote.textContent = [
+      herdr.stale ? `${active} working · last-known worker data` : `${active} working`,
+      unread ? `${plural(unread, "unread message")}` : "no unread mail",
+    ].join(" · ");
   }
-  dom.workerCount.textContent = String(workers);
-  dom.workerNote.textContent = [
-    `${active} working`,
-    unread ? `${plural(unread, "unread message")}` : "no unread mail",
-  ].join(" · ");
 
   const patrol = snapshotOf().patrol || {};
   dom.patrolStatus.textContent = humanize(text(patrol.status, "not-running"));
@@ -577,8 +619,8 @@ function setFeed(live, message) {
 
 function setSnapshotFeed(snapshot) {
   const refresh = snapshot.refresh || {};
-  if (refresh.status === "refreshing") {
-    setFeed(false, `Refreshing · showing local snapshot from ${formatRelative(snapshot.generated_at)}`);
+  if (refresh.status === "failed" && refresh.refreshing) {
+    setFeed(false, `Retrying · last refresh failed · ${text(refresh.error, "program refresh failed")}`);
     return;
   }
   if (refresh.status === "partial") {
@@ -589,20 +631,47 @@ function setSnapshotFeed(snapshot) {
     setFeed(false, `Stale · ${text(refresh.error, "program refresh failed")}`);
     return;
   }
+  if (refresh.refreshing) {
+    setFeed(false, `Refreshing · last update ${formatRelative(snapshot.generated_at)}`);
+    return;
+  }
+  if (sourceHealthDegraded(snapshot)) {
+    setFeed(false, "Updated · source data degraded");
+    return;
+  }
   setFeed(true, "Live · every 3s");
 }
 
+function sourceHealthDegraded(snapshot) {
+  const health = snapshot.source_health || {};
+  return Object.values(health).some((source) =>
+    source && (source.status === "loading" || source.status === "degraded" || source.stale));
+}
+
 function showReconnect(message) {
-  announce(dom.reconnect, message);
-  dom.reconnect.hidden = false;
+  state.pollError = message;
+  renderReconnect();
 }
 
 function hideReconnect() {
   if (dom.reconnect.hidden) {
     return;
   }
-  dom.reconnect.hidden = true;
-  announce(dom.reconnect, "");
+  state.pollError = "";
+  renderReconnect();
+}
+
+function renderReconnect() {
+  const message = [state.bundleError, state.pollError].filter(Boolean).join(" ");
+  if (!message) {
+    if (!dom.reconnect.hidden) {
+      dom.reconnect.hidden = true;
+      announce(dom.reconnect, "");
+    }
+    return;
+  }
+  announce(dom.reconnect, message);
+  dom.reconnect.hidden = false;
 }
 
 /* ---------- warnings and diagnostics ---------- */
@@ -1078,19 +1147,24 @@ function revealCard(id) {
   card.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
+function drawConnectorsForCurrentGraph() {
+  drawConnectors(list((snapshotOf().graph || {}).edges));
+}
+
 /* ---------- render orchestration ---------- */
 
 function renderInitial() {
   renderHeader();
   state.dirtyTabs = new Set(TABS);
   const markUsable = () => {
-    window.__relayUsableAt = performance.now();
-    performance.mark("relay-usable");
-    loadDeferredUI().then((ready) => {
-      if (ready) {
-        loadFullSnapshot();
-      }
-    });
+    loadFullSnapshot();
+    loadDeferredUI().catch(() => {});
+    loadDeferredUI().then(() => {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        window.__relayUsableAt = performance.now();
+        performance.mark("relay-usable");
+      }));
+    }).catch(() => {});
   };
   if (state.tab === "roadmap" && !state.selected) {
     renderActiveTab();
@@ -1160,10 +1234,62 @@ function safeID(raw) {
   return decoded.length <= MAX_ITEM_ID && ITEM_ID.test(decoded) ? decoded : "";
 }
 
+function isTypingTarget(node) {
+  if (!node) {
+    return false;
+  }
+  const tag = node.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || node.isContentEditable;
+}
+
+function tabKeyHandled(event) {
+  return ["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key);
+}
+
+function cardKeyHandled(event) {
+  return ["Enter", " ", "ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp", "Home", "End"]
+    .includes(event.key);
+}
+
+function globalKeyHandled(event) {
+  if (event.metaKey || event.ctrlKey || event.altKey) {
+    return false;
+  }
+  if (event.key === "Escape" && state.drawerOpen) {
+    return true;
+  }
+  if (state.drawerOpen) {
+    return false;
+  }
+  if (event.key === "Escape" && dom.filter && document.activeElement === dom.filter) {
+    return true;
+  }
+  if (isTypingTarget(event.target)) {
+    return false;
+  }
+  if (event.key === "/" && state.tab === "tasks") {
+    return true;
+  }
+  if (event.key === "g" && state.tab === "roadmap" && state.selected) {
+    return true;
+  }
+  if (state.tab !== "tasks" && state.tab !== "roadmap") {
+    return false;
+  }
+  const arrows = (dom.tableScroll && dom.tableScroll.contains(event.target)) ||
+    event.target === document.body;
+  return event.key === "j" || event.key === "k" ||
+    ((event.key === "ArrowDown" || event.key === "ArrowUp") && arrows) ||
+    (event.key === "Enter" && state.selected);
+}
+
 function bindControls() {
   dom.themeToggle.addEventListener("click", toggleTheme);
   dom.refresh.addEventListener("click", () => {
     setFeed(state.live, "Refreshing…");
+    if (state.bundleError) {
+      loadDeferredUI().catch(() => {});
+    }
     poll();
   });
   dom.copyCommand.addEventListener("click", () => withDeferredUI(copyCommand));
@@ -1177,7 +1303,12 @@ function bindControls() {
   dom.tabs.forEach((button) => {
     button.addEventListener("click", () => withDeferredUI(() => selectTab(button.dataset.tab)));
   });
-  dom.tablist.addEventListener("keydown", (event) => withDeferredUI(() => onTabKey(event)));
+  dom.tablist.addEventListener("keydown", (event) => {
+    if (tabKeyHandled(event)) {
+      event.preventDefault();
+    }
+    withDeferredUI(() => onTabKey(event));
+  });
   dom.graphNodes.addEventListener("click", (event) => {
     const card = event.target.closest(".card");
     if (card) {
@@ -1190,6 +1321,9 @@ function bindControls() {
   dom.graphNodes.addEventListener("keydown", (event) => {
     const card = event.target.closest(".card");
     if (card) {
+      if (cardKeyHandled(event)) {
+        event.preventDefault();
+      }
       withDeferredUI(() => onCardKey(event, card.dataset.item));
     }
   });
@@ -1202,7 +1336,12 @@ function bindControls() {
       withDeferredUI(fitDetailTail);
     }
   });
-  document.addEventListener("keydown", (event) => withDeferredUI(() => onGlobalKey(event)));
+  document.addEventListener("keydown", (event) => {
+    if (globalKeyHandled(event)) {
+      event.preventDefault();
+    }
+    withDeferredUI(() => onGlobalKey(event));
+  });
 }
 
 /* ---------- polling ---------- */

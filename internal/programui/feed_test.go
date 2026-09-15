@@ -64,7 +64,7 @@ func TestSnapshotFeedSingleFlightsAndRetainsLastSnapshot(t *testing.T) {
 			defer wait.Done()
 			got := feed.Get()
 			if got.GeneratedAt != "seed" ||
-				got.Refresh != (programview.RefreshDTO{Status: "refreshing"}) {
+				got.Refresh != (programview.RefreshDTO{Status: "partial", Refreshing: true}) {
 				t.Errorf("snapshot during refresh = %+v", got)
 			}
 		}()
@@ -84,8 +84,9 @@ func TestSnapshotFeedSingleFlightsAndRetainsLastSnapshot(t *testing.T) {
 	})
 
 	now = now.Add(2 * time.Second)
-	if got := feed.Get(); got.GeneratedAt != "fresh" {
-		t.Fatalf("expired snapshot = %q, want retained fresh snapshot", got.GeneratedAt)
+	if got := feed.Get(); got.GeneratedAt != "fresh" ||
+		got.Refresh != (programview.RefreshDTO{Status: "fresh", Refreshing: true}) {
+		t.Fatalf("expired snapshot = %+v, want retained fresh completion while refreshing", got)
 	}
 	eventually(t, time.Second, func() bool {
 		got := feed.Get()

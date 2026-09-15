@@ -466,6 +466,7 @@ function renderDetail() {
   if (decisions) {
     built.set("decisions", decisions);
   }
+  reconcileArtifactSelection(item);
   const contracts = itemContractSection(item);
   if (contracts) {
     built.set("contracts", contracts);
@@ -817,6 +818,11 @@ function workerSection(item) {
       ? "Herdr did not report a live agent for this worktree. The worker may have exited."
       : "No live worker is attached to this task."));
   } else {
+    if (worker.stale) {
+      const fetched = worker.fetched_at ? ` from ${formatRelative(worker.fetched_at)}` : "";
+      section.append(make("p", "banner banner--warn",
+        `Showing last-known worker state${fetched}. ${text(worker.stale_reason)}`.trim()));
+    }
     const facts = keyValues([
       ["Liveness", workerNode(worker)],
       ["Terminal", text(worker.terminal_title)],
@@ -908,6 +914,53 @@ function itemContractSection(item) {
     }
   }
   return section;
+}
+
+function reconcileArtifactSelection(item) {
+  const contracts = list(snapshotOf().contracts);
+  const validContractRefs = list(item.contracts)
+    .filter((ref) => contracts.some((contract) => contract.ref === ref));
+  let selectedContract = state.contractByItem.get(item.id);
+  if (!selectedContract || validContractRefs.indexOf(selectedContract) === -1) {
+    selectedContract = validContractRefs[0] || "";
+    if (selectedContract) {
+      state.contractByItem.set(item.id, selectedContract);
+    } else {
+      state.contractByItem.delete(item.id);
+    }
+  }
+
+  const artifacts = list(item.artifacts).length > 0
+    ? list(item.artifacts)
+    : (item.child_available ? TASK_ARTIFACT_NAMES.map((name) => ({ name })) : []);
+  const validArtifactNames = new Set(artifacts.map((artifact) => artifact.name));
+  const selection = state.artifactSelection.get(item.id);
+  if (!selection) {
+    return;
+  }
+  if (selection.kind === "contract") {
+    if (validContractRefs.indexOf(selection.ref) !== -1) {
+      state.contractByItem.set(item.id, selection.ref);
+      return;
+    }
+    if (selectedContract) {
+      state.artifactSelection.set(item.id, { kind: "contract", ref: selectedContract });
+      return;
+    }
+  } else if (selection.kind === "task" && validArtifactNames.has(selection.name)) {
+    return;
+  }
+
+  const first = artifacts.find((artifact) => artifact.present) || artifacts[0];
+  if (first) {
+    state.artifactByItem.set(item.id, first.name);
+    state.artifactSelection.set(
+      item.id,
+      { kind: "task", item: item.id, name: first.name },
+    );
+  } else {
+    state.artifactSelection.delete(item.id);
+  }
 }
 
 function artifactSection(item) {
@@ -1004,26 +1057,49 @@ function appendArtifactContent(section, selector, metadata) {
     loadArtifact(selector, false);
     return;
   }
-  if (entry.loading && !entry.envelope) {
+  if (entry.status === "loading" && !entry.lastValid) {
     section.append(emptyNote(`Loading ${label}…`));
     return;
   }
-  const envelope = entry.envelope;
-  const artifact = envelope ? envelope.artifact || metadata : metadata;
-  if (entry.error) {
+  if (entry.status === "error") {
     section.append(make("p", "banner banner--warn", entry.error));
+    section.append(emptyNote("Content is unavailable."));
+    return;
+  }
+  const historical = entry.status === "loading" || entry.status === "stale";
+  const valid = historical ? entry.lastValid : entry;
+  const envelope = valid && valid.envelope;
+  const artifact = envelope ? envelope.artifact || metadata : metadata;
+  if (entry.status === "loading") {
+    section.append(make("p", "banner banner--warn",
+      `Refreshing ${label} · showing last-known result.`));
+  } else if (entry.status === "stale") {
+    section.append(make("p", "banner banner--warn",
+      `${entry.error} Showing the last-known result; current state is unknown.`));
   }
   if (!envelope) {
     section.append(emptyNote("Content is unavailable."));
     return;
   }
   if (envelope.state === "missing") {
+    if (historical) {
+      section.append(emptyNote(
+        `Last successful check found ${artifact.name || selector.ref} missing; current state is unknown.`,
+      ));
+      return;
+    }
     section.append(emptyNote(
       ARTIFACT_HINTS[artifact.name] || `${artifact.name || selector.ref} has not been written yet.`,
     ));
     return;
   }
   if (envelope.state === "empty") {
+    if (historical) {
+      section.append(emptyNote(
+        `Last successful check found ${artifact.name || selector.ref} empty; current state is unknown.`,
+      ));
+      return;
+    }
     section.append(emptyNote(`${artifact.name || selector.ref} exists but is empty.`));
     return;
   }
@@ -1061,7 +1137,17 @@ function loadCurrentArtifact(revalidate) {
 async function loadArtifact(selector, revalidate) {
   const key = artifactCacheKey(selector);
   const existing = state.artifactCache.get(key);
-  if (existing && (existing.loading || (!revalidate && existing.envelope))) {
+  const current = existing;
+  if (current && current.status === "loading" &&
+      current.controller === state.artifactController &&
+      !current.controller.signal.aborted &&
+      current.generation === state.artifactGeneration) {
+    return;
+  }
+  const lastValid = current && current.status === "ready"
+    ? { envelope: current.envelope, etag: current.etag }
+    : current && current.lastValid;
+  if (!revalidate && lastValid) {
     return;
   }
   if (state.artifactController) {
@@ -1071,15 +1157,11 @@ async function loadArtifact(selector, revalidate) {
   const generation = ++state.artifactGeneration;
   state.artifactController = controller;
   state.artifactCache.set(key, {
-    envelope: existing && existing.envelope,
-    etag: existing && existing.etag,
-    loading: true,
-    error: "",
-    generation,
+    status: "loading", lastValid, controller, generation,
   });
   const headers = { Accept: "application/json" };
-  if (existing && existing.etag) {
-    headers["If-None-Match"] = existing.etag;
+  if (lastValid && lastValid.etag) {
+    headers["If-None-Match"] = lastValid.etag;
   }
   try {
     const response = await fetch(artifactURL(selector), {
@@ -1088,9 +1170,9 @@ async function loadArtifact(selector, revalidate) {
     if (generation !== state.artifactGeneration || !artifactMatchesSelection(selector)) {
       return;
     }
-    if (response.status === 304 && existing && existing.envelope) {
+    if (response.status === 304 && lastValid) {
       state.artifactCache.set(key, {
-        envelope: existing.envelope, etag: existing.etag, loading: false, error: "",
+        status: "ready", envelope: lastValid.envelope, etag: lastValid.etag,
       });
       renderDetailPreservingFocus();
       return;
@@ -1103,7 +1185,7 @@ async function loadArtifact(selector, revalidate) {
       throw new Error(envelope.error || `Artifact request failed with status ${response.status}`);
     }
     state.artifactCache.set(key, {
-      envelope, etag: response.headers.get("ETag") || "", loading: false, error: "",
+      status: "ready", envelope, etag: response.headers.get("ETag") || "",
     });
     renderDetailPreservingFocus();
   } catch (error) {
@@ -1111,18 +1193,16 @@ async function loadArtifact(selector, revalidate) {
         !artifactMatchesSelection(selector)) {
       return;
     }
-    state.artifactCache.set(key, {
-      envelope: existing && existing.envelope,
-      etag: existing && existing.etag,
-      loading: false,
-      error: error.message || "Artifact content could not be loaded.",
-    });
+    const message = error.message || "Artifact content could not be loaded.";
+    state.artifactCache.set(key, lastValid
+      ? { status: "stale", lastValid, error: message }
+      : { status: "error", error: message });
     renderDetailPreservingFocus();
   } finally {
-    const current = state.artifactCache.get(key);
-    if (current && current.loading && current.generation === generation) {
-      if (existing) {
-        state.artifactCache.set(key, { ...existing, loading: false });
+    const latest = state.artifactCache.get(key);
+    if (latest && latest.status === "loading" && latest.generation === generation) {
+      if (lastValid) {
+        state.artifactCache.set(key, { status: "ready", ...lastValid });
       } else {
         state.artifactCache.delete(key);
       }
@@ -1625,10 +1705,6 @@ function markSelection() {
   }
 }
 
-function drawConnectorsForCurrentGraph() {
-  drawConnectors(list((snapshotOf().graph || {}).edges));
-}
-
 function focusSelection() {
   if (state.tab === "tasks") {
     restoreFocus(`row:${state.selected}`);
@@ -1661,14 +1737,6 @@ function moveSelection(step) {
 
 
 /* ---------- interaction ---------- */
-
-function isTypingTarget(node) {
-  if (!node) {
-    return false;
-  }
-  const tag = node.tagName;
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || node.isContentEditable;
-}
 
 function onGlobalKey(event) {
   if (event.metaKey || event.ctrlKey || event.altKey) {

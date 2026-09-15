@@ -172,7 +172,7 @@ type agentCache struct {
 
 type agentFlight struct {
 	done   chan struct{}
-	agents []herdr.Agent
+	result programview.AgentSnapshot
 	err    error
 }
 
@@ -188,18 +188,28 @@ func newAgentCache(
 }
 
 func (c *agentCache) Agents() ([]herdr.Agent, error) {
+	result, err := c.AgentsWithProvenance()
+	return result.Agents, err
+}
+
+func (c *agentCache) AgentsWithProvenance() (programview.AgentSnapshot, error) {
 	c.mu.Lock()
 	now := c.now()
 	if c.hasEntry && now.Before(c.expiresAt) {
-		agents := append([]herdr.Agent(nil), c.agents...)
+		result := programview.AgentSnapshot{
+			Agents:    append([]herdr.Agent(nil), c.agents...),
+			FetchedAt: c.fetchedAt.UTC().Format(time.RFC3339Nano),
+		}
 		c.mu.Unlock()
-		return agents, nil
+		return result, nil
 	}
 	if c.flight != nil {
 		flight := c.flight
 		c.mu.Unlock()
 		<-flight.done
-		return append([]herdr.Agent(nil), flight.agents...), flight.err
+		result := flight.result
+		result.Agents = append([]herdr.Agent(nil), result.Agents...)
+		return result, flight.err
 	}
 	flight := &agentFlight{done: make(chan struct{})}
 	c.flight = flight
@@ -211,16 +221,21 @@ func (c *agentCache) Agents() ([]herdr.Agent, error) {
 	if c.lister == nil {
 		flight.err = fmt.Errorf("herdr agent lister is not configured")
 	} else {
-		flight.agents, flight.err = c.lister.Agents()
+		flight.result.Agents, flight.err = c.lister.Agents()
 	}
 	completedAt := c.now()
 	if flight.err != nil && hasStale && completedAt.Sub(fetchedAt) <= maxHerdrStaleAge {
-		flight.agents = stale
+		flight.result = programview.AgentSnapshot{
+			Agents: stale, Stale: true, FetchedAt: fetchedAt.UTC().Format(time.RFC3339Nano),
+			StaleReason: flight.err.Error(),
+		}
+	} else if flight.err == nil {
+		flight.result.FetchedAt = completedAt.UTC().Format(time.RFC3339Nano)
 	}
 
 	c.mu.Lock()
 	if flight.err == nil {
-		c.agents = append([]herdr.Agent(nil), flight.agents...)
+		c.agents = append([]herdr.Agent(nil), flight.result.Agents...)
 		c.hasEntry = true
 		c.fetchedAt = completedAt
 		c.expiresAt = c.now().Add(c.ttl)
@@ -233,7 +248,9 @@ func (c *agentCache) Agents() ([]herdr.Agent, error) {
 	c.flight = nil
 	close(flight.done)
 	c.mu.Unlock()
-	return append([]herdr.Agent(nil), flight.agents...), flight.err
+	result := flight.result
+	result.Agents = append([]herdr.Agent(nil), result.Agents...)
+	return result, flight.err
 }
 
 func newGitHubCache(fetcher programview.Fetcher, ttl time.Duration, now func() time.Time) *githubCache {
