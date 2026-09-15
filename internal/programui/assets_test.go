@@ -111,6 +111,7 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		`class="visually-hidden"`,
 		"<caption",
 		`<a class="skip-link"`,
+		`<link rel="preload" href="/app.js" as="script">`,
 	})
 
 	if strings.Count(index, "<script") != 3 ||
