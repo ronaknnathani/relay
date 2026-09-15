@@ -99,10 +99,7 @@ func Serve(ctx context.Context, options Options) error {
 	}
 	url := "http://127.0.0.1:" + actualPort
 	server := &http.Server{
-		Handler: newHandler(options.Slug, actualPort, cache, feed,
-			func(slug string, selector programview.ArtifactSelector) (programview.ArtifactResponse, error) {
-				return programview.LoadArtifact(slug, selector, 0)
-			}),
+		Handler:           newHandler(options.Slug, actualPort, cache, feed, defaultArtifactLoader),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	serveError := make(chan error, 1)

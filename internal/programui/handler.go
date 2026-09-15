@@ -39,11 +39,13 @@ func NewHandler(options HandlerOptions) http.Handler {
 	cache := newSnapshotCache(2*time.Second, options.Now, options.Builder)
 	loader := options.ArtifactLoader
 	if loader == nil {
-		loader = func(slug string, selector programview.ArtifactSelector) (programview.ArtifactResponse, error) {
-			return programview.LoadArtifact(slug, selector, 0)
-		}
+		loader = defaultArtifactLoader
 	}
 	return newHandler(options.Slug, strconv.Itoa(options.Port), cache, nil, loader)
+}
+
+func defaultArtifactLoader(slug string, selector programview.ArtifactSelector) (programview.ArtifactResponse, error) {
+	return programview.LoadArtifact(slug, selector, 0)
 }
 
 func newHandler(
@@ -174,22 +176,25 @@ func (h *handler) serveArtifact(response http.ResponseWriter, request *http.Requ
 func artifactSelector(request *http.Request) (programview.ArtifactSelector, error) {
 	query := request.URL.Query()
 	kind := programview.ArtifactKind(query.Get("kind"))
+	item := query.Get("item")
+	name := query.Get("name")
+	ref := query.Get("ref")
 	switch kind {
 	case programview.ArtifactKindTask:
-		item, ok := normalizeDetailItem(query.Get("item"))
-		if !ok || item == "" || query.Get("name") == "" || query.Get("ref") != "" {
+		item, ok := normalizeDetailItem(item)
+		if !ok || item == "" || name == "" || ref != "" {
 			return programview.ArtifactSelector{}, fmt.Errorf(
 				"%w: task requests require item and name only", programview.ErrInvalidArtifactSelector,
 			)
 		}
-		return programview.ArtifactSelector{Kind: kind, Item: item, Name: query.Get("name")}, nil
+		return programview.ArtifactSelector{Kind: kind, Item: item, Name: name}, nil
 	case programview.ArtifactKindContract:
-		if query.Get("ref") == "" || query.Get("item") != "" || query.Get("name") != "" {
+		if ref == "" || item != "" || name != "" {
 			return programview.ArtifactSelector{}, fmt.Errorf(
 				"%w: contract requests require ref only", programview.ErrInvalidArtifactSelector,
 			)
 		}
-		return programview.ArtifactSelector{Kind: kind, Ref: query.Get("ref")}, nil
+		return programview.ArtifactSelector{Kind: kind, Ref: ref}, nil
 	default:
 		return programview.ArtifactSelector{}, fmt.Errorf(
 			"%w: kind must be task or contract", programview.ErrInvalidArtifactSelector,

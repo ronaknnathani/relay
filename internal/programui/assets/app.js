@@ -2091,13 +2091,14 @@ function artifactURL(selector) {
 function appendArtifactContent(section, selector, metadata) {
   const key = artifactCacheKey(selector);
   const entry = state.artifactCache.get(key);
+  const label = metadata.name || selector.ref;
   if (!entry) {
-    section.append(emptyNote(`Loading ${metadata.name || selector.ref}…`));
+    section.append(emptyNote(`Loading ${label}…`));
     loadArtifact(selector, false);
     return;
   }
   if (entry.loading && !entry.envelope) {
-    section.append(emptyNote(`Loading ${metadata.name || selector.ref}…`));
+    section.append(emptyNote(`Loading ${label}…`));
     return;
   }
   const envelope = entry.envelope;
@@ -2217,7 +2218,8 @@ async function loadArtifact(selector, revalidate) {
 }
 
 function artifactMatchesSelection(selector) {
-  if (!state.drawerOpen || state.selected !== (selector.item || state.selected)) {
+  const itemID = selector.item || state.selected;
+  if (!state.drawerOpen || state.selected !== itemID) {
     return false;
   }
   return currentArtifactKey(state.selected) === artifactCacheKey(selector);

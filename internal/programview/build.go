@@ -146,8 +146,8 @@ func Build(slug string, options Options) (Snapshot, error) {
 		displayIdentity(p.Title, artifactBody(snapshot.ProgramArtifacts, "goal.md"))
 	snapshot.OpenDecisions, snapshot.ResolvedDecisions = decisionLists(observed.Decisions)
 
-	agents := []herdr.Agent{}
-	agentsErr := error(nil)
+	var agents []herdr.Agent
+	var agentsErr error
 	if agentsResult != nil {
 		snapshot.SourceHealth.Herdr.Status = "ok"
 		result := <-agentsResult
@@ -197,11 +197,12 @@ func prefetchPullRequests(
 		return results
 	}
 	const parallelism = 4
-	jobs := make(chan string)
-	fetched := make(chan struct {
+	type fetchedResult struct {
 		ref    string
 		result memoResult
-	})
+	}
+	jobs := make(chan string)
+	fetched := make(chan fetchedResult)
 	var wait sync.WaitGroup
 	workers := min(parallelism, len(refs))
 	wait.Add(workers)
@@ -210,10 +211,9 @@ func prefetchPullRequests(
 			defer wait.Done()
 			for ref := range jobs {
 				pullRequest, err := fetcher.Fetch(ctx, repo, ref)
-				fetched <- struct {
-					ref    string
-					result memoResult
-				}{ref: ref, result: memoResult{pullRequest: pullRequest, err: err}}
+				fetched <- fetchedResult{
+					ref: ref, result: memoResult{pullRequest: pullRequest, err: err},
+				}
 			}
 		}()
 	}

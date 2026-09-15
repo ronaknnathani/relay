@@ -71,23 +71,20 @@ func (f *snapshotFeed) startRefreshLocked() {
 
 func snapshotWithRefreshError(snapshot programview.Snapshot, refreshErr error) programview.Snapshot {
 	message := fmt.Sprintf("refresh program snapshot: %v", refreshErr)
-	snapshot.Warnings = appendUnique(append([]string(nil), snapshot.Warnings...), message)
-	snapshot.SourceHealth.GitHub.Warnings = appendUnique(
-		append([]string(nil), snapshot.SourceHealth.GitHub.Warnings...), message,
-	)
-	snapshot.SourceHealth.Herdr.Warnings = appendUnique(
-		append([]string(nil), snapshot.SourceHealth.Herdr.Warnings...), message,
-	)
+	snapshot.Warnings = appendUniqueCopy(snapshot.Warnings, message)
+	snapshot.SourceHealth.GitHub.Warnings = appendUniqueCopy(snapshot.SourceHealth.GitHub.Warnings, message)
+	snapshot.SourceHealth.Herdr.Warnings = appendUniqueCopy(snapshot.SourceHealth.Herdr.Warnings, message)
 	snapshot.SourceHealth.GitHub.Status = "degraded"
 	snapshot.SourceHealth.Herdr.Status = "degraded"
 	return snapshot
 }
 
-func appendUnique(values []string, value string) []string {
-	for _, existing := range values {
+func appendUniqueCopy(values []string, value string) []string {
+	copied := append([]string(nil), values...)
+	for _, existing := range copied {
 		if existing == value {
-			return values
+			return copied
 		}
 	}
-	return append(values, value)
+	return append(copied, value)
 }
