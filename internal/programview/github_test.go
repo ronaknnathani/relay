@@ -23,6 +23,8 @@ func TestPullRequestNumber(t *testing.T) {
 		{ref: "#123", want: 123, ok: true},
 		{ref: "https://github.com/acme/widgets/pull/456", want: 456, ok: true},
 		{ref: "#0"},
+		{ref: "#+1"},
+		{ref: "#-1"},
 		{ref: "#12x"},
 		{ref: "--repo"},
 		{ref: "-Rother/repo"},

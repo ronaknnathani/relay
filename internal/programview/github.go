@@ -274,8 +274,19 @@ func PullRequestNumber(ref string) (int, bool) {
 }
 
 func positiveNumber(value string) (int, bool) {
+	if value == "" {
+		return 0, false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return 0, false
+		}
+	}
 	number, err := strconv.Atoi(value)
-	return number, err == nil && number > 0
+	if err != nil || number <= 0 {
+		return 0, false
+	}
+	return number, true
 }
 
 // Lookup resolves one pull request and returns the repository and head commit
