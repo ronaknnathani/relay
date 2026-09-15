@@ -264,7 +264,10 @@ func removeLocalBranchConfig(repo, branch string) error {
 func configSectionAbsent(err error, output []byte, section string) bool {
 	var exitErr *exec.ExitError
 	return errors.As(err, &exitErr) &&
-		strings.TrimSpace(string(output)) == "fatal: no such section: "+section
+		strings.HasSuffix(
+			strings.TrimSpace(string(output)),
+			"fatal: no such section: "+section,
+		)
 }
 
 func branchCheckout(repo, ref string) (string, bool, error) {

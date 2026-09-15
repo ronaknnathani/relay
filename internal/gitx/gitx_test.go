@@ -461,10 +461,12 @@ func TestForceDeleteBranchAtDoesNotRecreateRefWhenConfigCleanupFails(t *testing.
 func TestRemoveBranchConfigTreatsDottedSiblingAsDistinctSection(t *testing.T) {
 	repo := initRepo(t)
 	runGit(t, repo, "config", "--local", "branch.api.v2.remote", "origin")
+	t.Setenv("GIT_TRACE", "1")
 
 	if err := RemoveBranchConfig(repo, "api"); err != nil {
 		t.Fatalf("RemoveBranchConfig(api): %v", err)
 	}
+	t.Setenv("GIT_TRACE", "0")
 	if got := gitOutput(t, repo, "config", "--local", "--get", "branch.api.v2.remote"); got != "origin" {
 		t.Fatalf("branch.api.v2.remote = %q, want preserved sibling value", got)
 	}
