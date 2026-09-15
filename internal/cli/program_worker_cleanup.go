@@ -147,11 +147,7 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 		}
 		if archiveOutcome.BranchDeletionWarning != "" {
 			if result.NextCommand == "" {
-				if archiveOutcome.BranchDeleted {
-					result.NextCommand = manualBranchConfigRemoveCommand(manifest.Repo, manifest.Branch)
-				} else {
-					result.NextCommand = manualBranchDeleteCommand(manifest.Repo, manifest.Branch)
-				}
+				result.NextCommand = archiveOutcome.BranchCleanupCommand
 			}
 		}
 		result.Status = cleanupFinalStatus(result)
@@ -181,11 +177,7 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 	}
 	if archiveOutcome.BranchDeletionWarning != "" {
 		if result.NextCommand == "" {
-			if archiveOutcome.BranchDeleted {
-				result.NextCommand = manualBranchConfigRemoveCommand(manifest.Repo, manifest.Branch)
-			} else {
-				result.NextCommand = manualBranchDeleteCommand(manifest.Repo, manifest.Branch)
-			}
+			result.NextCommand = archiveOutcome.BranchCleanupCommand
 		}
 	}
 	result.Status = cleanupFinalStatus(result)
@@ -193,7 +185,8 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 }
 
 func cleanupFinalStatus(result programWorkerCleanupOutput) string {
-	if result.NextCommand != "" {
+	if result.NextCommand != "" ||
+		(result.Archive != nil && result.Archive.BranchDeletionWarning != "") {
 		return cleanupIncomplete
 	}
 	return cleanupClean

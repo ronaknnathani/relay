@@ -1253,6 +1253,7 @@ func TestArchiveReportsBranchStillPresentOnlyAfterDeletionFailure(t *testing.T) 
 	worktree := addArchiveWorktree(t, repo, slug, branch)
 	missingWorktree := worktree + "-missing"
 	writeArchiveManifest(t, slug, repo, branch, missingWorktree)
+	expectedSHA := gitx.RevParse(repo, "refs/heads/"+branch)
 
 	stdout, stderr, err := captureGCOutput(t, func() error {
 		return runArchive(slug, false)
@@ -1264,8 +1265,16 @@ func TestArchiveReportsBranchStillPresentOnlyAfterDeletionFailure(t *testing.T) 
 		!strings.Contains(stdout, branch) {
 		t.Fatalf("stdout %q is missing the branch deletion failure", stdout)
 	}
-	if !strings.Contains(stderr, manualBranchDeleteCommand(repo, branch)) {
-		t.Fatalf("stderr %q is missing the manual branch deletion guidance", stderr)
+	for _, want := range []string{
+		"git -C " + shellQuote(repo) + " update-ref -d " + shellQuote("refs/heads/"+branch) + " " + shellQuote(expectedSHA),
+		manualBranchConfigRemoveCommand(repo, branch),
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing safe branch cleanup guidance %q", stderr, want)
+		}
+	}
+	if strings.Contains(stderr, "branch -D") {
+		t.Fatalf("stderr %q recommends unconditional branch deletion", stderr)
 	}
 	if !gitx.BranchExists(repo, branch) {
 		t.Fatalf("branch %q was deleted despite being checked out", branch)
@@ -1304,6 +1313,10 @@ func TestArchiveDoesNotDeleteBranchAdvancedImmediatelyBeforeDeletion(t *testing.
 	}
 	if !strings.Contains(result.BranchDeletionWarning, "changed from") {
 		t.Fatalf("branch deletion warning = %q, want changed-tip rejection", result.BranchDeletionWarning)
+	}
+	if strings.Contains(result.BranchDeletionWarning, "branch -D") ||
+		strings.Contains(result.BranchDeletionWarning, "hint:") {
+		t.Fatalf("branch deletion warning %q includes destructive guidance for an advanced branch", result.BranchDeletionWarning)
 	}
 	tip, found, tipErr := gitx.LocalBranchTip(repo, branch)
 	if tipErr != nil || !found || tip != advancedTip {

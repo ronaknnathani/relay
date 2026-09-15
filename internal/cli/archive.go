@@ -193,6 +193,7 @@ type archiveResult struct {
 	Branch                string   `json:"branch,omitempty"`
 	BranchDeleted         bool     `json:"branch_deleted"`
 	BranchDeletionWarning string   `json:"branch_deletion_warning,omitempty"`
+	BranchCleanupCommand  string   `json:"branch_cleanup_command,omitempty"`
 	Merged                bool     `json:"merged"`
 	ArchivedPath          string   `json:"archived_path"`
 	Warnings              []string `json:"warnings"`
@@ -657,26 +658,9 @@ func archiveProjectWithProofLocked(proof archiveProofSnapshot, force bool) (arch
 		if err := archiveForceDeleteBranchAt(
 			proof.Repository, proof.Branch, proof.ExpectedBranchTip,
 		); err != nil {
-			_, branchPresent, inspectErr := gitx.LocalBranchTip(proof.Repository, proof.Branch)
-			switch {
-			case inspectErr != nil:
-				result.BranchDeletionWarning = fmt.Sprintf(
-					"%s; inspect branch after cleanup failure: %v",
-					err, inspectErr,
-				)
-			case branchPresent:
-				result.BranchDeletionWarning = fmt.Sprintf(
-					"%s\ncleanup was already claimed and will not be retried automatically\n"+
-						"hint: delete manually with: %s",
-					err, manualBranchDeleteCommand(proof.Repository, proof.Branch),
-				)
-			default:
-				result.BranchDeleted = true
-				result.BranchDeletionWarning = fmt.Sprintf(
-					"%s\nbranch ref was deleted; finish config cleanup with: %s",
-					err, manualBranchConfigRemoveCommand(proof.Repository, proof.Branch),
-				)
-			}
+			setBranchDeletionRecovery(
+				&result, proof.Repository, proof.Branch, proof.ExpectedBranchTip, err,
+			)
 		} else {
 			result.BranchDeleted = true
 			if err := consumeArchivedBranchProof(&m, project.ArchiveCleanupClaimed); err != nil {
@@ -880,7 +864,7 @@ func retryArchivedProjectCleanupLocked(m project.Manifest) (archiveResult, error
 	switch proof.WorktreeState {
 	case project.ArchiveCleanupClaimed:
 		if current.worktreePresent {
-			return result, claimedCleanupError(m, "worktree", proof.Worktree)
+			return result, claimedCleanupError(m, "worktree", proof.Worktree, "")
 		}
 		if err := consumeArchivedWorktreeProof(&m, project.ArchiveCleanupClaimed); err != nil {
 			return result, fmt.Errorf(
@@ -952,7 +936,9 @@ func retryArchivedProjectCleanupLocked(m project.Manifest) (archiveResult, error
 		return result, nil
 	}
 	if proof.BranchState == project.ArchiveCleanupClaimed {
-		return result, claimedCleanupError(m, "branch", proof.Branch)
+		return result, claimedCleanupError(
+			m, "branch", proof.Branch, proof.ExpectedBranchTip,
+		)
 	}
 	if err := claimArchivedBranchCleanup(&m); err != nil {
 		return result, fmt.Errorf(
@@ -962,10 +948,8 @@ func retryArchivedProjectCleanupLocked(m project.Manifest) (archiveResult, error
 	if err := archiveForceDeleteBranchAt(
 		m.Repo, m.Branch, proof.ExpectedBranchTip,
 	); err != nil {
-		result.BranchDeletionWarning = fmt.Sprintf(
-			"%s\ncleanup was already claimed and will not be retried automatically\n"+
-				"hint: delete manually with: %s",
-			err, manualBranchDeleteCommand(m.Repo, m.Branch),
+		setBranchDeletionRecovery(
+			&result, m.Repo, m.Branch, proof.ExpectedBranchTip, err,
 		)
 		return result, nil
 	}
@@ -980,13 +964,20 @@ func retryArchivedProjectCleanupLocked(m project.Manifest) (archiveResult, error
 	return result, nil
 }
 
-func claimedCleanupError(m project.Manifest, resource, identity string) error {
-	var manual string
+func claimedCleanupError(
+	m project.Manifest, resource, identity, expectedSHA string,
+) error {
 	if resource == "branch" {
-		manual = manualBranchDeleteCommand(m.Repo, identity)
-	} else {
-		manual = "git -C " + shellQuote(m.Repo) + " worktree remove --force " + shellQuote(identity)
+		manual := manualBranchDeleteAtCommand(m.Repo, identity, expectedSHA)
+		return newManualCleanupError(fmt.Errorf(
+			"finish archived branch cleanup for %s: cleanup was already claimed and its outcome is ambiguous; "+
+				"will not retry removal of %s; inspect it and remove it manually only if it still belongs "+
+				"to this archived project\nhint: delete the unchanged ref with: %s\n"+
+				"if branch config remains, remove it with: %s",
+			m.Slug, identity, manual, manualBranchConfigRemoveCommand(m.Repo, identity),
+		), manual)
 	}
+	manual := "git -C " + shellQuote(m.Repo) + " worktree remove --force " + shellQuote(identity)
 	return newManualCleanupError(fmt.Errorf(
 		"finish archived %s cleanup for %s: cleanup was already claimed and its outcome is ambiguous; "+
 			"will not retry removal of %s; inspect it and remove it manually only if it still belongs "+
@@ -1354,13 +1345,54 @@ func archivedCleanupDriftError(proof project.ArchiveCleanupProof, detail string)
 	)
 }
 
-func manualBranchDeleteCommand(repo, branch string) string {
-	return "git -C " + shellQuote(repo) + " branch -D " + shellQuote(branch)
+func manualBranchDeleteAtCommand(repo, branch, expectedSHA string) string {
+	return "git -C " + shellQuote(repo) + " update-ref -d " +
+		shellQuote("refs/heads/"+branch) + " " + shellQuote(expectedSHA)
 }
 
 func manualBranchConfigRemoveCommand(repo, branch string) string {
 	return "git -C " + shellQuote(repo) + " config --local --remove-section " +
 		shellQuote("branch."+branch)
+}
+
+func setBranchDeletionRecovery(
+	result *archiveResult, repo, branch, expectedSHA string, deleteErr error,
+) {
+	tip, found, inspectErr := gitx.LocalBranchTip(repo, branch)
+	switch {
+	case inspectErr != nil:
+		result.BranchDeletionWarning = fmt.Sprintf(
+			"%s; inspect branch after cleanup failure: %v",
+			deleteErr, inspectErr,
+		)
+	case !found:
+		result.BranchDeleted = true
+		result.BranchCleanupCommand = manualBranchConfigRemoveCommand(repo, branch)
+		result.BranchDeletionWarning = fmt.Sprintf(
+			"%s\nbranch ref was deleted; finish config cleanup with: %s",
+			deleteErr, result.BranchCleanupCommand,
+		)
+	case expectedSHA == "":
+		result.BranchDeletionWarning = fmt.Sprintf(
+			"%s\nbranch cleanup has no expected commit; inspect branch %q before deleting it",
+			deleteErr, branch,
+		)
+	case tip != expectedSHA:
+		result.BranchDeletionWarning = fmt.Sprintf(
+			"%s\nbranch %q now points at %s instead of expected commit %s; "+
+				"inspect it before taking any destructive action",
+			deleteErr, branch, tip, expectedSHA,
+		)
+	default:
+		result.BranchCleanupCommand = manualBranchDeleteAtCommand(repo, branch, expectedSHA)
+		result.BranchDeletionWarning = fmt.Sprintf(
+			"%s\ncleanup was already claimed and will not be retried automatically\n"+
+				"hint: delete the unchanged ref with: %s\n"+
+				"if branch config remains, remove it with: %s",
+			deleteErr, result.BranchCleanupCommand,
+			manualBranchConfigRemoveCommand(repo, branch),
+		)
+	}
 }
 
 func stageArchivedProject(srcDir, dstDir string, m project.Manifest) (func() error, error) {
