@@ -747,6 +747,9 @@ func runPRWatchStatus(out io.Writer, slug string, jsonOutput bool) error {
 		fmt.Fprintf(out, "Last check: %s\nNext check: %s\nScheduled checks: %d\n",
 			localTime(result.State.LastCheckAt), localTime(result.State.NextCheckAt),
 			result.State.ScheduledChecks)
+		if result.State.ConsecutiveErrors > 0 {
+			fmt.Fprintf(out, "Consecutive errors: %d\n", result.State.ConsecutiveErrors)
+		}
 		fmt.Fprintf(out, "Actionable: %d\nCurrent digest: %s\n",
 			result.State.ActionableCount, prWatchFingerprintLabel(result.State.CurrentFingerprint))
 		if result.State.LastWakeStatus != "" {

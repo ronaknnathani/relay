@@ -86,6 +86,12 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"] WAKE  delivered",
 				"next=01:00:00",
 				"never written to a file",
+				"organization IP allow-list denial",
+				"primary or secondary API rate limit",
+				"retry every 15 minutes until a complete observation succeeds",
+				"three consecutive non-recoverable observation failures",
+				"`Consecutive errors`",
+				"clears the latest error and consecutive-error count",
 			},
 			forbidden: []string{
 				"relay pr watch acknowledge", "next check at=",
