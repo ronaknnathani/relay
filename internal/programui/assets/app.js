@@ -101,20 +101,15 @@ cardTemplate.className = "card";
 cardTemplate.type = "button";
 const cardTopTemplate = make("div", "card__top");
 const cardStatusTemplate = make("span", "status");
-const cardStatusGlyphTemplate = make("span", "status__glyph");
-cardStatusGlyphTemplate.setAttribute("aria-hidden", "true");
-cardStatusTemplate.append(cardStatusGlyphTemplate, make("span", "status__word"));
 cardTopTemplate.append(make("span", "card__id"), cardStatusTemplate);
 const cardFootTemplate = make("div", "card__foot");
 cardFootTemplate.append(
-  make("span"),
   make("span"),
   make("span", "card__pr"),
   make("span", "flag"),
 );
 cardFootTemplate.children[1].hidden = true;
 cardFootTemplate.children[2].hidden = true;
-cardFootTemplate.children[3].hidden = true;
 cardTemplate.append(cardTopTemplate, make("p", "card__title"), cardFootTemplate);
 
 const state = {
@@ -1050,24 +1045,21 @@ function decorateTaskCard(card, node, item, lane) {
   const top = card.children[0];
   const status = top.children[1];
   const foot = card.children[2];
-  const priority = foot.children[0];
-  const dependencies = foot.children[1];
-  const pullRequest = foot.children[2];
-  const flag = foot.children[3];
+  const facts = foot.children[0];
+  const pullRequest = foot.children[1];
+  const flag = foot.children[2];
   const meta = statusMeta(lane);
   top.children[0].textContent = node.id;
   status.dataset.lane = lane;
-  status.children[0].textContent = meta.glyph;
-  status.children[1].textContent = meta.word;
+  status.textContent = `${meta.glyph} ${meta.word}`;
   card.children[1].textContent = text(node.title, "Untitled task");
   card.setAttribute("aria-label", cardLabel(node, item, lane));
   if (item) {
-    priority.textContent = text(item.priority, "P?");
     const dependencyCount = list(item.dependencies).length;
-    if (dependencyCount > 0) {
-      dependencies.textContent = plural(dependencyCount, "dep");
-      dependencies.hidden = false;
-    }
+    facts.textContent = [
+      text(item.priority, "P?"),
+      dependencyCount > 0 ? plural(dependencyCount, "dep") : "",
+    ].filter(Boolean).join(" · ");
     const pr = item.live_pr || item.recorded_pr;
     if (pr && pr.number) {
       pullRequest.textContent = `PR #${pr.number}`;
