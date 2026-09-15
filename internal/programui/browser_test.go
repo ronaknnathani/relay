@@ -2,6 +2,7 @@ package programui
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -22,20 +23,48 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 	snapshot := browserTestSnapshot()
 	var detailItems []string
 	var detailsMu sync.Mutex
+	artifactCalls := make(map[string]int)
+	var artifactMu sync.Mutex
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	var firstOnce sync.Once
 	loader := func(_ string, selector programview.ArtifactSelector) (programview.ArtifactResponse, error) {
+		key := artifactCacheKeyForTest(selector)
+		artifactMu.Lock()
+		artifactCalls[key]++
+		call := artifactCalls[key]
+		artifactMu.Unlock()
 		if selector.Item == "w1" {
 			firstOnce.Do(func() { close(firstStarted) })
 			<-releaseFirst
 		}
 		value := selector.Item + ":" + selector.Name
+		state := programview.ArtifactStateLoaded
+		switch selector.Name {
+		case "assignment.md":
+			if call > 1 {
+				value += ":updated"
+			}
+		case "task.md":
+			value = ""
+			state = programview.ArtifactStateEmpty
+		case "notes.md":
+			value = ""
+			state = programview.ArtifactStateMissing
+		case "plan.md":
+			value = "truncated-body"
+			state = programview.ArtifactStateTruncated
+		case "context.md":
+			return programview.ArtifactResponse{
+				State: programview.ArtifactStateError, Error: "cannot read context",
+			}, errors.New("cannot read context")
+		}
+		present := state != programview.ArtifactStateMissing
 		return programview.ArtifactResponse{
-			State: programview.ArtifactStateLoaded,
+			State: state,
 			Artifact: programview.ArtifactDTO{
-				Name: selector.Name, Path: selector.Name, Present: true,
-				Size: int64(len(value)), Text: &value,
+				Name: selector.Name, Path: selector.Name, Present: present,
+				Size: int64(len(value)), Text: &value, Truncated: state == programview.ArtifactStateTruncated,
 			},
 		}, nil
 	}
@@ -84,7 +113,7 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 	defer cancelAllocator()
 	browser, cancelBrowser := chromedp.NewContext(allocator)
 	defer cancelBrowser()
-	browser, cancelTimeout := context.WithTimeout(browser, 10*time.Second)
+	browser, cancelTimeout := context.WithTimeout(browser, 20*time.Second)
 	defer cancelTimeout()
 	url := "http://127.0.0.1:" + portText
 	if err := chromedp.Run(browser,
@@ -120,6 +149,64 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 	if body != "w2:assignment.md" {
 		t.Fatalf("visible artifact = %q, want second selection", body)
 	}
+	artifactMu.Lock()
+	firstAssignmentCalls := artifactCalls["task:w2:assignment.md"]
+	artifactMu.Unlock()
+	if firstAssignmentCalls != 1 {
+		t.Fatalf("initial assignment requests = %d, want 1", firstAssignmentCalls)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(
+			`document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}))`, nil,
+		),
+		chromedp.Poll(`document.querySelector("#drawer").hidden === true`, nil),
+		chromedp.Click(`.card[data-item="w2"]`, chromedp.ByQuery),
+		chromedp.Poll(`Array.from(document.querySelectorAll(".artifact-text"))
+			.some((node) => node.textContent === "w2:assignment.md")`, nil),
+	); err != nil {
+		t.Fatal(err)
+	}
+	artifactMu.Lock()
+	reopenCalls := artifactCalls["task:w2:assignment.md"]
+	artifactMu.Unlock()
+	if reopenCalls != 1 {
+		t.Fatalf("cached reopen requests = %d, want 1", reopenCalls)
+	}
+	for _, test := range []struct {
+		name string
+		want string
+	}{
+		{name: "task.md", want: "exists but is empty"},
+		{name: "notes.md", want: "The worker appends notes"},
+		{name: "plan.md", want: "truncated-body"},
+		{name: "context.md", want: "cannot read context"},
+	} {
+		selector := `button[data-focus-key="art:w2:` + test.name + `"]`
+		expression := `document.querySelector("#section-files").textContent.includes(` +
+			strconv.Quote(test.want) + `)`
+		if err := chromedp.Run(browser,
+			chromedp.Click(selector, chromedp.ByQuery),
+			chromedp.Poll(expression, nil),
+		); err != nil {
+			t.Fatalf("%s state: %v", test.name, err)
+		}
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Click(`button[data-focus-key="art:w2:assignment.md"]`, chromedp.ByQuery),
+		chromedp.Poll(`Array.from(document.querySelectorAll(".artifact-text"))
+			.some((node) => node.textContent === "w2:assignment.md")`, nil),
+		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+		chromedp.Sleep(500*time.Millisecond),
+		chromedp.Text(".artifact-text", &body, chromedp.ByQuery),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if body != "w2:assignment.md:updated" {
+		artifactMu.Lock()
+		calls := artifactCalls["task:w2:assignment.md"]
+		artifactMu.Unlock()
+		t.Fatalf("revalidated artifact = %q after %d requests", body, calls)
+	}
 	detailsMu.Lock()
 	defer detailsMu.Unlock()
 	for _, detail := range detailItems {
@@ -129,11 +216,22 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 	}
 }
 
+func artifactCacheKeyForTest(selector programview.ArtifactSelector) string {
+	if selector.Kind == programview.ArtifactKindTask {
+		return "task:" + selector.Item + ":" + selector.Name
+	}
+	return "contract:" + selector.Ref
+}
+
 func browserTestSnapshot() programview.Snapshot {
 	artifact := func() []programview.ArtifactDTO {
-		return []programview.ArtifactDTO{{
-			Name: "assignment.md", Path: "assignment.md", Present: true, Size: 12,
-		}}
+		return []programview.ArtifactDTO{
+			{Name: "assignment.md", Path: "assignment.md", Present: true, Size: 12},
+			{Name: "task.md", Path: "task.md", Present: true},
+			{Name: "notes.md", Path: "notes.md"},
+			{Name: "plan.md", Path: "plan.md", Present: true, Size: 20},
+			{Name: "context.md", Path: "context.md", Present: true, Size: 10},
+		}
 	}
 	return programview.Snapshot{
 		Schema: programview.SchemaVersion,
