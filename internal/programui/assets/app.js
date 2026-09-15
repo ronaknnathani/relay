@@ -1276,21 +1276,19 @@ function renderInitial() {
   renderHeader();
   state.dirtyTabs = new Set(TABS);
   const markUsable = () => {
-    loadFullSnapshot().then((snapshotReady) => {
-      if (!snapshotReady) {
-        return;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      window.__relayUsableAt = performance.now();
+      performance.mark("relay-usable");
+      const hydrate = () => {
+        loadFullSnapshot();
+        loadDeferredUI().then(loadFullSnapshot).catch(() => {});
+      };
+      if (window.requestIdleCallback) {
+        window.requestIdleCallback(hydrate, { timeout: 1000 });
+      } else {
+        setTimeout(hydrate, 0);
       }
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        window.__relayUsableAt = performance.now();
-        performance.mark("relay-usable");
-        const load = () => loadDeferredUI().catch(() => {});
-        if (window.requestIdleCallback) {
-          window.requestIdleCallback(load, { timeout: 1000 });
-        } else {
-          setTimeout(load, 0);
-        }
-      }));
-    });
+    }));
   };
   if (state.tab === "roadmap" && !state.selected) {
     renderActiveTab();

@@ -1128,8 +1128,8 @@ func TestDeferredBundleFailureDoesNotGateSnapshotHydration(t *testing.T) {
 		"new Promise((resolve, reject) =>",
 		"deferredUIPromise = null",
 		"Click Refresh to retry",
-		"loadFullSnapshot().then",
-		"loadDeferredUI().catch",
+		"loadFullSnapshot();",
+		"loadDeferredUI().then",
 		"state.bundleError",
 	})
 	_, renderInitial, found := strings.Cut(script, "function renderInitial()")
@@ -1140,11 +1140,11 @@ func TestDeferredBundleFailureDoesNotGateSnapshotHydration(t *testing.T) {
 	if !found {
 		t.Fatal("app.js is missing renderActiveTab after renderInitial")
 	}
-	if strings.Index(renderInitial, "loadFullSnapshot().then") >
-		strings.Index(renderInitial, `performance.mark("relay-usable")`) ||
-		strings.Index(renderInitial, `performance.mark("relay-usable")`) >
-			strings.Index(renderInitial, "loadDeferredUI().catch") {
-		t.Error("full snapshot hydration and the usable paint must finish before deferred bundle loading")
+	if strings.Index(renderInitial, `performance.mark("relay-usable")`) >
+		strings.Index(renderInitial, "loadFullSnapshot();") ||
+		strings.Index(renderInitial, "loadFullSnapshot();") >
+			strings.Index(renderInitial, "loadDeferredUI().then") {
+		t.Error("the usable roadmap paint must finish before full snapshot and deferred bundle loading")
 	}
 }
 
