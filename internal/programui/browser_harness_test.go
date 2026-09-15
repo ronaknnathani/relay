@@ -248,7 +248,27 @@ func measureBrowserRun(
 		chromedp.Navigate(url),
 		waitForBrowserCondition(`window.__relayCompleteUsableAt > 0`),
 	); err != nil {
-		t.Fatalf("navigate to usable program UI: %v", err)
+		var diagnostic string
+		_ = chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+			title: document.querySelector("#program-title")?.textContent,
+			summary: document.querySelector("#program-summary")?.textContent,
+			total: document.querySelector("#task-total")?.textContent,
+			progress: document.querySelector("#progress-counts")?.textContent,
+			note: document.querySelector("#roadmap-note")?.textContent,
+			cards: document.querySelectorAll(".card").length,
+			stages: document.querySelectorAll("#graph-nodes .stage").length,
+			edges: document.querySelectorAll("#graph-edges .edge").length,
+			graphLabel: document.querySelector("#graph")?.getAttribute("aria-label"),
+			schema: typeof state === "undefined" ? "" : state.snapshot?.schema,
+			items: typeof state === "undefined" ? 0 : state.itemsByID?.size,
+			selected: document.querySelector(".card[data-selected='true']")?.dataset.item,
+			focused: document.activeElement?.dataset?.item,
+			roadmapSelected: document.querySelector("#tab-roadmap")?.getAttribute("aria-selected"),
+			roadmapHidden: document.querySelector("#panel-roadmap")?.hidden,
+			probe: window.__relayUsabilityProbe,
+			usable: window.__relayCompleteUsableAt
+		})`, &diagnostic))
+		t.Fatalf("navigate to usable program UI: %v: %s", err, diagnostic)
 	}
 	var navigationToUsable float64
 	if err := chromedp.Run(tab,
