@@ -70,8 +70,10 @@ const state = {
   copyTimer: null,
   failures: 0,
   live: false,
+  bundlePending: "",
   bundleError: "",
   pollError: "",
+  pendingTab: null,
 };
 
 const initialProgramController = new AbortController();
@@ -148,11 +150,18 @@ function loadDeferredUI() {
   }
   deferredUIPromise = Promise.all([loadDeferredStyle(), loadDeferredScript()]).then(() => {
     deferredUIReady = true;
+    state.bundlePending = "";
     state.bundleError = "";
-    renderReconnect();
     ensureDeferredDom();
+    const pendingTab = state.pendingTab;
+    state.pendingTab = null;
+    renderReconnect();
+    if (pendingTab) {
+      selectTab(pendingTab.name, pendingTab.options);
+    }
   }).catch((error) => {
     deferredUIPromise = null;
+    state.bundlePending = "";
     state.bundleError =
       `${error.message || "Deferred interface failed to load."} Click Refresh to retry.`;
     renderReconnect();
@@ -666,7 +675,7 @@ function hideReconnect() {
 }
 
 function renderReconnect() {
-  const message = [state.bundleError, state.pollError].filter(Boolean).join(" ");
+  const message = [state.bundlePending, state.bundleError, state.pollError].filter(Boolean).join(" ");
   if (!message) {
     if (!dom.reconnect.hidden) {
       dom.reconnect.hidden = true;
@@ -744,9 +753,17 @@ function renderWarningCount() {
 
 function selectTab(name, options) {
   const tab = TABS.indexOf(name) === -1 ? "roadmap" : name;
-  if (tab !== "roadmap" && state.snapshot && !deferredUIReady) {
-    withDeferredUI(() => selectTab(name, options));
+  if (tab !== "roadmap" && !deferredUIReady) {
+    state.pendingTab = { name: tab, options };
+    state.bundlePending = `Loading ${tab.charAt(0).toUpperCase()}${tab.slice(1)}…`;
+    renderReconnect();
+    loadDeferredUI().catch(() => {});
     return;
+  }
+  if (tab === "roadmap" && state.pendingTab) {
+    state.pendingTab = null;
+    state.bundlePending = "";
+    renderReconnect();
   }
   if (tab !== "roadmap" && deferredUIReady) {
     ensureDeferredDom();
@@ -1314,6 +1331,9 @@ function renderCore() {
 
 function renderActiveTab() {
   if (!state.snapshot) {
+    return;
+  }
+  if (state.tab !== "roadmap" && !deferredUIReady) {
     return;
   }
   if (!state.dirtyTabs.has(state.tab)) {

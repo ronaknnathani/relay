@@ -171,6 +171,177 @@ func TestBrowserHydratesAndPollsWhenDeferredBundleFails(t *testing.T) {
 	}
 }
 
+func TestBrowserDeepLinkedDeferredTabsWaitForAssetsAndRecover(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	tabs := []struct {
+		name     string
+		rendered string
+	}{
+		{name: "tasks", rendered: `document.querySelector("#ledger-count").textContent === "2 of 2 tasks"`},
+		{name: "decisions", rendered: `document.querySelector("#decisions-note").textContent === "Nothing is waiting on you."`},
+		{name: "goal", rendered: `document.querySelector("#goal-body").textContent.includes("No program files were found on disk.")`},
+	}
+	for _, mode := range []string{"delayed", "blocked"} {
+		for _, tab := range tabs {
+			t.Run(mode+"/"+tab.name, func(t *testing.T) {
+				snapshot := browserTestSnapshot()
+				snapshot.SourceHealth.GitHub.Status = "ok"
+				snapshot.SourceHealth.Herdr.Status = "ok"
+				var release chan struct{}
+				var releaseOnce sync.Once
+				url := ""
+				if mode == "delayed" {
+					release = make(chan struct{})
+					t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+					feed := newSnapshotFeed(
+						snapshot,
+						time.Minute,
+						time.Now,
+						func() (programview.Snapshot, error) { return snapshot, nil },
+					)
+					url = startBrowserHTTPHandler(t, func(port int) http.Handler {
+						base := newHandler(
+							snapshot.Program.Slug,
+							strconv.Itoa(port),
+							newSnapshotCache(time.Minute, time.Now, nil),
+							feed,
+							nil,
+						)
+						return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+							if request.URL.Path == "/app-deferred.css" ||
+								request.URL.Path == "/app-deferred.js" {
+								select {
+								case <-release:
+								case <-request.Context().Done():
+									return
+								}
+							}
+							base.ServeHTTP(response, request)
+						})
+					})
+				} else {
+					url = startBrowserTestFeedHandler(t, snapshot)
+				}
+
+				allocator, cancelAllocator := chromedp.NewExecAllocator(
+					context.Background(),
+					append(chromedp.DefaultExecAllocatorOptions[:],
+						chromedp.ExecPath(chromeExecutable(t)),
+						chromedp.Flag("headless", true),
+						chromedp.Flag("disable-gpu", true),
+					)...,
+				)
+				defer cancelAllocator()
+				browser, cancelBrowser := chromedp.NewContext(allocator)
+				defer cancelBrowser()
+				browser, cancelTimeout := context.WithTimeout(browser, 30*time.Second)
+				defer cancelTimeout()
+
+				setup := []chromedp.Action{
+					chromedp.ActionFunc(func(ctx context.Context) error {
+						_, err := page.AddScriptToEvaluateOnNewDocument(`
+							window.__relayErrors = [];
+							window.addEventListener("error", (event) => window.__relayErrors.push(event.message));
+							window.addEventListener("unhandledrejection", (event) =>
+								window.__relayErrors.push(String(event.reason)));
+						`).Do(ctx)
+						return err
+					}),
+				}
+				if mode == "blocked" {
+					setup = append(setup,
+						network.Enable(),
+						network.SetBlockedURLs([]string{"*app-deferred.css", "*app-deferred.js"}),
+					)
+				}
+				deepLink := url + "/#tab=" + tab.name
+				if mode == "delayed" {
+					setup = append(setup, chromedp.ActionFunc(func(ctx context.Context) error {
+						_, _, _, _, err := page.Navigate(deepLink).Do(ctx)
+						return err
+					}))
+				} else {
+					setup = append(setup, chromedp.Navigate(deepLink))
+				}
+				if err := chromedp.Run(browser, setup...); err != nil {
+					t.Fatalf("navigate to %s deep link with %s assets: %v", tab.name, mode, err)
+				}
+				if err := chromedp.Run(browser,
+					chromedp.Poll(`typeof state !== "undefined" &&
+						state.snapshot?.schema === "relay.program.v1" &&
+						state.failures === 0 &&
+						!document.querySelector("#feed-state").textContent.includes("Reconnecting") &&
+						window.__relayErrors.length === 0`, nil, chromedp.WithPollingTimeout(8*time.Second)),
+				); err != nil {
+					var diagnostic string
+					_ = chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+						ready: document.readyState,
+						tab: typeof state === "undefined" ? null : state.tab,
+						schema: typeof state === "undefined" ? null : state.snapshot?.schema,
+						feed: document.querySelector("#feed-state")?.textContent,
+						reconnect: document.querySelector("#reconnect")?.textContent,
+						errors: window.__relayErrors
+					})`, &diagnostic))
+					t.Fatalf("hydrate %s deep link with %s assets: %v: %s", tab.name, mode, err, diagnostic)
+				}
+				if mode == "delayed" {
+					if err := chromedp.Run(browser,
+						chromedp.Poll(
+							`document.querySelector("#reconnect").textContent === `+
+								strconv.Quote("Loading "+strings.ToUpper(tab.name[:1])+tab.name[1:]+"…")+` &&
+								!document.querySelector("#reconnect").textContent.includes("Reconnecting")`,
+							nil,
+						),
+						chromedp.ActionFunc(func(context.Context) error {
+							releaseOnce.Do(func() { close(release) })
+							return nil
+						}),
+					); err != nil {
+						t.Fatalf("delayed deferred asset state for %s deep link: %v", tab.name, err)
+					}
+				} else {
+					if err := chromedp.Run(browser,
+						chromedp.Poll(`document.querySelector("#reconnect").textContent.includes(
+							"Deferred") &&
+							document.querySelector("#reconnect").textContent.includes(
+								"failed to load. Click Refresh to retry.") &&
+							!document.querySelector("#reconnect").textContent.includes("Reconnecting")`,
+							nil,
+						),
+						network.SetBlockedURLs([]string{}),
+						chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+					); err != nil {
+						t.Fatalf("blocked deferred asset state for %s deep link: %v", tab.name, err)
+					}
+				}
+				if err := chromedp.Run(browser,
+					chromedp.Poll(`typeof deferredUIReady !== "undefined" &&
+						deferredUIReady &&
+						document.querySelector('[data-tab="`+tab.name+`"]').getAttribute("aria-selected") === "true" &&
+						document.querySelector("#panel-`+tab.name+`").hidden === false &&
+						`+tab.rendered+` &&
+						document.querySelector("#reconnect").hidden &&
+						window.__relayErrors.length === 0`, nil, chromedp.WithPollingTimeout(8*time.Second)),
+				); err != nil {
+					var diagnostic string
+					_ = chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+						tab: state.tab,
+						schema: state.snapshot?.schema,
+						deferred: deferredUIReady,
+						feed: document.querySelector("#feed-state")?.textContent,
+						reconnect: document.querySelector("#reconnect")?.textContent,
+						selected: document.querySelector('[role="tab"][aria-selected="true"]')?.dataset.tab,
+						errors: window.__relayErrors
+					})`, &diagnostic))
+					t.Fatalf("%s deferred assets for %s deep link: %v: %s", mode, tab.name, err, diagnostic)
+				}
+			})
+		}
+	}
+}
+
 func TestBrowserKeepsPendingExternalDrawerStateNonAuthoritative(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
