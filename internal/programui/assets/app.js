@@ -13,7 +13,7 @@ function applyTheme(theme) {
 
 const POLL_INTERVAL = 3000;
 const BACKOFF = [3000, 6000, 12000];
-const INITIAL_ROADMAP_CARDS = 12;
+const INITIAL_ROADMAP_CARDS = 2;
 const ROADMAP_RENDER_BATCH = 32;
 const LANES = ["pending", "dispatched", "in-review", "blocked", "merged", "cancelled"];
 const TABS = ["roadmap", "tasks", "decisions", "goal"];

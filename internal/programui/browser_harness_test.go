@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v8"
+	performanceHarness = "complete-roadmap-v9"
 )
 
 type performanceReport struct {
@@ -180,14 +180,14 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 					document.activeElement === selected &&
 					roadmapTab.getAttribute("aria-selected") === "true" &&
 					document.querySelector("#panel-roadmap")?.hidden === false) {
-					requestAnimationFrame(() => requestAnimationFrame(() => {
+					requestAnimationFrame(() => {
 						if (roadmapTab.getAttribute("aria-selected") === "true" &&
 							document.querySelector("#panel-roadmap")?.hidden === false &&
 							selected.dataset.selected === "true") {
 							window.__relayCompleteUsableAt = performance.now();
 							relayObserver.disconnect();
 						}
-					}));
+					});
 				}
 			};
 			const relayObserver = new MutationObserver(relayUsable);
