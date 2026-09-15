@@ -937,7 +937,6 @@ function renderRoadmap() {
   dom.roadmapEmpty.hidden = true;
   dom.roadmapScroll.hidden = false;
   const stages = stageLists(graph, nodes);
-  const nodesByID = new Map(nodes.map((node) => [node.id, node]));
   const hasSelection = Boolean(selectedItem());
   let position = 0;
   const fragment = new DocumentFragment();
@@ -946,9 +945,11 @@ function renderRoadmap() {
     stage.dataset.stage = String(index);
     stage.dataset.label = `Stage ${index + 1} · ${plural(ids.length, "task")}`;
     ids.forEach((id, itemIndex) => {
-      const node = nodesByID.get(id) || { id, title: "", lane: "" };
+      const item = itemByID(id);
+      const node = item || nodes.find((entry) => entry.id === id) || { id, title: "", lane: "" };
       const card = taskCard(
         node,
+        item,
         position,
         hasSelection,
         itemIndex === 0 ? stage.firstElementChild : null,
@@ -1014,8 +1015,7 @@ function roadmapLabel(nodes, edges) {
     `${breakdown}. The Tasks tab carries the same information as a table.`;
 }
 
-function taskCard(node, position, hasSelection, existingCard) {
-  const item = itemByID(node.id);
+function taskCard(node, item, position, hasSelection, existingCard) {
   const lane = text(node.lane, item ? text(item.status) : "pending");
   const card = existingCard || cardTemplate.cloneNode(true);
   card.dataset.lane = lane;
