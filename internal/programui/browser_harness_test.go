@@ -458,6 +458,9 @@ func measureBrowserRun(
 		}
 	}
 
+	if err := chromedp.Run(tab, chromedp.Navigate("about:blank")); err != nil {
+		t.Fatalf("close measured page before server shutdown: %v", err)
+	}
 	if err := command.Process.Signal(os.Interrupt); err != nil {
 		t.Fatalf("stop program UI process: %v", err)
 	}
