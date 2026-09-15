@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -84,6 +85,42 @@ func TestSnapshotTracksUntrackedFileTypeAndExecutableMode(t *testing.T) {
 	}
 	symlink := mustSnapshot(t, repo, base)
 	assertFingerprintChanged(t, executable, symlink)
+}
+
+func TestSnapshotTreatsUntrackedNestedRepositoryAsOpaqueIdentity(t *testing.T) {
+	repo := initRepo(t)
+	base := RevParse(repo, "HEAD")
+	nested := filepath.Join(repo, "private-repo")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, nested, "init", "-q")
+	if err := os.WriteFile(filepath.Join(nested, "secret.txt"), []byte("private content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, nested, "add", "secret.txt")
+	runGit(t, nested, "commit", "-q", "-m", "nested")
+
+	first := mustSnapshot(t, repo, base)
+	if first.FileCount != 1 || first.ChangedLines != 0 {
+		t.Fatalf("nested repository counts = %+v, want 1 opaque entry and 0 content lines", first)
+	}
+	file, err := readUntracked(repo, "private-repo/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.kind != "nested-git-repository" ||
+		strings.Contains(string(file.content), "private content") {
+		t.Fatalf("nested repository fingerprint input = kind %q content %q", file.kind, file.content)
+	}
+
+	if err := os.WriteFile(filepath.Join(nested, "secret.txt"), []byte("different private content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, nested, "add", "secret.txt")
+	runGit(t, nested, "commit", "-q", "-m", "nested change")
+	second := mustSnapshot(t, repo, base)
+	assertFingerprintChanged(t, first, second)
 }
 
 func TestSnapshotRejectsInvalidRepository(t *testing.T) {

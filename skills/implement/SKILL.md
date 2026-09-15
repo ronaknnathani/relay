@@ -7,9 +7,11 @@ description: Execute an implementation plan (from `plan`) task by task, writing 
 
 Turn the selected implementation input into working, tested code, one thin slice at a time, keeping the build and
 existing tests green at every step. The bar: at any moment you could stop and the system is committable
-— nothing half-built, nothing red. When `plan` was selected, consume its artifact. A standard route
-may legitimately omit `plan`; then consume the explicit task, route decision, requirements, and fresh
-exploration artifact instead. This phase does **not** invent unresolved design decisions or open a PR.
+— nothing half-built, nothing red. When `plan` was selected, consume its artifact. An easy route uses
+the explicit task, requirements, and `route.md` as its sole upstream discovery artifact; do not require
+or repeat a separate exploration. A standard route may legitimately omit `plan`; then consume the
+explicit task, route decision, requirements, and fresh exploration artifact instead. This phase does
+**not** invent unresolved design decisions or open a PR.
 
 Read the persisted route before starting. The route's review owner and validation owner determine who
 records final evidence. The coordinator supplies the dispatch token returned by
@@ -22,10 +24,11 @@ did.
 
 ## Process
 
-1. **Load the selected inputs critically.** If `plan` is selected, read it end to end. Otherwise use
-   the task, requirements, route, and fresh exploration artifact. If those selected inputs leave an
-   unresolved design choice or omit a necessary step, surface the gap rather than inventing a design.
-   Turn the settled work into an ordered checklist of slices.
+1. **Load the selected inputs critically.** If `plan` is selected, read it end to end. On an easy
+   route, use the task, requirements, and `route.md`; routing already performed the one allowed
+   exploration. On another route without `plan`, also consume its fresh exploration artifact. If
+   those selected inputs leave an unresolved design choice or omit a necessary step, surface the gap
+   rather than inventing a design. Turn the settled work into an ordered checklist of slices.
 2. **Load coding guidance.** Read the repo's `AGENTS.md` when present, then read global guidance from
    `~/AGENTS.md` or `~/.config/agents/AGENTS.md` when present. Repo guidance takes precedence over
    global guidance. Treat these files as implementation constraints for scope, style, tests, errors,
@@ -51,9 +54,10 @@ did.
    commit or any other mutation is stale by definition.
 10. **Reassess after the final mutation (adaptive only).** Content changes invalidate the prior risk
     assessment and gate policy. Re-run the route skill against the exact final snapshot. A plain
-    `relay route refresh "$SLUG"` without that reassessment conservatively leaves the easy path. After
-    the final route revision, the coordinator re-dispatches `implement --inline` and supplies the new
-    dispatch token used below.
+    `relay route refresh "$SLUG"` without that reassessment conservatively leaves the easy path. When
+    the reassessment keeps the same easy execution contract, Relay rebinds the active implementation
+    dispatch to the new route revision, so keep using the original dispatch token below. If the route
+    escalates or changes owners, stop and let the coordinator dispatch the newly selected phase.
 11. **Honor review and validation ownership.**
     - On an easy route, inspect the exact final diff yourself without a separate review worker. Cover
       the mandatory review axes: correctness, acceptance-criteria compliance, scope/minimality, and

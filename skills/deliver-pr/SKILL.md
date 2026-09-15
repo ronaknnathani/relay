@@ -80,7 +80,9 @@ Ask `relay state next "$SLUG"` after every state change.
   inputs require route refresh and escalation before more discovery.
 - **`route`:** always inline. Reclassify from fresh facts after mutations; use
   `relay route refresh "$SLUG"` only when the changed snapshot cannot be fully reassessed, which
-  conservatively leaves the easy path.
+  conservatively leaves the easy path. A full reassessment that keeps the same easy execution
+  contract rebinds the active implementation dispatch to the new route revision instead of
+  dispatching implementation again.
 - **`open-pr`:** always inline. It consumes the shared commit/rebase contracts and must not launch
   another review.
 

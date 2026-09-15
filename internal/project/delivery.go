@@ -420,6 +420,18 @@ func ValidateValidationEvidence(record EvidenceRecord, policy GatePolicy) error 
 	if err != nil {
 		return err
 	}
+	if record.Result == EvidenceBlocked {
+		if record.NoGates {
+			return fmt.Errorf("blocked validation evidence cannot use no-gates")
+		}
+		if normalized.Mode == GatePolicyRequired {
+			return validateRecordedGates(record.Commands, normalized.Gates, false)
+		}
+		if len(record.Commands) != 0 {
+			return fmt.Errorf("blocked validation evidence cannot record gates without a required gate policy")
+		}
+		return nil
+	}
 	switch normalized.Mode {
 	case GatePolicyUnknown:
 		return fmt.Errorf("validation evidence requires a known gate policy")
@@ -432,18 +444,19 @@ func ValidateValidationEvidence(record EvidenceRecord, policy GatePolicy) error 
 	if record.NoGates {
 		return fmt.Errorf("required gate policy cannot use no-gates validation evidence")
 	}
-	if len(record.Commands) != len(normalized.Gates) {
-		return fmt.Errorf(
-			"validation evidence covers %d gates, want %d",
-			len(record.Commands), len(normalized.Gates),
-		)
+	return validateRecordedGates(record.Commands, normalized.Gates, true)
+}
+
+func validateRecordedGates(commands []CommandEvidence, required []RequiredGate, requireAll bool) error {
+	if requireAll && len(commands) != len(required) {
+		return fmt.Errorf("validation evidence covers %d gates, want %d", len(commands), len(required))
 	}
-	expected := make(map[string]string, len(normalized.Gates))
-	for _, gate := range normalized.Gates {
+	expected := make(map[string]string, len(required))
+	for _, gate := range required {
 		expected[gate.ID] = gate.CommandDigest
 	}
-	seen := make(map[string]bool, len(record.Commands))
-	for _, command := range record.Commands {
+	seen := make(map[string]bool, len(commands))
+	for _, command := range commands {
 		if seen[command.GateID] {
 			return fmt.Errorf("validation evidence contains duplicate gate %q", command.GateID)
 		}
@@ -479,6 +492,9 @@ func validateValidationEvidence(record EvidenceRecord) error {
 		return nil
 	}
 	if len(record.Commands) == 0 {
+		if record.Result == EvidenceBlocked {
+			return nil
+		}
 		return fmt.Errorf("validation evidence requires at least one command or no-gates attestation")
 	}
 	failed := false
@@ -819,6 +835,15 @@ func (ws *WorkflowState) ApplyRoute(decision RouteDecision) error {
 		decision.Revision = max(1, previousRevision+1)
 	}
 	decision.Digest = digest
+	reboundPhase := ""
+	if ws.Route != nil && routeChanged && canRebindActiveDispatch(*ws.Route, decision) {
+		current := ws.currentSelectedPhase()
+		phase := ws.Phases[current]
+		if current == EvidenceOwnerImplement &&
+			phase.Status == PhaseInProgress && phase.Dispatch != nil {
+			reboundPhase = current
+		}
+	}
 	selected := make(map[string]bool, len(decision.SelectedPhases))
 	for _, phase := range decision.SelectedPhases {
 		if _, ok := ws.Phases[phase]; !ok {
@@ -844,11 +869,16 @@ func (ws *WorkflowState) ApplyRoute(decision RouteDecision) error {
 			}
 			if previousRevision > 0 && routeChanged &&
 				phase.Status == PhaseInProgress && phase.Dispatch != nil {
-				phase.Status = PhaseEscalated
-				phase.Reason = "route revision invalidated active dispatch"
-				phase.Outcome = ""
-				phase.EndedAt = ""
-				phase.Dispatch = nil
+				if name == reboundPhase {
+					phase.Dispatch.RouteRevision = decision.Revision
+					phase.Dispatch.RouteDigest = decision.Digest
+				} else {
+					phase.Status = PhaseEscalated
+					phase.Reason = "route revision invalidated active dispatch"
+					phase.Outcome = ""
+					phase.EndedAt = ""
+					phase.Dispatch = nil
+				}
 			}
 			ws.Phases[name] = phase
 			continue
@@ -870,14 +900,25 @@ func (ws *WorkflowState) ApplyRoute(decision RouteDecision) error {
 	ws.Version = WorkflowStateVersion
 	ws.Route = &copyDecision
 	if routeChanged && previousRevision > 0 {
-		ws.invalidateEvidenceForRouteChange()
+		ws.invalidateEvidenceForRouteChange(reboundPhase)
 	}
 	return nil
 }
 
-func (ws *WorkflowState) invalidateEvidenceForRouteChange() {
+func canRebindActiveDispatch(previous, next RouteDecision) bool {
+	return previous.Class == RouteEasy &&
+		next.Class == RouteEasy &&
+		!previous.ForcedFull &&
+		!next.ForcedFull &&
+		slices.Equal(previous.SelectedPhases, next.SelectedPhases) &&
+		slices.Equal(previous.ReviewRoles, next.ReviewRoles) &&
+		previous.EffectiveReviewOwner() == next.EffectiveReviewOwner() &&
+		previous.ValidationOwner == next.ValidationOwner
+}
+
+func (ws *WorkflowState) invalidateEvidenceForRouteChange(reboundPhase string) {
 	for name, phase := range ws.Phases {
-		if phase.Dispatch != nil {
+		if phase.Dispatch != nil && name != reboundPhase {
 			phase.Dispatch = nil
 			ws.Phases[name] = phase
 		}

@@ -70,7 +70,39 @@ func TestRouteClassifyPersistsEasyDecision(t *testing.T) {
 	}
 }
 
-func TestRouteReclassifyReopensImplementationAndCompletesEasyDelivery(t *testing.T) {
+func TestRouteClassifyPersistsNormalizedIncompleteRiskAssessment(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runRoute(t, "classify", "demo",
+		"--requested-behavior-explicit",
+		"--no-repository-gates",
+		"--predicted-size-known",
+		"--predicted-files", "1",
+		"--predicted-lines", "20",
+	); err != nil {
+		t.Fatal(err)
+	}
+	got, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Route == nil || got.Route.Class != project.RouteStandard ||
+		got.Route.Facts.RiskAssessmentComplete ||
+		got.Route.Facts.AssessmentFingerprint != "" {
+		t.Fatalf("normalized conservative route = %+v", got.Route)
+	}
+}
+
+func TestRouteReclassifyRebindsImplementationAndKeepsEasyDeliveryAtTwoDispatches(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := initCLIGitRepo(t)
 	saveDeliveryProject(t, "demo", repo)
@@ -95,7 +127,7 @@ func TestRouteReclassifyReopensImplementationAndCompletesEasyDelivery(t *testing
 	if _, err := runState(t, "finish", "demo", "route", "done", "--outcome", "material"); err != nil {
 		t.Fatal(err)
 	}
-	dispatchPhase(t, "demo", "implement")
+	implementToken := dispatchPhase(t, "demo", "implement")
 	if err := os.WriteFile(filepath.Join(repo, "changed.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -106,17 +138,18 @@ func TestRouteReclassifyReopensImplementationAndCompletesEasyDelivery(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Phases["implement"].Status != project.PhaseEscalated ||
-		got.Phases["implement"].Dispatch != nil {
+	if got.Phases["implement"].Status != project.PhaseInProgress ||
+		got.Phases["implement"].Dispatch == nil ||
+		got.Phases["implement"].Dispatch.RouteRevision != got.Route.Revision ||
+		got.Phases["implement"].Dispatch.RouteDigest != got.Route.Digest {
 		t.Fatalf("reclassified implementation = %+v", got.Phases["implement"])
 	}
-	token := dispatchPhase(t, "demo", "implement")
 	if _, err := runState(t, "evidence", "record", "demo", "review",
-		"--result", "passed", "--role", "code-reviewer", "--dispatch-token", token); err != nil {
+		"--result", "passed", "--role", "code-reviewer", "--dispatch-token", implementToken); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runState(t, "evidence", "record", "demo", "validation",
-		"--result", "passed", "--no-gates", "--dispatch-token", token); err != nil {
+		"--result", "passed", "--no-gates", "--dispatch-token", implementToken); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runState(t, "finish", "demo", "implement", "done", "--outcome", "material"); err != nil {
@@ -128,6 +161,14 @@ func TestRouteReclassifyReopensImplementationAndCompletesEasyDelivery(t *testing
 	}
 	if _, err := runState(t, "finish", "demo", "open-pr", "done", "--outcome", "material"); err != nil {
 		t.Fatal(err)
+	}
+	got, err = project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatches, handoffs := got.DeliveryMetrics()
+	if dispatches != 2 || handoffs != 1 {
+		t.Fatalf("easy delivery metrics = dispatches:%d handoffs:%d", dispatches, handoffs)
 	}
 }
 
@@ -406,6 +447,47 @@ func TestRouteForcedFullAndExplicitEscalation(t *testing.T) {
 	}
 	if _, err := runRoute(t, "escalate", "demo", "easy", "--reason", "downgrade"); err == nil {
 		t.Fatal("route downgrade was accepted")
+	}
+}
+
+func TestRouteClassifyUsesForcedFullManifestWithoutFlag(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	manifestPath := project.ManifestPath(project.ActiveDir(), "demo")
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.DeliveryMode = project.DeliveryModeFull
+	if err := project.Save(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runRoute(t, "classify", "demo",
+		"--requested-behavior-explicit",
+		"--no-repository-gates",
+		"--risk-assessment-complete",
+		"--predicted-size-known",
+		"--predicted-files", "1",
+		"--predicted-lines", "20",
+	); err != nil {
+		t.Fatal(err)
+	}
+	got, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Route == nil || !got.Route.ForcedFull ||
+		!slices.Equal(got.Route.SelectedPhases, project.AdaptiveDeliveryPhases) {
+		t.Fatalf("manifest-forced route = %+v", got.Route)
 	}
 }
 

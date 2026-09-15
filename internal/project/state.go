@@ -70,6 +70,9 @@ type WorkflowState struct {
 	Route         *RouteDecision        `json:"route,omitempty"`
 	Evidence      DeliveryEvidence      `json:"evidence,omitempty"`
 	SubagentCount int                   `json:"subagent_count,omitempty"`
+	DispatchCount int                   `json:"delivery_dispatch_count,omitempty"`
+	HandoffCount  int                   `json:"delivery_handoff_count,omitempty"`
+	LastDispatch  string                `json:"last_delivery_dispatch,omitempty"`
 	FinalResult   *FinalResult          `json:"final_result,omitempty"`
 	PR            PRRef                 `json:"pr"`
 	Updated       string                `json:"updated"`
@@ -187,6 +190,18 @@ func (ws WorkflowState) validate() error {
 			return fmt.Errorf("state %q: %w", ws.Slug, err)
 		}
 	}
+	if ws.DispatchCount < 0 || ws.HandoffCount < 0 ||
+		ws.HandoffCount > max(0, ws.DispatchCount-1) {
+		return fmt.Errorf("state %q: invalid delivery dispatch metrics", ws.Slug)
+	}
+	if ws.LastDispatch != "" {
+		if ws.DispatchCount == 0 {
+			return fmt.Errorf("state %q: last delivery dispatch requires a dispatch count", ws.Slug)
+		}
+		if _, ok := ws.Phases[ws.LastDispatch]; !ok || ws.LastDispatch == "route" {
+			return fmt.Errorf("state %q: invalid last delivery dispatch %q", ws.Slug, ws.LastDispatch)
+		}
+	}
 	if !ws.hasAdaptiveState() {
 		return nil
 	}
@@ -204,7 +219,9 @@ func (ws WorkflowState) validate() error {
 
 func (ws WorkflowState) hasAdaptiveState() bool {
 	if ws.Version > 0 || ws.Route != nil || ws.Evidence.Review != nil ||
-		ws.Evidence.Validation != nil || ws.SubagentCount != 0 || ws.FinalResult != nil {
+		ws.Evidence.Validation != nil || ws.SubagentCount != 0 ||
+		ws.DispatchCount != 0 || ws.HandoffCount != 0 || ws.LastDispatch != "" ||
+		ws.FinalResult != nil {
 		return true
 	}
 	for _, phase := range ws.Phases {
@@ -214,6 +231,25 @@ func (ws WorkflowState) hasAdaptiveState() bool {
 		}
 	}
 	return false
+}
+
+// RecordDeliveryDispatch records one actual non-routing phase dispatch and
+// counts an inter-phase handoff when ownership moves to another phase.
+func (ws *WorkflowState) RecordDeliveryDispatch(name string) {
+	if name == "route" {
+		return
+	}
+	if ws.LastDispatch != "" && ws.LastDispatch != name {
+		ws.HandoffCount++
+	}
+	ws.DispatchCount++
+	ws.LastDispatch = name
+}
+
+// DeliveryMetrics returns dispatch and handoff counts recorded by state
+// transitions rather than inferred from the selected route.
+func (ws WorkflowState) DeliveryMetrics() (int, int) {
+	return ws.DispatchCount, ws.HandoffCount
 }
 
 func (ws WorkflowState) validateRoute() error {
@@ -507,6 +543,15 @@ func (ws *WorkflowState) SetPhase(name, status, artifact, task string) error {
 	}
 	if !validStatus(status) {
 		return fmt.Errorf("invalid status %q (want pending|in-progress|done|skipped|blocked|escalated)", status)
+	}
+	if status == PhasePending || status == PhaseInProgress {
+		ph.Reason = ""
+		ph.Artifact = ""
+		ph.Task = ""
+		ph.Outcome = ""
+		ph.StartedAt = ""
+		ph.EndedAt = ""
+		ph.Dispatch = nil
 	}
 	ph.Status = status
 	if artifact != "" {

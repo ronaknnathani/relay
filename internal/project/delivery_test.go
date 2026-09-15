@@ -465,34 +465,24 @@ func TestReasonRequiredForNonSuccessTerminalStates(t *testing.T) {
 	}
 }
 
-func TestLegacyPhaseReopenPreservesPointersAndBlockedAttemptStart(t *testing.T) {
+func TestSetPhaseReopenClearsTerminalMetadata(t *testing.T) {
 	state, err := NewState("demo", "deliver-pr", []string{"implement"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	state.Phases["implement"] = PhaseState{
 		Status: PhaseDone, Artifact: "implementation.md", Task: "4/7",
+		Reason: "old result", Outcome: PhaseOutcomeMaterial,
 		StartedAt: "2026-09-15T00:00:00Z", EndedAt: "2026-09-15T00:05:00Z",
 	}
 	if err := state.SetPhase("implement", PhaseInProgress, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	reopened := state.Phases["implement"]
-	if reopened.Artifact != "implementation.md" || reopened.Task != "4/7" ||
-		reopened.StartedAt != "2026-09-15T00:00:00Z" {
-		t.Fatalf("legacy reopen lost pointers or start time: %+v", reopened)
-	}
-	if err := state.SetPhaseWithDelivery(
-		"implement", PhaseBlocked, "dependency unavailable", "", "", "", "",
-		"2026-09-15T00:06:00Z",
-	); err != nil {
-		t.Fatal(err)
-	}
-	blocked := state.Phases["implement"]
-	if blocked.Artifact != "implementation.md" || blocked.Task != "4/7" ||
-		blocked.StartedAt != "2026-09-15T00:00:00Z" ||
-		blocked.EndedAt != "2026-09-15T00:06:00Z" {
-		t.Fatalf("blocked attempt lost legacy metadata: %+v", blocked)
+	if reopened.Reason != "" || reopened.Outcome != "" ||
+		reopened.StartedAt != "" || reopened.EndedAt != "" ||
+		reopened.Artifact != "" || reopened.Task != "" {
+		t.Fatalf("reopened phase retained terminal metadata: %+v", reopened)
 	}
 }
 
@@ -722,6 +712,33 @@ func TestValidationEvidenceRequiresExactGatePolicy(t *testing.T) {
 	}
 	if err := ValidateValidationEvidence(noGates, GatePolicy{}); err == nil {
 		t.Fatal("unknown gate policy accepted no-gates evidence")
+	}
+}
+
+func TestBlockedValidationEvidenceCanOmitGateExecution(t *testing.T) {
+	record := EvidenceRecord{
+		Snapshot: RepositorySnapshot{
+			BaseSHA: "base", HeadSHA: "head", Fingerprint: "fingerprint",
+		},
+		RouteRevision: 1, RouteDigest: strings.Repeat("a", 64),
+		DispatchID: "dispatch", Result: EvidenceBlocked, Owner: EvidenceOwnerValidate,
+		BlockerCategory: "input", BlockerReason: "required credentials are unavailable",
+		CompletedAt: "2026-09-15T00:00:00Z",
+	}
+	for _, policy := range []GatePolicy{
+		{},
+		{Mode: GatePolicyNone},
+		{
+			Mode: GatePolicyRequired,
+			Gates: []RequiredGate{{
+				ID: "test", CommandDigest: commandDigest("go test ./..."),
+				RedactedDisplay: "go <redacted-args>",
+			}},
+		},
+	} {
+		if err := ValidateValidationEvidence(record, policy); err != nil {
+			t.Fatalf("blocked validation with policy %+v was rejected: %v", policy, err)
+		}
 	}
 }
 

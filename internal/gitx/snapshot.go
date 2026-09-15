@@ -77,7 +77,7 @@ func Snapshot(repo, baseRef string) (RepoSnapshot, error) {
 		if err != nil {
 			return RepoSnapshot{}, err
 		}
-		changedLines += contentLineCount(file.content)
+		changedLines += file.changedLines
 		hash.Write([]byte("\x00untracked\x00" + relative + "\x00"))
 		hash.Write([]byte(file.kind))
 		hash.Write([]byte{0})
@@ -144,8 +144,9 @@ func parseNumstat(output string) (int, error) {
 }
 
 type untrackedFile struct {
-	kind    string
-	content []byte
+	kind         string
+	content      []byte
+	changedLines int
 }
 
 func readUntracked(root, relative string) (untrackedFile, error) {
@@ -162,7 +163,25 @@ func readUntracked(root, relative string) (untrackedFile, error) {
 		if err != nil {
 			return untrackedFile{}, fmt.Errorf("read untracked symlink %s: %w", path, err)
 		}
-		return untrackedFile{kind: "symlink", content: []byte(target)}, nil
+		content := []byte(target)
+		return untrackedFile{
+			kind: "symlink", content: content, changedLines: contentLineCount(content),
+		}, nil
+	}
+	if info.IsDir() {
+		top, err := gitOutput(path, "rev-parse", "--show-toplevel")
+		topInfo, topErr := os.Stat(strings.TrimSpace(top))
+		pathInfo, pathErr := os.Stat(path)
+		if err != nil || topErr != nil || pathErr != nil || !os.SameFile(topInfo, pathInfo) {
+			return untrackedFile{}, fmt.Errorf("untracked path %s is not a nested Git repository", path)
+		}
+		head, err := gitOutput(path, "rev-parse", "--verify", "HEAD")
+		if err != nil {
+			head = "unborn"
+		}
+		return untrackedFile{
+			kind: "nested-git-repository", content: []byte(strings.TrimSpace(head)),
+		}, nil
 	}
 	if !info.Mode().IsRegular() {
 		return untrackedFile{}, fmt.Errorf("untracked path %s is not a regular file", path)
@@ -175,7 +194,7 @@ func readUntracked(root, relative string) (untrackedFile, error) {
 	if info.Mode().Perm()&0o111 != 0 {
 		kind = "regular-executable"
 	}
-	return untrackedFile{kind: kind, content: content}, nil
+	return untrackedFile{kind: kind, content: content, changedLines: contentLineCount(content)}, nil
 }
 
 func pathWithin(path, root string) bool {

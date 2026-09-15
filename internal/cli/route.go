@@ -93,7 +93,6 @@ func newCmdRouteClassify() *cobra.Command {
 				return err
 			}
 			decision.Snapshot = snapshot
-			decision.Facts = facts
 			if state.Route != nil {
 				reason := routeTransitionReason(*state.Route, decision)
 				decision, err = deliveryroute.PreserveMonotonic(

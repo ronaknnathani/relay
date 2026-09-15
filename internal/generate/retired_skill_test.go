@@ -13,6 +13,7 @@ func TestRetiredWrapperSkillsStayAbsent(t *testing.T) {
 	for _, name := range []string{"relay-status", "relay-archive", "todo"} {
 		for _, path := range []string{
 			filepath.Join(root, "skills", name),
+			filepath.Join(root, "skills-template", name),
 			filepath.Join(out, "skills", name),
 		} {
 			if _, err := os.Stat(path); !os.IsNotExist(err) {

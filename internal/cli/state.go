@@ -164,10 +164,10 @@ func newCmdStateSet() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if phase == "open-pr" && status == project.PhaseDone {
-				if err := validateAdaptiveOpenPRSuccess(slug, ws); err != nil {
-					return err
-				}
+			if ws.UsesAdaptiveDelivery() {
+				return fmt.Errorf(
+					"adaptive delivery cannot use state set; use state dispatch and state finish",
+				)
 			}
 			if err := ws.SetPhase(phase, status, artifact, task); err != nil {
 				return err

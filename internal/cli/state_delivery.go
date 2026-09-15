@@ -72,6 +72,7 @@ func newCmdStateDispatch() *cobra.Command {
 			phase := state.Phases[args[1]]
 			phase.Dispatch = dispatch
 			state.Phases[args[1]] = phase
+			state.RecordDeliveryDispatch(args[1])
 			state.InvalidateEvidenceForOwner(args[1])
 			if err := project.SaveState(statePath, state); err != nil {
 				return err
@@ -259,7 +260,8 @@ func newCmdStateEvidenceRecord() *cobra.Command {
 			if len(gates) != len(exitStatuses) {
 				return fmt.Errorf("--gate and --exit-status counts must match")
 			}
-			if kind == "validation" && len(gates) == 0 && !noGates {
+			if kind == "validation" && result != project.EvidenceBlocked &&
+				len(gates) == 0 && !noGates {
 				return fmt.Errorf("validation evidence requires at least one --gate and --exit-status or --no-gates")
 			}
 			if kind == "review" && len(roles) == 0 {

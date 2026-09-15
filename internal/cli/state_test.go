@@ -3,8 +3,11 @@ package cli
 import (
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/ronaknnathani/relay/internal/project"
 )
 
 // captureStdout runs fn with os.Stdout redirected to a pipe and returns what it
@@ -99,5 +102,42 @@ func TestStateCurrentQuotesTask(t *testing.T) {
 	}
 	if !strings.Contains(out, "phase=b status=in-progress next=c") {
 		t.Errorf("current digest = %q, want phase=b status=in-progress next=c", out)
+	}
+}
+
+func TestStateSetRejectsAdaptiveDeliveryTransitions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route = testRouteDecision(project.RouteEasy)
+	refreshRouteDigest(t, state.Route)
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	before, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"set", "demo", "implement", "done"},
+		{"set", "demo", "open-pr", "skipped"},
+		{"set", "demo", "route", "in-progress"},
+	} {
+		if _, err := runState(t, args...); err == nil ||
+			!strings.Contains(err.Error(), "state dispatch") {
+			t.Fatalf("adaptive state set %v error = %v", args, err)
+		}
+	}
+	after, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before.Updated = ""
+	after.Updated = ""
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("rejected adaptive set mutated state:\nbefore=%+v\nafter=%+v", before, after)
 	}
 }

@@ -557,6 +557,77 @@ func TestBlockedReviewEvidenceStaysWithEvidenceOwner(t *testing.T) {
 	}
 }
 
+func TestBlockedValidationEvidenceRecordsWithoutFabricatedGatesAndRecovers(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route = testRouteDecision(project.RouteStandard)
+	snapshot, err := projectSnapshot("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route.Snapshot = snapshot
+	prepareAdaptivePhase(&state, "validate")
+	refreshRouteDigest(t, state.Route)
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	token := dispatchPhase(t, "demo", "validate")
+	if _, err := runState(t, "evidence", "record", "demo", "validation",
+		"--result", "blocked",
+		"--blocker-category", "authentication",
+		"--blocker-reason", "artifact registry login expired",
+		"--dispatch-token", token); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked.Evidence.Validation == nil ||
+		len(blocked.Evidence.Validation.Commands) != 0 ||
+		blocked.Evidence.Validation.NoGates ||
+		blocked.Evidence.Validation.BlockerCategory != "authentication" ||
+		blocked.Evidence.Validation.BlockerReason != "artifact registry login expired" ||
+		blocked.Phases["validate"].Status != project.PhaseBlocked {
+		t.Fatalf("blocked validation state = %+v", blocked)
+	}
+	if _, err := runState(t, "dispatch", "demo", "open-pr", "--inline"); err == nil {
+		t.Fatal("open-pr dispatched with blocked validation evidence")
+	}
+
+	recoveryToken := dispatchPhase(t, "demo", "validate")
+	recovering, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovering.Evidence.Validation != nil {
+		t.Fatal("validation redispatch retained blocked evidence")
+	}
+	if _, err := runState(t, "evidence", "record", "demo", "validation",
+		"--result", "passed",
+		"--gate", "test=go test ./...",
+		"--exit-status", "0",
+		"--dispatch-token", recoveryToken); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Evidence.Validation == nil ||
+		recovered.Evidence.Validation.Result != project.EvidencePassed ||
+		recovered.Evidence.Validation.BlockerCategory != "" ||
+		recovered.Evidence.Validation.BlockerReason != "" {
+		t.Fatalf("recovered validation evidence = %+v", recovered.Evidence.Validation)
+	}
+}
+
 func TestFailedEasyReviewRestoresNewlySelectedPhases(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := initCLIGitRepo(t)

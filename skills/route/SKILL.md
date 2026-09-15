@@ -71,11 +71,14 @@ record it explicitly:
 
 ```bash
 relay route escalate "$SLUG" <standard|high-risk|stack-candidate> \
-  --reason "<specific evidence>" [--risk <closed-trigger>]
+  --reason "<specific evidence>" [--risk <closed-trigger>] \
+  [--stack-rationale "<required when target is stack-candidate>"]
 ```
 
-Never convert a stack-candidate to `stack-ship`; report the recommendation and continue with the
-conservative single-PR route unless the caller explicitly chose stack ownership.
+`--stack-rationale` is required whenever the target is `stack-candidate`, including when the stack
+boundary was discovered after initial classification. Never convert a stack-candidate to
+`stack-ship`; report the recommendation and continue with the conservative single-PR route unless
+the caller explicitly chose stack ownership.
 
 ## Return
 

@@ -180,25 +180,14 @@ func TestForcedFullSelectsAllPhasesWithoutChangingClass(t *testing.T) {
 	}
 }
 
-func TestEasyRouteDeterministicallyReducesSequentialWork(t *testing.T) {
+func TestEasyRouteSelectsTwoDeliveryPhases(t *testing.T) {
 	decision, err := Classify(easyInput())
 	if err != nil {
 		t.Fatal(err)
 	}
-	const fixedPhases, fixedDispatches, fixedHandoffs = 7, 7, 6
 	selectedPhases := len(decision.SelectedPhases) - 1
-	dispatches := selectedPhases
-	handoffs := dispatches - 1
-	if selectedPhases != 2 || dispatches != 2 || handoffs != 1 {
-		t.Fatalf(
-			"easy metrics = phases:%d dispatches:%d handoffs:%d",
-			selectedPhases,
-			dispatches,
-			handoffs,
-		)
-	}
-	if selectedPhases >= fixedPhases || dispatches >= fixedDispatches || handoffs >= fixedHandoffs {
-		t.Fatal("easy route did not reduce every deterministic latency driver")
+	if selectedPhases != 2 {
+		t.Fatalf("easy selected delivery phases = %d, want 2", selectedPhases)
 	}
 }
 
