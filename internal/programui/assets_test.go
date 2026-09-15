@@ -92,9 +92,9 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		`<a class="skip-link"`,
 	})
 
-	if strings.Count(index, "<script") != 1 ||
-		!strings.Contains(index, `<script src="/app.js"></script>`) {
-		t.Error("index.html must load the minified application before paint")
+	if strings.Count(index, "<script") != 2 ||
+		!strings.Contains(index, `<script src="/app.js" defer></script>`) {
+		t.Error("index.html must apply the inline theme before loading the deferred application")
 	}
 	if strings.Count(index, "<link ") != 1 || !strings.Contains(index, `href="/app.css"`) {
 		t.Error("index.html must link exactly one local stylesheet, /app.css")
@@ -128,15 +128,14 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	})
 
 	head := index[strings.Index(index, "<head>"):strings.Index(index, "</head>")]
-	if !strings.Contains(head, `<script src="/app.js">`) ||
-		strings.Contains(head, "defer") || strings.Contains(head, "async") {
-		t.Error("the application must load synchronously so its theme applies before paint")
+	if !strings.Contains(head,
+		`document.documentElement.dataset.theme=t==="dark"?"dark":"light"`) {
+		t.Error("the stored theme must be applied inline before paint")
 	}
 
 	script := readAsset(t, "assets/app.js")
 	requireContains(t, "app.js", script, []string{
 		`const THEME_KEY = "relay.program.theme"`,
-		"window.localStorage.getItem(THEME_KEY)",
 		"window.localStorage.setItem(THEME_KEY, next)",
 		"document.documentElement.dataset.theme",
 		"function toggleTheme()",

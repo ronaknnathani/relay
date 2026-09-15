@@ -6,7 +6,8 @@
   <meta name="color-scheme" content="light dark">
   <title>Relay Program</title>
   <link rel="stylesheet" href="/app.css">
-  <script src="/app.js"></script>
+  <script>try{const t=localStorage.getItem("relay.program.theme");document.documentElement.dataset.theme=t==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
+  <script src="/app.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#views">Skip to program views</a>
