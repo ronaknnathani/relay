@@ -215,22 +215,50 @@ const (
 // runArchive archives a project and prints the human-facing report.
 func runArchive(slug string, force bool) error {
 	result, err := archiveProject(slug, force)
+	if err == nil {
+		renderArchive(os.Stdout, result)
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	activeDir := filepath.Join(project.ActiveDir(), slug)
+	if _, activeErr := os.Lstat(activeDir); activeErr == nil {
+		return err
+	} else if !errors.Is(activeErr, os.ErrNotExist) {
+		return fmt.Errorf("inspect active project %s: %w", activeDir, activeErr)
+	}
+	archived, archivedErr := loadArchivedCleanupManifest(slug)
+	if archivedErr != nil {
+		if errors.Is(archivedErr, os.ErrNotExist) {
+			return err
+		}
+		return archivedErr
+	}
+	if archived.Program != "" || archived.ProgramItem != "" {
+		if archived.Program != "" && archived.ProgramItem != "" {
+			return fmt.Errorf(
+				"archived project %q is managed by program %s/%s; retry with: relay program worker cleanup %s %s",
+				slug, archived.Program, archived.ProgramItem, archived.Program, archived.ProgramItem,
+			)
+		}
+		return fmt.Errorf(
+			"archived project %q has incomplete program ownership metadata; inspect %s and use the program worker cleanup lifecycle",
+			slug, project.ManifestPath(project.ArchivedDir(), slug),
+		)
+	}
+	result, err = retryArchivedProjectCleanup(archived)
 	if err != nil {
 		return err
 	}
-	renderArchive(os.Stdout, result)
+	renderArchivedCleanupRetry(os.Stdout, result)
 	return nil
 }
 
 // renderArchive prints archive's long-standing text output, including the
 // branch-deletion warning it has always written to stderr.
 func renderArchive(out io.Writer, result archiveResult) {
-	for _, warning := range result.Warnings {
-		ui.Warn("%s", warning)
-	}
-	if result.BranchDeletionWarning != "" {
-		ui.Warn("%s", result.BranchDeletionWarning)
-	}
+	renderArchiveWarnings(result)
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Green, "Archived:"), result.Slug)
 	if result.WorktreeRemoved {
@@ -242,6 +270,40 @@ func renderArchive(out io.Writer, result archiveResult) {
 		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Yellow, "Branch config cleanup incomplete:"), result.Branch)
 	}
 	fmt.Fprintln(out)
+}
+
+func renderArchivedCleanupRetry(out io.Writer, result archiveResult) {
+	renderArchiveWarnings(result)
+	fmt.Fprintln(out)
+	if result.BranchDeletionWarning != "" {
+		fmt.Fprintf(
+			out, "  %s %s\n",
+			ui.Color(ui.Yellow, "Archived cleanup incomplete:"), result.Slug,
+		)
+	} else {
+		fmt.Fprintf(
+			out, "  %s %s\n",
+			ui.Color(ui.Green, "Archived cleanup complete:"), result.Slug,
+		)
+	}
+	if result.WorktreeRemoved {
+		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Dim, "Worktree removed:"), result.Worktree)
+	}
+	if result.BranchDeleted {
+		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Dim, "Branch removed:"), result.Branch)
+	} else if result.BranchDeletionWarning != "" {
+		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Yellow, "Branch still present:"), result.Branch)
+	}
+	fmt.Fprintln(out)
+}
+
+func renderArchiveWarnings(result archiveResult) {
+	for _, warning := range result.Warnings {
+		ui.Warn("%s", warning)
+	}
+	if result.BranchDeletionWarning != "" {
+		ui.Warn("%s", result.BranchDeletionWarning)
+	}
 }
 
 type archiveProofKind string
