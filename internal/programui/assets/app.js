@@ -1274,14 +1274,21 @@ function renderInitial() {
   renderHeader();
   state.dirtyTabs = new Set(TABS);
   const markUsable = () => {
-    loadFullSnapshot();
-    loadDeferredUI().catch(() => {});
-    loadDeferredUI().then(() => {
+    loadFullSnapshot().then((snapshotReady) => {
+      if (!snapshotReady) {
+        return;
+      }
       requestAnimationFrame(() => requestAnimationFrame(() => {
         window.__relayUsableAt = performance.now();
         performance.mark("relay-usable");
+        const load = () => loadDeferredUI().catch(() => {});
+        if (window.requestIdleCallback) {
+          window.requestIdleCallback(load, { timeout: 1000 });
+        } else {
+          setTimeout(load, 0);
+        }
       }));
-    }).catch(() => {});
+    });
   };
   if (state.tab === "roadmap" && !state.selected) {
     renderActiveTab();
