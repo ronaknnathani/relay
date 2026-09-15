@@ -551,6 +551,12 @@ func archiveProjectWithProof(proof archiveProofSnapshot, force bool) (archiveRes
 			return archiveResult{}, err
 		}
 		result.WorktreeRemoved = true
+		if err := consumeArchivedWorktreeProof(&m); err != nil {
+			return archiveResult{}, fmt.Errorf(
+				"worktree %s was removed, but its archived cleanup proof could not be consumed: %w",
+				proof.Worktree, err,
+			)
+		}
 	}
 
 	if proof.BranchPresent {
@@ -563,6 +569,12 @@ func archiveProjectWithProof(proof archiveProofSnapshot, force bool) (archiveRes
 			)
 		} else {
 			result.BranchDeleted = true
+			if err := consumeArchivedBranchProof(&m); err != nil {
+				return archiveResult{}, fmt.Errorf(
+					"branch %q was deleted, but its archived cleanup proof could not be consumed: %w",
+					proof.Branch, err,
+				)
+			}
 		}
 	}
 	return result, nil
@@ -677,6 +689,13 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 			return result, fmt.Errorf("finish archived worktree cleanup for %s: %w", m.Slug, err)
 		}
 		result.WorktreeRemoved = true
+		if err := consumeArchivedWorktreeProof(&m); err != nil {
+			return result, fmt.Errorf(
+				"finish archived worktree cleanup for %s: worktree was removed, but its cleanup proof "+
+					"could not be consumed: %w",
+				m.Slug, err,
+			)
+		}
 	}
 	if !current.branchPresent {
 		return result, nil
@@ -691,6 +710,13 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 		return result, nil
 	}
 	result.BranchDeleted = true
+	if err := consumeArchivedBranchProof(&m); err != nil {
+		return result, fmt.Errorf(
+			"finish archived branch cleanup for %s: branch was deleted, but its cleanup proof "+
+				"could not be consumed: %w",
+			m.Slug, err,
+		)
+	}
 	return result, nil
 }
 
@@ -711,6 +737,28 @@ func archiveCleanupProof(proof archiveProofSnapshot) *project.ArchiveCleanupProo
 		ExpectedWorktreeBranch: proof.ExpectedWorktreeBranch,
 		WorktreeDetached:       proof.WorktreeDetached,
 	}
+}
+
+func consumeArchivedWorktreeProof(m *project.Manifest) error {
+	m.ArchiveCleanup.WorktreePresent = false
+	m.ArchiveCleanup.ExpectedWorktreeTip = ""
+	m.ArchiveCleanup.ExpectedWorktreeBranch = ""
+	m.ArchiveCleanup.WorktreeDetached = false
+	return persistArchivedCleanupProof(*m)
+}
+
+func consumeArchivedBranchProof(m *project.Manifest) error {
+	m.ArchiveCleanup.BranchPresent = false
+	m.ArchiveCleanup.ExpectedBranchTip = ""
+	return persistArchivedCleanupProof(*m)
+}
+
+func persistArchivedCleanupProof(m project.Manifest) error {
+	path := project.ManifestPath(project.ArchivedDir(), m.Slug)
+	if err := saveArchiveManifest(path, m); err != nil {
+		return fmt.Errorf("save archived cleanup proof %s: %w", path, err)
+	}
+	return nil
 }
 
 func validateArchivedCleanupProof(m project.Manifest) (project.ArchiveCleanupProof, error) {

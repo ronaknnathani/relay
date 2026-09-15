@@ -1011,6 +1011,12 @@ func TestWorkerCleanupRetryFinishesArchivedBranchCleanup(t *testing.T) {
 			archived.ArchiveCleanup.ExpectedBranchTip, branchTip,
 		)
 	}
+	if archived.ArchiveCleanup.WorktreePresent ||
+		archived.ArchiveCleanup.ExpectedWorktreeTip != "" ||
+		archived.ArchiveCleanup.ExpectedWorktreeBranch != "" ||
+		archived.ArchiveCleanup.WorktreeDetached {
+		t.Fatalf("worktree cleanup proof was not consumed: %+v", archived.ArchiveCleanup)
+	}
 
 	client.closeErr = nil
 	out, err = runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
@@ -1026,6 +1032,11 @@ func TestWorkerCleanupRetryFinishesArchivedBranchCleanup(t *testing.T) {
 	}
 	if deleteAttempts != 2 {
 		t.Fatalf("branch deletion attempts = %d, want 2", deleteAttempts)
+	}
+	archived = loadArchivedManifest(t, manifest.Slug)
+	if archived.ArchiveCleanup.BranchPresent ||
+		archived.ArchiveCleanup.ExpectedBranchTip != "" {
+		t.Fatalf("branch cleanup proof was not consumed: %+v", archived.ArchiveCleanup)
 	}
 }
 

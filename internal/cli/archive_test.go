@@ -829,13 +829,16 @@ func TestArchivedCleanupRetryPreservesReusedWorktreePath(t *testing.T) {
 	worktree := addArchiveWorktree(t, repo, slug, branch)
 	writeArchiveManifest(t, slug, repo, branch, worktree)
 	archived := archiveWithFailedBranchDeletion(t, slug)
+	if archived.ArchiveCleanup.WorktreePresent {
+		t.Fatal("successful worktree cleanup did not consume its durable proof")
+	}
 
 	replacementBranch := "user/replacement"
 	runArchiveGit(t, repo, "worktree", "add", "-q", worktree, "-b", replacementBranch, "main")
 
 	_, err := retryArchivedProjectCleanup(archived)
-	if err == nil || !strings.Contains(err.Error(), "reused or changed") {
-		t.Fatalf("retryArchivedProjectCleanup error = %v, want reused worktree rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "registered after") {
+		t.Fatalf("retryArchivedProjectCleanup error = %v, want recreated worktree rejection", err)
 	}
 	if !pathExists(worktree) {
 		t.Fatal("retry removed the replacement worktree")
@@ -845,6 +848,62 @@ func TestArchivedCleanupRetryPreservesReusedWorktreePath(t *testing.T) {
 	}
 	if !gitx.BranchExists(repo, replacementBranch) {
 		t.Fatal("retry removed the replacement branch")
+	}
+}
+
+func TestArchivedCleanupRetryRejectsRecreatedBranchAtConsumedTip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archived-retry-recreated-branch"
+	branch := "user/archived-retry-recreated-branch"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	branchTip := gitx.RevParse(repo, "refs/heads/"+branch)
+
+	if _, err := archiveProject(slug, true); err != nil {
+		t.Fatalf("archiveProject: %v", err)
+	}
+	archived := loadArchivedManifest(t, slug)
+	if archived.ArchiveCleanup == nil || archived.ArchiveCleanup.BranchPresent ||
+		archived.ArchiveCleanup.ExpectedBranchTip != "" {
+		t.Fatalf("branch cleanup proof was not consumed: %+v", archived.ArchiveCleanup)
+	}
+	runArchiveGit(t, repo, "branch", branch, branchTip)
+
+	_, err := retryArchivedProjectCleanup(archived)
+	if err == nil || !strings.Contains(err.Error(), "appeared after") {
+		t.Fatalf("retryArchivedProjectCleanup error = %v, want recreated branch rejection", err)
+	}
+	tip, found, tipErr := gitx.LocalBranchTip(repo, branch)
+	if tipErr != nil || !found || tip != branchTip {
+		t.Fatalf("recreated branch = (%q, %t, %v), want (%q, true, nil)", tip, found, tipErr, branchTip)
+	}
+}
+
+func TestArchivedCleanupRetryIsCleanAfterProofConsumption(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archived-retry-consumed"
+	branch := "user/archived-retry-consumed"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+
+	if _, err := archiveProject(slug, true); err != nil {
+		t.Fatalf("archiveProject: %v", err)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		archived := loadArchivedManifest(t, slug)
+		if archived.ArchiveCleanup == nil || archived.ArchiveCleanup.WorktreePresent ||
+			archived.ArchiveCleanup.BranchPresent {
+			t.Fatalf("attempt %d cleanup proof = %+v, want fully consumed", attempt, archived.ArchiveCleanup)
+		}
+		result, err := retryArchivedProjectCleanup(archived)
+		if err != nil {
+			t.Fatalf("attempt %d retryArchivedProjectCleanup: %v", attempt, err)
+		}
+		if result.WorktreeRemoved || result.BranchDeleted || result.BranchDeletionWarning != "" {
+			t.Fatalf("attempt %d replayed cleanup: %+v", attempt, result)
+		}
 	}
 }
 
