@@ -1015,6 +1015,17 @@ func loadArchivedManifest(t *testing.T, slug string) project.Manifest {
 	return m
 }
 
+func saveArchivedManifest(t *testing.T, m project.Manifest) {
+	t.Helper()
+	path := project.ManifestPath(project.ArchivedDir(), m.Slug)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create archived project dir: %v", err)
+	}
+	if err := project.Save(path, m); err != nil {
+		t.Fatalf("save archived manifest: %v", err)
+	}
+}
+
 func assertArchivePreserved(t *testing.T, repo, slug, branch, worktree string) {
 	t.Helper()
 	if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
@@ -1638,6 +1649,7 @@ func TestLegacyArchivedCleanupIsCleanWhenResourcesAreAlreadyAbsent(t *testing.T)
 	manifest := project.Manifest{
 		Slug: slug, Repo: repo, Branch: branch, Worktree: &worktree, Status: "archived",
 	}
+	saveArchivedManifest(t, manifest)
 
 	result, err := retryArchivedProjectCleanup(manifest)
 	if err != nil {
@@ -1657,6 +1669,7 @@ func TestLegacyArchivedCleanupPreservesRemainingResources(t *testing.T) {
 	manifest := project.Manifest{
 		Slug: slug, Repo: repo, Branch: branch, Worktree: &worktree, Status: "archived",
 	}
+	saveArchivedManifest(t, manifest)
 
 	_, err := retryArchivedProjectCleanup(manifest)
 	if err == nil || !strings.Contains(err.Error(), "no durable cleanup proof") ||
@@ -1682,6 +1695,7 @@ func TestLegacyArchivedCleanupReportsWorktreeProbeFailure(t *testing.T) {
 	manifest := project.Manifest{
 		Slug: slug, Repo: repo, Branch: branch, Worktree: &worktree, Status: "archived",
 	}
+	saveArchivedManifest(t, manifest)
 
 	_, err := retryArchivedProjectCleanup(manifest)
 	if err == nil || !strings.Contains(err.Error(), "not registered") ||
