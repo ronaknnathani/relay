@@ -145,7 +145,19 @@ func Serve(ctx context.Context, options Options) error {
 		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownContext); err != nil {
-			return fmt.Errorf("shut down program UI: %w", err)
+			closeErr := server.Close()
+			serveErr := <-serveError
+			if errors.Is(serveErr, http.ErrServerClosed) {
+				serveErr = nil
+			}
+			if closeErr != nil || serveErr != nil {
+				return errors.Join(
+					fmt.Errorf("force close program UI after graceful shutdown: %w", err),
+					closeErr,
+					serveErr,
+				)
+			}
+			return nil
 		}
 		err := <-serveError
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
