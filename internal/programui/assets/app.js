@@ -1147,6 +1147,9 @@ function drawConnectors(edges) {
       );
     }
     const touched = Boolean(related && (edge.from === state.selected || edge.to === state.selected));
+    path.dataset.from = edge.from;
+    path.dataset.to = edge.to;
+    path.dataset.downward = downward ? "true" : "false";
     if (touched && downward) {
       path.setAttribute("class", "edge edge--active");
     }
@@ -1154,6 +1157,18 @@ function drawConnectors(edges) {
     fragment.append(path);
   });
   dom.graphEdges.replaceChildren(fragment);
+}
+
+function updateConnectorSelection() {
+  Array.from(dom.graphEdges.children).forEach((path) => {
+    const downward = path.dataset.downward === "true";
+    const active = downward && Boolean(state.selected) &&
+      (path.dataset.from === state.selected || path.dataset.to === state.selected);
+    path.setAttribute("class", downward
+      ? (active ? "edge edge--active" : "edge")
+      : "edge edge--back");
+    path.setAttribute("marker-end", active ? "url(#flow-arrow-active)" : "url(#flow-arrow)");
+  });
 }
 
 function round(value) {
@@ -1247,7 +1262,7 @@ function markSelection() {
     });
   }
   if (state.tab === "roadmap") {
-    drawConnectorsForCurrentGraph();
+    updateConnectorSelection();
   }
 }
 
