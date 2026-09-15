@@ -65,6 +65,22 @@ func LocalBranchTip(repo, branch string) (sha string, found bool, err error) {
 	return strings.TrimSpace(string(out)), true, nil
 }
 
+// WorktreeHead resolves the current commit of a worktree directory. A missing
+// directory is returned as found=false; an existing invalid worktree is an error.
+func WorktreeHead(dir string) (sha string, found bool, err error) {
+	if _, err := os.Stat(dir); err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("stat worktree %s: %w", dir, err)
+	}
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--verify", "HEAD^{commit}").CombinedOutput()
+	if err != nil {
+		return "", false, gitCommandError("git -C "+dir+" rev-parse --verify HEAD^{commit}", err, out)
+	}
+	return strings.TrimSpace(string(out)), true, nil
+}
+
 // HasOrigin reports whether the repo has an "origin" remote configured.
 func HasOrigin(repo string) bool {
 	return exec.Command("git", "-C", repo, "remote", "get-url", "origin").Run() == nil

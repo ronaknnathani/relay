@@ -196,6 +196,57 @@ func TestGCArchivesMergedPullRequestWhenLocalBranchIsDeleted(t *testing.T) {
 	}
 }
 
+func TestGCArchivesMergedPullRequestWhenDeletedBranchWorktreeHeadMatches(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "pr-deleted-branch-matching-worktree"
+	branch, worktree := addGCProject(t, fixture, slug)
+	recordArchiveManifestPR(t, slug, 711)
+	installArchivePRIndex(t, map[string]programview.PRState{"#711": programview.PRStateMerged})
+	runArchiveGit(t, worktree, "checkout", "-q", "--detach")
+	runArchiveGit(t, fixture.repo, "branch", "-D", branch)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if err != nil {
+		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) || pathExists(worktree) {
+		t.Fatal("GC left the matching detached-worktree project active")
+	}
+	if archived := loadArchivedManifest(t, slug); !archived.Merged {
+		t.Fatal("GC did not record the matching detached-worktree project as merged")
+	}
+}
+
+func TestGCKeepsMergedPullRequestWhenDeletedBranchWorktreeHeadDiverges(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "pr-deleted-branch-divergent-worktree"
+	branch, worktree := addGCProject(t, fixture, slug)
+	recordArchiveManifestPR(t, slug, 711)
+	installArchivePRIndex(t, map[string]programview.PRState{"#711": programview.PRStateMerged})
+	runArchiveGit(t, worktree, "checkout", "-q", "--detach")
+	commitArchiveFile(t, worktree, "later.txt", "later\n", "later detached work")
+	runArchiveGit(t, fixture.repo, "branch", "-D", branch)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "worktree HEAD") || !strings.Contains(stderr, "does not match") {
+		t.Fatalf("stderr %q is missing the divergent worktree diagnostic", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("GC removed a project whose detached worktree diverged from the merged pull request")
+	}
+	if !pathExists(worktree) {
+		t.Fatal("GC removed the divergent detached worktree")
+	}
+	if gitx.BranchExists(fixture.repo, branch) {
+		t.Fatalf("deleted branch %q was unexpectedly restored", branch)
+	}
+}
+
 func TestGCKeepsMergedPullRequestWhenDeletedBranchNameDoesNotMatch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")
