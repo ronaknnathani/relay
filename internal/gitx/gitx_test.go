@@ -80,6 +80,32 @@ func TestWorktreeRemovePreservesExistingUnregisteredDirectory(t *testing.T) {
 	}
 }
 
+func TestWorktreeReclaimRestrictsUnregisteredPathsToRelayWorktreeRoot(t *testing.T) {
+	repo := initRepo(t)
+	owned := filepath.Join(repo, ".worktrees", "interrupted")
+	if err := os.MkdirAll(owned, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WorktreeReclaim(repo, owned, true); err != nil {
+		t.Fatalf("WorktreeReclaim owned path: %v", err)
+	}
+	if _, err := os.Stat(owned); !os.IsNotExist(err) {
+		t.Fatalf("owned path still exists: %v", err)
+	}
+
+	outside := filepath.Join(repo, "unrelated")
+	if err := os.MkdirAll(outside, 0755); err != nil {
+		t.Fatal(err)
+	}
+	err := WorktreeReclaim(repo, outside, true)
+	if err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("WorktreeReclaim outside error = %v", err)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside path was changed: %v", err)
+	}
+}
+
 func TestWorktreeHeadRejectsExistingUnregisteredDirectory(t *testing.T) {
 	repo := initRepo(t)
 	dir := filepath.Join(repo, ".worktrees", "leftover")

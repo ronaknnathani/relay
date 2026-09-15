@@ -376,7 +376,7 @@ func promptYesNo(question string, defaultYes bool) (bool, error) {
 // sees exactly what was reclaimed.
 func reclaimLeftovers(repoRoot, branch, worktreeDir, projDir string) error {
 	if pathExists(worktreeDir) {
-		if err := gitx.WorktreeRemove(repoRoot, worktreeDir, true); err != nil {
+		if err := gitx.WorktreeReclaim(repoRoot, worktreeDir, true); err != nil {
 			return fmt.Errorf("reclaim worktree %s: %w", worktreeDir, err)
 		}
 		fmt.Printf("  %s %s\n", ui.Color(ui.Dim, "Removed worktree:"), worktreeDir)

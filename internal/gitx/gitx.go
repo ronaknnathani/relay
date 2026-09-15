@@ -372,6 +372,43 @@ func WorktreeRemove(repo, dir string, force bool) error {
 		}
 		return nil
 	}
+	return removeRegisteredWorktree(repo, dir, force)
+}
+
+// WorktreeReclaim removes a registered worktree or an unregistered direct
+// child of the repository's .worktrees directory. The latter is reserved for
+// Relay's interrupted-project setup recovery, where the caller has already
+// applied its clean-worktree and confirmation policy.
+func WorktreeReclaim(repo, dir string, force bool) error {
+	registered, err := IsWorktree(repo, dir)
+	if err != nil {
+		return err
+	}
+	if registered {
+		return removeRegisteredWorktree(repo, dir, force)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat worktree %s: %w", dir, err)
+	}
+	root := canonPath(filepath.Join(repo, ".worktrees"))
+	target := canonPath(dir)
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == "." || filepath.Dir(rel) != "." {
+		return fmt.Errorf("refuse to reclaim unregistered worktree path outside %s: %s", root, dir)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("remove Relay worktree path %s: %w", dir, err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "worktree", "prune").CombinedOutput(); err != nil {
+		return gitCommandError("git worktree prune", err, out)
+	}
+	return nil
+}
+
+func removeRegisteredWorktree(repo, dir string, force bool) error {
 	args := []string{"-C", repo, "worktree", "remove"}
 	if force {
 		args = append(args, "--force")
