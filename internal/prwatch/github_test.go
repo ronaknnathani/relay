@@ -264,8 +264,24 @@ func TestObserveClassifiesRecoverableGitHubAccessFailures(t *testing.T) {
 			},
 			recoverable: true,
 		},
+		"IP allow list denial without GraphQL scope": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "gh: Although you appear to have the correct authorization credentials, " +
+					"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+					"IP address is not permitted to access this resource.",
+			},
+			recoverable: true,
+		},
 		"primary rate limit": {
 			failure:     errors.New("API rate limit exceeded for 192.0.2.1"),
+			recoverable: true,
+		},
+		"primary rate limit with retry guidance": {
+			failure: errors.New(
+				"API rate limit exceeded for 192.0.2.1. Please wait a few minutes before you try again.",
+			),
 			recoverable: true,
 		},
 		"primary rate limit already exceeded": {
@@ -278,6 +294,12 @@ func TestObserveClassifiesRecoverableGitHubAccessFailures(t *testing.T) {
 		},
 		"secondary rate limit": {
 			failure:     errors.New("You have exceeded a secondary rate limit"),
+			recoverable: true,
+		},
+		"secondary rate limit with retry guidance": {
+			failure: errors.New(
+				"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+			),
 			recoverable: true,
 		},
 		"multiple recognized diagnostics": {
@@ -301,11 +323,32 @@ func TestObserveClassifiesRecoverableGitHubAccessFailures(t *testing.T) {
 				"GraphQL: Could not resolve to a Repository with the name 'owner/ip-allow-list-denied'",
 			),
 		},
+		"allow list denial with unrelated scope": {
+			failure: errors.New(
+				"gh: Although you appear to have the correct authorization credentials, " +
+					"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+					"IP address is not permitted to access this resource. (organization)",
+			),
+		},
+		"secondary rate limit with unrelated continuation": {
+			failure: errors.New(
+				"You have exceeded a secondary rate limit. Contact your administrator.",
+			),
+		},
 		"rate limit followed by unrelated failure": {
 			failure: &ghCommandError{
 				args:  "api repos/acme/widgets/pulls/42/reviews",
 				cause: errors.New("exit status 1"),
 				detail: "GraphQL: API rate limit already exceeded for user ID 134885571.\n" +
+					"GraphQL: Could not resolve to a Repository with the name 'owner/missing'",
+			},
+		},
+		"secondary rate limit guidance followed by unrelated failure": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "You have exceeded a secondary rate limit. " +
+					"Please wait a few minutes before you try again.\n" +
 					"GraphQL: Could not resolve to a Repository with the name 'owner/missing'",
 			},
 		},

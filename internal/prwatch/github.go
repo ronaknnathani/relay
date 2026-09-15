@@ -61,13 +61,13 @@ var (
 	githubAllowListDiagnosticPattern = regexp.MustCompile(
 		`(?i)^(?:(?:gh|graphql):\s*)?although you appear to have the correct authorization credentials, ` +
 			"the `[^`\r\n]+` organization has an ip allow[ -]?list enabled, and your ip address is " +
-			`not permitted to access this resource\. \(repository\)$`,
+			`not permitted to access this resource\.(?: \(repository\))?$`,
 	)
 	githubRateLimitDiagnosticPattern = regexp.MustCompile(
 		`(?i)^(?:(?:gh|graphql):\s*)?(?:` +
 			`api rate limit (?:already )?exceeded(?: for (?:user id [0-9]+|[0-9a-f:.]+))?` +
 			`|you have exceeded a secondary rate limit` +
-			`)\.?$`,
+			`)(?:\.|\. please wait a few minutes before you try again\.)?$`,
 	)
 )
 
