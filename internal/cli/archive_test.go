@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ronaknnathani/relay/internal/config"
 	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/programview"
 	"github.com/ronaknnathani/relay/internal/project"
@@ -1813,6 +1814,74 @@ func TestArchivedCleanupRetryConsumesProofForAlreadyAbsentResources(t *testing.T
 	_, err = retryArchivedProjectCleanup(consumed)
 	if err == nil || !strings.Contains(err.Error(), "appeared after") {
 		t.Fatalf("retry after branch recreation error = %v, want consumed-proof rejection", err)
+	}
+}
+
+func TestArchivedCleanupRetryRemovesMissingRegisteredWorktree(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archived-retry-missing-registered-worktree"
+	branch := "test/" + slug
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Status = "archived"
+	manifest.ArchiveCleanup = archiveCleanupProof(decision.proof)
+	if _, err := stageArchivedProject(
+		filepath.Join(project.ActiveDir(), slug),
+		filepath.Join(project.ArchivedDir(), slug),
+		manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(worktree); err != nil {
+		t.Fatal(err)
+	}
+	if registered, err := gitx.IsWorktree(repo, worktree); err != nil || !registered {
+		t.Fatalf("missing worktree registration = (%t, %v), want (true, nil)", registered, err)
+	}
+
+	result, err := retryArchivedProjectCleanup(loadArchivedManifest(t, slug))
+	if err != nil {
+		t.Fatalf("retryArchivedProjectCleanup: %v", err)
+	}
+	if !result.WorktreeRemoved {
+		t.Fatalf("archive result = %+v, want stale registration removed", result)
+	}
+	if registered, err := gitx.IsWorktree(repo, worktree); err != nil || registered {
+		t.Fatalf("worktree registration after retry = (%t, %v), want (false, nil)", registered, err)
+	}
+	archived := loadArchivedManifest(t, slug)
+	if archived.ArchiveCleanup == nil ||
+		archived.ArchiveCleanup.WorktreeState != project.ArchiveCleanupDone ||
+		archived.ArchiveCleanup.WorktreePresent {
+		t.Fatalf("cleanup proof = %+v, want completed worktree cleanup", archived.ArchiveCleanup)
+	}
+
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/",
+		DefaultAgent: "copilot",
+		PermissionModes: map[string]string{
+			"copilot": "allow-all",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := createProject(projectCreateOpts{
+		task: "replacement project", name: slug, repo: repo,
+	})
+	if err != nil {
+		t.Fatalf("createProject after stale registration cleanup: %v", err)
+	}
+	if !pathExists(created.worktreeDir) {
+		t.Fatal("replacement worktree was not created")
 	}
 }
 

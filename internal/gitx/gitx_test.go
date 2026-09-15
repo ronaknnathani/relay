@@ -242,6 +242,30 @@ func TestWorktreeHeadRejectsDanglingSymlink(t *testing.T) {
 	}
 }
 
+func TestRegisteredWorktreeStateFindsAndRemovesMissingPath(t *testing.T) {
+	repo := initRepo(t)
+	dir := filepath.Join(repo, ".worktrees", "missing")
+	runGit(t, repo, "worktree", "add", "-q", dir, "-b", "missing", "HEAD")
+	want := WorktreeState{
+		Head:   gitOutput(t, repo, "rev-parse", "refs/heads/missing"),
+		Branch: "refs/heads/missing",
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	state, found, err := RegisteredWorktreeState(repo, dir)
+	if err != nil || !found || state != want {
+		t.Fatalf("RegisteredWorktreeState = (%+v, %t, %v), want (%+v, true, nil)", state, found, err, want)
+	}
+	if err := WorktreeRemoveAt(repo, dir, want, true); err != nil {
+		t.Fatalf("WorktreeRemoveAt: %v", err)
+	}
+	if registered, err := IsWorktree(repo, dir); err != nil || registered {
+		t.Fatalf("IsWorktree after removal = (%t, %v), want (false, nil)", registered, err)
+	}
+}
+
 func TestGitValueHelpersIgnoreSuccessfulStderr(t *testing.T) {
 	repo := initRepo(t)
 	base := currentBranchInRepo(t, repo)

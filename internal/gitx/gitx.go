@@ -70,9 +70,9 @@ func LocalBranchTip(repo, branch string) (sha string, found bool, err error) {
 	return strings.TrimSpace(string(out)), true, nil
 }
 
-// WorktreeHead resolves the current commit of a registered worktree directory.
-// Missing directories are returned as found=false; existing unregistered
-// directories return an error.
+// WorktreeHead resolves the current commit of a registered worktree. A missing
+// path remains found when Git still records it; existing unregistered paths
+// return an error.
 func WorktreeHead(repo, dir string) (sha string, found bool, err error) {
 	state, found, err := RegisteredWorktreeState(repo, dir)
 	return state.Head, found, err
@@ -87,18 +87,29 @@ type WorktreeState struct {
 }
 
 // RegisteredWorktreeState resolves the identity of a registered worktree.
-// Missing paths return found=false; existing unregistered paths are errors.
+// It queries Git independently of path existence so stale registrations remain
+// visible. Existing unregistered paths are errors.
 func RegisteredWorktreeState(repo, dir string) (state WorktreeState, found bool, err error) {
-	info, err := os.Lstat(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return WorktreeState{}, false, nil
-		}
-		return WorktreeState{}, false, fmt.Errorf("inspect worktree %s: %w", dir, err)
+	info, statErr := os.Lstat(dir)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return WorktreeState{}, false, fmt.Errorf("inspect worktree %s: %w", dir, statErr)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
+	if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
 		return WorktreeState{}, false, fmt.Errorf("worktree path %s is a symlink", dir)
 	}
+	state, found, err = listedWorktreeState(repo, dir)
+	if err != nil || found {
+		return state, found, err
+	}
+	if os.IsNotExist(statErr) {
+		return WorktreeState{}, false, nil
+	}
+	return WorktreeState{}, false, fmt.Errorf(
+		"worktree path %s exists but is not registered in %s", dir, repo,
+	)
+}
+
+func listedWorktreeState(repo, dir string) (state WorktreeState, found bool, err error) {
 	out, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").Output()
 	if err != nil {
 		return WorktreeState{}, false, gitOutputError("git worktree list", err)
@@ -128,9 +139,7 @@ func RegisteredWorktreeState(repo, dir string) (state WorktreeState, found bool,
 	if currentPath != "" && canonPath(currentPath) == target {
 		return state, true, nil
 	}
-	return WorktreeState{}, false, fmt.Errorf(
-		"worktree path %s exists but is not registered in %s", dir, repo,
-	)
+	return WorktreeState{}, false, nil
 }
 
 // OriginURL returns the configured URL for the origin remote.
@@ -534,19 +543,8 @@ func WorktreeAdd(repo, dir, branch, startPoint string) error {
 // IsWorktree reports whether dir is registered as a git worktree of repo.
 // The returned bool is only meaningful when err is nil.
 func IsWorktree(repo, dir string) (bool, error) {
-	out, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").Output()
-	if err != nil {
-		return false, gitOutputError("git worktree list", err)
-	}
-	target := canonPath(dir)
-	for _, line := range strings.Split(string(out), "\n") {
-		if p, ok := strings.CutPrefix(line, "worktree "); ok {
-			if canonPath(strings.TrimSpace(p)) == target {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
+	_, found, err := listedWorktreeState(repo, dir)
+	return found, err
 }
 
 // canonPath resolves symlinks so paths from git (which reports real paths, e.g.
@@ -556,7 +554,25 @@ func canonPath(p string) string {
 	if resolved, err := filepath.EvalSymlinks(p); err == nil {
 		return resolved
 	}
-	return filepath.Clean(p)
+	cleaned := filepath.Clean(p)
+	current := cleaned
+	var suffix []string
+	for {
+		parent := filepath.Dir(current)
+		if parent == current {
+			return cleaned
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+		resolved, err := filepath.EvalSymlinks(current)
+		if err != nil {
+			continue
+		}
+		for i := len(suffix) - 1; i >= 0; i-- {
+			resolved = filepath.Join(resolved, suffix[i])
+		}
+		return resolved
+	}
 }
 
 // WorktreeClean reports whether the registered worktree at dir has no
