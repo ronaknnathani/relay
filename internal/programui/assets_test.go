@@ -211,7 +211,7 @@ func TestRoadmapCardsKeepOneVisibleMetadataLineAndExplicitNames(t *testing.T) {
 		`Dependencies: ${dependencies.join(", ")}`,
 		`No dependencies`,
 		`function updateConnectorSelection()`,
-		`path.dataset.from = edge.from`,
+		`path.dataset.edgeCount = String(groups[group].length)`,
 	})
 	requireAbsent(t, "app.css", styles, []string{
 		"content: attr(data-meta)",

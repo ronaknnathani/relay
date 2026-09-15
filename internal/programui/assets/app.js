@@ -60,6 +60,7 @@ const state = {
   roadmapRenderGeneration: 0,
   dirtyTabs: new Set(TABS),
   cards: new Map(),
+  connectorPaths: [],
   drawerOpen: false,
   drawerReturn: null,
   detailItem: "",
@@ -792,34 +793,6 @@ function onTabKey(event) {
 
 /* ---------- roadmap ---------- */
 
-function relatedSet(id) {
-  const related = new Set();
-  if (!id) {
-    return related;
-  }
-  const byID = new Map(items().map((item) => [item.id, item]));
-  const walk = (start, key) => {
-    const queue = [start];
-    while (queue.length > 0) {
-      const current = queue.shift();
-      const item = byID.get(current);
-      if (!item) {
-        continue;
-      }
-      list(item[key]).forEach((next) => {
-        if (!related.has(next)) {
-          related.add(next);
-          queue.push(next);
-        }
-      });
-    }
-  };
-  related.add(id);
-  walk(id, "dependencies");
-  walk(id, "dependents");
-  return related;
-}
-
 function renderRoadmap() {
   const generation = ++state.roadmapRenderGeneration;
   const graph = snapshotOf().graph || {};
@@ -828,6 +801,7 @@ function renderRoadmap() {
   renderRoadmapSummary(graph, plan, nodes);
 
   state.cards.clear();
+  state.connectorPaths = [];
   if (dom.graphEdges.firstChild) {
     dom.graphEdges.replaceChildren();
   }
@@ -1143,8 +1117,7 @@ function drawConnectors(edges) {
   dom.graph.setAttribute("height", String(height));
   dom.graph.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
-  const related = state.selected ? relatedSet(state.selected) : null;
-  const fragment = new DocumentFragment();
+  const connectorPaths = [];
   edges.forEach((edge) => {
     const from = boxes.get(edge.from);
     const to = boxes.get(edge.to);
@@ -1152,38 +1125,50 @@ function drawConnectors(edges) {
       return;
     }
     const downward = to.top > from.bottom + 4;
-    const path = svg("path", downward ? "edge" : "edge edge--back");
+    let path;
     if (downward) {
-      path.setAttribute("d", downwardPath(from, to));
+      path = downwardPath(from, to);
     } else {
-      path.setAttribute(
-        "d",
-        `M ${round(from.center)} ${round(from.bottom + 1)} L ${round(to.center)} ${round(to.top - 7)}`,
-      );
+      path =
+        `M ${round(from.center)} ${round(from.bottom + 1)} L ${round(to.center)} ${round(to.top - 7)}`;
     }
-    const touched = Boolean(related && (edge.from === state.selected || edge.to === state.selected));
-    path.dataset.from = edge.from;
-    path.dataset.to = edge.to;
-    path.dataset.downward = downward ? "true" : "false";
-    if (touched && downward) {
-      path.setAttribute("class", "edge edge--active");
-    }
-    path.setAttribute("marker-end", touched && downward ? "url(#flow-arrow-active)" : "url(#flow-arrow)");
-    fragment.append(path);
+    connectorPaths.push({ from: edge.from, to: edge.to, downward, path });
   });
-  dom.graphEdges.replaceChildren(fragment);
+  state.connectorPaths = connectorPaths;
+  renderConnectorPaths();
 }
 
 function updateConnectorSelection() {
-  Array.from(dom.graphEdges.children).forEach((path) => {
-    const downward = path.dataset.downward === "true";
-    const active = downward && Boolean(state.selected) &&
-      (path.dataset.from === state.selected || path.dataset.to === state.selected);
-    path.setAttribute("class", downward
-      ? (active ? "edge edge--active" : "edge")
-      : "edge edge--back");
-    path.setAttribute("marker-end", active ? "url(#flow-arrow-active)" : "url(#flow-arrow)");
+  renderConnectorPaths();
+}
+
+function renderConnectorPaths() {
+  const groups = {
+    normal: [],
+    active: [],
+    back: [],
+  };
+  state.connectorPaths.forEach((edge) => {
+    const active = edge.downward && Boolean(state.selected) &&
+      (edge.from === state.selected || edge.to === state.selected);
+    groups[edge.downward ? (active ? "active" : "normal") : "back"].push(edge.path);
   });
+  const fragment = new DocumentFragment();
+  [
+    ["normal", "edge", "url(#flow-arrow)"],
+    ["active", "edge edge--active", "url(#flow-arrow-active)"],
+    ["back", "edge edge--back", "url(#flow-arrow)"],
+  ].forEach(([group, className, marker]) => {
+    if (groups[group].length === 0) {
+      return;
+    }
+    const path = svg("path", className);
+    path.setAttribute("d", groups[group].join(" "));
+    path.setAttribute("marker-end", marker);
+    path.dataset.edgeCount = String(groups[group].length);
+    fragment.append(path);
+  });
+  dom.graphEdges.replaceChildren(fragment);
 }
 
 function round(value) {

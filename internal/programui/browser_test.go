@@ -340,7 +340,8 @@ func TestBrowserRoadmapResumesAfterTabSwitch(t *testing.T) {
 		chromedp.Poll(`document.querySelector("#panel-tasks").hidden === false`, nil),
 		chromedp.Evaluate(`selectTab("roadmap")`, nil),
 		chromedp.Poll(`document.querySelectorAll(".card").length === 160 &&
-			document.querySelectorAll("#graph-edges .edge").length === 159`, nil),
+			Array.from(document.querySelectorAll("#graph-edges .edge"))
+				.reduce((total, path) => total + Number(path.dataset.edgeCount || 1), 0) === 159`, nil),
 	); err != nil {
 		t.Fatalf("resume roadmap render: %v", err)
 	}

@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v13"
+	performanceHarness = "complete-roadmap-v14"
 )
 
 type performanceReport struct {
@@ -161,6 +161,8 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 			});
 			const relayUsable = () => {
 				const cards = Array.from(document.querySelectorAll(".card"));
+				const edgeCount = Array.from(document.querySelectorAll("#graph-edges .edge"))
+					.reduce((total, path) => total + Number(path.dataset.edgeCount || 1), 0);
 				const refresh = document.querySelector("#refresh");
 				const roadmapTab = document.querySelector("#tab-roadmap");
 				if (window.__relayCompleteUsableAt > 0 ||
@@ -174,7 +176,7 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 					!cards.every((card) => card.dataset.focusKey &&
 						card.textContent.includes("Reference task")) ||
 					document.querySelectorAll("#graph-nodes .stage").length === 0 ||
-					document.querySelectorAll("#graph-edges .edge").length !== 200 ||
+					edgeCount !== 200 ||
 					!document.querySelector("#graph")?.getAttribute("aria-label")?.includes(
 						"100 tasks, 200 dependency links") ||
 					!refresh || refresh.disabled ||
@@ -274,7 +276,8 @@ func measureBrowserRun(
 			note: document.querySelector("#roadmap-note")?.textContent,
 			cards: document.querySelectorAll(".card").length,
 			stages: document.querySelectorAll("#graph-nodes .stage").length,
-			edges: document.querySelectorAll("#graph-edges .edge").length,
+			edges: Array.from(document.querySelectorAll("#graph-edges .edge"))
+				.reduce((total, path) => total + Number(path.dataset.edgeCount || 1), 0),
 			graphLabel: document.querySelector("#graph")?.getAttribute("aria-label"),
 			schema: typeof state === "undefined" ? "" : state.snapshot?.schema,
 			items: typeof state === "undefined" ? 0 : state.snapshot?.items?.length,
