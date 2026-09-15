@@ -836,7 +836,9 @@ function renderRoadmap() {
       taskCard(node, item, index, hasSelection, card);
       state.cards.set(id, card);
     });
-    if (dom.graphEdges.children.length !== list(graph.edges).length) {
+    const renderedEdges = Array.from(dom.graphEdges.querySelectorAll(".edge"))
+      .reduce((total, path) => total + count(path.dataset.edgeCount), 0);
+    if (renderedEdges !== list(graph.edges).length) {
       drawConnectorsForCurrentGraph();
     }
     return true;
@@ -1629,6 +1631,8 @@ function start() {
   Array.from(dom.graphNodes.querySelectorAll(".card")).forEach((card) => {
     state.cards.set(card.dataset.item, card);
   });
+  state.connectorPaths = window.__relayRoadmapConnectorPaths || [];
+  delete window.__relayRoadmapConnectorPaths;
   renderThemeToggle();
   bindControls();
   const parsed = readHash();

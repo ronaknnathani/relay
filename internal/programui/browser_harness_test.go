@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v19"
+	performanceHarness = "complete-roadmap-v20"
 )
 
 type performanceReport struct {
@@ -195,8 +195,7 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 				if (window.__relayCompleteUsableAt > 0 ||
 					(document.querySelector("#app-script") && !window.__relayCoreReady) ||
 					typeof state === "undefined" ||
-					state.snapshot?.schema !== "relay.program.v1" ||
-					state.snapshot?.items?.length !== 100 ||
+					state.snapshot?.graph?.nodes?.length !== 100 ||
 					!window.__relayCompleteGraphAt ||
 					document.querySelector("#program-title")?.textContent !== "Reference Program" ||
 					!document.querySelector("#program-summary")?.textContent ||
