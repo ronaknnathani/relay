@@ -74,6 +74,7 @@ const state = {
   bundleError: "",
   pollError: "",
   pendingTab: null,
+  pendingHash: false,
 };
 
 const initialProgramController = new AbortController();
@@ -153,12 +154,8 @@ function loadDeferredUI() {
     state.bundlePending = "";
     state.bundleError = "";
     ensureDeferredDom();
-    const pendingTab = state.pendingTab;
-    state.pendingTab = null;
     renderReconnect();
-    if (pendingTab) {
-      selectTab(pendingTab.name, pendingTab.options);
-    }
+    flushPendingNavigation();
   }).catch((error) => {
     deferredUIPromise = null;
     state.bundlePending = "";
@@ -183,7 +180,7 @@ function withDeferredUI(action) {
 }
 
 function loadFullSnapshot() {
-  if (state.snapshot && state.snapshot.schema === "relay.program.v1") {
+  if (fullSnapshotReady()) {
     return Promise.resolve(true);
   }
   if (fullSnapshotPromise) {
@@ -196,6 +193,46 @@ function loadFullSnapshot() {
     return loaded;
   });
   return fullSnapshotPromise;
+}
+
+function fullSnapshotReady() {
+  return Boolean(state.snapshot && state.snapshot.schema === "relay.program.v1");
+}
+
+function flushPendingTab() {
+  if (!deferredUIReady || !fullSnapshotReady() || !state.pendingTab) {
+    return;
+  }
+  const pendingTab = state.pendingTab;
+  state.pendingTab = null;
+  state.bundlePending = "";
+  renderReconnect();
+  selectTab(pendingTab.name, pendingTab.options);
+}
+
+function flushPendingNavigation() {
+  if (!deferredUIReady || !fullSnapshotReady()) {
+    return;
+  }
+  if (state.pendingHash) {
+    state.pendingHash = false;
+    state.pendingTab = null;
+    state.bundlePending = "";
+    renderReconnect();
+    applyHash();
+    return;
+  }
+  flushPendingTab();
+}
+
+function loadPendingTab() {
+  Promise.all([loadDeferredUI(), loadFullSnapshot()])
+    .then((results) => {
+      if (results[1]) {
+        flushPendingNavigation();
+      }
+    })
+    .catch(() => {});
 }
 
 /* ---------- DOM helpers ---------- */
@@ -753,11 +790,11 @@ function renderWarningCount() {
 
 function selectTab(name, options) {
   const tab = TABS.indexOf(name) === -1 ? "roadmap" : name;
-  if (tab !== "roadmap" && !deferredUIReady) {
+  if (tab !== "roadmap" && (!deferredUIReady || !fullSnapshotReady())) {
     state.pendingTab = { name: tab, options };
     state.bundlePending = `Loading ${tab.charAt(0).toUpperCase()}${tab.slice(1)}…`;
     renderReconnect();
-    loadDeferredUI().catch(() => {});
+    loadPendingTab();
     return;
   }
   if (tab === "roadmap" && state.pendingTab) {
@@ -1483,7 +1520,16 @@ function bindControls() {
       onCardKey(event, card.dataset.item);
     }
   });
-  window.addEventListener("hashchange", () => withDeferredUI(applyHash));
+  window.addEventListener("hashchange", () => {
+    state.pendingHash = true;
+    Promise.all([loadDeferredUI(), loadFullSnapshot()])
+      .then((results) => {
+        if (results[1]) {
+          flushPendingNavigation();
+        }
+      })
+      .catch(() => {});
+  });
   window.addEventListener("resize", () => {
     if (state.tab === "roadmap") {
       drawConnectorsForCurrentGraph();
@@ -1584,6 +1630,7 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
     }
     if (initial) {
       renderInitial();
+      flushPendingNavigation();
       window.requestAnimationFrame(() => {
         state.signature = signatureOf(JSON.stringify(snapshot));
         if (snapshot.schema !== "relay.program.roadmap.bootstrap.v1") {
@@ -1614,6 +1661,7 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
       render();
       state.signature = signature;
     }
+    flushPendingNavigation();
     if (state.pendingDrawer && state.selected) {
       withDeferredUI(() => {
         state.pendingDrawer = false;

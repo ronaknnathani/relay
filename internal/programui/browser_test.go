@@ -342,6 +342,281 @@ func TestBrowserDeepLinkedDeferredTabsWaitForAssetsAndRecover(t *testing.T) {
 	}
 }
 
+func TestBrowserDeepLinkedDeferredTabsWaitForFullSnapshot(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	goal := "# Authoritative goal\n"
+	tabs := []struct {
+		name       string
+		falseEmpty string
+		rendered   string
+	}{
+		{
+			name:       "tasks",
+			falseEmpty: `document.querySelector("#ledger-count").textContent === "No tasks"`,
+			rendered:   `document.querySelector("#ledger-count").textContent === "2 of 2 tasks"`,
+		},
+		{
+			name:       "decisions",
+			falseEmpty: `document.querySelector("#decisions-note").textContent === "Nothing is waiting on you."`,
+			rendered:   `document.querySelector("#decisions-note").textContent === "1 decision waiting on you."`,
+		},
+		{
+			name:       "goal",
+			falseEmpty: `document.querySelector("#goal-body").textContent.includes("No program files were found on disk.")`,
+			rendered:   `document.querySelector("#goal-body").textContent.includes("Authoritative goal")`,
+		},
+	}
+	for _, tab := range tabs {
+		t.Run(tab.name, func(t *testing.T) {
+			snapshot := browserTestSnapshot()
+			snapshot.OpenDecisions = []programview.DecisionDTO{{
+				ID: "d1", Question: "Choose the authoritative path.",
+			}}
+			snapshot.ProgramArtifacts = []programview.ArtifactDTO{{
+				Name: "goal.md", Path: "goal.md", Present: true,
+				Size: int64(len(goal)), Text: &goal,
+			}}
+			assetsRelease := make(chan struct{})
+			snapshotRelease := make(chan struct{})
+			var assetsOnce sync.Once
+			var snapshotOnce sync.Once
+			t.Cleanup(func() {
+				assetsOnce.Do(func() { close(assetsRelease) })
+				snapshotOnce.Do(func() { close(snapshotRelease) })
+			})
+			feed := newSnapshotFeed(
+				snapshot,
+				time.Minute,
+				time.Now,
+				func() (programview.Snapshot, error) { return snapshot, nil },
+			)
+			url := startBrowserHTTPHandler(t, func(port int) http.Handler {
+				base := newHandler(
+					snapshot.Program.Slug,
+					strconv.Itoa(port),
+					newSnapshotCache(time.Minute, time.Now, nil),
+					feed,
+					nil,
+				)
+				return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+					switch {
+					case request.URL.Path == "/app-deferred.css" ||
+						request.URL.Path == "/app-deferred.js":
+						select {
+						case <-assetsRelease:
+						case <-request.Context().Done():
+							return
+						}
+					case request.URL.Path == "/api/program" &&
+						request.URL.Query().Get("view") == "":
+						select {
+						case <-snapshotRelease:
+						case <-request.Context().Done():
+							return
+						}
+					}
+					base.ServeHTTP(response, request)
+				})
+			})
+
+			allocator, cancelAllocator := chromedp.NewExecAllocator(
+				context.Background(),
+				append(chromedp.DefaultExecAllocatorOptions[:],
+					chromedp.ExecPath(chromeExecutable(t)),
+					chromedp.Flag("headless", true),
+					chromedp.Flag("disable-gpu", true),
+				)...,
+			)
+			defer cancelAllocator()
+			browser, cancelBrowser := chromedp.NewContext(allocator)
+			defer cancelBrowser()
+			browser, cancelTimeout := context.WithTimeout(browser, 20*time.Second)
+			defer cancelTimeout()
+			if err := chromedp.Run(browser,
+				chromedp.ActionFunc(func(ctx context.Context) error {
+					_, err := page.AddScriptToEvaluateOnNewDocument(`
+						window.__relayErrors = [];
+						window.addEventListener("error", (event) => window.__relayErrors.push(event.message));
+						window.addEventListener("unhandledrejection", (event) =>
+							window.__relayErrors.push(String(event.reason)));
+					`).Do(ctx)
+					return err
+				}),
+				chromedp.ActionFunc(func(ctx context.Context) error {
+					_, _, _, _, err := page.Navigate(url + "/#tab=" + tab.name).Do(ctx)
+					return err
+				}),
+				chromedp.Poll(`typeof deferredScriptPromise !== "undefined" &&
+					deferredScriptPromise !== null`, nil),
+				chromedp.ActionFunc(func(context.Context) error {
+					assetsOnce.Do(func() { close(assetsRelease) })
+					return nil
+				}),
+				chromedp.Poll(`deferredUIReady === true`, nil),
+			); err != nil {
+				t.Fatalf("load deferred assets before full snapshot: %v", err)
+			}
+			var renderedFalseEmpty bool
+			if err := chromedp.Run(browser, chromedp.Evaluate(tab.falseEmpty, &renderedFalseEmpty)); err != nil {
+				t.Fatal(err)
+			}
+			if renderedFalseEmpty {
+				t.Fatalf("%s rendered an empty-program state before the full snapshot", tab.name)
+			}
+			if err := chromedp.Run(browser,
+				chromedp.Evaluate(`window.__relayBeforeFull = {
+					schema: state.snapshot?.schema,
+					tab: state.tab,
+					pending: state.pendingTab?.name,
+					panelHidden: document.querySelector("#panel-`+tab.name+`").hidden,
+					errors: window.__relayErrors.slice()
+				}`, nil),
+				chromedp.Poll(`window.__relayBeforeFull.schema === "relay.program.roadmap.bootstrap.v1" &&
+					window.__relayBeforeFull.tab === "roadmap" &&
+					window.__relayBeforeFull.pending === "`+tab.name+`" &&
+					window.__relayBeforeFull.panelHidden === true &&
+					window.__relayBeforeFull.errors.length === 0`, nil),
+				chromedp.ActionFunc(func(context.Context) error {
+					snapshotOnce.Do(func() { close(snapshotRelease) })
+					return nil
+				}),
+				chromedp.Poll(`state.snapshot?.schema === "relay.program.v1" &&
+					state.tab === "`+tab.name+`" &&
+					`+tab.rendered+` &&
+					window.__relayErrors.length === 0`, nil, chromedp.WithPollingTimeout(8*time.Second)),
+			); err != nil {
+				t.Fatalf("render authoritative %s tab: %v", tab.name, err)
+			}
+		})
+	}
+}
+
+func TestBrowserQueuesHashChangesBeforeDeferredBundle(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	snapshot := browserTestSnapshot()
+	snapshot.OpenDecisions = []programview.DecisionDTO{{
+		ID: "d1", Question: "Choose the requested tab.",
+	}}
+	snapshotRelease := make(chan struct{})
+	var snapshotOnce sync.Once
+	t.Cleanup(func() {
+		snapshotOnce.Do(func() { close(snapshotRelease) })
+	})
+	feed := newSnapshotFeed(
+		snapshot,
+		time.Minute,
+		time.Now,
+		func() (programview.Snapshot, error) { return snapshot, nil },
+	)
+	url := startBrowserHTTPHandler(t, func(port int) http.Handler {
+		base := newHandler(
+			snapshot.Program.Slug,
+			strconv.Itoa(port),
+			newSnapshotCache(time.Minute, time.Now, nil),
+			feed,
+			nil,
+		)
+		return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			if request.URL.Path == "/api/program" &&
+				request.URL.Query().Get("view") == "" {
+				select {
+				case <-snapshotRelease:
+				case <-request.Context().Done():
+					return
+				}
+			}
+			base.ServeHTTP(response, request)
+		})
+	})
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 20*time.Second)
+	defer cancelTimeout()
+	if err := chromedp.Run(browser,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(`
+				window.__relayErrors = [];
+				window.addEventListener("error", (event) => window.__relayErrors.push(event.message));
+				window.addEventListener("unhandledrejection", (event) =>
+					window.__relayErrors.push(String(event.reason)));
+			`).Do(ctx)
+			return err
+		}),
+		network.Enable(),
+		network.SetBlockedURLs([]string{"*app-deferred.css", "*app-deferred.js"}),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, _, _, _, err := page.Navigate(url).Do(ctx)
+			return err
+		}),
+		chromedp.Poll(`document.querySelector("#reconnect").textContent.includes(
+			"failed to load. Click Refresh to retry.")`, nil),
+		chromedp.Evaluate(`
+			window.__relayTabSelections = {tasks: 0, decisions: 0};
+			const tabs = document.querySelectorAll('[role="tab"]');
+			const observer = new MutationObserver((records) => {
+				records.forEach((record) => {
+					const tab = record.target.dataset.tab;
+					if (record.attributeName === "aria-selected" &&
+						record.target.getAttribute("aria-selected") === "true" &&
+						Object.prototype.hasOwnProperty.call(window.__relayTabSelections, tab)) {
+						window.__relayTabSelections[tab] += 1;
+					}
+				});
+			});
+			tabs.forEach((tab) => observer.observe(tab, {attributes: true}));
+			window.location.hash = "tab=tasks";
+			window.location.hash = "tab=decisions";
+		`, nil),
+		chromedp.Poll(`window.location.hash === "#tab=decisions" &&
+			window.__relayErrors.length === 0`, nil),
+		network.SetBlockedURLs([]string{}),
+		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+	); err != nil {
+		t.Fatalf("queue pre-bundle hash changes: %v", err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Poll(`deferredUIReady === true`, nil),
+		chromedp.Poll(`state.snapshot?.schema === "relay.program.roadmap.bootstrap.v1" &&
+			state.tab === "roadmap" &&
+			window.__relayErrors.length === 0`, nil),
+		chromedp.ActionFunc(func(context.Context) error {
+			snapshotOnce.Do(func() { close(snapshotRelease) })
+			return nil
+		}),
+		chromedp.Poll(`state.snapshot?.schema === "relay.program.v1" &&
+			state.tab === "decisions" &&
+			document.querySelector("#decisions-note").textContent === "1 decision waiting on you." &&
+			window.__relayTabSelections.tasks === 0 &&
+			window.__relayTabSelections.decisions === 1 &&
+			window.__relayErrors.length === 0`, nil, chromedp.WithPollingTimeout(8*time.Second)),
+	); err != nil {
+		var diagnostic string
+		_ = chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+			hash: window.location.hash,
+			tab: state.tab,
+			schema: state.snapshot?.schema,
+			pending: state.pendingTab?.name,
+			selections: window.__relayTabSelections,
+			errors: window.__relayErrors
+		})`, &diagnostic))
+		t.Fatalf("apply queued hash once after dependencies: %v: %s", err, diagnostic)
+	}
+}
+
 func TestBrowserKeepsPendingExternalDrawerStateNonAuthoritative(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")

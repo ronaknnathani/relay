@@ -1132,7 +1132,15 @@ func TestDeferredBundleFailureDoesNotGateSnapshotHydration(t *testing.T) {
 		"loadFullSnapshot();",
 		"loadDeferredUI().then",
 		"state.bundleError",
+		"!deferredUIReady || !fullSnapshotReady()",
+		"Promise.all([loadDeferredUI(), loadFullSnapshot()])",
+		"state.pendingHash = true",
+		"function flushPendingNavigation()",
+		"applyHash();",
 	})
+	if strings.Contains(script, "withDeferredUI(applyHash)") {
+		t.Error("hash changes must not resolve deferred-only symbols before the bundle loads")
+	}
 	_, renderInitial, found := strings.Cut(script, "function renderInitial()")
 	if !found {
 		t.Fatal("app.js is missing renderInitial")
