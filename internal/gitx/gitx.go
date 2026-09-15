@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -18,10 +17,6 @@ var (
 	// destructive merge decision.
 	ErrInvalidWorkStart = errors.New("invalid work start")
 
-	gitURLPattern     = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s'"<>]+`)
-	scpLikeURLPattern = regexp.MustCompile(
-		`(?i)\b[^\s'"<>/@:]+@(?:\[[0-9a-f:.]+\]|[^\s'"<>/:]+):[^\s'"<>]+`,
-	)
 	removeBranchConfig = removeLocalBranchConfig
 )
 
@@ -482,8 +477,123 @@ func Fetch(repo, branch string) (string, error) {
 // output while preserving the host, path, and surrounding diagnostic.
 func SanitizeDiagnostic(output string) string {
 	output = strings.TrimSpace(output)
-	output = gitURLPattern.ReplaceAllStringFunc(output, sanitizeGitDiagnosticURL)
-	return scpLikeURLPattern.ReplaceAllStringFunc(output, sanitizeSCPStyleURL)
+	var sanitized strings.Builder
+	for index := 0; index < len(output); {
+		if end, ok := schemeURLTokenEnd(output, index); ok {
+			sanitized.WriteString(sanitizeGitDiagnosticURL(output[index:end]))
+			index = end
+			continue
+		}
+		if end, ok := scpStyleURLTokenEnd(output, index); ok {
+			sanitized.WriteString(sanitizeSCPStyleURL(output[index:end]))
+			index = end
+			continue
+		}
+		sanitized.WriteByte(output[index])
+		index++
+	}
+	return sanitized.String()
+}
+
+func schemeURLTokenEnd(output string, start int) (int, bool) {
+	if !urlTokenBoundary(output, start) || start >= len(output) ||
+		!isASCIILetter(output[start]) {
+		return 0, false
+	}
+	index := start + 1
+	for index < len(output) && isSchemeCharacter(output[index]) {
+		index++
+	}
+	if !strings.HasPrefix(output[index:], "://") {
+		return 0, false
+	}
+	end := scanURLTokenEnd(output, start, index+3)
+	if end == index+3 {
+		return 0, false
+	}
+	return end, true
+}
+
+func scpStyleURLTokenEnd(output string, start int) (int, bool) {
+	if !urlTokenBoundary(output, start) {
+		return 0, false
+	}
+	end := scanURLTokenEnd(output, start, start)
+	if end <= start {
+		return 0, false
+	}
+	token := output[start:end]
+	pathStart := strings.IndexByte(token, ':')
+	if bracketStart := strings.IndexByte(token, '['); bracketStart >= 0 {
+		pathStart = strings.Index(token[bracketStart:], "]:")
+		if pathStart >= 0 {
+			pathStart += bracketStart + 1
+		}
+	}
+	if pathStart <= 0 || pathStart == len(token)-1 {
+		return 0, false
+	}
+	userinfoEnd := strings.LastIndexByte(token[:pathStart], '@')
+	if userinfoEnd <= 0 || userinfoEnd == pathStart-1 {
+		return 0, false
+	}
+	host := token[userinfoEnd+1 : pathStart]
+	if strings.ContainsAny(host, "/@") {
+		return 0, false
+	}
+	return end, true
+}
+
+func scanURLTokenEnd(output string, start, scanFrom int) int {
+	wrappedInSingleQuotes := start > 0 && output[start-1] == '\''
+	for index := scanFrom; index < len(output); index++ {
+		character := output[index]
+		if character <= ' ' || strings.ContainsRune("\"<>`", rune(character)) {
+			return trimURLTrailingProse(output, start, index)
+		}
+		if character == '\'' && wrappedInSingleQuotes && closesQuotedURL(output, index) {
+			return index
+		}
+	}
+	return trimURLTrailingProse(output, start, len(output))
+}
+
+func closesQuotedURL(output string, quote int) bool {
+	if quote+1 == len(output) {
+		return true
+	}
+	next := output[quote+1]
+	if next <= ' ' {
+		return true
+	}
+	return strings.ContainsRune(":,.;!?)]}", rune(next)) &&
+		(quote+2 == len(output) || output[quote+2] <= ' ')
+}
+
+func trimURLTrailingProse(output string, start, end int) int {
+	for end > start && strings.ContainsRune(",.;!", rune(output[end-1])) {
+		end--
+	}
+	return end
+}
+
+func urlTokenBoundary(output string, start int) bool {
+	if start == 0 {
+		return true
+	}
+	previous := output[start-1]
+	return !isASCIILetter(previous) &&
+		!(previous >= '0' && previous <= '9') &&
+		previous != '_'
+}
+
+func isASCIILetter(character byte) bool {
+	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z'
+}
+
+func isSchemeCharacter(character byte) bool {
+	return isASCIILetter(character) || character >= '0' && character <= '9' ||
+		character == '+' || character == '-' || character == '.'
 }
 
 func sanitizeGitDiagnosticURL(rawURL string) string {

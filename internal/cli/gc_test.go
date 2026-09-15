@@ -864,6 +864,75 @@ func TestGCFetchWarningRedactsCredentials(t *testing.T) {
 	}
 }
 
+func TestGCFetchWarningRedactsApostrophesInURLTokens(t *testing.T) {
+	tests := []struct {
+		name       string
+		diagnostic string
+		wantURL    string
+		secrets    []string
+		wantProse  string
+	}{
+		{
+			name: "scheme URL",
+			diagnostic: "fatal: unable to access " +
+				"'https://fetch'user:fetch'secret@git_alias_1/team/it's/repo.git" +
+				"?access_token=query'secret#fragment'secret': denied after request",
+			wantURL: "https://[redacted]@git_alias_1/team/it's/repo.git",
+			secrets: []string{
+				"fetch'user", "fetch'secret", "access_token", "query'secret", "fragment'secret",
+			},
+			wantProse: "denied after request",
+		},
+		{
+			name: "SCP URL",
+			diagnostic: "fatal: repository " +
+				"'de'ploy@git_alias_1:team/it's/repo.git?token=query'secret#fragment'secret'" +
+				" is unavailable",
+			wantURL: "[redacted]@git_alias_1:team/it's/repo.git",
+			secrets: []string{
+				"de'ploy", "token=", "query'secret", "fragment'secret",
+			},
+			wantProse: "is unavailable",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			fixture := newGCRepoFixture(t, "main")
+			slug := "apostrophe-fetch-failure"
+			branch, worktree := addGCProject(t, fixture, slug)
+			scriptPath := filepath.Join(t.TempDir(), "failing-upload-pack")
+			script := "#!/bin/sh\n" +
+				"printf '%s\\n' " + shellQuote(test.diagnostic) + " >&2\n" +
+				"exit 1\n"
+			if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+				t.Fatal(err)
+			}
+			runArchiveGit(t, fixture.repo, "config", "remote.origin.uploadpack", scriptPath)
+
+			_, stderr, err := captureGCOutput(t, runGC)
+			if !errors.Is(err, errGCCompletedWithErrors) {
+				t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+			}
+			for _, secret := range test.secrets {
+				if strings.Contains(stderr, secret) {
+					t.Fatalf("stderr %q leaked %q", stderr, secret)
+				}
+			}
+			for _, want := range []string{test.wantURL, test.wantProse} {
+				if !strings.Contains(stderr, want) {
+					t.Fatalf("stderr %q is missing %q", stderr, want)
+				}
+			}
+			if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+				!pathExists(worktree) ||
+				!gitx.BranchExists(fixture.repo, branch) {
+				t.Fatal("GC changed a project after its credential-bearing fetch failure")
+			}
+		})
+	}
+}
+
 func TestGCRefreshFailureDoesNotBlockAnotherRepository(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	failingRepo := newGCRepoFixture(t, "main")
