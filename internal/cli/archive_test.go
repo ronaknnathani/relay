@@ -207,6 +207,54 @@ func TestArchiveRejectsManifestSlugMismatchWithoutChangingVictim(t *testing.T) {
 	}
 }
 
+func TestArchiveForcePreservesWorktreeFromStaleManifest(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "stale-worktree"
+	branch := "user/stale-worktree"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, repo, "worktree", "remove", "--force", worktree)
+	runArchiveGit(t, repo, "branch", "-D", branch)
+
+	victimBranch := "user/victim"
+	runArchiveGit(t, repo, "worktree", "add", "-q", worktree, "-b", victimBranch, "main")
+
+	_, err := archiveProject(slug, true)
+	if err == nil || !strings.Contains(err.Error(), "attached to") ||
+		!strings.Contains(err.Error(), "refs/heads/"+branch) {
+		t.Fatalf("archiveProject error = %v, want stale worktree rejection", err)
+	}
+	if !pathExists(worktree) || !gitx.BranchExists(repo, victimBranch) {
+		t.Fatal("forced archive removed the worktree or branch belonging to another project")
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("forced archive moved stale project metadata")
+	}
+}
+
+func TestArchiveForceRejectsDetachedWorktreeWithoutAuthoritativeCommit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "detached-without-proof"
+	branch := "user/detached-without-proof"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, worktree, "checkout", "-q", "--detach")
+	runArchiveGit(t, repo, "branch", "-D", branch)
+
+	_, err := archiveProject(slug, true)
+	if err == nil || !strings.Contains(err.Error(), "authoritative project commit") {
+		t.Fatalf("archiveProject error = %v, want detached worktree proof rejection", err)
+	}
+	if !pathExists(worktree) {
+		t.Fatal("forced archive removed a detached worktree without authoritative proof")
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("forced archive moved project metadata before validating detached ownership")
+	}
+}
+
 func TestArchiveRejectsDanglingWorktreeSymlink(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)

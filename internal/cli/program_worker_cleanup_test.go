@@ -913,6 +913,36 @@ func TestWorkerCleanupReturnsIncompleteWhenBranchDeletionFails(t *testing.T) {
 	}
 }
 
+func TestWorkerCleanupPreservesWorktreeAttachedToWrongBranch(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	victimBranch := "user/worker-victim"
+	runArchiveGit(t, manifest.Repo, "branch", victimBranch, manifest.Branch)
+	runArchiveGit(t, *manifest.Worktree, "checkout", "-q", victimBranch)
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installStubWatcherState(t, manifest.Slug, false)
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("worker cleanup: %v", err)
+	}
+	result := decodeCleanupOutput(t, out)
+	if result.Status != cleanupIncomplete || result.Archived {
+		t.Fatalf("result = %+v, want active incomplete cleanup", result)
+	}
+	if !strings.Contains(result.Error, "attached to") ||
+		!strings.Contains(result.Error, "refs/heads/"+manifest.Branch) {
+		t.Fatalf("cleanup error = %q, want manifest branch mismatch", result.Error)
+	}
+	if !pathExists(*manifest.Worktree) || !gitx.BranchExists(manifest.Repo, victimBranch) {
+		t.Fatal("worker cleanup removed the worktree or branch belonging to another project")
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), manifest.Slug)) {
+		t.Fatal("worker cleanup archived metadata before validating worktree ownership")
+	}
+}
+
 func TestWorkerCleanupPreservesWatcherRetryWhenBranchDeletionAlsoFails(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
 	actualWorktree := *manifest.Worktree

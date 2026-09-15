@@ -246,6 +246,7 @@ type archiveProofSnapshot struct {
 	ExpectedWorktreeTip    string
 	ExpectedWorktreeBranch string
 	WorktreeDetached       bool
+	AuthoritativeCommit    string
 	Merged                 bool
 }
 
@@ -291,6 +292,7 @@ func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision
 	workMerged := false
 	var warnings []string
 	if proof.BranchPresent {
+		proof.AuthoritativeCommit = proof.ExpectedBranchTip
 		base := m.BaseBranch
 		if base == "" {
 			base = gitx.DetectDefaultBranch(m.Repo)
@@ -347,6 +349,7 @@ func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision
 			if err := validatePullRequestProofTips(proof, evidence.HeadSHA); err != nil {
 				return archiveDecision{}, err
 			}
+			proof.AuthoritativeCommit = evidence.HeadSHA
 			proof.Kind = archiveProofPullRequest
 			workMerged = true
 		case force:
@@ -367,9 +370,13 @@ func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision
 				warnings = append(warnings, err.Error())
 			} else {
 				workMerged = true
+				proof.AuthoritativeCommit = evidence.HeadSHA
 				proof.Kind = archiveProofPullRequest
 			}
 		}
+	}
+	if err := validateArchiveWorktreeBinding(proof); err != nil {
+		return archiveDecision{}, err
 	}
 	proof.Merged = workMerged
 	return archiveDecision{proof: proof, warnings: warnings}, nil
@@ -451,6 +458,7 @@ func newMergedBranchArchiveProof(
 			expectedTip, proof.ExpectedBranchTip, m.Slug,
 		)
 	}
+	proof.AuthoritativeCommit = expectedTip
 	if proof.WorktreePresent && proof.ExpectedWorktreeTip != expectedTip {
 		return archiveProofSnapshot{}, fmt.Errorf(
 			"worktree HEAD %s for project %s does not match branch %q tip %s",
@@ -470,6 +478,7 @@ func newPullRequestArchiveProof(
 	if err != nil {
 		return archiveProofSnapshot{}, err
 	}
+	proof.AuthoritativeCommit = evidence.HeadSHA
 	if err := validatePullRequestProofTips(proof, evidence.HeadSHA); err != nil {
 		return archiveProofSnapshot{}, err
 	}
@@ -496,9 +505,23 @@ func validatePullRequestProofTips(proof archiveProofSnapshot, expectedTip string
 }
 
 func validateArchiveWorktreeBinding(proof archiveProofSnapshot) error {
-	// A detached worktree is accepted only after its HEAD matched the proven
-	// commit. An attached worktree must also still name the manifest branch.
-	if !proof.WorktreePresent || proof.WorktreeDetached {
+	if !proof.WorktreePresent {
+		return nil
+	}
+	if proof.WorktreeDetached {
+		if proof.AuthoritativeCommit == "" {
+			return fmt.Errorf(
+				"worktree %s for project %s is detached without an authoritative project commit; "+
+					"preserving it for manual inspection",
+				proof.Worktree, proof.Slug,
+			)
+		}
+		if proof.ExpectedWorktreeTip != proof.AuthoritativeCommit {
+			return fmt.Errorf(
+				"worktree %s for project %s is detached at %s, want authoritative project commit %s",
+				proof.Worktree, proof.Slug, proof.ExpectedWorktreeTip, proof.AuthoritativeCommit,
+			)
+		}
 		return nil
 	}
 	expectedBranch := "refs/heads/" + proof.Branch
@@ -762,6 +785,7 @@ func archiveCleanupProof(proof archiveProofSnapshot) *project.ArchiveCleanupProo
 		ExpectedWorktreeTip:    proof.ExpectedWorktreeTip,
 		ExpectedWorktreeBranch: proof.ExpectedWorktreeBranch,
 		WorktreeDetached:       proof.WorktreeDetached,
+		AuthoritativeCommit:    proof.AuthoritativeCommit,
 	}
 }
 
@@ -856,6 +880,14 @@ func validateArchivedCleanupProof(m project.Manifest) (project.ArchiveCleanupPro
 				"archived project %s cleanup proof records worktree %s on branch %q, want %q; "+
 					"preserving resources for manual inspection",
 				m.Slug, proof.Worktree, proof.ExpectedWorktreeBranch, "refs/heads/"+proof.Branch,
+			)
+		}
+		if proof.WorktreeDetached &&
+			(proof.AuthoritativeCommit == "" || proof.ExpectedWorktreeTip != proof.AuthoritativeCommit) {
+			return project.ArchiveCleanupProof{}, fmt.Errorf(
+				"archived project %s cleanup proof does not bind detached worktree %s to an "+
+					"authoritative project commit; preserving resources for manual inspection",
+				m.Slug, proof.Worktree,
 			)
 		}
 	} else if proof.ExpectedWorktreeTip != "" || proof.ExpectedWorktreeBranch != "" ||

@@ -40,6 +40,7 @@ type ArchiveCleanupProof struct {
 	ExpectedWorktreeTip    string `json:"expected_worktree_tip,omitempty"`
 	ExpectedWorktreeBranch string `json:"expected_worktree_branch,omitempty"`
 	WorktreeDetached       bool   `json:"worktree_detached,omitempty"`
+	AuthoritativeCommit    string `json:"authoritative_commit,omitempty"`
 }
 
 type PRInfo struct {
