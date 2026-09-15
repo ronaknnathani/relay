@@ -2,6 +2,7 @@
 package programui
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"embed"
 	"encoding/json"
@@ -17,7 +18,10 @@ import (
 	"github.com/ronaknnathani/relay/internal/programview"
 )
 
-const contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-Mn4bxo9tzkD5bpzro8up+ox0uq36P01csr2pwJhJTGc='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+const (
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-Mn4bxo9tzkD5bpzro8up+ox0uq36P01csr2pwJhJTGc=' 'sha256-JeHg4fCRru9vrvd54wqAIeW+MVIjEtD9V6jv6S9uoSI='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	appTemplateToken      = "__RELAY_APP__"
+)
 
 //go:embed assets/*
 var embeddedAssets embed.FS
@@ -78,7 +82,7 @@ func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	}
 	switch request.URL.Path {
 	case "/":
-		h.serveAsset(response, request, "assets/index.html", "text/html; charset=utf-8")
+		h.serveIndex(response, request)
 	case "/app.css":
 		h.serveAsset(response, request, "assets/app.css", "text/css; charset=utf-8")
 	case "/app.js":
@@ -89,6 +93,28 @@ func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		h.serveArtifact(response, request)
 	default:
 		http.NotFound(response, request)
+	}
+}
+
+func (h *handler) serveIndex(response http.ResponseWriter, request *http.Request) {
+	index, err := fs.ReadFile(embeddedAssets, "assets/index.html")
+	if err != nil {
+		http.Error(response, "read embedded asset assets/index.html", http.StatusInternalServerError)
+		return
+	}
+	script, err := fs.ReadFile(embeddedAssets, "assets/app.min.js")
+	if err != nil {
+		http.Error(response, "read embedded asset assets/app.min.js", http.StatusInternalServerError)
+		return
+	}
+	index = bytes.Replace(index, []byte(appTemplateToken), script, 1)
+	response.Header().Set("Content-Type", "text/html; charset=utf-8")
+	response.WriteHeader(http.StatusOK)
+	if request.Method == http.MethodHead {
+		return
+	}
+	if _, err := response.Write(index); err != nil {
+		return
 	}
 }
 

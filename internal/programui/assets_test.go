@@ -1,6 +1,8 @@
 package programui
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"io/fs"
 	"math"
 	"regexp"
@@ -93,8 +95,8 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 	})
 
 	if strings.Count(index, "<script") != 2 ||
-		!strings.Contains(index, `<script src="/app.js" defer></script>`) {
-		t.Error("index.html must apply the inline theme before loading the deferred application")
+		!strings.Contains(index, `<script>__RELAY_APP__</script>`) {
+		t.Error("index.html must apply the inline theme before the inline application bundle")
 	}
 	if strings.Count(index, "<link ") != 1 || !strings.Contains(index, `href="/app.css"`) {
 		t.Error("index.html must link exactly one local stylesheet, /app.css")
@@ -128,8 +130,7 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	})
 
 	head := index[strings.Index(index, "<head>"):strings.Index(index, "</head>")]
-	if !strings.Contains(head,
-		`document.documentElement.dataset.theme=t==="dark"?"dark":"light"`) ||
+	if !strings.Contains(head, `document.documentElement.dataset.theme=t==="dark"?"dark":"light"`) ||
 		!strings.Contains(head, `window.__relayInitialProgramRequest=fetch("/api/program"`) {
 		t.Error("the bootstrap must apply the stored theme and start the initial snapshot before app parsing")
 	}
@@ -149,6 +150,11 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	minified := readAsset(t, "assets/app.min.js")
 	if len(minified) >= len(script) || !strings.Contains(minified, "relay-usable") {
 		t.Error("the served application bundle must be minified and retain the usable marker")
+	}
+	digest := sha256.Sum256([]byte(minified))
+	hash := "'sha256-" + base64.StdEncoding.EncodeToString(digest[:]) + "'"
+	if !strings.Contains(contentSecurityPolicy, hash) {
+		t.Errorf("content security policy is missing the application hash %s", hash)
 	}
 	if strings.Index(script, "applyTheme(storedTheme()") > strings.Index(script, "function start()") {
 		t.Error("the theme must be applied before the app boot code")
