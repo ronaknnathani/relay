@@ -943,3 +943,44 @@ func TestWorkerCleanupRetryFinishesArchivedBranchCleanup(t *testing.T) {
 		t.Fatalf("branch deletion attempts = %d, want 2", deleteAttempts)
 	}
 }
+
+func TestWorkerCleanupRetryReturnsIncompleteWhenBranchProbeFails(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installStubWatcherState(t, manifest.Slug, false)
+
+	activeDir := filepath.Join(project.ActiveDir(), manifest.Slug)
+	archivedDir := filepath.Join(project.ArchivedDir(), manifest.Slug)
+	if err := os.MkdirAll(project.ArchivedDir(), 0755); err != nil {
+		t.Fatal(err)
+	}
+	manifest.Status = "archived"
+	if err := project.Save(filepath.Join(activeDir, "manifest.json"), manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(activeDir, archivedDir); err != nil {
+		t.Fatal(err)
+	}
+	previous := archiveBranchExists
+	archiveBranchExists = func(string, string) (bool, error) {
+		return false, errors.New("git branch probe failed")
+	}
+	t.Cleanup(func() { archiveBranchExists = previous })
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("worker cleanup: %v", err)
+	}
+	result := decodeCleanupOutput(t, out)
+	if result.Status != cleanupIncomplete || !result.AlreadyArchived {
+		t.Fatalf("result = %+v, want incomplete archived cleanup", result)
+	}
+	if !strings.Contains(result.Error, "git branch probe failed") {
+		t.Fatalf("cleanup error %q is missing branch probe failure", result.Error)
+	}
+	if result.NextCommand != "relay program worker cleanup "+p.Slug+" "+item.ID {
+		t.Fatalf("next command = %q, want worker cleanup retry", result.NextCommand)
+	}
+}

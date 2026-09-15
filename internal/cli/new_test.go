@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ronaknnathani/relay/internal/config"
@@ -147,6 +148,20 @@ func TestReclaimLeftoversRemovesDanglingWorktreeSymlink(t *testing.T) {
 	}
 	if _, err := os.Lstat(worktreeDir); !os.IsNotExist(err) {
 		t.Fatalf("dangling worktree symlink still exists: %v", err)
+	}
+}
+
+func TestReclaimLeftoversReturnsBranchProbeFailure(t *testing.T) {
+	repo := t.TempDir()
+
+	err := reclaimLeftovers(repo, "user/feature", "", "")
+	if err == nil {
+		t.Fatal("reclaimLeftovers error = nil")
+	}
+	for _, want := range []string{"inspect reclaim branch", "not a git repository"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("reclaimLeftovers error %q is missing %q", err, want)
+		}
 	}
 }
 

@@ -137,6 +137,28 @@ func TestArchiveRejectsDanglingWorktreeSymlink(t *testing.T) {
 	}
 }
 
+func TestArchivePreservesProjectWhenBranchProbeFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "branch-probe-failure"
+	branch := "user/branch-probe-failure"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	previous := archiveBranchExists
+	archiveBranchExists = func(string, string) (bool, error) {
+		return false, errors.New("git branch probe failed")
+	}
+	t.Cleanup(func() { archiveBranchExists = previous })
+
+	_, err := captureStdout(t, func() error {
+		return runArchive(slug, true)
+	})
+	if err == nil || !strings.Contains(err.Error(), "git branch probe failed") {
+		t.Fatalf("runArchive error = %v, want branch probe failure", err)
+	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
+}
+
 func TestArchiveRollbackCombinesManifestRestoreAndCleanupFailures(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	slug := "rollback-cleanup-failure"

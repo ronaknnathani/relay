@@ -19,6 +19,7 @@ var (
 	loadArchivePullRequestProof = programview.GitHubPullRequestProof
 	loadArchiveRepository       = programview.GitHubRepository
 	saveArchiveManifest         = project.Save
+	archiveBranchExists         = gitx.LocalBranchExists
 	archiveForceDeleteBranch    = gitx.ForceDeleteBranch
 	archiveRename               = os.Rename
 	archiveRemoveFile           = os.Remove
@@ -211,11 +212,19 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 
 	// Decide branch fate up front so we don't tear down the worktree and
 	// then fail on an unmerged branch with no recovery path.
+	branchExists := false
+	if m.Branch != "" {
+		branchExists, err = archiveBranchExists(m.Repo, m.Branch)
+		if err != nil {
+			return archiveResult{}, fmt.Errorf(
+				"inspect branch %q for project %s: %w", m.Branch, slug, err,
+			)
+		}
+	}
 	var (
 		deleteBranchAfter      bool
 		forceDeleteBranchAfter bool
 		workMerged             = mergeProven
-		branchExists           = m.Branch != "" && gitx.BranchExists(m.Repo, m.Branch)
 	)
 	// The recorded pull request is authoritative about merge state and is
 	// resolved lazily, at most once, so a locally merged branch costs no GitHub
@@ -335,7 +344,16 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 		}
 		result.WorktreeRemoved = worktreePresent
 	}
-	if m.Branch == "" || !gitx.BranchExists(m.Repo, m.Branch) {
+	if m.Branch == "" {
+		return result, nil
+	}
+	branchExists, err := archiveBranchExists(m.Repo, m.Branch)
+	if err != nil {
+		return result, fmt.Errorf(
+			"inspect archived branch %q for project %s: %w", m.Branch, m.Slug, err,
+		)
+	}
+	if !branchExists {
 		return result, nil
 	}
 	if err := archiveForceDeleteBranch(m.Repo, m.Branch); err != nil {

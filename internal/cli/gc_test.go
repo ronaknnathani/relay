@@ -1074,6 +1074,32 @@ func TestGCContinuesAfterArchiveFailure(t *testing.T) {
 	}
 }
 
+func TestGCBranchProbeFailureReturnsIncomplete(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "branch-probe-failure"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	previous := archiveBranchExists
+	archiveBranchExists = func(string, string) (bool, error) {
+		return false, errors.New("git branch probe failed")
+	}
+	t.Cleanup(func() { archiveBranchExists = previous })
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "git branch probe failed") {
+		t.Fatalf("stderr %q is missing branch probe failure", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC reported clean after branch probe failure")
+	}
+}
+
 func TestGCArchiveWarningReturnsFailureAfterArchiving(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")

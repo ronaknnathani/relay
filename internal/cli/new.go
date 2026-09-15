@@ -185,7 +185,10 @@ func createProject(opts projectCreateOpts) (projectCreateResult, error) {
 	// A branch, worktree, or project dir with no valid manifest is leftover
 	// state from an interrupted or failed setup (e.g. Ctrl+C before the manifest
 	// was written). Detect it and offer to reclaim so the same slug is reusable.
-	branchExists := gitx.BranchExists(repoRoot, branch)
+	branchExists, err := gitx.LocalBranchExists(repoRoot, branch)
+	if err != nil {
+		return projectCreateResult{}, fmt.Errorf("inspect project branch %q: %w", branch, err)
+	}
 	if branchExists || pathExists(worktreeDir) || pathExists(projDir) {
 		// "safe" leftovers can be reclaimed without prompting non-interactively:
 		// the branch has no unique commits AND the worktree holds no uncommitted
@@ -385,7 +388,11 @@ func reclaimLeftovers(repoRoot, branch, worktreeDir, projDir string) error {
 		}
 		fmt.Printf("  %s %s\n", ui.Color(ui.Dim, "Removed worktree:"), worktreeDir)
 	}
-	if gitx.BranchExists(repoRoot, branch) {
+	branchExists, err := gitx.LocalBranchExists(repoRoot, branch)
+	if err != nil {
+		return fmt.Errorf("inspect reclaim branch %q: %w", branch, err)
+	}
+	if branchExists {
 		if err := gitx.ForceDeleteBranch(repoRoot, branch); err != nil {
 			return fmt.Errorf("reclaim branch %q: %w", branch, err)
 		}

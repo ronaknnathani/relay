@@ -114,8 +114,14 @@ func HasOrigin(repo string) bool {
 
 // BranchExists reports whether the named branch exists locally.
 func BranchExists(repo, branch string) bool {
-	exists, _ := localBranchExists(repo, branch)
+	exists, _ := LocalBranchExists(repo, branch)
 	return exists
+}
+
+// LocalBranchExists reports whether the named branch exists locally without
+// discarding Git failures.
+func LocalBranchExists(repo, branch string) (bool, error) {
+	return localBranchExists(repo, branch)
 }
 
 // DeleteBranch removes a branch with `git branch -d` (refuses if unmerged).

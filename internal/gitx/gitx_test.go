@@ -336,6 +336,23 @@ func TestOriginURLPreservesGitDiagnostic(t *testing.T) {
 	}
 }
 
+func TestLocalBranchExistsReturnsGitFailure(t *testing.T) {
+	repo := t.TempDir()
+
+	exists, err := LocalBranchExists(repo, "feature")
+	if err == nil {
+		t.Fatal("LocalBranchExists error = nil")
+	}
+	if exists {
+		t.Fatal("LocalBranchExists reported a branch after git failed")
+	}
+	for _, want := range []string{"git show-ref --verify refs/heads/feature", "not a git repository"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("LocalBranchExists error %q is missing %q", err, want)
+		}
+	}
+}
+
 func TestIsWorktreePreservesGitDiagnostic(t *testing.T) {
 	repo := t.TempDir()
 
