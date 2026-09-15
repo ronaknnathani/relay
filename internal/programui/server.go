@@ -68,7 +68,7 @@ func Serve(ctx context.Context, options Options) error {
 			localBuilder = func(slug, detailItem string) (programview.Snapshot, error) {
 				return programview.Build(slug, programview.Options{
 					Now: now, GitHub: cachedGitHub, Agents: agents,
-					DetailItem: detailItem, LocalOnly: true, SummaryOnly: true,
+					DetailItem: detailItem, LocalOnly: true,
 				})
 			}
 		}

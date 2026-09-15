@@ -728,7 +728,11 @@ function setFeed(live, message) {
 function setSnapshotFeed(snapshot) {
   const refresh = snapshot.refresh || {};
   if (refresh.status === "refreshing") {
-    setFeed(true, `Refreshing · showing snapshot from ${formatRelative(snapshot.generated_at)}`);
+    setFeed(false, `Refreshing · showing local snapshot from ${formatRelative(snapshot.generated_at)}`);
+    return;
+  }
+  if (refresh.status === "partial") {
+    setFeed(false, `Loading external sources · showing local snapshot from ${formatRelative(snapshot.generated_at)}`);
     return;
   }
   if (refresh.status === "failed") {

@@ -26,7 +26,7 @@ func newSnapshotFeed(
 	if now == nil {
 		now = time.Now
 	}
-	seed.Refresh = programview.RefreshDTO{Status: "fresh"}
+	seed.Refresh = programview.RefreshDTO{Status: "partial"}
 	return &snapshotFeed{
 		snapshot: seed, expiresAt: now().Add(ttl), ttl: ttl, now: now, refresh: refresh,
 	}

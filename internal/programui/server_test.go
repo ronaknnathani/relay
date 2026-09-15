@@ -202,19 +202,8 @@ func TestServeDefaultHerdrListerTimesOutInsteadOfHanging(t *testing.T) {
 }
 
 func TestServePublishesLocalSnapshotBeforeDelayedSources(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	repo := filepath.Join(home, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	p, err := program.New("local-first", "Local First", repo, "copilot", 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := program.Create(p); err != nil {
-		t.Fatal(err)
-	}
+	fixture := newReferenceProgramFixture(t)
+	p := fixture.program
 
 	release := make(chan struct{})
 	started := make(chan struct{})
@@ -251,6 +240,15 @@ func TestServePublishesLocalSnapshotBeforeDelayedSources(t *testing.T) {
 	}
 	if initial.SourceHealth.Herdr.Status != "loading" {
 		t.Fatalf("initial Herdr status = %q, want loading", initial.SourceHealth.Herdr.Status)
+	}
+	if initial.Refresh.Status != "partial" {
+		t.Fatalf("initial refresh status = %q, want partial", initial.Refresh.Status)
+	}
+	if len(initial.ProgramArtifacts) == 0 || len(initial.Contracts) == 0 ||
+		len(initial.OpenDecisions) == 0 || len(initial.Items) == 0 ||
+		initial.Items[0].Repo == "" || initial.Items[0].ProjectSlug == "" ||
+		len(initial.Items[0].Artifacts) == 0 {
+		t.Fatalf("initial local metadata is incomplete: %+v", initial)
 	}
 	select {
 	case <-started:

@@ -146,6 +146,9 @@ func Build(slug string, options Options) (Snapshot, error) {
 	snapshot.ProgramArtifacts = programArtifacts(programDir, limit, &snapshot.Warnings)
 	snapshot.Program.DisplayTitle, snapshot.Program.Summary =
 		displayIdentity(p.Title, artifactBody(snapshot.ProgramArtifacts, "goal.md"))
+	if options.LocalOnly {
+		clearArtifactBodies(snapshot.ProgramArtifacts)
+	}
 	if options.SummaryOnly {
 		snapshot.ProgramArtifacts = []ArtifactDTO{}
 	} else {
@@ -1097,6 +1100,12 @@ func artifactBody(artifacts []ArtifactDTO, name string) string {
 		}
 	}
 	return ""
+}
+
+func clearArtifactBodies(artifacts []ArtifactDTO) {
+	for index := range artifacts {
+		artifacts[index].Text = nil
+	}
 }
 
 func missingChildArtifacts() []ArtifactDTO {

@@ -256,7 +256,7 @@ func TestBuildLocalOnlySkipsExternalSourcesAndArtifactBodies(t *testing.T) {
 			ID: "w1", Kind: program.ItemKindChange, Title: "task",
 			Priority: program.PriorityP1, Status: program.ItemDispatched,
 			Dependencies: []string{}, ContractRefs: []string{"api@v1"},
-			Repo: repo, ProjectSlug: "local-child", PRRef: "#42", Notes: []string{},
+			Repo: repo, ProjectSlug: "local-child", PRRef: "#42", Notes: []string{"local note"},
 			CreatedAt: at, UpdatedAt: at, DispatchedAt: at,
 		}},
 		Contracts: []program.Contract{{
@@ -264,7 +264,10 @@ func TestBuildLocalOnlySkipsExternalSourcesAndArtifactBodies(t *testing.T) {
 			SHA256: "abc", Status: program.ContractApproved, PublishedAt: at,
 			ApprovedAt: at, ApprovedBy: "test",
 		}},
-		Decisions: []program.Decision{},
+		Decisions: []program.Decision{{
+			ID: "d1", Kind: program.DecisionQuestion, RaisedBy: program.RaisedByTL,
+			ItemID: "w1", Question: "Use the local seed?", Options: []string{"yes"}, CreatedAt: at,
+		}},
 	}
 	if err := program.Create(p); err != nil {
 		t.Fatal(err)
@@ -313,10 +316,31 @@ func TestBuildLocalOnlySkipsExternalSourcesAndArtifactBodies(t *testing.T) {
 		t.Fatalf("source health = %+v", got.SourceHealth)
 	}
 	item := findSnapshotItem(t, got.Items, "w1")
+	if item.Repo != repo || item.ProjectSlug != "local-child" ||
+		len(item.Contracts) != 1 || item.Contracts[0] != "api@v1" ||
+		len(item.Notes) != 1 || item.Notes[0] != "local note" ||
+		item.Timestamps.DispatchedAt != at || item.Child == nil ||
+		item.Child.Manifest.Slug != "local-child" || len(item.Decisions) != 1 {
+		t.Fatalf("local task metadata = %+v", item)
+	}
 	for _, artifact := range item.Artifacts {
 		if artifact.Text != nil {
 			t.Fatalf("task artifact included text: %+v", artifact)
 		}
+	}
+	if len(got.ProgramArtifacts) != 3 || !got.ProgramArtifacts[0].Present {
+		t.Fatalf("program artifact metadata = %+v", got.ProgramArtifacts)
+	}
+	for _, artifact := range got.ProgramArtifacts {
+		if artifact.Text != nil {
+			t.Fatalf("program artifact included text: %+v", artifact)
+		}
+	}
+	if got.Program.DisplayTitle != "Local only" || got.Program.Summary != "goal" {
+		t.Fatalf("local program identity = %+v", got.Program)
+	}
+	if len(got.OpenDecisions) != 1 || len(got.Contracts) != 1 {
+		t.Fatalf("local decisions/contracts = %+v / %+v", got.OpenDecisions, got.Contracts)
 	}
 	if got.Contracts[0].Artifact.Text != nil {
 		t.Fatalf("contract artifact included text: %+v", got.Contracts[0].Artifact)

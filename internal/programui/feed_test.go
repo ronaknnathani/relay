@@ -48,6 +48,9 @@ func TestSnapshotFeedSingleFlightsAndRetainsLastSnapshot(t *testing.T) {
 			return programview.Snapshot{}, errors.New("refresh failed")
 		},
 	)
+	if got := feed.Get(); got.Refresh != (programview.RefreshDTO{Status: "partial"}) {
+		t.Fatalf("seed refresh = %+v, want partial", got.Refresh)
+	}
 	feed.Refresh()
 
 	var wait sync.WaitGroup
