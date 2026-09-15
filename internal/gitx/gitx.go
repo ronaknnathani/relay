@@ -474,7 +474,7 @@ func openRelayWorktreeTarget(repo, dir string) (*os.Root, string, bool, error) {
 		)
 	}
 	if !rootInfo.IsDir() {
-		return nil, "", false, fmt.Errorf("Relay worktree root %s is not a directory", rootPath)
+		return nil, "", false, fmt.Errorf("relay worktree root %s is not a directory", rootPath)
 	}
 
 	root, err := os.OpenRoot(rootPath)
