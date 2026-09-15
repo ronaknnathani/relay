@@ -94,7 +94,7 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		`<a class="skip-link"`,
 	})
 
-	if strings.Count(index, "<script") != 3 ||
+	if strings.Count(index, "<script") != 2 ||
 		!strings.Contains(index, `<script>__RELAY_APP__</script>`) {
 		t.Error("index.html must apply the inline theme before the inline application bundle")
 	}
@@ -131,8 +131,8 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 
 	head := index[strings.Index(index, "<head>"):strings.Index(index, "</head>")]
 	if !strings.Contains(head, `document.documentElement.dataset.theme=t==="dark"?"dark":"light"`) ||
-		!strings.Contains(index, `<script id="initial-program" type="application/json">__RELAY_SNAPSHOT__</script>`) {
-		t.Error("the page must apply the stored theme and embed the initial snapshot")
+		!strings.Contains(head, `window.__relayInitialProgramRequest=fetch("/api/program"`) {
+		t.Error("the bootstrap must apply the stored theme and start the initial snapshot before app parsing")
 	}
 
 	script := readAsset(t, "assets/app.js")

@@ -118,17 +118,8 @@ const state = {
 };
 
 const initialProgramController = new AbortController();
-const initialProgramNode = document.querySelector("#initial-program");
-const initialProgramBody = initialProgramNode ? initialProgramNode.textContent : "";
-if (initialProgramNode) {
-  initialProgramNode.remove();
-}
-const initialProgramRequest = initialProgramBody
-  ? Promise.resolve(new Response(initialProgramBody, {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    }))
-  : requestProgram(initialProgramController);
+const initialProgramRequest = window.__relayInitialProgramRequest ||
+  requestProgram(initialProgramController);
 
 /* ---------- DOM helpers ---------- */
 
