@@ -1092,6 +1092,15 @@ func TestArchiveForceKeepsAuthorityWhenOptionalPullRequestValidationFails(t *tes
 	worktree := addArchiveWorktree(t, repo, slug, branch)
 	commitArchiveFile(t, worktree, "feature.txt", "original\n", "original work")
 	writeArchiveManifest(t, slug, repo, branch, "")
+	manifestPath := project.ManifestPath(project.ActiveDir(), slug)
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Worktree = nil
+	if err := project.Save(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
 	recordArchiveManifestPR(t, slug, 412)
 	originalTip := gitx.RevParse(repo, "refs/heads/"+branch)
 
@@ -1118,7 +1127,7 @@ func TestArchiveForceKeepsAuthorityWhenOptionalPullRequestValidationFails(t *tes
 		loadArchiveRepository = previousRepository
 	})
 
-	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	manifest, err = project.Load(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}

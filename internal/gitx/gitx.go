@@ -543,10 +543,6 @@ func SanitizeDiagnostic(output string) string {
 
 const maxRemoteHelperDepth = 8
 
-func remoteHelperURLTokenEnd(output string, start int) (int, bool) {
-	return newDiagnosticURLScanner(output).remoteHelperURLTokenEnd(start)
-}
-
 type diagnosticURLScanner struct {
 	output           string
 	nextAt           []int
