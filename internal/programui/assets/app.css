@@ -698,15 +698,15 @@ pre {
 }
 
 .stage {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 16px 18px;
-  align-items: stretch;
+  contain: layout style;
 }
 
 .stage::before {
   content: attr(data-label);
-  grid-column: 1 / -1;
+  flex: 0 0 100%;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--muted);
@@ -714,10 +714,9 @@ pre {
 
 .card {
   position: relative;
-  display: grid;
-  align-content: start;
-  gap: 10px;
-  min-width: 0;
+  display: block;
+  flex: 1 1 260px;
+  min-width: min(260px, 100%);
   padding: 16px 18px 16px 21px;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -728,6 +727,7 @@ pre {
   white-space: pre-line;
   text-align: left;
   cursor: pointer;
+  contain: layout style;
   transition:
     border-color var(--swap) ease,
     box-shadow var(--swap) ease,
