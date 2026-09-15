@@ -239,6 +239,91 @@ func TestBuildPopulatesProgramDetailAndDegradesPerSource(t *testing.T) {
 	}
 }
 
+func TestBuildLocalOnlySkipsExternalSourcesAndArtifactBodies(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	at := "2026-09-14T20:00:00Z"
+	p := program.Program{
+		Revision: 1, Slug: "local-only", Title: "Local only", Repo: repo,
+		State: program.StateActive, Agent: "copilot", MaxOpenPRs: 2,
+		CreatedAt: at, UpdatedAt: at, ApprovalRequestedAt: at, ApprovedAt: at, ApprovedBy: "test",
+		Items: []program.WorkItem{{
+			ID: "w1", Kind: program.ItemKindChange, Title: "task",
+			Priority: program.PriorityP1, Status: program.ItemDispatched,
+			Dependencies: []string{}, ContractRefs: []string{"api@v1"},
+			Repo: repo, ProjectSlug: "local-child", PRRef: "#42", Notes: []string{},
+			CreatedAt: at, UpdatedAt: at, DispatchedAt: at,
+		}},
+		Contracts: []program.Contract{{
+			Name: "api", Version: 1, Ref: "api@v1", Path: "contracts/api/v1.md",
+			SHA256: "abc", Status: program.ContractApproved, PublishedAt: at,
+			ApprovedAt: at, ApprovedBy: "test",
+		}},
+		Decisions: []program.Decision{},
+	}
+	if err := program.Create(p); err != nil {
+		t.Fatal(err)
+	}
+	childDir := filepath.Join(project.ActiveDir(), "local-child")
+	if err := os.MkdirAll(childDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(repo, ".worktrees", "local-child")
+	if err := project.Save(project.ManifestPath(project.ActiveDir(), "local-child"), project.Manifest{
+		Slug: "local-child", Title: "Local child", Repo: repo, Branch: "feature",
+		BaseBranch: "main", Worktree: &worktree, Status: "active", Workflow: "deliver-pr",
+		Program: p.Slug, ProgramItem: "w1", Phase: "implement", Created: at, Updated: at,
+		PhasesCompleted: []string{}, PhasesRemaining: []string{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(childDir, "plan.md"), "task body")
+	programDir := program.ProgramDir(program.ActiveDir(), p.Slug)
+	writeTestFile(t, filepath.Join(programDir, "goal.md"), "goal")
+	writeTestFile(t, filepath.Join(programDir, "contracts", "api", "v1.md"), "contract body")
+
+	var githubCalls, agentCalls int
+	got, err := Build(p.Slug, Options{
+		LocalOnly: true,
+		GitHub: fetcherFunc(func(context.Context, string, string) (PullRequestDTO, error) {
+			githubCalls++
+			return PullRequestDTO{}, nil
+		}),
+		PRIndex: prIndexFunc(func(string) (PRState, bool) {
+			githubCalls++
+			return PRStateOpen, true
+		}),
+		Agents: agentListerFunc(func() ([]herdr.Agent, error) {
+			agentCalls++
+			return nil, nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if githubCalls != 0 || agentCalls != 0 {
+		t.Fatalf("external calls = GitHub %d, Herdr %d; want zero", githubCalls, agentCalls)
+	}
+	if got.SourceHealth.GitHub.Status != "loading" || got.SourceHealth.Herdr.Status != "loading" {
+		t.Fatalf("source health = %+v", got.SourceHealth)
+	}
+	item := findSnapshotItem(t, got.Items, "w1")
+	for _, artifact := range item.Artifacts {
+		if artifact.Text != nil {
+			t.Fatalf("task artifact included text: %+v", artifact)
+		}
+	}
+	if got.Contracts[0].Artifact.Text != nil {
+		t.Fatalf("contract artifact included text: %+v", got.Contracts[0].Artifact)
+	}
+	if got.Items == nil || got.Contracts == nil || got.Warnings == nil {
+		t.Fatalf("local snapshot contains nil arrays: %+v", got)
+	}
+}
+
 type fetcherFunc func(context.Context, string, string) (PullRequestDTO, error)
 
 func (f fetcherFunc) Fetch(ctx context.Context, repo, ref string) (PullRequestDTO, error) {

@@ -58,6 +58,7 @@ type Options struct {
 	Agents        AgentLister
 	ArtifactLimit int64
 	DetailItem    string
+	LocalOnly     bool
 }
 
 // Build constructs a read-only snapshot of an active or archived program.
@@ -85,6 +86,18 @@ func Build(slug string, options Options) (Snapshot, error) {
 	snapshot.GeneratedAt = generatedAt.Format(time.RFC3339)
 	snapshot.Program = programDTO(p, path)
 	snapshot.Patrol = patrolDTO(p.Slug, p.Agent, &snapshot)
+	if options.LocalOnly {
+		snapshot.SourceHealth.GitHub = SourceDTO{
+			Status: "loading", Warnings: []string{"GitHub refresh pending"},
+		}
+		snapshot.SourceHealth.Herdr = SourceDTO{
+			Status: "loading", Warnings: []string{"Herdr refresh pending"},
+		}
+		snapshot.Warnings = append(snapshot.Warnings, "GitHub refresh pending", "Herdr refresh pending")
+		options.GitHub = nil
+		options.PRIndex = nil
+		options.Agents = nil
+	}
 	detailItem := selectedItem(p.Items, options.DetailItem)
 	if options.DetailItem != "" && detailItem == "" {
 		snapshot.Warnings = append(snapshot.Warnings, fmt.Sprintf("detail item %q not found", options.DetailItem))
