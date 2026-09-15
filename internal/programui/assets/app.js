@@ -862,7 +862,9 @@ function renderRoadmap() {
       taskCard(node, item, index, hasSelection, card);
       state.cards.set(id, card);
     });
-    drawConnectorsForCurrentGraph();
+    if (dom.graphEdges.children.length !== list(graph.edges).length) {
+      drawConnectorsForCurrentGraph();
+    }
     return true;
   }
   let position = 0;
@@ -1633,6 +1635,7 @@ function start() {
   selectTab(parsed.tab || "roadmap");
   setFeed(false, "Connecting…");
   poll(initialProgramRequest, initialProgramController, initialProgramSnapshot);
+  window.__relayCoreReady = true;
   window.setInterval(() => {
     if (state.snapshot) {
       renderHeader();

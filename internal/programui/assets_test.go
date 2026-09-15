@@ -236,10 +236,14 @@ func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
 		`window.__relayBootstrapCleanup`,
 		`const visibleNodes = nodes.length <= 128 ? nodes : nodes.slice(0, 2)`,
 		`stage.dataset.label =`,
+		`document.createElementNS(graph.namespaceURI, "path")`,
 	})
 	requireAbsent(t, "bootstrap.js", bootstrap, []string{
 		"window.setTimeout",
 		"document.createElement(\"script\")",
+	})
+	requireContains(t, "app.js", readAsset(t, "assets/app.js"), []string{
+		`window.__relayCoreReady = true`,
 	})
 }
 

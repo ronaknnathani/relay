@@ -5,6 +5,8 @@
   const appScript = document.getElementById("app-script");
   const reconnect = document.getElementById("reconnect");
   const graphNodes = document.getElementById("graph-nodes");
+  const graphEdges = document.getElementById("graph-edges");
+  const roadmapContent = document.getElementById("roadmap-content");
   const graph = document.getElementById("graph");
   const snapshot = initial ? JSON.parse(initial.textContent) : null;
 
@@ -17,6 +19,25 @@
   const values = (value) => Array.isArray(value) ? value : [];
   const count = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
   const plural = (value, word) => `${value} ${word}${value === 1 ? "" : "s"}`;
+  const round = (value) => Math.round(value * 10) / 10;
+  const downwardPath = (from, to) => {
+    const y1 = from.bottom + 1;
+    const y2 = to.top - 7;
+    const channel = Math.max(y1 + 6, to.top - 13);
+    const x1 = from.center;
+    const x2 = to.center;
+    if (Math.abs(x2 - x1) < 1.5) {
+      return `M ${round(x1)} ${round(y1)} V ${round(y2)}`;
+    }
+    const direction = x2 > x1 ? 1 : -1;
+    const radius = Math.max(0, Math.min(10, Math.abs(x2 - x1) / 2, channel - y1, y2 - channel));
+    return `M ${round(x1)} ${round(y1)}` +
+      ` V ${round(channel - radius)}` +
+      ` Q ${round(x1)} ${round(channel)} ${round(x1 + direction * radius)} ${round(channel)}` +
+      ` H ${round(x2 - direction * radius)}` +
+      ` Q ${round(x2)} ${round(channel)} ${round(x2)} ${round(channel + radius)}` +
+      ` V ${round(y2)}`;
+  };
 
   if (snapshot) {
     const program = snapshot.program || {};
@@ -84,6 +105,44 @@
       fragment.append(stage);
     });
     graphNodes.replaceChildren(fragment);
+
+    if (visibleNodes.length === nodes.length) {
+      const base = roadmapContent.getBoundingClientRect();
+      const boxes = new Map();
+      Array.from(graphNodes.querySelectorAll(".card")).forEach((card) => {
+        const box = card.getBoundingClientRect();
+        boxes.set(card.dataset.item, {
+          center: box.left - base.left + box.width / 2,
+          top: box.top - base.top,
+          bottom: box.bottom - base.top,
+        });
+      });
+      const edgeFragment = new DocumentFragment();
+      edges.forEach((edge) => {
+        const from = boxes.get(edge.from);
+        const to = boxes.get(edge.to);
+        if (!from || !to) {
+          return;
+        }
+        const downward = to.top > from.bottom + 4;
+        const path = document.createElementNS(graph.namespaceURI, "path");
+        path.setAttribute("class", downward ? "edge" : "edge edge--back");
+        path.setAttribute("d", downward
+          ? downwardPath(from, to)
+          : `M ${round(from.center)} ${round(from.bottom + 1)} L ${round(to.center)} ${round(to.top - 7)}`);
+        path.setAttribute("marker-end", "url(#flow-arrow)");
+        path.dataset.from = edge.from;
+        path.dataset.to = edge.to;
+        path.dataset.downward = downward ? "true" : "false";
+        edgeFragment.append(path);
+      });
+      const width = Math.ceil(base.width);
+      const height = Math.ceil(base.height);
+      graph.setAttribute("width", String(width));
+      graph.setAttribute("height", String(height));
+      graph.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      graphEdges.replaceChildren(edgeFragment);
+    }
   }
 
   const cards = () => Array.from(graphNodes.querySelectorAll(".card"));

@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v12"
+	performanceHarness = "complete-roadmap-v13"
 )
 
 type performanceReport struct {
@@ -164,6 +164,7 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 				const refresh = document.querySelector("#refresh");
 				const roadmapTab = document.querySelector("#tab-roadmap");
 				if (window.__relayCompleteUsableAt > 0 ||
+					(document.querySelector("#app-script") && !window.__relayCoreReady) ||
 					document.querySelector("#program-title")?.textContent !== "Reference Program" ||
 					!document.querySelector("#program-summary")?.textContent ||
 					document.querySelector("#task-total")?.textContent !== "100" ||
