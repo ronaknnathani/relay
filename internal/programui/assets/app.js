@@ -95,13 +95,6 @@ const cardTopTemplate = make("div", "card__top");
 const cardStatusTemplate = make("span", "status");
 cardTopTemplate.append(make("span", "card__id"), cardStatusTemplate);
 const cardFootTemplate = make("div", "card__foot");
-cardFootTemplate.append(
-  make("span"),
-  make("span", "card__pr"),
-  make("span", "flag"),
-);
-cardFootTemplate.children[1].hidden = true;
-cardFootTemplate.children[2].hidden = true;
 cardTemplate.append(cardTopTemplate, make("p", "card__title"), cardFootTemplate);
 
 const state = {
@@ -1037,9 +1030,6 @@ function decorateTaskCard(card, node, item, lane) {
   const top = card.children[0];
   const status = top.children[1];
   const foot = card.children[2];
-  const facts = foot.children[0];
-  const pullRequest = foot.children[1];
-  const flag = foot.children[2];
   const meta = statusMeta(lane);
   top.children[0].textContent = node.id;
   status.dataset.lane = lane;
@@ -1047,24 +1037,13 @@ function decorateTaskCard(card, node, item, lane) {
   card.children[1].textContent = text(node.title, "Untitled task");
   if (item) {
     const dependencyCount = list(item.dependencies).length;
-    facts.textContent = [
+    const pr = item.live_pr || item.recorded_pr;
+    foot.textContent = [
       text(item.priority, "P?"),
       dependencyCount > 0 ? plural(dependencyCount, "dep") : "",
+      pr && pr.number ? `PR #${pr.number}` : "",
+      item.orphaned ? "orphan" : item.ready ? "ready" : "",
     ].filter(Boolean).join(" · ");
-    const pr = item.live_pr || item.recorded_pr;
-    if (pr && pr.number) {
-      pullRequest.textContent = `PR #${pr.number}`;
-      pullRequest.hidden = false;
-    }
-    if (item.orphaned) {
-      flag.className = "flag flag--orphan";
-      flag.textContent = "orphan";
-      flag.hidden = false;
-    } else if (item.ready) {
-      flag.className = "flag flag--ready";
-      flag.textContent = "ready";
-      flag.hidden = false;
-    }
   }
 }
 
