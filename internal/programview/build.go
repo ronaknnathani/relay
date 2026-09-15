@@ -60,7 +60,6 @@ type Options struct {
 	ArtifactLimit int64
 	DetailItem    string
 	LocalOnly     bool
-	SummaryOnly   bool
 }
 
 // Build constructs a read-only snapshot of an active or archived program.
@@ -146,14 +145,7 @@ func Build(slug string, options Options) (Snapshot, error) {
 	snapshot.ProgramArtifacts = programArtifacts(programDir, limit, &snapshot.Warnings)
 	snapshot.Program.DisplayTitle, snapshot.Program.Summary =
 		displayIdentity(p.Title, artifactBody(snapshot.ProgramArtifacts, "goal.md"))
-	if options.LocalOnly {
-		clearArtifactBodies(snapshot.ProgramArtifacts)
-	}
-	if options.SummaryOnly {
-		snapshot.ProgramArtifacts = []ArtifactDTO{}
-	} else {
-		snapshot.OpenDecisions, snapshot.ResolvedDecisions = decisionLists(observed.Decisions)
-	}
+	snapshot.OpenDecisions, snapshot.ResolvedDecisions = decisionLists(observed.Decisions)
 
 	var agents []herdr.Agent
 	var agentsErr error
@@ -174,17 +166,12 @@ func Build(slug string, options Options) (Snapshot, error) {
 	}
 	snapshot.Items = buildItems(
 		context.Background(), observed, plan, orphaned, detailItem, limit,
-		!options.SummaryOnly, options.GitHub, prefetched, agents, agentsErr, &snapshot,
+		true, options.GitHub, prefetched, agents, agentsErr, &snapshot,
 	)
-	if !options.SummaryOnly {
-		snapshot.Contracts = buildContracts(
-			programDir, observed.Contracts, selectedContractRefs(observed.Items, detailItem),
-			limit, &snapshot.Warnings,
-		)
-	}
-	if options.LocalOnly {
-		clearRedundantTaskArtifactPaths(snapshot.Items)
-	}
+	snapshot.Contracts = buildContracts(
+		programDir, observed.Contracts, selectedContractRefs(observed.Items, detailItem),
+		limit, &snapshot.Warnings,
+	)
 	return snapshot, nil
 }
 
@@ -1101,23 +1088,6 @@ func artifactBody(artifacts []ArtifactDTO, name string) string {
 		}
 	}
 	return ""
-}
-
-func clearArtifactBodies(artifacts []ArtifactDTO) {
-	for index := range artifacts {
-		artifacts[index].Text = nil
-	}
-}
-
-func clearRedundantTaskArtifactPaths(items []ItemDTO) {
-	for itemIndex := range items {
-		for artifactIndex := range items[itemIndex].Artifacts {
-			artifact := &items[itemIndex].Artifacts[artifactIndex]
-			if artifact.Path == artifact.Name {
-				artifact.Path = ""
-			}
-		}
-	}
 }
 
 func missingChildArtifacts() []ArtifactDTO {

@@ -240,7 +240,7 @@ func TestBuildPopulatesProgramDetailAndDegradesPerSource(t *testing.T) {
 	}
 }
 
-func TestBuildLocalOnlySkipsExternalSourcesAndArtifactBodies(t *testing.T) {
+func TestBuildLocalOnlySkipsExternalSourcesAndKeepsLocalProgramArtifacts(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := filepath.Join(t.TempDir(), "repo")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
@@ -327,17 +327,15 @@ func TestBuildLocalOnlySkipsExternalSourcesAndArtifactBodies(t *testing.T) {
 		if artifact.Text != nil {
 			t.Fatalf("task artifact included text: %+v", artifact)
 		}
-		if artifact.Path != "" {
-			t.Fatalf("task artifact repeated its allowlisted name as a path: %+v", artifact)
+		if artifact.Path != artifact.Name {
+			t.Fatalf("task artifact path = %q, want %q", artifact.Path, artifact.Name)
 		}
 	}
 	if len(got.ProgramArtifacts) != 3 || !got.ProgramArtifacts[0].Present {
 		t.Fatalf("program artifact metadata = %+v", got.ProgramArtifacts)
 	}
-	for _, artifact := range got.ProgramArtifacts {
-		if artifact.Text != nil {
-			t.Fatalf("program artifact included text: %+v", artifact)
-		}
+	if artifactText(got.ProgramArtifacts[0]) != "goal" {
+		t.Fatalf("local goal artifact = %+v", got.ProgramArtifacts[0])
 	}
 	if got.Program.DisplayTitle != "Local only" || got.Program.Summary != "goal" {
 		t.Fatalf("local program identity = %+v", got.Program)
@@ -351,56 +349,13 @@ func TestBuildLocalOnlySkipsExternalSourcesAndArtifactBodies(t *testing.T) {
 	if got.Items == nil || got.Contracts == nil || got.Warnings == nil {
 		t.Fatalf("local snapshot contains nil arrays: %+v", got)
 	}
-}
 
-func TestBuildSummaryOnlyOmitsPerItemArtifactMetadata(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	repo := filepath.Join(t.TempDir(), "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	p, err := program.New("summary-only", "Summary only", repo, "copilot", 1)
+	data, err := json.Marshal(ArtifactDTO{Name: "missing.md", Path: "missing.md"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.AddItem(program.WorkItem{Title: "Task", Priority: program.PriorityP1}); err != nil {
-		t.Fatal(err)
-	}
-	p.Items[0].Status = program.ItemDispatched
-	p.Items[0].ProjectSlug = "summary-child"
-	p.Items[0].DispatchedAt = "2026-09-14T20:00:00Z"
-	if err := program.Create(p); err != nil {
-		t.Fatal(err)
-	}
-	childDir := filepath.Join(project.ActiveDir(), "summary-child")
-	if err := os.MkdirAll(childDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	worktree := filepath.Join(repo, ".worktrees", "summary-child")
-	manifest := project.Manifest{
-		Slug: "summary-child", Title: "Task", Repo: repo, Branch: "feature",
-		BaseBranch: "main", Worktree: &worktree, Status: "active", Workflow: "deliver-pr",
-		Created: "2026-09-14T20:00:00Z", Updated: "2026-09-14T20:00:00Z",
-		PhasesCompleted: []string{}, PhasesRemaining: []string{},
-	}
-	if err := project.Save(project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest); err != nil {
-		t.Fatal(err)
-	}
-	writeTestFile(t, filepath.Join(childDir, "assignment.md"), "assignment")
-
-	got, err := Build(p.Slug, Options{LocalOnly: true, SummaryOnly: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Items) != 1 || !got.Items[0].ChildAvailable ||
-		got.Items[0].Child != nil || len(got.Items[0].Artifacts) != 0 {
-		t.Fatalf("summary item = %+v", got.Items)
-	}
-	if got.Items[0].Repo != "" || got.Items[0].ProjectSlug != "" ||
-		len(got.Items[0].Contracts) != 0 || len(got.ProgramArtifacts) != 0 ||
-		len(got.Contracts) != 0 || len(got.OpenDecisions) != 0 ||
-		len(got.ResolvedDecisions) != 0 {
-		t.Fatalf("summary includes deferred detail: %+v", got)
+	if string(data) != `{"name":"missing.md","path":"missing.md","present":false,"size":0,"updated_at":"","truncated":false}` {
+		t.Fatalf("artifact JSON = %s", data)
 	}
 }
 

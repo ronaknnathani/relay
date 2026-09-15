@@ -324,11 +324,11 @@ type ContractDTO struct {
 // ArtifactDTO contains safe filesystem metadata and optional text.
 type ArtifactDTO struct {
 	Name      string  `json:"name"`
-	Path      string  `json:"path,omitempty"`
+	Path      string  `json:"path"`
 	Present   bool    `json:"present"`
 	Size      int64   `json:"size"`
 	UpdatedAt string  `json:"updated_at"`
-	Truncated bool    `json:"truncated,omitempty"`
+	Truncated bool    `json:"truncated"`
 	Text      *string `json:"text,omitempty"`
 }
 
