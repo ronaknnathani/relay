@@ -1,6 +1,7 @@
 package programview
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -628,7 +629,14 @@ func githubPRIndexForRefs(repo string, refs []string) PRIndex {
 func runGHCommand(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, name, args...)
 	command.Dir = dir
-	return command.CombinedOutput()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return stderr.Bytes(), err
+	}
+	return stdout.Bytes(), nil
 }
 
 // NewGHFetcher creates a Fetcher backed by the installed gh CLI.

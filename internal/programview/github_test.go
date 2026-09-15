@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -321,6 +323,82 @@ func TestGHPullRequestLookupUsesOriginIdentityDespiteGHRepo(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotArgs, wantArgs) {
 		t.Fatalf("args = %v, want %v", gotArgs, wantArgs)
+	}
+}
+
+func TestGitHubJSONCommandsIgnoreSuccessfulDebugStderr(t *testing.T) {
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	script := `#!/bin/sh
+echo '{"number":42,"state":"MERGED","url":"https://github.example/acme/widgets/pull/42","baseRefName":"main","headRefName":"user/verified-pr","headRefOid":"abc123","isDraft":false,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","statusCheckRollup":[],"title":"Ship it","updatedAt":"2026-08-25T16:00:00Z"}'
+echo 'gh debug: request completed' >&2
+`
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GH_DEBUG", "api")
+	repoDir := t.TempDir()
+
+	originURL := func(string) (string, error) {
+		return "https://github.example/acme/widgets.git", nil
+	}
+	loader := ghPRIndexLoader{
+		originURL: originURL,
+		lookPath:  exec.LookPath,
+		run:       runGHCommand,
+		cache:     newPRStateCache(time.Minute, time.Now),
+	}
+	index := loader.Load(repoDir, []string{"#42"})
+	if index == nil {
+		t.Fatal("index = nil")
+	}
+	if state, found := index.Lookup("#42"); !found || state != PRStateMerged {
+		t.Fatalf("index lookup = (%q, %t), want (%q, true)", state, found, PRStateMerged)
+	}
+
+	lookup := ghPullRequestLookup{
+		originURL: originURL,
+		lookPath:  exec.LookPath,
+		run:       runGHCommand,
+	}
+	proof, err := lookup.Lookup(repoDir, "#42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.State != PRStateMerged || proof.HeadSHA != "abc123" {
+		t.Fatalf("proof = %+v", proof)
+	}
+
+	pullRequest, err := NewGHFetcher().Fetch(context.Background(), repoDir, "#42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pullRequest.Number != 42 || pullRequest.State != "merged" {
+		t.Fatalf("pull request = %+v", pullRequest)
+	}
+}
+
+func TestRunGHCommandReturnsOnlyStderrOnFailure(t *testing.T) {
+	scriptPath := filepath.Join(t.TempDir(), "failed-gh")
+	script := `#!/bin/sh
+echo '{"misleading":"stdout"}'
+echo 'authentication failed for ssh://token@git.example/repo' >&2
+exit 1
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := runGHCommand(context.Background(), t.TempDir(), scriptPath)
+	if err == nil {
+		t.Fatal("runGHCommand error = nil")
+	}
+	if strings.Contains(string(output), "misleading") {
+		t.Fatalf("failure output included stdout: %q", output)
+	}
+	if !strings.Contains(string(output), "authentication failed") {
+		t.Fatalf("failure output = %q, want stderr diagnostic", output)
 	}
 }
 
