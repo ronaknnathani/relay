@@ -111,6 +111,32 @@ func TestArchivePreservesProjectWhenArchivedManifestCannotBeStaged(t *testing.T)
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
 
+func TestArchiveRejectsDanglingWorktreeSymlink(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "dangling-worktree"
+	branch := "user/dangling-worktree"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, repo, "worktree", "remove", "--force", worktree)
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), worktree); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := captureStdout(t, func() error {
+		return runArchive(slug, true)
+	})
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("runArchive error = %v, want dangling symlink rejection", err)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("archive moved project metadata after rejecting dangling symlink")
+	}
+	if _, statErr := os.Lstat(worktree); statErr != nil {
+		t.Fatalf("archive removed dangling symlink: %v", statErr)
+	}
+}
+
 func TestArchiveRollbackCombinesManifestRestoreAndCleanupFailures(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	slug := "rollback-cleanup-failure"

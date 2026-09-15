@@ -274,7 +274,7 @@ func createProject(opts projectCreateOpts) (projectCreateResult, error) {
 
 // pathExists reports whether a filesystem path exists (file, dir, or symlink).
 func pathExists(p string) bool {
-	_, err := os.Stat(p)
+	_, err := os.Lstat(p)
 	return err == nil
 }
 
@@ -283,8 +283,12 @@ func pathExists(p string) bool {
 // worktree is safe only when it is clean (no uncommitted/untracked changes); a
 // leftover directory that git does not track is safe only when it is empty.
 func worktreeReclaimSafe(repoRoot, dir string) bool {
-	if !pathExists(dir) {
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
 		return true
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return false
 	}
 	registered, err := gitx.IsWorktree(repoRoot, dir)
 	if err != nil {

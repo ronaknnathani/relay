@@ -81,6 +81,25 @@ func TestWorktreeRemovePreservesExistingUnregisteredDirectory(t *testing.T) {
 	}
 }
 
+func TestWorktreeRemoveRejectsDanglingSymlink(t *testing.T) {
+	repo := initRepo(t)
+	dir := filepath.Join(repo, ".worktrees", "dangling")
+	if err := os.MkdirAll(filepath.Dir(dir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), dir); err != nil {
+		t.Fatal(err)
+	}
+
+	err := WorktreeRemove(repo, dir, true)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("WorktreeRemove error = %v, want symlink rejection", err)
+	}
+	if _, statErr := os.Lstat(dir); statErr != nil {
+		t.Fatalf("dangling symlink was removed: %v", statErr)
+	}
+}
+
 func TestWorktreeReclaimRestrictsUnregisteredPathsToRelayWorktreeRoot(t *testing.T) {
 	repo := initRepo(t)
 	owned := filepath.Join(repo, ".worktrees", "interrupted")
@@ -161,7 +180,7 @@ func TestWorktreeReclaimRejectsSymlinkedRelayWorktreeRoot(t *testing.T) {
 	}
 }
 
-func TestWorktreeReclaimRejectsSymlinkEscapeTarget(t *testing.T) {
+func TestWorktreeReclaimRemovesOnlySymlinkTarget(t *testing.T) {
 	repo := initRepo(t)
 	root := filepath.Join(repo, ".worktrees")
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -177,15 +196,14 @@ func TestWorktreeReclaimRejectsSymlinkEscapeTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := WorktreeReclaim(repo, target, true)
-	if err == nil || !strings.Contains(err.Error(), "symlink") {
-		t.Fatalf("WorktreeReclaim error = %v, want symlink target rejection", err)
+	if err := WorktreeReclaim(repo, target, true); err != nil {
+		t.Fatalf("WorktreeReclaim symlink: %v", err)
 	}
 	if data, readErr := os.ReadFile(marker); readErr != nil || string(data) != "keep\n" {
 		t.Fatalf("external target changed: data=%q err=%v", data, readErr)
 	}
-	if _, statErr := os.Lstat(target); statErr != nil {
-		t.Fatalf("escape symlink was removed: %v", statErr)
+	if _, statErr := os.Lstat(target); !os.IsNotExist(statErr) {
+		t.Fatalf("symlink still exists: %v", statErr)
 	}
 }
 
@@ -199,6 +217,25 @@ func TestWorktreeHeadRejectsExistingUnregisteredDirectory(t *testing.T) {
 	sha, found, err := WorktreeHead(repo, dir)
 	if err == nil || !strings.Contains(err.Error(), "exists but is not registered") {
 		t.Fatalf("WorktreeHead error = %v, want unregistered path diagnostic", err)
+	}
+	if found || sha != "" {
+		t.Fatalf("WorktreeHead = (%q, %t), want empty, false", sha, found)
+	}
+}
+
+func TestWorktreeHeadRejectsDanglingSymlink(t *testing.T) {
+	repo := initRepo(t)
+	dir := filepath.Join(repo, ".worktrees", "dangling")
+	if err := os.MkdirAll(filepath.Dir(dir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), dir); err != nil {
+		t.Fatal(err)
+	}
+
+	sha, found, err := WorktreeHead(repo, dir)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("WorktreeHead error = %v, want symlink rejection", err)
 	}
 	if found || sha != "" {
 		t.Fatalf("WorktreeHead = (%q, %t), want empty, false", sha, found)

@@ -227,6 +227,33 @@ func TestGCPreservesMergedBranchWithExistingUnregisteredWorktreeDirectory(t *tes
 	}
 }
 
+func TestGCRejectsDanglingWorktreeSymlink(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "dangling-worktree"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	runArchiveGit(t, fixture.repo, "worktree", "remove", "--force", worktree)
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), worktree); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "symlink") {
+		t.Fatalf("stderr %q is missing dangling symlink diagnostic", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC changed project after rejecting dangling symlink")
+	}
+	if _, statErr := os.Lstat(worktree); statErr != nil {
+		t.Fatalf("GC removed dangling symlink: %v", statErr)
+	}
+}
+
 func TestGCArchivesMergedPullRequestWithMatchingBranchTip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")

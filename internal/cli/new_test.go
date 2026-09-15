@@ -132,6 +132,24 @@ func TestReclaimLeftoversHandlesUnregisteredWorktree(t *testing.T) {
 	}
 }
 
+func TestReclaimLeftoversRemovesDanglingWorktreeSymlink(t *testing.T) {
+	repo := newTestRepo(t)
+	worktreeDir := filepath.Join(repo, ".worktrees", "dangling")
+	if err := os.MkdirAll(filepath.Dir(worktreeDir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), worktreeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := reclaimLeftovers(repo, "user/missing", worktreeDir, ""); err != nil {
+		t.Fatalf("reclaimLeftovers: %v", err)
+	}
+	if _, err := os.Lstat(worktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("dangling worktree symlink still exists: %v", err)
+	}
+}
+
 func TestBranchMerged(t *testing.T) {
 	repo := newTestRepo(t)
 	// A branch at HEAD is reachable from main (merged / no unique work).

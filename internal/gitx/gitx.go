@@ -73,11 +73,15 @@ func LocalBranchTip(repo, branch string) (sha string, found bool, err error) {
 // Missing directories are returned as found=false; existing unregistered
 // directories return an error.
 func WorktreeHead(repo, dir string) (sha string, found bool, err error) {
-	if _, err := os.Stat(dir); err != nil {
+	info, err := os.Lstat(dir)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return "", false, nil
 		}
-		return "", false, fmt.Errorf("stat worktree %s: %w", dir, err)
+		return "", false, fmt.Errorf("inspect worktree %s: %w", dir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", false, fmt.Errorf("worktree path %s is a symlink", dir)
 	}
 	registered, err := IsWorktree(repo, dir)
 	if err != nil {
@@ -393,15 +397,20 @@ func WorktreeClean(dir string) (bool, error) {
 // An absent unregistered path is safe to prune, but an existing unregistered
 // path is preserved because Relay cannot prove that it owns its contents.
 func WorktreeRemove(repo, dir string, force bool) error {
+	info, statErr := os.Lstat(dir)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect worktree %s: %w", dir, statErr)
+	}
+	if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("worktree path %s is a symlink", dir)
+	}
 	registered, err := IsWorktree(repo, dir)
 	if err != nil {
 		return err
 	}
 	if !registered {
-		if _, statErr := os.Stat(dir); statErr == nil {
+		if statErr == nil {
 			return fmt.Errorf("worktree path %s exists but is not registered in %s", dir, repo)
-		} else if !os.IsNotExist(statErr) {
-			return fmt.Errorf("stat worktree %s: %w", dir, statErr)
 		}
 		if out, pruneErr := exec.Command("git", "-C", repo, "worktree", "prune").CombinedOutput(); pruneErr != nil {
 			return gitCommandError("git worktree prune", pruneErr, out)
@@ -416,7 +425,7 @@ func WorktreeRemove(repo, dir string, force bool) error {
 // Relay's interrupted-project setup recovery, where the caller has already
 // applied its clean-worktree and confirmation policy.
 func WorktreeReclaim(repo, dir string, force bool) (returnErr error) {
-	root, targetName, targetExists, err := openRelayWorktreeTarget(repo, dir)
+	root, targetName, targetExists, targetSymlink, err := openRelayWorktreeTarget(repo, dir)
 	if err != nil {
 		return err
 	}
@@ -425,18 +434,24 @@ func WorktreeReclaim(repo, dir string, force bool) (returnErr error) {
 			returnErr = errors.Join(returnErr, root.Close())
 		}()
 	}
-	registered, err := IsWorktree(repo, dir)
-	if err != nil {
-		return err
-	}
-	if registered {
-		return removeRegisteredWorktree(repo, dir, force)
-	}
 	if !targetExists {
 		return nil
 	}
-	if err := root.RemoveAll(targetName); err != nil {
-		return fmt.Errorf("remove Relay worktree path %s: %w", dir, err)
+	if targetSymlink {
+		if err := root.Remove(targetName); err != nil {
+			return fmt.Errorf("remove Relay worktree symlink %s: %w", dir, err)
+		}
+	} else {
+		registered, err := IsWorktree(repo, dir)
+		if err != nil {
+			return err
+		}
+		if registered {
+			return removeRegisteredWorktree(repo, dir, force)
+		}
+		if err := root.RemoveAll(targetName); err != nil {
+			return fmt.Errorf("remove Relay worktree path %s: %w", dir, err)
+		}
 	}
 	if out, err := exec.Command("git", "-C", repo, "worktree", "prune").CombinedOutput(); err != nil {
 		return gitCommandError("git worktree prune", err, out)
@@ -444,19 +459,19 @@ func WorktreeReclaim(repo, dir string, force bool) (returnErr error) {
 	return nil
 }
 
-func openRelayWorktreeTarget(repo, dir string) (*os.Root, string, bool, error) {
+func openRelayWorktreeTarget(repo, dir string) (*os.Root, string, bool, bool, error) {
 	rootPath, err := filepath.Abs(filepath.Join(repo, ".worktrees"))
 	if err != nil {
-		return nil, "", false, fmt.Errorf("resolve Relay worktree root: %w", err)
+		return nil, "", false, false, fmt.Errorf("resolve Relay worktree root: %w", err)
 	}
 	targetPath, err := filepath.Abs(dir)
 	if err != nil {
-		return nil, "", false, fmt.Errorf("resolve worktree path %s: %w", dir, err)
+		return nil, "", false, false, fmt.Errorf("resolve worktree path %s: %w", dir, err)
 	}
 	rel, err := filepath.Rel(rootPath, targetPath)
 	if err != nil || filepath.IsAbs(rel) || rel == "." || rel == ".." ||
 		strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.Dir(rel) != "." {
-		return nil, "", false, fmt.Errorf(
+		return nil, "", false, false, fmt.Errorf(
 			"refuse to reclaim worktree path outside %s: %s", rootPath, dir,
 		)
 	}
@@ -464,34 +479,34 @@ func openRelayWorktreeTarget(repo, dir string) (*os.Root, string, bool, error) {
 	rootInfo, err := os.Lstat(rootPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, rel, false, nil
+			return nil, rel, false, false, nil
 		}
-		return nil, "", false, fmt.Errorf("inspect Relay worktree root %s: %w", rootPath, err)
+		return nil, "", false, false, fmt.Errorf("inspect Relay worktree root %s: %w", rootPath, err)
 	}
 	if rootInfo.Mode()&os.ModeSymlink != 0 {
-		return nil, "", false, fmt.Errorf(
+		return nil, "", false, false, fmt.Errorf(
 			"refuse to reclaim through symlinked Relay worktree root %s", rootPath,
 		)
 	}
 	if !rootInfo.IsDir() {
-		return nil, "", false, fmt.Errorf("relay worktree root %s is not a directory", rootPath)
+		return nil, "", false, false, fmt.Errorf("relay worktree root %s is not a directory", rootPath)
 	}
 
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {
-		return nil, "", false, fmt.Errorf("open Relay worktree root %s: %w", rootPath, err)
+		return nil, "", false, false, fmt.Errorf("open Relay worktree root %s: %w", rootPath, err)
 	}
 	openedInfo, err := root.Stat(".")
 	if err != nil {
 		closeErr := root.Close()
-		return nil, "", false, errors.Join(
+		return nil, "", false, false, errors.Join(
 			fmt.Errorf("verify Relay worktree root %s: %w", rootPath, err),
 			closeErr,
 		)
 	}
 	if !os.SameFile(rootInfo, openedInfo) {
 		closeErr := root.Close()
-		return nil, "", false, errors.Join(
+		return nil, "", false, false, errors.Join(
 			fmt.Errorf("refuse to reclaim through changed Relay worktree root %s", rootPath),
 			closeErr,
 		)
@@ -499,22 +514,15 @@ func openRelayWorktreeTarget(repo, dir string) (*os.Root, string, bool, error) {
 	targetInfo, err := root.Lstat(rel)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return root, rel, false, nil
+			return root, rel, false, false, nil
 		}
 		closeErr := root.Close()
-		return nil, "", false, errors.Join(
+		return nil, "", false, false, errors.Join(
 			fmt.Errorf("inspect Relay worktree path %s: %w", dir, err),
 			closeErr,
 		)
 	}
-	if targetInfo.Mode()&os.ModeSymlink != 0 {
-		closeErr := root.Close()
-		return nil, "", false, errors.Join(
-			fmt.Errorf("refuse to reclaim symlinked Relay worktree path %s", dir),
-			closeErr,
-		)
-	}
-	return root, rel, true, nil
+	return root, rel, true, targetInfo.Mode()&os.ModeSymlink != 0, nil
 }
 
 func removeRegisteredWorktree(repo, dir string, force bool) error {
