@@ -141,6 +141,31 @@ func TestArchivePreservesProjectWhenMoveToArchivedFails(t *testing.T) {
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
 
+func TestArchiveResultReportsActiveLocationForDestinationCollision(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archive-destination-collision"
+	branch := "user/archive-destination-collision"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	srcDir := filepath.Join(project.ActiveDir(), slug)
+	dstDir := filepath.Join(project.ArchivedDir(), slug)
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := archiveProject(slug, true)
+	if err == nil || !strings.Contains(err.Error(), "destination already exists") {
+		t.Fatalf("archiveProject error = %v, want destination collision", err)
+	}
+	if result.ProjectLocation != archiveLocationActive ||
+		result.ProjectPath != srcDir ||
+		result.MetadataTransition != archiveTransitionNone ||
+		result.ArchivedPath != "" {
+		t.Fatalf("archive result = %+v, want unchanged active location", result)
+	}
+}
+
 func TestArchivePreservesProjectWhenArchivedManifestCannotBeStaged(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
@@ -161,6 +186,51 @@ func TestArchivePreservesProjectWhenArchivedManifestCannotBeStaged(t *testing.T)
 		t.Fatalf("runArchive error = %v, want manifest staging failure", err)
 	}
 	assertArchivePreserved(t, repo, slug, branch, worktree)
+}
+
+func TestArchiveResultReportsActiveLocationWhenManifestRestoreFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "active-manifest-restore-failure"
+	branch := "user/active-manifest-restore-failure"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	srcDir := filepath.Join(project.ActiveDir(), slug)
+
+	previousSave := saveArchiveManifest
+	saveArchiveManifest = func(path string, manifest project.Manifest) error {
+		if manifest.ArchiveCleanup != nil &&
+			manifest.ArchiveCleanup.WorktreeState == project.ArchiveCleanupClaimed {
+			return errors.New("injected cleanup claim save failure")
+		}
+		return project.Save(path, manifest)
+	}
+	previousRename := archiveRename
+	archiveRename = func(oldPath, newPath string) error {
+		if strings.HasPrefix(filepath.Base(oldPath), ".manifest.active-") &&
+			filepath.Base(newPath) == "manifest.json" {
+			return errors.New("injected active manifest restore failure")
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	t.Cleanup(func() {
+		saveArchiveManifest = previousSave
+		archiveRename = previousRename
+	})
+
+	result, err := archiveProject(slug, true)
+	if err == nil || !strings.Contains(err.Error(), "restore active manifest") {
+		t.Fatalf("archiveProject error = %v, want active manifest restore failure", err)
+	}
+	if result.ProjectLocation != archiveLocationActive ||
+		result.ProjectPath != srcDir ||
+		result.MetadataTransition != archiveTransitionRollbackIncomplete ||
+		result.ArchivedPath != "" {
+		t.Fatalf("archive result = %+v, want active rollback-incomplete location", result)
+	}
+	if !pathExists(srcDir) || pathExists(filepath.Join(project.ArchivedDir(), slug)) {
+		t.Fatal("archive result does not match the active project directory")
+	}
 }
 
 func TestArchiveDoesNotRemoveWorktreeWhenCleanupClaimCannotBeSaved(t *testing.T) {
@@ -703,7 +773,7 @@ func TestArchiveRollbackRetainsArchivedProofWhenDirectoryRestoreFails(t *testing
 		ExpectedBranchTip: "0123456789012345678901234567890123456789",
 	}
 
-	rollback, err := stageArchivedProject(srcDir, dstDir, archived)
+	stage, err := stageArchivedProject(srcDir, dstDir, archived)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -716,10 +786,10 @@ func TestArchiveRollbackRetainsArchivedProofWhenDirectoryRestoreFails(t *testing
 	}
 	t.Cleanup(func() { archiveRename = previousRename })
 
-	err = rollback()
-	if err == nil || !strings.Contains(err.Error(), "restore active project directory") ||
-		!strings.Contains(err.Error(), "injected directory restore failure") {
-		t.Fatalf("rollback error = %v, want directory restore failure", err)
+	rollback := stage.rollback()
+	if rollback.err == nil || !strings.Contains(rollback.err.Error(), "restore active project directory") ||
+		!strings.Contains(rollback.err.Error(), "injected directory restore failure") {
+		t.Fatalf("rollback error = %v, want directory restore failure", rollback.err)
 	}
 	if pathExists(srcDir) {
 		t.Fatal("rollback recreated the active directory after its move failed")
@@ -810,7 +880,7 @@ func TestArchiveRollbackIgnoresHostileFixedManifestEntry(t *testing.T) {
 		ExpectedBranchTip: "0123456789012345678901234567890123456789",
 	}
 
-	rollback, err := stageArchivedProject(srcDir, dstDir, archived)
+	stage, err := stageArchivedProject(srcDir, dstDir, archived)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -823,8 +893,8 @@ func TestArchiveRollbackIgnoresHostileFixedManifestEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := rollback(); err != nil {
-		t.Fatalf("rollback: %v", err)
+	if rollback := stage.rollback(); rollback.err != nil {
+		t.Fatalf("rollback: %v", rollback.err)
 	}
 	after, err := os.ReadFile(filepath.Join(srcDir, "manifest.json"))
 	if err != nil || string(after) != string(before) {

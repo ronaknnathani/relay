@@ -155,7 +155,7 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 	}
 	archiveOutcome, err := archiveProject(manifest.Slug, true)
 	result.Archive = &archiveOutcome
-	result.Archived = archiveOutcome.ArchivedPath != ""
+	result.Archived = archiveOutcome.ProjectLocation == archiveLocationArchived
 	result.Warnings = append(result.Warnings, archiveOutcome.Warnings...)
 	if archiveOutcome.BranchDeletionWarning != "" {
 		result.Warnings = append(result.Warnings, archiveOutcome.BranchDeletionWarning)

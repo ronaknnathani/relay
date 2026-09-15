@@ -195,9 +195,21 @@ type archiveResult struct {
 	BranchDeletionWarning string   `json:"branch_deletion_warning,omitempty"`
 	BranchCleanupCommand  string   `json:"branch_cleanup_command,omitempty"`
 	Merged                bool     `json:"merged"`
+	MetadataTransition    string   `json:"metadata_transition"`
+	ProjectLocation       string   `json:"project_location"`
+	ProjectPath           string   `json:"project_path"`
 	ArchivedPath          string   `json:"archived_path"`
 	Warnings              []string `json:"warnings"`
 }
+
+const (
+	archiveTransitionNone               = "none"
+	archiveTransitionStaged             = "staged"
+	archiveTransitionRolledBack         = "rolled-back"
+	archiveTransitionRollbackIncomplete = "rollback-incomplete"
+	archiveLocationActive               = "active"
+	archiveLocationArchived             = "archived"
+)
 
 // runArchive archives a project and prints the human-facing report.
 func runArchive(slug string, force bool) error {
@@ -555,7 +567,13 @@ func archiveProjectWithProofLocked(proof archiveProofSnapshot, force bool) (arch
 		return archiveResult{}, err
 	}
 	result := archiveResult{
-		Slug: proof.Slug, Branch: proof.Branch, Merged: proof.Merged, Warnings: []string{},
+		Slug:               proof.Slug,
+		Branch:             proof.Branch,
+		Merged:             proof.Merged,
+		MetadataTransition: archiveTransitionNone,
+		ProjectLocation:    archiveLocationActive,
+		ProjectPath:        filepath.Join(project.ActiveDir(), proof.Slug),
+		Warnings:           []string{},
 	}
 	if proof.HasWorktree {
 		result.Worktree = proof.Worktree
@@ -568,44 +586,44 @@ func archiveProjectWithProofLocked(proof archiveProofSnapshot, force bool) (arch
 
 	srcDir := filepath.Join(project.ActiveDir(), proof.Slug)
 	dstDir := filepath.Join(project.ArchivedDir(), proof.Slug)
-	rollbackMetadata, err := stageArchivedProject(srcDir, dstDir, m)
+	stage, err := stageArchivedProject(srcDir, dstDir, m)
+	applyArchiveMetadataState(&result, stage)
 	if err != nil {
-		if _, statErr := os.Stat(dstDir); statErr == nil {
-			result.ArchivedPath = dstDir
-		}
 		return result, err
 	}
-	result.ArchivedPath = dstDir
 	m, err = loadArchivedCleanupManifest(proof.Slug)
 	if err != nil {
-		if rollbackErr := rollbackMetadata(); rollbackErr != nil {
+		rollback := stage.rollback()
+		applyArchiveMetadataState(&result, rollback)
+		if rollback.err != nil {
 			return result, fmt.Errorf(
 				"reload archived cleanup manifest: %w; rollback archive metadata: %v",
-				err, rollbackErr,
+				err, rollback.err,
 			)
 		}
-		result.ArchivedPath = ""
 		return result, fmt.Errorf("reload archived cleanup manifest: %w", err)
 	}
 
 	if proof.HasWorktree && proof.Worktree != "" {
 		if err := validateArchiveTips(proof); err != nil {
-			if rollbackErr := rollbackMetadata(); rollbackErr != nil {
-				err = fmt.Errorf("%w; rollback archive metadata: %v", err, rollbackErr)
+			rollback := stage.rollback()
+			applyArchiveMetadataState(&result, rollback)
+			if rollback.err != nil {
+				err = fmt.Errorf("%w; rollback archive metadata: %v", err, rollback.err)
 				return result, err
 			}
-			result.ArchivedPath = ""
 			return result, err
 		}
 		if proof.WorktreePresent {
 			if err := claimArchivedWorktreeCleanup(&m); err != nil {
-				if rollbackErr := rollbackMetadata(); rollbackErr != nil {
+				rollback := stage.rollback()
+				applyArchiveMetadataState(&result, rollback)
+				if rollback.err != nil {
 					return result, fmt.Errorf(
 						"claim worktree %s cleanup: %w; rollback archive metadata: %v",
-						proof.Worktree, err, rollbackErr,
+						proof.Worktree, err, rollback.err,
 					)
 				}
-				result.ArchivedPath = ""
 				return result, fmt.Errorf("claim worktree %s cleanup: %w", proof.Worktree, err)
 			}
 			if err := archiveWorktreeRemove(
@@ -620,11 +638,12 @@ func archiveProjectWithProofLocked(proof archiveProofSnapshot, force bool) (arch
 			); err != nil {
 				present, unchanged, inspectErr := archiveWorktreeStateAfterFailure(proof)
 				if inspectErr == nil && unchanged {
-					if rollbackErr := rollbackMetadata(); rollbackErr != nil {
-						err = fmt.Errorf("%w; rollback archive metadata: %v", err, rollbackErr)
+					rollback := stage.rollback()
+					applyArchiveMetadataState(&result, rollback)
+					if rollback.err != nil {
+						err = fmt.Errorf("%w; rollback archive metadata: %v", err, rollback.err)
 						return result, err
 					}
-					result.ArchivedPath = ""
 					if !force {
 						return result, fmt.Errorf(
 							"%w\nhint: use --force to remove worktrees with untracked/modified files", err,
@@ -838,11 +857,14 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 
 func retryArchivedProjectCleanupLocked(m project.Manifest) (archiveResult, error) {
 	result := archiveResult{
-		Slug:         m.Slug,
-		Branch:       m.Branch,
-		Merged:       m.Merged,
-		ArchivedPath: filepath.Join(project.ArchivedDir(), m.Slug),
-		Warnings:     []string{},
+		Slug:               m.Slug,
+		Branch:             m.Branch,
+		Merged:             m.Merged,
+		MetadataTransition: archiveTransitionStaged,
+		ProjectLocation:    archiveLocationArchived,
+		ProjectPath:        filepath.Join(project.ArchivedDir(), m.Slug),
+		ArchivedPath:       filepath.Join(project.ArchivedDir(), m.Slug),
+		Warnings:           []string{},
 	}
 	if m.Worktree != nil {
 		result.Worktree = *m.Worktree
@@ -1395,87 +1417,140 @@ func setBranchDeletionRecovery(
 	}
 }
 
-func stageArchivedProject(srcDir, dstDir string, m project.Manifest) (func() error, error) {
+type archiveMetadataState struct {
+	transition string
+	location   string
+	path       string
+	rollback   func() archiveMetadataState
+	err        error
+}
+
+func applyArchiveMetadataState(result *archiveResult, state archiveMetadataState) {
+	result.MetadataTransition = state.transition
+	result.ProjectLocation = state.location
+	result.ProjectPath = state.path
+	result.ArchivedPath = ""
+	if state.location == archiveLocationArchived {
+		result.ArchivedPath = state.path
+	}
+}
+
+func stageArchivedProject(srcDir, dstDir string, m project.Manifest) (archiveMetadataState, error) {
+	active := archiveMetadataState{
+		transition: archiveTransitionNone,
+		location:   archiveLocationActive,
+		path:       srcDir,
+	}
 	manifestPath := filepath.Join(srcDir, "manifest.json")
 	originalManifest, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return nil, fmt.Errorf("read active manifest for archive: %w", err)
+		return active, fmt.Errorf("read active manifest for archive: %w", err)
 	}
 	info, err := os.Stat(manifestPath)
 	if err != nil {
-		return nil, fmt.Errorf("stat active manifest for archive: %w", err)
+		return active, fmt.Errorf("stat active manifest for archive: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(dstDir), 0755); err != nil {
-		return nil, fmt.Errorf("create archived dir: %w", err)
+		return active, fmt.Errorf("create archived dir: %w", err)
 	}
 	if _, err := os.Lstat(dstDir); err == nil {
-		return nil, fmt.Errorf("move project to archived: destination already exists: %s", dstDir)
+		return active, fmt.Errorf("move project to archived: destination already exists: %s", dstDir)
 	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("inspect archive destination %s: %w", dstDir, err)
+		return active, fmt.Errorf("inspect archive destination %s: %w", dstDir, err)
 	}
 
 	staged, err := os.CreateTemp(srcDir, ".manifest.archived-*")
 	if err != nil {
-		return nil, fmt.Errorf("stage archived manifest: %w", err)
+		return active, fmt.Errorf("stage archived manifest: %w", err)
 	}
 	stagedPath := staged.Name()
 	if err := staged.Close(); err != nil {
 		err = archiveCleanupError(err, archiveRemoveFile(stagedPath))
-		return nil, fmt.Errorf("stage archived manifest: close temporary file: %w", err)
+		return active, fmt.Errorf("stage archived manifest: close temporary file: %w", err)
 	}
 	if err := saveArchiveManifest(stagedPath, m); err != nil {
 		err = archiveCleanupError(err, archiveRemoveFile(stagedPath))
-		return nil, fmt.Errorf("stage archived manifest: %w", err)
+		return active, fmt.Errorf("stage archived manifest: %w", err)
 	}
 
 	if err := archiveRename(srcDir, dstDir); err != nil {
 		err = archiveCleanupError(err, archiveRemoveFile(stagedPath))
-		return nil, fmt.Errorf("move project to archived: %w", err)
+		return active, fmt.Errorf("move project to archived: %w", err)
+	}
+	archived := archiveMetadataState{
+		transition: archiveTransitionRollbackIncomplete,
+		location:   archiveLocationArchived,
+		path:       dstDir,
 	}
 	stagedPath = filepath.Join(dstDir, filepath.Base(stagedPath))
 	archivedManifestPath := filepath.Join(dstDir, "manifest.json")
 	if err := archiveRename(stagedPath, archivedManifestPath); err != nil {
 		rollbackErr := archiveRename(dstDir, srcDir)
 		if rollbackErr != nil {
-			return nil, fmt.Errorf(
+			return archived, fmt.Errorf(
 				"install archived manifest: %w; rollback project directory: %v", err, rollbackErr,
 			)
 		}
 		err = archiveCleanupError(err, archiveRemoveFile(filepath.Join(srcDir, filepath.Base(stagedPath))))
-		return nil, fmt.Errorf("install archived manifest: %w", err)
+		active.transition = archiveTransitionRolledBack
+		return active, fmt.Errorf("install archived manifest: %w", err)
 	}
 
-	rollback := func() error {
+	stagedState := archiveMetadataState{
+		transition: archiveTransitionStaged,
+		location:   archiveLocationArchived,
+		path:       dstDir,
+	}
+	stagedState.rollback = func() archiveMetadataState {
 		if err := archiveRename(dstDir, srcDir); err != nil {
-			return fmt.Errorf("restore active project directory: %w", err)
+			return archiveMetadataState{
+				transition: archiveTransitionRollbackIncomplete,
+				location:   archiveLocationArchived,
+				path:       dstDir,
+				err:        fmt.Errorf("restore active project directory: %w", err),
+			}
+		}
+		incomplete := archiveMetadataState{
+			transition: archiveTransitionRollbackIncomplete,
+			location:   archiveLocationActive,
+			path:       srcDir,
 		}
 		rollbackFile, err := os.CreateTemp(srcDir, ".manifest.active-*")
 		if err != nil {
-			return fmt.Errorf("stage active manifest: %w", err)
+			incomplete.err = fmt.Errorf("stage active manifest: %w", err)
+			return incomplete
 		}
 		rollbackPath := rollbackFile.Name()
 		if err := rollbackFile.Chmod(info.Mode().Perm()); err != nil {
 			err = archiveCleanupError(err, rollbackFile.Close())
 			err = archiveCleanupError(err, archiveRemoveFile(rollbackPath))
-			return fmt.Errorf("stage active manifest permissions: %w", err)
+			incomplete.err = fmt.Errorf("stage active manifest permissions: %w", err)
+			return incomplete
 		}
 		if _, err := rollbackFile.Write(originalManifest); err != nil {
 			err = archiveCleanupError(err, rollbackFile.Close())
 			err = archiveCleanupError(err, archiveRemoveFile(rollbackPath))
-			return fmt.Errorf("stage active manifest contents: %w", err)
+			incomplete.err = fmt.Errorf("stage active manifest contents: %w", err)
+			return incomplete
 		}
 		if err := rollbackFile.Close(); err != nil {
 			err = archiveCleanupError(err, archiveRemoveFile(rollbackPath))
-			return fmt.Errorf("stage active manifest: close temporary file: %w", err)
+			incomplete.err = fmt.Errorf("stage active manifest: close temporary file: %w", err)
+			return incomplete
 		}
 		activeManifestPath := filepath.Join(srcDir, "manifest.json")
 		if err := archiveRename(rollbackPath, activeManifestPath); err != nil {
 			err = archiveCleanupError(err, archiveRemoveFile(rollbackPath))
-			return fmt.Errorf("restore active manifest: %w", err)
+			incomplete.err = fmt.Errorf("restore active manifest: %w", err)
+			return incomplete
 		}
-		return nil
+		return archiveMetadataState{
+			transition: archiveTransitionRolledBack,
+			location:   archiveLocationActive,
+			path:       srcDir,
+		}
 	}
-	return rollback, nil
+	return stagedState, nil
 }
 
 func archiveCleanupError(cause, cleanupErr error) error {
