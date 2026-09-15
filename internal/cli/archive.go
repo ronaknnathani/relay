@@ -176,12 +176,13 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 		deleteBranchAfter      bool
 		forceDeleteBranchAfter bool
 		workMerged             = mergeProven
+		branchExists           = m.Branch != "" && gitx.BranchExists(m.Repo, m.Branch)
 	)
 	// The recorded pull request is authoritative about merge state and is
 	// resolved lazily, at most once, so a locally merged branch costs no GitHub
 	// call and a branch that is already deleted is still evaluated.
 	recordedMerge := recordedPullRequestMergeOnce(m, slug)
-	if m.Branch != "" && gitx.BranchExists(m.Repo, m.Branch) {
+	if branchExists {
 		base := m.BaseBranch
 		if base == "" {
 			base = gitx.DetectDefaultBranch(m.Repo)
@@ -222,9 +223,10 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 	if !workMerged {
 		pullRequestMerged, err := recordedMerge()
 		if err != nil {
-			if !force {
+			if !force && branchExists {
 				return archiveResult{}, err
 			}
+			result.Warnings = append(result.Warnings, err.Error())
 		} else {
 			workMerged = pullRequestMerged
 		}

@@ -286,7 +286,7 @@ func TestArchiveRecordsMergedPullRequestWhenTheLocalBranchIsGone(t *testing.T) {
 	}
 }
 
-func TestArchivePreservesProjectWhenDeletedBranchProofFails(t *testing.T) {
+func TestArchiveWarnsAndContinuesWhenDeletedBranchProofFails(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
 	slug := "deleted-branch-proof-error"
@@ -299,17 +299,21 @@ func TestArchivePreservesProjectWhenDeletedBranchProofFails(t *testing.T) {
 	runArchiveGit(t, repo, "worktree", "remove", "--force", worktree)
 	runArchiveGit(t, repo, "branch", "-D", branch)
 
-	_, err := captureStdout(t, func() error {
+	_, stderr, err := captureGCOutput(t, func() error {
 		return runArchive(slug, false)
 	})
-	if err == nil || !strings.Contains(err.Error(), "GitHub unavailable") {
-		t.Fatalf("runArchive error = %v, want proof lookup failure", err)
+	if err != nil {
+		t.Fatalf("runArchive with unavailable proof lookup: %v", err)
 	}
-	if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
-		t.Fatal("archive removed project metadata after proof lookup failed")
+	if !strings.Contains(stderr, "GitHub unavailable") {
+		t.Fatalf("stderr %q is missing proof lookup warning", stderr)
 	}
-	if pathExists(filepath.Join(project.ArchivedDir(), slug)) {
-		t.Fatal("archive created archived metadata after proof lookup failed")
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("archive left project metadata active after proof lookup failed")
+	}
+	archived := loadArchivedManifest(t, slug)
+	if archived.Merged {
+		t.Fatal("archive recorded unavailable pull request proof as merged")
 	}
 }
 
