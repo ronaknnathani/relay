@@ -149,7 +149,7 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 				if (window.__relayCompleteUsableAt > 0 ||
 					typeof state === "undefined" ||
 					state.snapshot?.schema !== "relay.program.v1" ||
-					state.itemsByID?.size !== 100 ||
+					state.snapshot?.items?.length !== 100 ||
 					document.querySelector("#program-title")?.textContent !== "Reference Program" ||
 					!document.querySelector("#program-summary")?.textContent ||
 					document.querySelector("#task-total")?.textContent !== "100" ||
@@ -260,7 +260,7 @@ func measureBrowserRun(
 			edges: document.querySelectorAll("#graph-edges .edge").length,
 			graphLabel: document.querySelector("#graph")?.getAttribute("aria-label"),
 			schema: typeof state === "undefined" ? "" : state.snapshot?.schema,
-			items: typeof state === "undefined" ? 0 : state.itemsByID?.size,
+			items: typeof state === "undefined" ? 0 : state.snapshot?.items?.length,
 			selected: document.querySelector(".card[data-selected='true']")?.dataset.item,
 			focused: document.activeElement?.dataset?.item,
 			roadmapSelected: document.querySelector("#tab-roadmap")?.getAttribute("aria-selected"),
