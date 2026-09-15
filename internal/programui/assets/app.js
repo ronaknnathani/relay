@@ -637,16 +637,22 @@ function renderOverview() {
     ? "Nothing waiting on you"
     : `${plural(open, "answer")} needed`;
 
-  const workers = items().filter((item) => item.worker);
-  const active = workers.filter((item) => text(item.worker.status) === "working").length;
+  let workers = 0;
+  let active = 0;
   let unread = 0;
-  items().forEach((item) => {
+  for (const item of items()) {
+    if (item.worker) {
+      workers += 1;
+      if (item.worker.status === "working") {
+        active += 1;
+      }
+    }
     const mailbox = item.mailbox || {};
     if (mailbox.available) {
       unread += count(mailbox.inbox) + count(mailbox.outbox);
     }
-  });
-  dom.workerCount.textContent = String(workers.length);
+  }
+  dom.workerCount.textContent = String(workers);
   dom.workerNote.textContent = [
     `${active} working`,
     unread ? `${plural(unread, "unread message")}` : "no unread mail",
@@ -2788,7 +2794,10 @@ async function poll(preloadedRequest, preloadedController) {
     hideReconnect();
     const initial = !state.snapshot;
     state.snapshot = snapshot;
-    state.itemsByID = new Map(items().map((item) => [item.id, item]));
+    state.itemsByID = new Map();
+    for (const item of items()) {
+      state.itemsByID.set(item.id, item);
+    }
     if (initial) {
       renderInitial();
       window.requestAnimationFrame(() => {
