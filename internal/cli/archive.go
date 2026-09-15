@@ -496,6 +496,8 @@ func validatePullRequestProofTips(proof archiveProofSnapshot, expectedTip string
 }
 
 func validateArchiveWorktreeBinding(proof archiveProofSnapshot) error {
+	// A detached worktree is accepted only after its HEAD matched the proven
+	// commit. An attached worktree must also still name the manifest branch.
 	if !proof.WorktreePresent || proof.WorktreeDetached {
 		return nil
 	}
@@ -690,6 +692,15 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 	if err != nil {
 		return result, err
 	}
+	if proof.WorktreePresent && !current.worktreePresent {
+		if err := consumeArchivedWorktreeProof(&m); err != nil {
+			return result, fmt.Errorf(
+				"finish archived worktree cleanup for %s: worktree is absent, but its cleanup proof "+
+					"could not be consumed: %w",
+				m.Slug, err,
+			)
+		}
+	}
 	if current.worktreePresent {
 		if err := gitx.WorktreeRemove(m.Repo, *m.Worktree, true); err != nil {
 			return result, fmt.Errorf("finish archived worktree cleanup for %s: %w", m.Slug, err)
@@ -704,6 +715,15 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 		}
 	}
 	if !current.branchPresent {
+		if proof.BranchPresent {
+			if err := consumeArchivedBranchProof(&m); err != nil {
+				return result, fmt.Errorf(
+					"finish archived branch cleanup for %s: branch is absent, but its cleanup proof "+
+						"could not be consumed: %w",
+					m.Slug, err,
+				)
+			}
+		}
 		return result, nil
 	}
 	if err := archiveForceDeleteBranchAt(

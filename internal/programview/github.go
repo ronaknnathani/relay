@@ -46,8 +46,7 @@ type PRIndex interface {
 type PRIndexLoader func(repo string, refs []string) PRIndex
 
 // PullRequestProof contains the GitHub fields needed to bind a merged pull
-// request to an existing local branch by repository and head SHA, or to a
-// deleted local branch by repository and head branch name.
+// request to the recorded repository, base branch, head branch, and head SHA.
 type PullRequestProof struct {
 	State      PRState
 	Repository string

@@ -194,6 +194,32 @@ func TestGCKeepsUpstreamMergedBranchWhenDetachedWorktreeHeadDiverges(t *testing.
 	}
 }
 
+func TestGCKeepsUpstreamMergedBranchWhenWorktreeIsAttachedToAnotherBranch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "upstream-wrong-attached-branch"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	tip := gitx.RevParse(fixture.repo, "refs/heads/"+branch)
+	replacement := "user/replacement-at-merged-tip"
+	runArchiveGit(t, fixture.repo, "branch", replacement, tip)
+	runArchiveGit(t, worktree, "checkout", "-q", replacement)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "attached to") ||
+		!strings.Contains(stderr, "refs/heads/"+branch) {
+		t.Fatalf("stderr %q is missing the attached branch mismatch", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) || !pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) ||
+		!gitx.BranchExists(fixture.repo, replacement) {
+		t.Fatal("GC changed a project whose worktree was attached to another branch")
+	}
+}
+
 func TestGCPreservesMergedBranchWithExistingUnregisteredWorktreeDirectory(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")

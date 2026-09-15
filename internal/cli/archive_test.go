@@ -964,6 +964,48 @@ func TestArchivedCleanupRetryIsCleanAfterProofConsumption(t *testing.T) {
 	}
 }
 
+func TestArchivedCleanupRetryConsumesProofForAlreadyAbsentResources(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archived-retry-stale-proof"
+	branch := "user/archived-retry-stale-proof"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archiveProjectWithProof(decision.proof, true); err != nil {
+		t.Fatalf("archiveProjectWithProof: %v", err)
+	}
+	archived := loadArchivedManifest(t, slug)
+	archived.ArchiveCleanup = archiveCleanupProof(decision.proof)
+	if err := project.Save(
+		project.ManifestPath(project.ArchivedDir(), slug), archived,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := retryArchivedProjectCleanup(archived); err != nil {
+		t.Fatalf("retryArchivedProjectCleanup: %v", err)
+	}
+	consumed := loadArchivedManifest(t, slug)
+	if consumed.ArchiveCleanup == nil || consumed.ArchiveCleanup.WorktreePresent ||
+		consumed.ArchiveCleanup.BranchPresent {
+		t.Fatalf("cleanup proof = %+v, want absent resources consumed", consumed.ArchiveCleanup)
+	}
+
+	runArchiveGit(t, repo, "branch", branch, decision.proof.ExpectedBranchTip)
+	_, err = retryArchivedProjectCleanup(consumed)
+	if err == nil || !strings.Contains(err.Error(), "appeared after") {
+		t.Fatalf("retry after branch recreation error = %v, want consumed-proof rejection", err)
+	}
+}
+
 func TestLegacyArchivedCleanupIsCleanWhenResourcesAreAlreadyAbsent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
