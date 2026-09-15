@@ -676,6 +676,66 @@ func TestObservationErrorsRetryThenFailTheWatcher(t *testing.T) {
 	}
 }
 
+func TestRecoverableObservationErrorsRemainRunning(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		mode  Mode
+		owner string
+	}{
+		{name: "standalone", mode: ModeStandalone},
+		{name: "managed", mode: ModeManaged},
+		{name: "stack", mode: ModeStack, owner: "stack-run"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			harness := newWatchHarness(t, test.mode, test.owner, quietObservation())
+			harness.out.awaitLine(t, "] CHECK ")
+			harness.setObservation(
+				Observation{},
+				classifyGitHubAccessError(errors.New("API rate limit exceeded")),
+			)
+
+			next, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
+			if err != nil {
+				t.Fatalf("parse next check: %v", err)
+			}
+			observations := harness.observations()
+			harness.setNow(next.Add(-time.Second))
+			harness.tick()
+			harness.tick()
+			if got := harness.observations(); got != observations {
+				t.Fatalf("observations before next check = %d, want %d", got, observations)
+			}
+
+			for count := 1; count <= maxConsecutiveErrors+1; count++ {
+				if count > 1 {
+					next, err = time.Parse(time.RFC3339, harness.state().NextCheckAt)
+					if err != nil {
+						t.Fatalf("parse next check after error %d: %v", count-1, err)
+					}
+				}
+				harness.setNow(next)
+				harness.tick()
+				harness.err.awaitLine(t, "API rate limit exceeded")
+
+				state := harness.state()
+				if state.Status != StatusRunning {
+					t.Fatalf("state after error %d = %+v, want a running watcher", count, state)
+				}
+				if state.ConsecutiveErrors != count {
+					t.Errorf("consecutive errors = %d, want %d", state.ConsecutiveErrors, count)
+				}
+				if state.DelaySeconds != int64(FastCadence/time.Second) {
+					t.Errorf("delay = %ds, want %ds", state.DelaySeconds, int64(FastCadence/time.Second))
+				}
+				wantNext := next.Add(FastCadence).Format(time.RFC3339)
+				if state.NextCheckAt != wantNext {
+					t.Errorf("next check = %q, want %q", state.NextCheckAt, wantNext)
+				}
+			}
+		})
+	}
+}
+
 func TestWatcherEventsCarryNoPullRequestContent(t *testing.T) {
 	observation := actionableObservation()
 	observation.PR.Title = "Add the secret widget"

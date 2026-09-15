@@ -518,19 +518,20 @@ func (r *checkRunner) recordClosed(now time.Time, state State) error {
 }
 
 // recordObservationError treats a GitHub failure as an error, never as a quiet
-// no-action. The watcher retries at the fast cadence and stops after three
-// consecutive failures so a blind watcher is visible.
+// no-action. Recoverable GitHub access failures remain scheduled at the fast
+// cadence; other observation failures stop the watcher after three attempts.
 func (r *checkRunner) recordObservationError(now time.Time, cause error) (bool, error) {
 	wrapped := fmt.Errorf(
 		"observe pull request #%d for project %q: %w", r.target.PRNumber, r.slug, cause,
 	)
+	recoverable := isRecoverableGitHubAccessError(cause)
 	state, err := UpdateState(r.slug, func(state State) (State, error) {
 		state.ConsecutiveErrors++
 		state.Error = wrapped.Error()
 		state.DelaySeconds = int64(FastCadence / time.Second)
 		state.NextCheckAt = now.Add(FastCadence).Format(time.RFC3339)
 		state.UpdatedAt = now.Format(time.RFC3339)
-		if state.ConsecutiveErrors >= maxConsecutiveErrors {
+		if !recoverable && state.ConsecutiveErrors >= maxConsecutiveErrors {
 			state.Status = StatusFailed
 			state.NextCheckAt = ""
 		}
