@@ -1612,6 +1612,9 @@ function start() {
     window.__relayBootstrapCleanup();
     delete window.__relayBootstrapCleanup;
   }
+  Array.from(dom.graphNodes.querySelectorAll(".card")).forEach((card) => {
+    state.cards.set(card.dataset.item, card);
+  });
   renderThemeToggle();
   bindControls();
   const parsed = readHash();
@@ -1621,6 +1624,7 @@ function start() {
   setFeed(false, "Connecting…");
   poll(initialProgramRequest, initialProgramController, initialProgramSnapshot);
   window.__relayCoreReady = true;
+  document.documentElement.dataset.relayCoreReady = "true";
   window.setInterval(() => {
     if (state.snapshot) {
       renderHeader();

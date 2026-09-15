@@ -25,6 +25,13 @@ const (
 	bootstrapTemplateToken = "__RELAY_BOOTSTRAP__"
 	roadmapTemplateToken   = "__RELAY_INITIAL_ROADMAP__"
 	roadmapMarkupToken     = "__RELAY_ROADMAP_MARKUP__"
+	programSlugToken       = "__RELAY_PROGRAM_SLUG__"
+	programTitleToken      = "__RELAY_PROGRAM_TITLE__"
+	programSummaryToken    = "__RELAY_PROGRAM_SUMMARY__"
+	progressCountsToken    = "__RELAY_PROGRESS_COUNTS__"
+	taskTotalToken         = "__RELAY_TASK_TOTAL__"
+	roadmapNoteToken       = "__RELAY_ROADMAP_NOTE__"
+	roadmapLabelToken      = "__RELAY_ROADMAP_LABEL__"
 )
 
 //go:embed assets/*
@@ -156,16 +163,15 @@ func (h *handler) serveIndex(response http.ResponseWriter, request *http.Request
 		http.Error(response, h.indexErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	markup := []byte{}
+	roadmap := []byte("null")
 	if h.feed != nil {
-		var err error
-		markup, err = renderRoadmapMarkup(h.feed.roadmapResponse())
-		if err != nil {
-			http.Error(response, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		roadmap = h.feed.roadmapResponse()
 	}
-	index := bytes.Replace(h.indexTemplate, []byte(roadmapMarkupToken), markup, 1)
+	index, err := renderIndex(h.indexTemplate, roadmap)
+	if err != nil {
+		http.Error(response, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	response.Header().Set("Content-Length", strconv.Itoa(len(index)))
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
 	response.WriteHeader(http.StatusOK)
@@ -191,11 +197,47 @@ func prepareIndexTemplate() ([]byte, error) {
 	return index, nil
 }
 
-func renderRoadmapMarkup(encoded []byte) ([]byte, error) {
+func renderIndex(index, encoded []byte) ([]byte, error) {
 	var snapshot roadmapSnapshot
-	if err := json.Unmarshal(encoded, &snapshot); err != nil {
-		return nil, fmt.Errorf("decode roadmap markup snapshot: %w", err)
+	if !bytes.Equal(encoded, []byte("null")) {
+		if err := json.Unmarshal(encoded, &snapshot); err != nil {
+			return nil, fmt.Errorf("decode roadmap index snapshot: %w", err)
+		}
 	}
+	markup := renderRoadmapMarkup(snapshot)
+	title := snapshot.Program.DisplayTitle
+	if title == "" {
+		title = snapshot.Program.Title
+	}
+	if title == "" {
+		title = "Relay Program"
+	}
+	replacements := map[string]string{
+		roadmapMarkupToken:  string(markup),
+		programSlugToken:    html.EscapeString(snapshot.Program.Slug),
+		programTitleToken:   html.EscapeString(title),
+		programSummaryToken: html.EscapeString(snapshot.Program.Summary),
+		progressCountsToken: fmt.Sprintf(
+			"%d of %d merged", snapshot.Progress.Merged, snapshot.Progress.Total,
+		),
+		taskTotalToken: strconv.Itoa(snapshot.Progress.Total),
+		roadmapNoteToken: fmt.Sprintf(
+			"%d ready · %d in flight · %d blocked",
+			len(snapshot.Plan.Ready), len(snapshot.Plan.InFlight), len(snapshot.Plan.Blocked),
+		),
+		roadmapLabelToken: fmt.Sprintf(
+			"Dependency flow: %d task%s, %d dependency link%s.",
+			len(snapshot.Graph.Nodes), pluralSuffix(len(snapshot.Graph.Nodes)),
+			len(snapshot.Graph.Edges), pluralSuffix(len(snapshot.Graph.Edges)),
+		),
+	}
+	for token, value := range replacements {
+		index = bytes.ReplaceAll(index, []byte(token), []byte(value))
+	}
+	return index, nil
+}
+
+func renderRoadmapMarkup(snapshot roadmapSnapshot) []byte {
 	nodes := make(map[string]roadmapNode, len(snapshot.Graph.Nodes))
 	for _, node := range snapshot.Graph.Nodes {
 		nodes[node.ID] = node
@@ -247,6 +289,27 @@ func renderRoadmapMarkup(encoded []byte) ([]byte, error) {
 				tabIndex = 0
 			}
 			escapedID := html.EscapeString(node.ID)
+			statusGlyph, statusWord := roadmapStatus(node.Lane)
+			facts := node.Priority
+			if node.DependencyCount > 0 {
+				facts += fmt.Sprintf(" · %d dep%s", node.DependencyCount, pluralSuffix(node.DependencyCount))
+			}
+			if node.PRNumber > 0 {
+				facts += fmt.Sprintf(" · PR #%d", node.PRNumber)
+			}
+			if node.Orphaned {
+				facts += " · orphan"
+			} else if node.Ready {
+				facts += " · ready"
+			}
+			dependencyLabel := "No dependencies"
+			if len(node.Dependencies) > 0 {
+				dependencyLabel = "Dependencies: " + strings.Join(node.Dependencies, ", ")
+			}
+			accessibleName := fmt.Sprintf(
+				"Task %s: %s. Status %s. Priority %s. %s.",
+				node.ID, node.Title, statusWord, node.Priority, dependencyLabel,
+			)
 			markup.WriteString(`<button class="card" type="button" data-item="`)
 			markup.WriteString(escapedID)
 			markup.WriteString(`" data-focus-key="card:`)
@@ -255,18 +318,45 @@ func renderRoadmapMarkup(encoded []byte) ([]byte, error) {
 			markup.WriteString(strconv.Itoa(stageIndex))
 			markup.WriteString(`" data-lane="`)
 			markup.WriteString(html.EscapeString(node.Lane))
+			markup.WriteString(`" aria-label="`)
+			markup.WriteString(html.EscapeString(accessibleName))
 			markup.WriteString(`" tabindex="`)
 			markup.WriteString(strconv.Itoa(tabIndex))
 			markup.WriteString(`">`)
 			markup.WriteString(html.EscapeString(node.Title))
 			markup.WriteString("&#10;")
 			markup.WriteString(escapedID)
+			markup.WriteString(" · ")
+			markup.WriteString(html.EscapeString(statusGlyph))
+			markup.WriteString(" ")
+			markup.WriteString(html.EscapeString(statusWord))
+			markup.WriteString("&#10;")
+			markup.WriteString(html.EscapeString(facts))
 			markup.WriteString("</button>")
 			position++
 		}
 		markup.WriteString("</div>")
 	}
-	return []byte(markup.String()), nil
+	return []byte(markup.String())
+}
+
+func roadmapStatus(lane string) (string, string) {
+	switch lane {
+	case "pending":
+		return "○", "Pending"
+	case "dispatched":
+		return "▶", "Dispatched"
+	case "in-review":
+		return "◆", "In review"
+	case "blocked":
+		return "✕", "Blocked"
+	case "merged":
+		return "●", "Merged"
+	case "cancelled":
+		return "⊘", "Cancelled"
+	default:
+		return "·", "Unknown"
+	}
 }
 
 func pluralSuffix(count int) string {

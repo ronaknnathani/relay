@@ -71,8 +71,8 @@ func TestHandlerLoadsCurrentRoadmapOutsideDocument(t *testing.T) {
 		t.Fatalf("GET index status = %d: %s", response.Code, response.Body.String())
 	}
 	if bytes.Contains(response.Body.Bytes(), []byte("Seed roadmap")) ||
-		bytes.Contains(response.Body.Bytes(), []byte("Updated roadmap")) {
-		t.Fatal("rendered index embedded a roadmap projection")
+		!bytes.Contains(response.Body.Bytes(), []byte("Updated roadmap")) {
+		t.Fatal("rendered index did not use the feed's current roadmap projection")
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "http://localhost:4321/api/program?view=roadmap", nil)

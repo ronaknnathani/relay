@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v15"
+	performanceHarness = "complete-roadmap-v16"
 )
 
 type performanceReport struct {
@@ -58,6 +58,7 @@ type performanceEnvironment struct {
 type browserSample struct {
 	ProcessStartToURL    float64
 	NavigationToUsable   float64
+	NavigationToGraph    float64
 	NavigationToHydrated float64
 	DocumentTTFB         float64
 	DocumentTotal        float64
@@ -159,10 +160,30 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 				childList: true,
 				subtree: true
 			});
-			const relayUsable = () => {
-				const cards = Array.from(document.querySelectorAll(".card"));
+			const relayGraphComplete = () => {
 				const edgeCount = Array.from(document.querySelectorAll("#graph-edges .edge"))
 					.reduce((total, path) => total + Number(path.dataset.edgeCount || 1), 0);
+				if (window.__relayCompleteGraphAt || window.__relayGraphPaintPending ||
+					document.querySelectorAll(".card").length !== 100 ||
+					edgeCount !== 200) {
+					return;
+				}
+				window.__relayGraphPaintPending = true;
+				requestAnimationFrame(() => {
+					window.__relayCompleteGraphAt = performance.now();
+					window.__relayGraphPaintPending = false;
+					relayGraphObserver.disconnect();
+				});
+			};
+			const relayGraphObserver = new MutationObserver(relayGraphComplete);
+			relayGraphObserver.observe(document, {
+				attributes: true,
+				characterData: true,
+				childList: true,
+				subtree: true
+			});
+			const relayUsable = () => {
+				const cards = Array.from(document.querySelectorAll(".card"));
 				const refresh = document.querySelector("#refresh");
 				const roadmapTab = document.querySelector("#tab-roadmap");
 				if (window.__relayCompleteUsableAt > 0 ||
@@ -176,7 +197,6 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 					!cards.every((card) => card.dataset.focusKey &&
 						card.textContent.includes("Reference task")) ||
 					document.querySelectorAll("#graph-nodes .stage").length === 0 ||
-					edgeCount !== 200 ||
 					!document.querySelector("#graph")?.getAttribute("aria-label")?.includes(
 						"100 tasks, 200 dependency links") ||
 					!refresh || refresh.disabled ||
@@ -221,6 +241,7 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 				subtree: true
 			});
 			queueMicrotask(relayHydrated);
+			queueMicrotask(relayGraphComplete);
 			queueMicrotask(relayUsable);
 		`).Do(ctx)
 		return err
@@ -303,6 +324,7 @@ func measureBrowserRun(
 		typeof state !== "undefined" &&
 		state.snapshot?.schema === "relay.program.v1" &&
 		state.snapshot?.items?.length === 100 &&
+		window.__relayCompleteGraphAt > 0 &&
 		performance.getEntriesByType("resource").some((candidate) => {
 			const url = new URL(candidate.name);
 			return url.pathname === "/api/program" && url.search === "";
@@ -310,8 +332,10 @@ func measureBrowserRun(
 	`)); err != nil {
 		t.Fatalf("wait for full program hydration: %v", err)
 	}
+	var navigationToGraph float64
 	var navigationToHydrated float64
 	if err := chromedp.Run(tab,
+		chromedp.Evaluate(`window.__relayCompleteGraphAt`, &navigationToGraph),
 		chromedp.Evaluate(`window.__relayHydratedAt`, &navigationToHydrated),
 	); err != nil {
 		t.Fatalf("read navigation-to-hydrated timing: %v", err)
@@ -451,6 +475,7 @@ func measureBrowserRun(
 	}
 	return browserSample{
 		ProcessStartToURL: processStartToURL, NavigationToUsable: navigationToUsable,
+		NavigationToGraph:    navigationToGraph,
 		NavigationToHydrated: navigationToHydrated,
 		DocumentTTFB:         documentTiming.TTFB, DocumentTotal: documentTiming.Total,
 		DocumentBytes: documentTiming.Bytes, ProgramBytes: programTiming.Bytes,
@@ -569,6 +594,7 @@ func appendPerformanceSample(samples map[string][]float64, sample browserSample)
 	values := map[string]float64{
 		"process_start_to_url_ms":   sample.ProcessStartToURL,
 		"navigation_to_usable_ms":   sample.NavigationToUsable,
+		"navigation_to_graph_ms":    sample.NavigationToGraph,
 		"navigation_to_hydrated_ms": sample.NavigationToHydrated,
 		"document_ttfb_ms":          sample.DocumentTTFB,
 		"document_total_ms":         sample.DocumentTotal,
@@ -629,6 +655,7 @@ func verifyPerformanceReport(t *testing.T, report performanceReport, baselinePat
 	}
 	budgets := map[string]float64{
 		"navigation_to_usable_ms":  1000,
+		"navigation_to_graph_ms":   1000,
 		"click_to_drawer_ms":       100,
 		"click_to_file_content_ms": 500,
 		"unchanged_reopen_ms":      100,

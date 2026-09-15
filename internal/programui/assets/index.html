@@ -17,7 +17,7 @@
       <nav class="crumbs" aria-label="Breadcrumb">
         <span class="crumbs__root">Relay</span>
         <span class="crumbs__sep" aria-hidden="true">/</span>
-        <span class="crumbs__leaf mono" id="program-slug">program</span>
+        <span class="crumbs__leaf mono" id="program-slug">__RELAY_PROGRAM_SLUG__</span>
       </nav>
       <div class="brief__tools">
         <button id="warning-count" class="chip chip--warn" type="button" hidden></button>
@@ -29,8 +29,8 @@
       </div>
     </div>
 
-    <h1 id="program-title">Loading program…</h1>
-    <p id="program-summary" class="brief__summary"></p>
+    <h1 id="program-title">__RELAY_PROGRAM_TITLE__</h1>
+    <p id="program-summary" class="brief__summary">__RELAY_PROGRAM_SUMMARY__</p>
     <p class="brief__meta">
       <span id="program-state" class="state">…</span>
       <span id="program-updated" class="mono"></span>
@@ -43,11 +43,11 @@
       <div class="signal">
         <dt>Completion</dt>
         <dd><span id="progress-percent" class="signal__value mono">—</span><span class="signal__unit">%</span></dd>
-        <p id="progress-counts" class="signal__note"></p>
+        <p id="progress-counts" class="signal__note">__RELAY_PROGRESS_COUNTS__</p>
       </div>
       <div class="signal">
         <dt>Tasks</dt>
-        <dd><span id="task-total" class="signal__value mono">—</span></dd>
+        <dd><span id="task-total" class="signal__value mono">__RELAY_TASK_TOTAL__</span></dd>
         <p id="task-breakdown" class="signal__note"></p>
       </div>
       <div class="signal">
@@ -100,12 +100,12 @@
     <section id="panel-roadmap" class="panel" role="tabpanel" aria-labelledby="tab-roadmap" tabindex="-1">
       <div class="panel__head">
         <h2 id="roadmap-heading">Roadmap</h2>
-        <p id="roadmap-note" class="panel__note"></p>
+        <p id="roadmap-note" class="panel__note">__RELAY_ROADMAP_NOTE__</p>
       </div>
       <p id="roadmap-cycle" class="banner banner--warn" hidden></p>
       <div class="roadmap" id="roadmap-scroll">
         <div class="roadmap__content" id="roadmap-content">
-          <svg id="graph" class="roadmap__edges" role="img" aria-label="Dependency flow" width="0" height="0" focusable="false">
+          <svg id="graph" class="roadmap__edges" role="img" aria-label="__RELAY_ROADMAP_LABEL__" width="0" height="0" focusable="false">
             <defs>
               <marker id="flow-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
                 <path d="M 0 1 L 8 5 L 0 9 z" class="arrow"></path>
