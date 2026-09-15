@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v6"
+	performanceHarness = "complete-roadmap-v7"
 )
 
 type performanceReport struct {
@@ -144,7 +144,6 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 				const cards = Array.from(document.querySelectorAll(".card"));
 				const refresh = document.querySelector("#refresh");
 				const roadmapTab = document.querySelector("#tab-roadmap");
-				const tasksTab = document.querySelector("#tab-tasks");
 				if (window.__relayCompleteUsableAt > 0 ||
 					document.querySelector("#program-title")?.textContent !== "Reference Program" ||
 					!document.querySelector("#program-summary")?.textContent ||
@@ -158,28 +157,33 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 					!document.querySelector("#graph")?.getAttribute("aria-label")?.includes(
 						"100 tasks, 200 dependency links") ||
 					!refresh || refresh.disabled ||
-					!roadmapTab || !tasksTab) {
+					!roadmapTab) {
 					return;
 				}
 				if (!window.__relayUsabilityProbe) {
-					window.__relayUsabilityProbe = "tasks";
-					tasksTab.click();
+					const first = cards[0];
+					const second = cards[1];
+					first.focus({preventScroll: true});
+					window.__relayUsabilityProbe = {
+						target: second.dataset.item,
+						prevented: !first.dispatchEvent(new KeyboardEvent("keydown", {
+							key: "ArrowRight", bubbles: true, cancelable: true
+						}))
+					};
 					return;
 				}
-				if (window.__relayUsabilityProbe === "tasks" &&
-					tasksTab.getAttribute("aria-selected") === "true" &&
-					document.querySelector("#panel-tasks")?.hidden === false) {
-					window.__relayUsabilityProbe = "roadmap";
-					roadmapTab.click();
-					return;
-				}
-				if (window.__relayUsabilityProbe === "roadmap" &&
+				const probe = window.__relayUsabilityProbe;
+				const selected = document.querySelector(
+					'.card[data-item="' + probe.target + '"]');
+				if (probe.prevented &&
+					selected?.dataset.selected === "true" &&
+					document.activeElement === selected &&
 					roadmapTab.getAttribute("aria-selected") === "true" &&
 					document.querySelector("#panel-roadmap")?.hidden === false) {
-					window.__relayUsabilityProbe = "paint";
 					requestAnimationFrame(() => requestAnimationFrame(() => {
 						if (roadmapTab.getAttribute("aria-selected") === "true" &&
-							document.querySelector("#panel-roadmap")?.hidden === false) {
+							document.querySelector("#panel-roadmap")?.hidden === false &&
+							selected.dataset.selected === "true") {
 							window.__relayCompleteUsableAt = performance.now();
 							relayObserver.disconnect();
 						}

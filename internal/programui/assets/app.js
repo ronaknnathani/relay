@@ -1005,7 +1005,7 @@ function onCardKey(event, id) {
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
     selectItem(id);
-    openDrawer(true);
+    withDeferredUI(() => openDrawer(true));
     return;
   }
   const order = Array.from(state.cards.values());
@@ -1145,6 +1145,65 @@ function revealCard(id) {
     return;
   }
   card.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function writeHash() {
+  const parts = [];
+  if (state.tab !== "roadmap") {
+    parts.push(`tab=${state.tab}`);
+  }
+  if (state.selected) {
+    parts.push(`task=${encodeURIComponent(state.selected)}`);
+  }
+  const hash = parts.length > 0 ? `#${parts.join("&")}` : "";
+  if (window.location.hash === hash) {
+    return;
+  }
+  if (window.history && typeof window.history.replaceState === "function") {
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${hash}`);
+    return;
+  }
+  window.location.hash = hash;
+}
+
+function selectItem(id) {
+  if (!id) {
+    return;
+  }
+  const changed = state.selected !== id;
+  state.selected = id;
+  markSelection();
+  writeHash();
+  if (!deferredUIReady) {
+    return;
+  }
+  if (state.drawerOpen) {
+    renderDetail();
+  }
+  if (changed && state.drawerOpen) {
+    loadCurrentArtifact(false);
+  }
+}
+
+function markSelection() {
+  state.cards.forEach((card, id) => {
+    const active = id === state.selected;
+    card.dataset.selected = active ? "true" : "false";
+    card.setAttribute("tabindex", active ? "0" : "-1");
+  });
+  if (dom.ledgerRows) {
+    Array.from(dom.ledgerRows.querySelectorAll("tr")).forEach((row) => {
+      const active = row.dataset.item === state.selected;
+      row.setAttribute("aria-selected", active ? "true" : "false");
+      const button = row.querySelector(".row-id");
+      if (button) {
+        button.setAttribute("tabindex", active ? "0" : "-1");
+      }
+    });
+  }
+  if (state.tab === "roadmap") {
+    drawConnectorsForCurrentGraph();
+  }
 }
 
 function drawConnectorsForCurrentGraph() {
@@ -1312,10 +1371,8 @@ function bindControls() {
   dom.graphNodes.addEventListener("click", (event) => {
     const card = event.target.closest(".card");
     if (card) {
-      withDeferredUI(() => {
-        selectItem(card.dataset.item);
-        openDrawer(false);
-      });
+      selectItem(card.dataset.item);
+      withDeferredUI(() => openDrawer(false));
     }
   });
   dom.graphNodes.addEventListener("keydown", (event) => {
@@ -1324,7 +1381,7 @@ function bindControls() {
       if (cardKeyHandled(event)) {
         event.preventDefault();
       }
-      withDeferredUI(() => onCardKey(event, card.dataset.item));
+      onCardKey(event, card.dataset.item);
     }
   });
   window.addEventListener("hashchange", () => withDeferredUI(applyHash));

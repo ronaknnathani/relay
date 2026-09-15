@@ -1636,25 +1636,6 @@ function render() {
 
 /* ---------- selection and hash ---------- */
 
-function writeHash() {
-  const parts = [];
-  if (state.tab !== "roadmap") {
-    parts.push(`tab=${state.tab}`);
-  }
-  if (state.selected) {
-    parts.push(`task=${encodeURIComponent(state.selected)}`);
-  }
-  const hash = parts.length > 0 ? `#${parts.join("&")}` : "";
-  if (window.location.hash === hash) {
-    return;
-  }
-  if (window.history && typeof window.history.replaceState === "function") {
-    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${hash}`);
-    return;
-  }
-  window.location.hash = hash;
-}
-
 function applyHash() {
   const parsed = readHash();
   if (parsed.tab && parsed.tab !== state.tab) {
@@ -1663,45 +1644,6 @@ function applyHash() {
   if (parsed.task && parsed.task !== state.selected) {
     selectItem(parsed.task);
     withDeferredUI(() => openDrawer(true));
-  }
-}
-
-function selectItem(id) {
-  if (!id) {
-    return;
-  }
-  const changed = state.selected !== id;
-  state.selected = id;
-  markSelection();
-  writeHash();
-  if (state.drawerOpen) {
-    renderDetail();
-  }
-  if (changed && state.drawerOpen) {
-    loadCurrentArtifact(false);
-  }
-}
-
-/* markSelection repaints only the selection affordances so keyboard movement
-   never waits on a full re-render. */
-function markSelection() {
-  state.cards.forEach((card, id) => {
-    const active = id === state.selected;
-    card.dataset.selected = active ? "true" : "false";
-    card.setAttribute("tabindex", active ? "0" : "-1");
-  });
-  if (dom.ledgerRows) {
-    Array.from(dom.ledgerRows.querySelectorAll("tr")).forEach((row) => {
-      const active = row.dataset.item === state.selected;
-      row.setAttribute("aria-selected", active ? "true" : "false");
-      const button = row.querySelector(".row-id");
-      if (button) {
-        button.setAttribute("tabindex", active ? "0" : "-1");
-      }
-    });
-  }
-  if (state.tab === "roadmap") {
-    drawConnectorsForCurrentGraph();
   }
 }
 
