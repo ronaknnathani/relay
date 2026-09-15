@@ -931,16 +931,32 @@ func stageArchivedProject(srcDir, dstDir string, m project.Manifest) (func() err
 	}
 
 	rollback := func() error {
-		rollbackPath := filepath.Join(dstDir, ".manifest.active")
-		if err := os.WriteFile(rollbackPath, originalManifest, info.Mode().Perm()); err != nil {
-			return fmt.Errorf("stage active manifest: %w", err)
-		}
-		if err := archiveRename(rollbackPath, archivedManifestPath); err != nil {
-			err = archiveCleanupError(err, archiveRemoveFile(rollbackPath))
-			return fmt.Errorf("restore active manifest: %w", err)
-		}
 		if err := archiveRename(dstDir, srcDir); err != nil {
 			return fmt.Errorf("restore active project directory: %w", err)
+		}
+		rollbackFile, err := os.CreateTemp(srcDir, ".manifest.active-*")
+		if err != nil {
+			return fmt.Errorf("stage active manifest: %w", err)
+		}
+		rollbackPath := rollbackFile.Name()
+		if err := rollbackFile.Chmod(info.Mode().Perm()); err != nil {
+			err = archiveCleanupError(err, rollbackFile.Close())
+			err = archiveCleanupError(err, archiveRemoveFile(rollbackPath))
+			return fmt.Errorf("stage active manifest permissions: %w", err)
+		}
+		if _, err := rollbackFile.Write(originalManifest); err != nil {
+			err = archiveCleanupError(err, rollbackFile.Close())
+			err = archiveCleanupError(err, archiveRemoveFile(rollbackPath))
+			return fmt.Errorf("stage active manifest contents: %w", err)
+		}
+		if err := rollbackFile.Close(); err != nil {
+			err = archiveCleanupError(err, archiveRemoveFile(rollbackPath))
+			return fmt.Errorf("stage active manifest: close temporary file: %w", err)
+		}
+		activeManifestPath := filepath.Join(srcDir, "manifest.json")
+		if err := archiveRename(rollbackPath, activeManifestPath); err != nil {
+			err = archiveCleanupError(err, archiveRemoveFile(rollbackPath))
+			return fmt.Errorf("restore active manifest: %w", err)
 		}
 		return nil
 	}

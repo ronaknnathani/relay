@@ -283,7 +283,7 @@ func TestArchiveProofRejectsManifestChangeBeforeCleanup(t *testing.T) {
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
 
-func TestArchiveRollbackCombinesManifestRestoreAndCleanupFailures(t *testing.T) {
+func TestArchiveRollbackRetainsArchivedProofWhenDirectoryRestoreFails(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	slug := "rollback-cleanup-failure"
 	srcDir := filepath.Join(project.ActiveDir(), slug)
@@ -291,40 +291,97 @@ func TestArchiveRollbackCombinesManifestRestoreAndCleanupFailures(t *testing.T) 
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	manifest := project.Manifest{Slug: slug, Status: "active"}
-	if err := project.Save(filepath.Join(srcDir, "manifest.json"), manifest); err != nil {
+	active := project.Manifest{Slug: slug, Status: "active"}
+	if err := project.Save(filepath.Join(srcDir, "manifest.json"), active); err != nil {
 		t.Fatal(err)
 	}
+	archived := active
+	archived.Status = "archived"
+	archived.ArchiveCleanup = &project.ArchiveCleanupProof{
+		Repository: "/repo", Branch: "user/branch", BranchPresent: true,
+		ExpectedBranchTip: "0123456789012345678901234567890123456789",
+	}
 
-	rollback, err := stageArchivedProject(srcDir, dstDir, manifest)
+	rollback, err := stageArchivedProject(srcDir, dstDir, archived)
 	if err != nil {
 		t.Fatal(err)
 	}
-	previousRename, previousRemove := archiveRename, archiveRemoveFile
+	previousRename := archiveRename
 	archiveRename = func(oldPath, newPath string) error {
-		if filepath.Base(oldPath) == ".manifest.active" {
-			return errors.New("injected restore failure")
+		if oldPath == dstDir && newPath == srcDir {
+			return errors.New("injected directory restore failure")
 		}
 		return os.Rename(oldPath, newPath)
 	}
-	archiveRemoveFile = func(path string) error {
-		if filepath.Base(path) == ".manifest.active" {
-			return errors.New("injected cleanup failure")
-		}
-		return os.Remove(path)
-	}
-	t.Cleanup(func() {
-		archiveRename, archiveRemoveFile = previousRename, previousRemove
-	})
+	t.Cleanup(func() { archiveRename = previousRename })
 
 	err = rollback()
-	if err == nil {
-		t.Fatal("rollback error = nil")
+	if err == nil || !strings.Contains(err.Error(), "restore active project directory") ||
+		!strings.Contains(err.Error(), "injected directory restore failure") {
+		t.Fatalf("rollback error = %v, want directory restore failure", err)
 	}
-	for _, want := range []string{"restore active manifest", "injected restore failure", "injected cleanup failure"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("rollback error %q is missing %q", err, want)
-		}
+	if pathExists(srcDir) {
+		t.Fatal("rollback recreated the active directory after its move failed")
+	}
+	retained, loadErr := project.Load(filepath.Join(dstDir, "manifest.json"))
+	if loadErr != nil {
+		t.Fatalf("load retained archived manifest: %v", loadErr)
+	}
+	if retained.Status != "archived" || retained.ArchiveCleanup == nil {
+		t.Fatalf("retained manifest = %+v, want archived cleanup proof", retained)
+	}
+}
+
+func TestArchiveRollbackIgnoresHostileFixedManifestEntry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	slug := "rollback-hostile-entry"
+	srcDir := filepath.Join(project.ActiveDir(), slug)
+	dstDir := filepath.Join(project.ArchivedDir(), slug)
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	active := project.Manifest{Slug: slug, Status: "active"}
+	if err := project.Save(filepath.Join(srcDir, "manifest.json"), active); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(srcDir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived := active
+	archived.Status = "archived"
+	archived.ArchiveCleanup = &project.ArchiveCleanupProof{
+		Repository: "/repo", Branch: "user/branch", BranchPresent: true,
+		ExpectedBranchTip: "0123456789012345678901234567890123456789",
+	}
+
+	rollback, err := stageArchivedProject(srcDir, dstDir, archived)
+	if err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("do not overwrite\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hostile := filepath.Join(dstDir, ".manifest.active")
+	if err := os.Symlink(victim, hostile); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rollback(); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(srcDir, "manifest.json"))
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("restored manifest = %q, err=%v, want original", after, err)
+	}
+	victimData, err := os.ReadFile(victim)
+	if err != nil || string(victimData) != "do not overwrite\n" {
+		t.Fatalf("hostile target = %q, err=%v, want unchanged", victimData, err)
+	}
+	info, err := os.Lstat(filepath.Join(srcDir, ".manifest.active"))
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("hostile entry was changed: info=%v err=%v", info, err)
 	}
 }
 
