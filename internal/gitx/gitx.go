@@ -415,9 +415,15 @@ func WorktreeRemove(repo, dir string, force bool) error {
 // child of the repository's .worktrees directory. The latter is reserved for
 // Relay's interrupted-project setup recovery, where the caller has already
 // applied its clean-worktree and confirmation policy.
-func WorktreeReclaim(repo, dir string, force bool) error {
-	if err := validateRelayWorktreeTarget(repo, dir); err != nil {
+func WorktreeReclaim(repo, dir string, force bool) (returnErr error) {
+	root, targetName, targetExists, err := openRelayWorktreeTarget(repo, dir)
+	if err != nil {
 		return err
+	}
+	if root != nil {
+		defer func() {
+			returnErr = errors.Join(returnErr, root.Close())
+		}()
 	}
 	registered, err := IsWorktree(repo, dir)
 	if err != nil {
@@ -426,13 +432,10 @@ func WorktreeReclaim(repo, dir string, force bool) error {
 	if registered {
 		return removeRegisteredWorktree(repo, dir, force)
 	}
-	if _, err := os.Stat(dir); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("stat worktree %s: %w", dir, err)
+	if !targetExists {
+		return nil
 	}
-	if err := os.RemoveAll(dir); err != nil {
+	if err := root.RemoveAll(targetName); err != nil {
 		return fmt.Errorf("remove Relay worktree path %s: %w", dir, err)
 	}
 	if out, err := exec.Command("git", "-C", repo, "worktree", "prune").CombinedOutput(); err != nil {
@@ -441,29 +444,77 @@ func WorktreeReclaim(repo, dir string, force bool) error {
 	return nil
 }
 
-func validateRelayWorktreeTarget(repo, dir string) error {
-	root, err := filepath.Abs(filepath.Join(repo, ".worktrees"))
+func openRelayWorktreeTarget(repo, dir string) (*os.Root, string, bool, error) {
+	rootPath, err := filepath.Abs(filepath.Join(repo, ".worktrees"))
 	if err != nil {
-		return fmt.Errorf("resolve Relay worktree root: %w", err)
+		return nil, "", false, fmt.Errorf("resolve Relay worktree root: %w", err)
 	}
-	root = canonPath(root)
-	target, err := filepath.Abs(dir)
+	targetPath, err := filepath.Abs(dir)
 	if err != nil {
-		return fmt.Errorf("resolve worktree path %s: %w", dir, err)
+		return nil, "", false, fmt.Errorf("resolve worktree path %s: %w", dir, err)
 	}
-	if resolved, resolveErr := filepath.EvalSymlinks(target); resolveErr == nil {
-		target = resolved
-	} else if parent, parentErr := filepath.EvalSymlinks(filepath.Dir(target)); parentErr == nil {
-		target = filepath.Join(parent, filepath.Base(target))
-	} else {
-		target = filepath.Clean(target)
-	}
-	rel, err := filepath.Rel(root, target)
+	rel, err := filepath.Rel(rootPath, targetPath)
 	if err != nil || filepath.IsAbs(rel) || rel == "." || rel == ".." ||
 		strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.Dir(rel) != "." {
-		return fmt.Errorf("refuse to reclaim worktree path outside %s: %s", root, dir)
+		return nil, "", false, fmt.Errorf(
+			"refuse to reclaim worktree path outside %s: %s", rootPath, dir,
+		)
 	}
-	return nil
+
+	rootInfo, err := os.Lstat(rootPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, rel, false, nil
+		}
+		return nil, "", false, fmt.Errorf("inspect Relay worktree root %s: %w", rootPath, err)
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, "", false, fmt.Errorf(
+			"refuse to reclaim through symlinked Relay worktree root %s", rootPath,
+		)
+	}
+	if !rootInfo.IsDir() {
+		return nil, "", false, fmt.Errorf("Relay worktree root %s is not a directory", rootPath)
+	}
+
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("open Relay worktree root %s: %w", rootPath, err)
+	}
+	openedInfo, err := root.Stat(".")
+	if err != nil {
+		closeErr := root.Close()
+		return nil, "", false, errors.Join(
+			fmt.Errorf("verify Relay worktree root %s: %w", rootPath, err),
+			closeErr,
+		)
+	}
+	if !os.SameFile(rootInfo, openedInfo) {
+		closeErr := root.Close()
+		return nil, "", false, errors.Join(
+			fmt.Errorf("refuse to reclaim through changed Relay worktree root %s", rootPath),
+			closeErr,
+		)
+	}
+	targetInfo, err := root.Lstat(rel)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return root, rel, false, nil
+		}
+		closeErr := root.Close()
+		return nil, "", false, errors.Join(
+			fmt.Errorf("inspect Relay worktree path %s: %w", dir, err),
+			closeErr,
+		)
+	}
+	if targetInfo.Mode()&os.ModeSymlink != 0 {
+		closeErr := root.Close()
+		return nil, "", false, errors.Join(
+			fmt.Errorf("refuse to reclaim symlinked Relay worktree path %s", dir),
+			closeErr,
+		)
+	}
+	return root, rel, true, nil
 }
 
 func removeRegisteredWorktree(repo, dir string, force bool) error {

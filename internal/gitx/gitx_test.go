@@ -137,6 +137,58 @@ func TestWorktreeReclaimRejectsTargetsOutsideRelayWorktreeRoot(t *testing.T) {
 	}
 }
 
+func TestWorktreeReclaimRejectsSymlinkedRelayWorktreeRoot(t *testing.T) {
+	repo := initRepo(t)
+	externalRoot := t.TempDir()
+	target := filepath.Join(externalRoot, "interrupted")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(target, "keep")
+	if err := os.WriteFile(marker, []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalRoot, filepath.Join(repo, ".worktrees")); err != nil {
+		t.Fatal(err)
+	}
+
+	err := WorktreeReclaim(repo, filepath.Join(repo, ".worktrees", "interrupted"), true)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("WorktreeReclaim error = %v, want symlinked root rejection", err)
+	}
+	if data, readErr := os.ReadFile(marker); readErr != nil || string(data) != "keep\n" {
+		t.Fatalf("external target changed: data=%q err=%v", data, readErr)
+	}
+}
+
+func TestWorktreeReclaimRejectsSymlinkEscapeTarget(t *testing.T) {
+	repo := initRepo(t)
+	root := filepath.Join(repo, ".worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	external := t.TempDir()
+	marker := filepath.Join(external, "keep")
+	if err := os.WriteFile(marker, []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "escape")
+	if err := os.Symlink(external, target); err != nil {
+		t.Fatal(err)
+	}
+
+	err := WorktreeReclaim(repo, target, true)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("WorktreeReclaim error = %v, want symlink target rejection", err)
+	}
+	if data, readErr := os.ReadFile(marker); readErr != nil || string(data) != "keep\n" {
+		t.Fatalf("external target changed: data=%q err=%v", data, readErr)
+	}
+	if _, statErr := os.Lstat(target); statErr != nil {
+		t.Fatalf("escape symlink was removed: %v", statErr)
+	}
+}
+
 func TestWorktreeHeadRejectsExistingUnregisteredDirectory(t *testing.T) {
 	repo := initRepo(t)
 	dir := filepath.Join(repo, ".worktrees", "leftover")
