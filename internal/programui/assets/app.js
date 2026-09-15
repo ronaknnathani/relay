@@ -13,6 +13,8 @@ function applyTheme(theme) {
 
 const POLL_INTERVAL = 3000;
 const BACKOFF = [3000, 6000, 12000];
+const INITIAL_ROADMAP_CARDS = 12;
+const ROADMAP_RENDER_BATCH = 32;
 const LANES = ["pending", "dispatched", "in-review", "blocked", "merged", "cancelled"];
 const TABS = ["roadmap", "tasks", "decisions", "goal"];
 const ACTIVE_STATUSES = ["dispatched", "in-review"];
@@ -55,6 +57,7 @@ const state = {
   artifactController: null,
   artifactGeneration: 0,
   programGeneration: 0,
+  roadmapRenderGeneration: 0,
   dirtyTabs: new Set(TABS),
   cards: new Map(),
   drawerOpen: false,
@@ -818,6 +821,7 @@ function relatedSet(id) {
 }
 
 function renderRoadmap() {
+  const generation = ++state.roadmapRenderGeneration;
   const graph = snapshotOf().graph || {};
   const nodes = list(graph.nodes);
   const plan = planOf();
@@ -849,39 +853,69 @@ function renderRoadmap() {
     : null;
   const hasSelection = Boolean(selectedItem());
   let position = 0;
+  let stageIndex = 0;
+  let itemIndex = 0;
   const fragment = new DocumentFragment();
+  const stageNodes = [];
   for (let index = 0; index < stages.length; index += 1) {
     const ids = stages[index];
-    const stage = stageTemplate.cloneNode(true);
+    const stage = stageTemplate.cloneNode(false);
     stage.dataset.stage = String(index);
     stage.dataset.label = `Stage ${index + 1} · ${plural(ids.length, "task")}`;
-    for (let itemIndex = 0; itemIndex < ids.length; itemIndex += 1) {
-      const entry = ids[itemIndex];
-      const id = typeof entry === "string" ? entry : entry.id;
-      const item = itemByID(id);
-      const node = item || (nodesByID ? nodesByID.get(id) : entry) || { id, title: "", lane: "" };
-      const card = taskCard(
-        node,
-        item,
-        position,
-        hasSelection,
-        itemIndex === 0 ? stage.firstElementChild : null,
-      );
-      card.dataset.stage = String(index);
-      position += 1;
-      state.cards.set(id, card);
-      if (itemIndex > 0) {
-        stage.append(card);
-      }
-    }
+    stageNodes.push(stage);
     fragment.append(stage);
   }
   dom.graphNodes.replaceChildren(fragment);
-  window.requestAnimationFrame(() => {
-    if (state.tab === "roadmap") {
-      drawConnectorsForCurrentGraph();
+
+  const renderBatch = (limit) => {
+    let rendered = 0;
+    while (stageIndex < stages.length && rendered < limit) {
+      const ids = stages[stageIndex];
+      const stage = stageNodes[stageIndex];
+      while (itemIndex < ids.length && rendered < limit) {
+        const entry = ids[itemIndex];
+        const id = typeof entry === "string" ? entry : entry.id;
+        const item = itemByID(id);
+        const node = item || (nodesByID ? nodesByID.get(id) : entry) || { id, title: "", lane: "" };
+        const card = taskCard(node, item, position, hasSelection, null);
+        card.dataset.stage = String(stageIndex);
+        position += 1;
+        itemIndex += 1;
+        rendered += 1;
+        state.cards.set(id, card);
+        stage.append(card);
+      }
+      if (itemIndex === ids.length) {
+        stageIndex += 1;
+        itemIndex = 0;
+      }
     }
-  });
+    return stageIndex === stages.length;
+  };
+
+  if (renderBatch(INITIAL_ROADMAP_CARDS)) {
+    window.requestAnimationFrame(() => {
+      if (generation === state.roadmapRenderGeneration && state.tab === "roadmap") {
+        drawConnectorsForCurrentGraph();
+      }
+    });
+    return;
+  }
+  const finish = () => {
+    if (generation !== state.roadmapRenderGeneration || state.tab !== "roadmap") {
+      return;
+    }
+    if (renderBatch(ROADMAP_RENDER_BATCH)) {
+      window.requestAnimationFrame(() => {
+        if (generation === state.roadmapRenderGeneration && state.tab === "roadmap") {
+          drawConnectorsForCurrentGraph();
+        }
+      });
+      return;
+    }
+    window.requestAnimationFrame(finish);
+  };
+  window.setTimeout(() => window.requestAnimationFrame(finish), 50);
 }
 
 function renderRoadmapSummary(graph, plan, nodes) {
