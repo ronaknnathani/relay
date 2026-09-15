@@ -605,6 +605,21 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			input: "remote: token@host:repo@mirror",
 			want:  "remote: [redacted]@host:repo@mirror",
 		},
+		{
+			name:  "remote helper wrapping scheme URL",
+			input: "remote: git::https://token@github.com/o/r.git?secret=x#fragment",
+			want:  "remote: git::https://[redacted]@github.com/o/r.git",
+		},
+		{
+			name:  "remote helper wrapping scp URL",
+			input: "remote: cache::deploy-token@git.example.com:team/repo.git?secret=x#fragment",
+			want:  "remote: cache::[redacted]@git.example.com:team/repo.git",
+		},
+		{
+			name:  "nested remote helpers",
+			input: "remote: trace::cache::https://token@git.example.com/team/repo.git?secret=x#fragment",
+			want:  "remote: trace::cache::https://[redacted]@git.example.com/team/repo.git",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -612,6 +627,17 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 				t.Fatalf("SanitizeDiagnostic(%q) = %q, want %q", test.input, got, test.want)
 			}
 		})
+	}
+}
+
+func TestSCPStyleURLTokenRejectsRemoteHelperSyntax(t *testing.T) {
+	for _, input := range []string{
+		"git::https://token@github.com/o/r.git?secret=x",
+		"cache::deploy-token@git.example.com:team/repo.git?secret=x",
+	} {
+		if end, ok := scpStyleURLTokenEnd(input, 0); ok {
+			t.Fatalf("scpStyleURLTokenEnd(%q) = (%d, true), want remote-helper rejection", input, end)
+		}
 	}
 }
 

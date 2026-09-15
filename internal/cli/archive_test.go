@@ -1275,6 +1275,42 @@ func assertArchiveManifestAndResourcesUnchanged(
 	}
 }
 
+func TestArchiveDiagnosticSanitizesRemoteHelperPullRequestRef(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "remote-helper-proof-error"
+	branch := "user/remote-helper-proof-error"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	ref := "cache::deploy-token@git.example.com:team/repo.git?access_token=query-secret#fragment-secret"
+	updateGCManifest(t, slug, func(manifest *project.Manifest) {
+		manifest.PR = project.PRInfo{URL: &ref}
+	})
+	installArchivePRLookupError(t, errors.New("GitHub unavailable"))
+
+	_, stderr, err := captureGCOutput(t, func() error {
+		return runArchive(slug, true)
+	})
+	if err != nil {
+		t.Fatalf("runArchive with unavailable proof lookup: %v", err)
+	}
+	for _, secret := range []string{
+		"deploy-token", "access_token", "query-secret", "fragment-secret",
+	} {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr %q leaked %q", stderr, secret)
+		}
+	}
+	for _, want := range []string{
+		"GitHub unavailable",
+		"cache::[redacted]@git.example.com:team/repo.git",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+}
+
 func archiveWithFailedBranchDeletion(t *testing.T, slug string) project.Manifest {
 	t.Helper()
 	previous := archiveForceDeleteBranchAt

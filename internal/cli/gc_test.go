@@ -916,6 +916,20 @@ func TestGCFetchWarningRedactsApostrophesInURLTokens(t *testing.T) {
 			secrets:    []string{"token=", "query-secret", "fragment-secret"},
 			wantProse:  "is unavailable",
 		},
+		{
+			name:       "remote helper scheme URL",
+			diagnostic: "fatal: repository 'git::https://fetch-user:fetch-secret@git_alias_1/team/repo.git?token=query-secret#fragment-secret' is unavailable",
+			wantURL:    "git::https://[redacted]@git_alias_1/team/repo.git",
+			secrets:    []string{"fetch-user", "fetch-secret", "token=", "query-secret", "fragment-secret"},
+			wantProse:  "is unavailable",
+		},
+		{
+			name:       "remote helper SCP URL",
+			diagnostic: "fatal: repository 'cache::deploy-token@git_alias_1:team/repo.git?token=query-secret#fragment-secret' is unavailable",
+			wantURL:    "cache::[redacted]@git_alias_1:team/repo.git",
+			secrets:    []string{"deploy-token", "token=", "query-secret", "fragment-secret"},
+			wantProse:  "is unavailable",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

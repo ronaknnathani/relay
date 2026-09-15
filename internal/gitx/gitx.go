@@ -464,6 +464,11 @@ func SanitizeDiagnostic(output string) string {
 	output = strings.TrimSpace(output)
 	var sanitized strings.Builder
 	for index := 0; index < len(output); {
+		if end, ok := remoteHelperURLTokenEnd(output, index); ok {
+			sanitized.WriteString(sanitizeRemoteHelperURL(output[index:end]))
+			index = end
+			continue
+		}
 		if end, ok := schemeURLTokenEnd(output, index); ok {
 			sanitized.WriteString(sanitizeGitDiagnosticURL(output[index:end]))
 			index = end
@@ -478,6 +483,32 @@ func SanitizeDiagnostic(output string) string {
 		index++
 	}
 	return sanitized.String()
+}
+
+func remoteHelperURLTokenEnd(output string, start int) (int, bool) {
+	if !urlTokenBoundary(output, start) || start >= len(output) ||
+		!isASCIILetter(output[start]) {
+		return 0, false
+	}
+	separator := start + 1
+	for separator < len(output) &&
+		(isSchemeCharacter(output[separator]) || output[separator] == '_') {
+		separator++
+	}
+	if !strings.HasPrefix(output[separator:], "::") {
+		return 0, false
+	}
+	addressStart := separator + 2
+	if addressStart >= len(output) {
+		return 0, false
+	}
+	if end, ok := remoteHelperURLTokenEnd(output, addressStart); ok {
+		return end, true
+	}
+	if end, ok := schemeURLTokenEnd(output, addressStart); ok {
+		return end, true
+	}
+	return scpStyleURLTokenEnd(output, addressStart)
 }
 
 func schemeURLTokenEnd(output string, start int) (int, bool) {
@@ -519,6 +550,9 @@ func scpStyleURLTokenEnd(output string, start int) (int, bool) {
 		}
 	}
 	if pathStart <= 0 || pathStart == len(token)-1 {
+		return 0, false
+	}
+	if strings.HasPrefix(token[pathStart:], "::") {
 		return 0, false
 	}
 	userinfoEnd := strings.LastIndexByte(token[:pathStart], '@')
@@ -610,6 +644,15 @@ func sanitizeGitDiagnosticURL(rawURL string) string {
 		rawURL = rawURL[:authorityStart] + "[redacted]@" + authority[userinfoEnd+1:] + rawURL[authorityEnd:]
 	}
 	return rawURL
+}
+
+func sanitizeRemoteHelperURL(rawURL string) string {
+	separator := strings.Index(rawURL, "::")
+	if separator < 0 {
+		return rawURL
+	}
+	addressStart := separator + 2
+	return rawURL[:addressStart] + SanitizeDiagnostic(rawURL[addressStart:])
 }
 
 func sanitizeSCPStyleURL(rawURL string) string {
