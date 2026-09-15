@@ -182,6 +182,9 @@ func Build(slug string, options Options) (Snapshot, error) {
 			limit, &snapshot.Warnings,
 		)
 	}
+	if options.LocalOnly {
+		clearRedundantTaskArtifactPaths(snapshot.Items)
+	}
 	return snapshot, nil
 }
 
@@ -1103,6 +1106,17 @@ func artifactBody(artifacts []ArtifactDTO, name string) string {
 func clearArtifactBodies(artifacts []ArtifactDTO) {
 	for index := range artifacts {
 		artifacts[index].Text = nil
+	}
+}
+
+func clearRedundantTaskArtifactPaths(items []ItemDTO) {
+	for itemIndex := range items {
+		for artifactIndex := range items[itemIndex].Artifacts {
+			artifact := &items[itemIndex].Artifacts[artifactIndex]
+			if artifact.Path == artifact.Name {
+				artifact.Path = ""
+			}
+		}
 	}
 }
 

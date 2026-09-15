@@ -327,6 +327,9 @@ func TestBuildLocalOnlySkipsExternalSourcesAndArtifactBodies(t *testing.T) {
 		if artifact.Text != nil {
 			t.Fatalf("task artifact included text: %+v", artifact)
 		}
+		if artifact.Path != "" {
+			t.Fatalf("task artifact repeated its allowlisted name as a path: %+v", artifact)
+		}
 	}
 	if len(got.ProgramArtifacts) != 3 || !got.ProgramArtifacts[0].Present {
 		t.Fatalf("program artifact metadata = %+v", got.ProgramArtifacts)

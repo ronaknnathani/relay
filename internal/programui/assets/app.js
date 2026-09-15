@@ -1432,6 +1432,14 @@ function renderGoal() {
     return;
   }
   const body = typeof selected.text === "string" ? selected.text : "";
+  if (selected.present && selected.text === undefined) {
+    dom.goalBody.replaceChildren(emptyNote("File content loads with the external refresh."));
+    dom.goalMeta.textContent = [
+      selected.path || selected.name,
+      formatSize(selected.size),
+    ].filter(Boolean).join(" · ");
+    return;
+  }
   if (!selected.present || !body.trim()) {
     dom.goalBody.replaceChildren(emptyNote(
       ARTIFACT_HINTS[selected.name] || `${selected.name} has not been written yet.`,
