@@ -1715,7 +1715,7 @@ function start() {
   setFeed(false, "Connecting…");
   poll(initialProgramRequest, initialProgramController, initialProgramSnapshot);
   window.setInterval(() => {
-    if (state.snapshot) {
+    if (fullSnapshotReady()) {
       renderHeader();
     }
   }, 15000);

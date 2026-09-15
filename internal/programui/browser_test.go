@@ -493,6 +493,158 @@ func TestBrowserDeepLinkedDeferredTabsWaitForFullSnapshot(t *testing.T) {
 	}
 }
 
+func TestBrowserHeaderRefreshWaitsForFullSnapshot(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	snapshot := browserTestSnapshot()
+	snapshot.Program.Summary = "Authoritative program summary"
+	snapshot.Program.State = "active"
+	snapshot.Progress.Merged = 1
+	snapshot.Progress.Percent = 50
+	snapshot.Plan.NextAction = "Continue with the authoritative plan."
+	snapshotRelease := make(chan struct{})
+	var snapshotOnce sync.Once
+	t.Cleanup(func() {
+		snapshotOnce.Do(func() { close(snapshotRelease) })
+	})
+	feed := newSnapshotFeed(
+		snapshot,
+		time.Minute,
+		time.Now,
+		func() (programview.Snapshot, error) { return snapshot, nil },
+	)
+	url := startBrowserHTTPHandler(t, func(port int) http.Handler {
+		base := newHandler(
+			snapshot.Program.Slug,
+			strconv.Itoa(port),
+			newSnapshotCache(time.Minute, time.Now, nil),
+			feed,
+			nil,
+		)
+		return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			if request.URL.Path == "/api/program" &&
+				request.URL.Query().Get("view") == "" {
+				select {
+				case <-snapshotRelease:
+				case <-request.Context().Done():
+					return
+				}
+			}
+			base.ServeHTTP(response, request)
+		})
+	})
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 30*time.Second)
+	defer cancelTimeout()
+
+	const headerSnapshot = `JSON.stringify({
+		title: document.title,
+		programTitle: document.querySelector("#program-title").textContent,
+		summary: document.querySelector("#program-summary").textContent,
+		slug: document.querySelector("#program-slug").textContent,
+		state: document.querySelector("#program-state").textContent,
+		updated: document.querySelector("#program-updated").textContent,
+		repo: document.querySelector("#program-repo").textContent,
+		agent: document.querySelector("#program-agent").textContent,
+		percent: document.querySelector("#progress-percent").textContent,
+		progress: document.querySelector("#progress-counts").textContent,
+		tasks: document.querySelector("#task-total").textContent,
+		breakdown: document.querySelector("#task-breakdown").textContent,
+		capacity: document.querySelector("#capacity-readout").textContent,
+		capacityNote: document.querySelector("#capacity-note").textContent,
+		decisions: document.querySelector("#decision-count").textContent,
+		decisionNote: document.querySelector("#decision-note").textContent,
+		workers: document.querySelector("#worker-count").textContent,
+		workerNote: document.querySelector("#worker-note").textContent,
+		patrol: document.querySelector("#patrol-status").textContent,
+		patrolNote: document.querySelector("#patrol-note").textContent,
+		patrolTurn: document.querySelector("#patrol-turn").textContent,
+		nextAction: document.querySelector("#next-action").textContent,
+		nextCommand: document.querySelector("#next-command").textContent,
+		warningHidden: document.querySelector("#warning-count").hidden,
+		warningText: document.querySelector("#warning-count").textContent,
+		schema: document.querySelector("#schema-version").textContent
+	})`
+	if err := chromedp.Run(browser,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(`
+				window.__relayErrors = [];
+				window.__relayHeaderIntervalTicks = 0;
+				window.addEventListener("error", (event) => window.__relayErrors.push(event.message));
+				window.addEventListener("unhandledrejection", (event) =>
+					window.__relayErrors.push(String(event.reason)));
+				const relaySetInterval = window.setInterval.bind(window);
+				window.setInterval = (callback, delay, ...args) => relaySetInterval(() => {
+					if (delay === 15000) {
+						window.__relayHeaderIntervalTicks += 1;
+					}
+					callback(...args);
+				}, delay);
+			`).Do(ctx)
+			return err
+		}),
+		chromedp.Navigate(url),
+		chromedp.Poll(`typeof state !== "undefined" &&
+			state.snapshot?.schema === "relay.program.roadmap.bootstrap.v1" &&
+			window.__relayErrors.length === 0`, nil),
+		chromedp.Evaluate(`window.__relayServerHeader = `+headerSnapshot, nil),
+		chromedp.Poll(`window.__relayHeaderIntervalTicks >= 1`, nil,
+			chromedp.WithPollingTimeout(18*time.Second)),
+	); err != nil {
+		t.Fatalf("wait for header refresh interval: %v", err)
+	}
+
+	var headerPreserved bool
+	if err := chromedp.Run(browser, chromedp.Evaluate(
+		`window.__relayServerHeader === `+headerSnapshot, &headerPreserved,
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if !headerPreserved {
+		var diagnostic string
+		_ = chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+			before: JSON.parse(window.__relayServerHeader),
+			after: JSON.parse(`+headerSnapshot+`),
+			schema: state.snapshot?.schema,
+			ticks: window.__relayHeaderIntervalTicks,
+			errors: window.__relayErrors
+		})`, &diagnostic))
+		t.Fatalf("bootstrap header changed after periodic refresh: %s", diagnostic)
+	}
+
+	if err := chromedp.Run(browser,
+		chromedp.ActionFunc(func(context.Context) error {
+			snapshotOnce.Do(func() { close(snapshotRelease) })
+			return nil
+		}),
+		chromedp.Poll(`state.snapshot?.schema === "relay.program.v1" &&
+			document.querySelector("#program-title").textContent === "Browser Test" &&
+			document.querySelector("#program-summary").textContent === "Authoritative program summary" &&
+			document.querySelector("#program-state").textContent.includes("Active") &&
+			document.querySelector("#progress-percent").textContent === "50" &&
+			document.querySelector("#progress-counts").textContent === "1 of 2 merged" &&
+			document.querySelector("#task-total").textContent === "2" &&
+			document.querySelector("#next-action").textContent ===
+				"Continue with the authoritative plan." &&
+			document.querySelector("#schema-version").textContent === "relay.program.v1" &&
+			window.__relayErrors.length === 0`, nil, chromedp.WithPollingTimeout(8*time.Second)),
+	); err != nil {
+		t.Fatalf("recover authoritative header after full snapshot: %v", err)
+	}
+}
+
 func TestBrowserQueuesHashChangesBeforeDeferredBundle(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
