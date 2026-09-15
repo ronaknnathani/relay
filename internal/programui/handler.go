@@ -21,10 +21,11 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-llHS69LA8z65U2AUE5fQgFCDCqi6crU9WmOdVRc9Zew='; style-src 'self' 'sha256-sFjzPlb7DHQxv9AeEeQQGyXy9yFz9+Q4st0U32GXoDI='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-qjjVeQDnvfcgpAAsJa2mz1dfv9NAQ/0tz7lswxBRnOk='; style-src 'self' 'sha256-4ptMEUb9eurT1iIZ9wcZxnVMZAO/Bp8CSJ2RC2IRx5Q='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	roadmapCoreToken      = "__RELAY_ROADMAP_CORE__"
-	cssTemplateToken      = "__RELAY_CSS__"
+	cssTemplateToken      = "/*!__RELAY_CSS__*/"
 	roadmapMarkupToken    = "__RELAY_ROADMAP_MARKUP__"
+	roadmapJSONToken      = "__RELAY_ROADMAP_JSON__"
 	programSlugToken      = "__RELAY_PROGRAM_SLUG__"
 	programTitleToken     = "__RELAY_PROGRAM_TITLE__"
 	programSummaryToken   = "__RELAY_PROGRAM_SUMMARY__"
@@ -194,11 +195,32 @@ func prepareIndexTemplate() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read embedded asset assets/roadmap.min.js: %w", err)
 	}
-	index = bytes.Replace(index, []byte(roadmapCoreToken), roadmapCore, 1)
 	styles, err := fs.ReadFile(embeddedAssets, "assets/app.min.css")
 	if err != nil {
 		return nil, fmt.Errorf("read embedded asset assets/app.min.css: %w", err)
 	}
+	return prepareIndexTemplateData(index, roadmapCore, styles)
+}
+
+func prepareIndexTemplateData(index, roadmapCore, styles []byte) ([]byte, error) {
+	for _, token := range []string{
+		roadmapCoreToken,
+		cssTemplateToken,
+		roadmapMarkupToken,
+		roadmapJSONToken,
+		programSlugToken,
+		programTitleToken,
+		programSummaryToken,
+		progressCountsToken,
+		taskTotalToken,
+		roadmapNoteToken,
+		roadmapLabelToken,
+	} {
+		if bytes.Count(index, []byte(token)) != 1 {
+			return nil, fmt.Errorf("index template must contain exactly one %s token", token)
+		}
+	}
+	index = bytes.Replace(index, []byte(roadmapCoreToken), roadmapCore, 1)
 	index = bytes.Replace(index, []byte(cssTemplateToken), styles, 1)
 	return index, nil
 }
@@ -220,6 +242,7 @@ func renderIndex(index, encoded []byte) ([]byte, error) {
 	}
 	replacements := map[string]string{
 		roadmapMarkupToken:  string(markup),
+		roadmapJSONToken:    string(encoded),
 		programSlugToken:    html.EscapeString(snapshot.Program.Slug),
 		programTitleToken:   html.EscapeString(title),
 		programSummaryToken: html.EscapeString(snapshot.Program.Summary),

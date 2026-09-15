@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v17"
+	performanceHarness = "complete-roadmap-v19"
 )
 
 type performanceReport struct {
@@ -44,6 +44,7 @@ type performanceReport struct {
 	Samples         map[string][]float64   `json:"samples"`
 	P50             map[string]float64     `json:"p50"`
 	P95             map[string]float64     `json:"p95"`
+	Max             map[string]float64     `json:"max"`
 }
 
 type performanceEnvironment struct {
@@ -110,6 +111,7 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 		Samples:         map[string][]float64{},
 		P50:             map[string]float64{},
 		P95:             map[string]float64{},
+		Max:             map[string]float64{},
 	}
 	report.BinaryRevision, report.BinaryModified = binaryVCS(t, binary)
 	report.SourceCommit = report.BinaryRevision
@@ -126,6 +128,7 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 	for name, samples := range report.Samples {
 		report.P50[name] = percentile(samples, 0.50)
 		report.P95[name] = percentile(samples, 0.95)
+		report.Max[name] = maximum(samples)
 	}
 	return report
 }
@@ -173,6 +176,7 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 					window.__relayCompleteGraphAt = performance.now();
 					window.__relayGraphPaintPending = false;
 					relayGraphObserver.disconnect();
+					relayUsable();
 				});
 			};
 			const relayGraphObserver = new MutationObserver(relayGraphComplete);
@@ -184,10 +188,16 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 			});
 			const relayUsable = () => {
 				const cards = Array.from(document.querySelectorAll(".card"));
+				const edgeCount = Array.from(document.querySelectorAll("#graph-edges .edge"))
+					.reduce((total, path) => total + Number(path.dataset.edgeCount || 1), 0);
 				const refresh = document.querySelector("#refresh");
 				const roadmapTab = document.querySelector("#tab-roadmap");
 				if (window.__relayCompleteUsableAt > 0 ||
 					(document.querySelector("#app-script") && !window.__relayCoreReady) ||
+					typeof state === "undefined" ||
+					state.snapshot?.schema !== "relay.program.v1" ||
+					state.snapshot?.items?.length !== 100 ||
+					!window.__relayCompleteGraphAt ||
 					document.querySelector("#program-title")?.textContent !== "Reference Program" ||
 					!document.querySelector("#program-summary")?.textContent ||
 					document.querySelector("#task-total")?.textContent !== "100" ||
@@ -197,6 +207,7 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 					!cards.every((card) => card.dataset.focusKey &&
 						card.textContent.includes("Reference task")) ||
 					document.querySelectorAll("#graph-nodes .stage").length === 0 ||
+					edgeCount !== 200 ||
 					!document.querySelector("#graph")?.getAttribute("aria-label")?.includes(
 						"100 tasks, 200 dependency links") ||
 					!refresh || refresh.disabled ||
@@ -206,13 +217,16 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 				if (!window.__relayUsabilityProbe) {
 					const first = cards[0];
 					const second = cards[1];
+					const theme = document.documentElement.dataset.theme;
 					first.focus({preventScroll: true});
 					window.__relayUsabilityProbe = {
 						target: second.dataset.item,
+						theme,
 						prevented: !first.dispatchEvent(new KeyboardEvent("keydown", {
 							key: "ArrowRight", bubbles: true, cancelable: true
 						}))
 					};
+					document.querySelector("#theme-toggle").click();
 					return;
 				}
 				const probe = window.__relayUsabilityProbe;
@@ -223,6 +237,7 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 				const selected = document.querySelector(
 					'.card[data-item="' + probe.target + '"]');
 				if (probe.prevented &&
+					document.documentElement.dataset.theme !== probe.theme &&
 					selected?.dataset.selected === "true" &&
 					document.activeElement === selected &&
 					roadmapTab.getAttribute("aria-selected") === "true" &&
@@ -231,6 +246,7 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 						if (roadmapTab.getAttribute("aria-selected") === "true" &&
 							document.querySelector("#panel-roadmap")?.hidden === false &&
 							selected.dataset.selected === "true") {
+							document.querySelector("#theme-toggle").click();
 							window.__relayCompleteUsableAt = performance.now();
 							relayObserver.disconnect();
 						}
@@ -660,22 +676,8 @@ func verifyPerformanceReport(t *testing.T, report performanceReport, baselinePat
 	if err := validatePerformancePercentiles(baseline, performanceRuns); err != nil {
 		t.Fatalf("baseline report: %v", err)
 	}
-	budgets := map[string]float64{
-		"navigation_to_usable_ms":  1000,
-		"navigation_to_graph_ms":   1000,
-		"click_to_drawer_ms":       100,
-		"click_to_file_content_ms": 500,
-		"unchanged_reopen_ms":      100,
-		"program_response_bytes":   1024 * 1024,
-		"artifact_response_bytes":  192 * 1024,
-		"artifact_request_count":   1,
-		"max_long_task_ms":         100,
-		"total_blocking_time_ms":   200,
-	}
-	for name, budget := range budgets {
-		if got := report.P95[name]; got > budget {
-			t.Errorf("%s p95 = %.2f, want <= %.2f", name, got, budget)
-		}
+	for _, message := range validatePerformanceBudgets(report) {
+		t.Error(message)
 	}
 	baselineNavigation := baseline.P95["navigation_to_usable_ms"]
 	if baselineNavigation <= 0 {
@@ -701,6 +703,51 @@ func verifyPerformanceReport(t *testing.T, report performanceReport, baselinePat
 			t.Errorf("%s samples = %d, want %d", name, len(samples), performanceRuns)
 		}
 	}
+}
+
+func validatePerformanceBudgets(report performanceReport) []string {
+	var failures []string
+	percentileBudgets := map[string]float64{
+		"navigation_to_usable_ms":  1000,
+		"navigation_to_graph_ms":   1000,
+		"click_to_drawer_ms":       100,
+		"click_to_file_content_ms": 500,
+		"unchanged_reopen_ms":      100,
+	}
+	for name, budget := range percentileBudgets {
+		if got := report.P95[name]; got > budget {
+			failures = append(failures, fmt.Sprintf(
+				"%s p95 = %.2f, want <= %.2f", name, got, budget,
+			))
+		}
+	}
+	absoluteBudgets := map[string]float64{
+		"program_response_bytes":  1024 * 1024,
+		"artifact_response_bytes": 192 * 1024,
+		"artifact_request_count":  1,
+		"max_long_task_ms":        100,
+		"total_blocking_time_ms":  200,
+	}
+	for name, budget := range absoluteBudgets {
+		got := maximum(report.Samples[name])
+		if report.Max != nil {
+			got = report.Max[name]
+		}
+		if got > budget {
+			failures = append(failures, fmt.Sprintf(
+				"%s maximum = %.2f, want every run <= %.2f", name, got, budget,
+			))
+		}
+	}
+	return failures
+}
+
+func maximum(values []float64) float64 {
+	maximumValue := 0.0
+	for _, value := range values {
+		maximumValue = math.Max(maximumValue, value)
+	}
+	return maximumValue
 }
 
 func validatePerformancePercentiles(report performanceReport, sampleCount int) error {

@@ -983,9 +983,7 @@ function taskCard(node, item, position, hasSelection, existingCard) {
   card.dataset.lane = lane;
   card.dataset.item = node.id;
   card.dataset.focusKey = `card:${node.id}`;
-  if (node.id === state.selected) {
-    card.dataset.selected = "true";
-  }
+  card.dataset.selected = node.id === state.selected ? "true" : "false";
   card.tabIndex = hasSelection
     ? (node.id === state.selected ? "0" : "-1")
     : (position === 0 ? "0" : "-1");
@@ -1296,6 +1294,12 @@ function renderInitial() {
   }));
 }
 
+function renderCore() {
+  renderHeader();
+  state.dirtyTabs = new Set(TABS);
+  renderActiveTab();
+}
+
 function renderActiveTab() {
   if (!state.snapshot) {
     return;
@@ -1565,13 +1569,16 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
     setSnapshotFeed(snapshot);
     if (signature === state.signature) {
       renderHeader();
-    } else if (roadmapUnchanged && state.tab === "roadmap") {
+    } else if (!deferredUIReady) {
+      renderCore();
       state.signature = signature;
+    } else if (roadmapUnchanged && state.tab === "roadmap") {
       renderHeader();
       TABS.filter((tab) => tab !== "roadmap").forEach((tab) => state.dirtyTabs.add(tab));
-    } else {
       state.signature = signature;
+    } else {
       render();
+      state.signature = signature;
     }
     if (state.pendingDrawer && state.selected) {
       withDeferredUI(() => {
@@ -1618,7 +1625,7 @@ function start() {
   renderThemeToggle();
   bindControls();
   const parsed = readHash();
-  state.selected = parsed.task;
+  state.selected = parsed.task || window.__relayRoadmapSelection || "";
   state.pendingDrawer = Boolean(parsed.task);
   selectTab(parsed.tab || "roadmap");
   setFeed(false, "Connecting…");

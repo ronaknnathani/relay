@@ -33,6 +33,10 @@ func TestBrowserHydratesAndPollsWhenDeferredBundleFails(t *testing.T) {
 	full.SourceHealth.GitHub.Status = "ok"
 	full.SourceHealth.Herdr.Status = "ok"
 	updated := full
+	updated.Graph.Nodes = append([]programview.GraphNodeDTO(nil), full.Graph.Nodes...)
+	updated.Graph.Nodes[0].Title = "Updated roadmap task"
+	updated.Items = append([]programview.ItemDTO(nil), full.Items...)
+	updated.Items[0].Title = "Updated roadmap task"
 	updated.Progress.Total = 7
 
 	initialNow := time.Date(2026, 9, 14, 20, 0, 0, 0, time.UTC)
@@ -144,14 +148,134 @@ func TestBrowserHydratesAndPollsWhenDeferredBundleFails(t *testing.T) {
 	nowNanos.Store(initialNow.Add(6 * time.Second).UnixNano())
 	if err := chromedp.Run(browser,
 		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
-		chromedp.Poll(`document.querySelector("#task-total").textContent === "7"`, nil),
-		chromedp.Poll(`document.querySelector("#reconnect").textContent.includes(
-			"Click Refresh to retry")`, nil),
+		chromedp.Poll(`document.querySelector("#task-total").textContent === "7" &&
+			document.querySelector('.card[data-item="w1"]').textContent.includes(
+				"Updated roadmap task") &&
+			window.__relayErrors.length === 0 &&
+			document.querySelector("#reconnect").textContent.includes(
+				"Click Refresh to retry")`, nil, chromedp.WithPollingTimeout(8*time.Second)),
 	); err != nil {
-		t.Fatalf("polling after deferred bundle failure: %v", err)
+		var diagnostic string
+		_ = chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+			total: document.querySelector("#task-total")?.textContent,
+			card: document.querySelector('.card[data-item="w1"]')?.textContent,
+			reconnect: document.querySelector("#reconnect")?.textContent,
+			reconnectHidden: document.querySelector("#reconnect")?.hidden,
+			signature: state.signature,
+			errors: window.__relayErrors
+		})`, &diagnostic))
+		t.Fatalf("polling after deferred bundle failure: %v: %s", err, diagnostic)
 	}
 	if builds.Load() < 2 {
 		t.Fatalf("snapshot builds = %d, want at least 2", builds.Load())
+	}
+}
+
+func TestBrowserKeepsPendingExternalDrawerStateNonAuthoritative(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	snapshot := browserTestSnapshot()
+	snapshot.Items[0].RecordedPR = &programview.PullRequestDTO{
+		Number: 42, Ref: "#42", State: "open", Title: "Recorded PR",
+	}
+	url := startBrowserTestHandler(t, HandlerOptions{
+		Slug: "browser-test",
+		Builder: func(_ string, _ string) (programview.Snapshot, error) {
+			return snapshot, nil
+		},
+	})
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+	if err := chromedp.Run(browser,
+		chromedp.Navigate(url),
+		chromedp.Poll(`typeof deferredUIReady !== "undefined" && deferredUIReady`, nil),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+		chromedp.Poll(`document.querySelector("#detail-body").textContent.includes(
+			"GitHub refresh pending") &&
+			document.querySelector("#detail-body").textContent.includes(
+				"Herdr refresh pending")`, nil),
+	); err != nil {
+		t.Fatalf("pending external drawer state: %v", err)
+	}
+	var detail string
+	if err := chromedp.Run(browser, chromedp.Text("#detail-body", &detail)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(detail, "GitHub did not answer") ||
+		strings.Contains(detail, "worker may have exited") {
+		t.Fatalf("pending drawer made an authoritative negative claim: %s", detail)
+	}
+}
+
+func TestBrowserPreservesPreHydrationRoadmapSelection(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	url := startBrowserTestFeedHandler(t, browserTestSnapshot())
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+	if err := chromedp.Run(browser,
+		network.Enable(),
+		network.SetBlockedURLs([]string{"*/app.js"}),
+		chromedp.Navigate(url),
+		chromedp.Poll(`window.__relayCoreReady === true &&
+			document.querySelectorAll(".card").length === 2`, nil),
+		chromedp.Evaluate(`
+			document.querySelector('.card[data-item="w1"]').dispatchEvent(
+				new KeyboardEvent("keydown", {key: "ArrowRight", bubbles: true, cancelable: true}))
+		`, nil),
+		chromedp.Poll(`document.querySelector('.card[data-item="w2"]').dataset.selected === "true"`, nil),
+		network.SetBlockedURLs([]string{}),
+		chromedp.Evaluate(`
+			(() => {
+				const script = document.createElement("script");
+				script.src = "/app.js";
+				document.body.append(script);
+			})()
+		`, nil),
+		chromedp.Poll(`typeof state !== "undefined" &&
+			state.snapshot?.schema === "relay.program.v1"`, nil),
+	); err != nil {
+		t.Fatalf("pre-hydration keyboard selection: %v", err)
+	}
+	var selection struct {
+		State    string   `json:"state"`
+		Selected []string `json:"selected"`
+	}
+	if err := chromedp.Run(browser, chromedp.Evaluate(`({
+		state: state.selected,
+		selected: Array.from(document.querySelectorAll('.card[data-selected="true"]'),
+			(card) => card.dataset.item)
+	})`, &selection)); err != nil {
+		t.Fatal(err)
+	}
+	if selection.State != "w2" || !slices.Equal(selection.Selected, []string{"w2"}) {
+		t.Fatalf("hydrated selection = %+v, want state and DOM on w2", selection)
 	}
 }
 
@@ -1142,6 +1266,30 @@ func TestBrowserReconcilesRemovedContractSelection(t *testing.T) {
 
 func startBrowserTestHandler(t *testing.T, options HandlerOptions) string {
 	t.Helper()
+	return startBrowserHTTPHandler(t, func(port int) http.Handler {
+		options.Port = port
+		return NewHandler(options)
+	})
+}
+
+func startBrowserTestFeedHandler(t *testing.T, snapshot programview.Snapshot) string {
+	t.Helper()
+	feed := newSnapshotFeed(snapshot, time.Minute, time.Now, func() (programview.Snapshot, error) {
+		return snapshot, nil
+	})
+	return startBrowserHTTPHandler(t, func(port int) http.Handler {
+		return newHandler(
+			snapshot.Program.Slug,
+			strconv.Itoa(port),
+			newSnapshotCache(time.Minute, time.Now, nil),
+			feed,
+			nil,
+		)
+	})
+}
+
+func startBrowserHTTPHandler(t *testing.T, newHandler func(int) http.Handler) string {
+	t.Helper()
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -1154,8 +1302,7 @@ func startBrowserTestHandler(t *testing.T, options HandlerOptions) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	options.Port = port
-	server := &http.Server{Handler: NewHandler(options), ReadHeaderTimeout: time.Second}
+	server := &http.Server{Handler: newHandler(port), ReadHeaderTimeout: time.Second}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	t.Cleanup(func() {

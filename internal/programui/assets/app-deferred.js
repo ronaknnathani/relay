@@ -743,6 +743,7 @@ function trustedURL(value) {
 }
 
 function pullRequestSection(item) {
+  const github = (snapshotOf().source_health || {}).github || {};
   const live = item.live_pr;
   const pr = live || item.recorded_pr;
   const stale = Boolean(live && live.stale);
@@ -786,7 +787,9 @@ function pullRequestSection(item) {
       `GitHub refresh failed. Showing cached data fetched ${formatRelative(pr.fetched_at)}. ${text(pr.stale_reason)}`.trim()));
   } else if (!live && item.recorded_pr) {
     section.append(make("p", "banner banner--note",
-      "GitHub did not answer for this pull request, so these values come from recorded program state."));
+      github.status === "loading"
+        ? "GitHub refresh pending. Showing recorded program state until the source responds."
+        : "GitHub did not return live data for this pull request, so these values come from recorded program state."));
   }
   if (!url && text(pr.url)) {
     section.append(make("p", "banner banner--warn",
@@ -796,6 +799,10 @@ function pullRequestSection(item) {
 }
 
 function pullRequestHint(item) {
+  const github = (snapshotOf().source_health || {}).github || {};
+  if (github.status === "loading") {
+    return "GitHub refresh pending. Live pull request state is not known yet.";
+  }
   switch (text(item.status)) {
     case "pending":
       return "No pull request yet. One appears after the task is dispatched and the worker opens it.";
@@ -813,10 +820,15 @@ function pullRequestHint(item) {
 function workerSection(item) {
   const section = detailSection("Worker");
   const worker = item.worker;
+  const herdr = (snapshotOf().source_health || {}).herdr || {};
   if (!worker) {
-    section.append(emptyNote(item.status === "dispatched"
-      ? "Herdr did not report a live agent for this worktree. The worker may have exited."
-      : "No live worker is attached to this task."));
+    if (herdr.status === "loading") {
+      section.append(emptyNote("Herdr refresh pending. Live worker state is not known yet."));
+    } else {
+      section.append(emptyNote(item.status === "dispatched"
+        ? "Herdr did not report a live agent for this worktree. The worker may have exited."
+        : "No live worker is attached to this task."));
+    }
   } else {
     if (worker.stale) {
       const fetched = worker.fetched_at ? ` from ${formatRelative(worker.fetched_at)}` : "";

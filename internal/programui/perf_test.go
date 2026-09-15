@@ -158,3 +158,42 @@ func TestAppendPerformanceSampleTracksExactProgramAndAllArtifactResponses(t *tes
 		}
 	}
 }
+
+func TestValidatePerformanceBudgetsEnforcesAbsoluteLimitsPerRun(t *testing.T) {
+	report := performanceReport{
+		Samples: map[string][]float64{
+			"navigation_to_usable_ms":  {40, 45, 50},
+			"program_response_bytes":   {512, 1024*1024 + 1, 512},
+			"artifact_response_bytes":  {1024, 1024, 192*1024 + 1},
+			"artifact_request_count":   {1, 2, 1},
+			"max_long_task_ms":         {10, 101, 10},
+			"total_blocking_time_ms":   {0, 0, 201},
+			"click_to_drawer_ms":       {10, 10, 10},
+			"click_to_file_content_ms": {10, 10, 10},
+			"unchanged_reopen_ms":      {10, 10, 10},
+		},
+		P95: map[string]float64{
+			"navigation_to_usable_ms":  50,
+			"program_response_bytes":   512,
+			"artifact_response_bytes":  1024,
+			"artifact_request_count":   1,
+			"max_long_task_ms":         10,
+			"total_blocking_time_ms":   0,
+			"click_to_drawer_ms":       10,
+			"click_to_file_content_ms": 10,
+			"unchanged_reopen_ms":      10,
+		},
+	}
+	errs := validatePerformanceBudgets(report)
+	for _, want := range []string{
+		"program_response_bytes maximum",
+		"artifact_response_bytes maximum",
+		"artifact_request_count maximum",
+		"max_long_task_ms maximum",
+		"total_blocking_time_ms maximum",
+	} {
+		if !strings.Contains(strings.Join(errs, "\n"), want) {
+			t.Errorf("budget errors = %v, want %q", errs, want)
+		}
+	}
+}

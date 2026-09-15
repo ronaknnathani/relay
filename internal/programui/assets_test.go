@@ -113,13 +113,14 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		`<a class="skip-link"`,
 	})
 
-	if strings.Count(index, "<script") != 2 ||
+	if strings.Count(index, "<script") != 3 ||
 		!strings.Contains(index, `<script id="app-script">__RELAY_ROADMAP_CORE__</script>`) ||
-		strings.Contains(index, "initial-program") {
-		t.Error("index.html must embed the roadmap controller after the complete document")
+		!strings.Contains(index, `<script id="initial-program" type="application/json">`+
+			roadmapJSONToken+`</script>`) {
+		t.Error("index.html must embed the initial roadmap data and controller after the complete document")
 	}
 	if strings.Count(index, "<style>") != 1 ||
-		!strings.Contains(index, `<style>__RELAY_CSS__</style>`) {
+		!strings.Contains(index, `<style>/*!__RELAY_CSS__*/</style>`) {
 		t.Error("index.html must embed the minified core stylesheet")
 	}
 }
@@ -137,7 +138,7 @@ func TestOverviewRendersMergedProgressContract(t *testing.T) {
 		"<dt>Completion</dt>",
 		`<span id="progress-percent" class="signal__value mono">`,
 		`<span class="signal__unit">%</span>`,
-		`<p id="progress-counts" class="signal__note"></p>`,
+		`<p id="progress-counts" class="signal__note">__RELAY_PROGRESS_COUNTS__</p>`,
 	})
 }
 

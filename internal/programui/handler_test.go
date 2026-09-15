@@ -37,9 +37,58 @@ func TestHandlerCachesRenderedIndex(t *testing.T) {
 		t.Fatalf("Content-Length = %q, want %d", got, response.Body.Len())
 	}
 	if bytes.Contains(response.Body.Bytes(), []byte(roadmapCoreToken)) ||
+		bytes.Contains(response.Body.Bytes(), []byte(cssTemplateToken)) ||
 		bytes.Contains(response.Body.Bytes(), []byte(roadmapMarkupToken)) ||
+		bytes.Contains(response.Body.Bytes(), []byte("<style></style>")) ||
+		!bytes.Contains(response.Body.Bytes(), []byte("--canvas:")) ||
 		!bytes.Contains(response.Body.Bytes(), []byte("/app.js")) {
-		t.Fatal("rendered index must contain the first-paint bootstrap and no template token")
+		t.Fatal("rendered index must contain the complete first-paint CSS and bootstrap with no template token")
+	}
+}
+
+func TestPrepareIndexTemplateRejectsMissingRequiredTokens(t *testing.T) {
+	valid := []byte(readAsset(t, "assets/index.html"))
+	for _, test := range []struct {
+		name  string
+		index []byte
+		want  string
+	}{
+		{name: "css", index: bytes.ReplaceAll(valid, []byte(cssTemplateToken), nil), want: cssTemplateToken},
+		{name: "roadmap", index: bytes.ReplaceAll(valid, []byte(roadmapCoreToken), nil), want: roadmapCoreToken},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := prepareIndexTemplateData(test.index, []byte("roadmap"), []byte("styles"))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("prepareIndexTemplateData() error = %v, want missing %s", err, test.want)
+			}
+		})
+	}
+}
+
+func TestHandlerRendersMergedProgressBeforeHydration(t *testing.T) {
+	seed := programview.Snapshot{
+		Schema:   programview.SchemaVersion,
+		Program:  programview.ProgramDTO{Title: "Progress"},
+		Progress: programview.ProgressDTO{Total: 7, Merged: 3, Canceled: 2},
+		Items:    []programview.ItemDTO{},
+	}
+	feed := newSnapshotFeed(seed, time.Minute, time.Now, func() (programview.Snapshot, error) {
+		return seed, nil
+	})
+	handler := newHandler("relay-v1", "4321", newSnapshotCache(time.Minute, nil, nil), feed, nil)
+	request := httptest.NewRequest(http.MethodGet, "http://localhost:4321/", nil)
+	request.Host = "localhost:4321"
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET index status = %d: %s", response.Code, response.Body.String())
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte(
+		`<p id="progress-counts" class="signal__note">3 of 7 merged`,
+	)) {
+		t.Fatal("rendered index does not preserve merged progress")
 	}
 }
 

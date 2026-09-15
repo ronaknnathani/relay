@@ -13,6 +13,7 @@
       candidate.dataset.selected = active ? "true" : "false";
       candidate.tabIndex = active ? 0 : -1;
     });
+    window.__relayRoadmapSelection = card.dataset.item;
     card.focus({ preventScroll: true });
     if (persist) {
       window.history.replaceState(null, "", `#task=${encodeURIComponent(card.dataset.item)}`);
@@ -43,6 +44,8 @@
     graphNodes.removeEventListener("keydown", onKeyDown);
   };
   window.__relayCoreReady = true;
+  window.__relayRoadmapSelection =
+    document.querySelector('.card[data-selected="true"]')?.dataset.item || "";
   document.documentElement.dataset.relayCoreReady = "true";
 
   requestAnimationFrame(() => setTimeout(() => {
