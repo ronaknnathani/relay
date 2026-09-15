@@ -2,28 +2,14 @@
 
 /* Relay Program UI.
    Read-only. Every value reaches the DOM through textContent or createElement;
-   no markup is ever parsed from data. This file loads in <head> so the stored
-   theme is applied before the first paint; the app itself boots on DOMContentLoaded. */
+   no markup is ever parsed from data. */
 
 const THEME_KEY = "relay.program.theme";
 const THEMES = ["light", "dark"];
 
-/* Light is the default for everyone, regardless of the operating system
-   preference, so the brief always opens as paper. */
-function storedTheme() {
-  try {
-    const value = window.localStorage.getItem(THEME_KEY);
-    return THEMES.indexOf(value) === -1 ? "" : value;
-  } catch (error) {
-    return "";
-  }
-}
-
 function applyTheme(theme) {
   document.documentElement.dataset.theme = THEMES.indexOf(theme) === -1 ? "light" : theme;
 }
-
-applyTheme(storedTheme() || "light");
 
 const POLL_INTERVAL = 3000;
 const BACKOFF = [3000, 6000, 12000];

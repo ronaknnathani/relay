@@ -10,7 +10,7 @@ import (
 )
 
 // assetNames lists every file the browser is allowed to load.
-var assetNames = []string{"assets/index.html", "assets/app.css", "assets/app.js"}
+var assetNames = []string{"assets/index.html", "assets/app.css", "assets/theme.js", "assets/app.js"}
 
 // forbiddenAssetSubstrings keeps the embedded UI local-only and free of any
 // API that turns data into markup.
@@ -87,8 +87,10 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		`<a class="skip-link"`,
 	})
 
-	if strings.Count(index, "<script") != 1 || !strings.Contains(index, `<script src="/app.js"></script>`) {
-		t.Error("index.html must load exactly one local script, /app.js, with no defer so the theme lands before paint")
+	if strings.Count(index, "<script") != 2 ||
+		!strings.Contains(index, `<script src="/theme.js"></script>`) ||
+		!strings.Contains(index, `<script src="/app.js" defer></script>`) {
+		t.Error("index.html must load the pre-paint theme script before the deferred application")
 	}
 	if strings.Count(index, "<link ") != 1 || !strings.Contains(index, `href="/app.css"`) {
 		t.Error("index.html must link exactly one local stylesheet, /app.css")
@@ -122,20 +124,20 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	})
 
 	head := index[strings.Index(index, "<head>"):strings.Index(index, "</head>")]
-	if !strings.Contains(head, `<script src="/app.js">`) {
-		t.Error("app.js must load inside <head> so the stored theme applies before the first paint")
-	}
-	if strings.Contains(head, "defer") || strings.Contains(head, "async") {
-		t.Error("the theme bootstrap script must not be deferred or async")
+	theme := readAsset(t, "assets/theme.js")
+	requireContains(t, "theme.js", theme, []string{
+		"window.localStorage.getItem(key)",
+		"document.documentElement.dataset.theme = theme",
+	})
+	if strings.Contains(strings.Split(head, `<script src="/app.js"`)[0], "defer") {
+		t.Error("the theme bootstrap script must not be deferred")
 	}
 
 	script := readAsset(t, "assets/app.js")
 	requireContains(t, "app.js", script, []string{
 		`const THEME_KEY = "relay.program.theme"`,
-		"window.localStorage.getItem(THEME_KEY)",
 		"window.localStorage.setItem(THEME_KEY, next)",
 		"document.documentElement.dataset.theme",
-		`applyTheme(storedTheme() || "light")`,
 		"function toggleTheme()",
 		`dom.themeToggle.setAttribute("aria-label"`,
 	})
