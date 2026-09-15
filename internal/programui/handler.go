@@ -17,7 +17,7 @@ import (
 	"github.com/ronaknnathani/relay/internal/programview"
 )
 
-const contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-UXIL+j6UmJdVusQ2iRt/3tKDJxuh42y6D1HM1W2MC54='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+const contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-Mn4bxo9tzkD5bpzro8up+ox0uq36P01csr2pwJhJTGc='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 
 //go:embed assets/*
 var embeddedAssets embed.FS

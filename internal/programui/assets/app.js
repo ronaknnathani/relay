@@ -122,7 +122,8 @@ const state = {
 };
 
 const initialProgramController = new AbortController();
-const initialProgramRequest = requestProgram(initialProgramController);
+const initialProgramRequest = window.__relayInitialProgramRequest ||
+  requestProgram(initialProgramController);
 
 /* ---------- DOM helpers ---------- */
 
