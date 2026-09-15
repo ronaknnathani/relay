@@ -23,9 +23,9 @@ import (
 )
 
 const (
-	performanceRuns         = 20
+	performanceRuns         = 40
 	performanceFixture      = "reference-program-v1"
-	performanceHarness      = "complete-roadmap-v2"
+	performanceHarness      = "complete-roadmap-v3"
 	performanceSourceCommit = "RELAY_PERF_SOURCE_COMMIT"
 )
 
