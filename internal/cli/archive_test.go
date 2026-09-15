@@ -1713,6 +1713,92 @@ func TestArchivedCleanupRetryDoesNotReplayClaimedWorktreeRemoval(t *testing.T) {
 	}
 }
 
+func TestArchivedCleanupRetryFinishesPendingWorktreeAfterBranchCleanupCompleted(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archived-retry-branch-done-worktree-pending"
+	branch := "user/" + slug
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, worktree, "checkout", "--detach")
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Status = "archived"
+	manifest.ArchiveCleanup = archiveCleanupProof(decision.proof)
+	runArchiveGit(t, repo, "update-ref", "-d", "refs/heads/"+branch)
+	manifest.ArchiveCleanup.BranchPresent = false
+	manifest.ArchiveCleanup.ExpectedBranchTip = ""
+	manifest.ArchiveCleanup.BranchState = project.ArchiveCleanupDone
+	if _, err := stageArchivedProject(
+		filepath.Join(project.ActiveDir(), slug),
+		filepath.Join(project.ArchivedDir(), slug),
+		manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := retryArchivedProjectCleanup(loadArchivedManifest(t, slug))
+	if err != nil {
+		t.Fatalf("retryArchivedProjectCleanup: %v", err)
+	}
+	if !result.WorktreeRemoved || pathExists(worktree) {
+		t.Fatalf("retry result = %+v, want pending worktree removed", result)
+	}
+	archived := loadArchivedManifest(t, slug)
+	if archived.ArchiveCleanup == nil ||
+		archived.ArchiveCleanup.BranchState != project.ArchiveCleanupDone ||
+		archived.ArchiveCleanup.WorktreeState != project.ArchiveCleanupDone {
+		t.Fatalf("cleanup proof = %+v, want completed branch and worktree", archived.ArchiveCleanup)
+	}
+}
+
+func TestArchivedCleanupRetryPreservesClaimedWorktreeAfterBranchCleanupCompleted(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archived-retry-branch-done-worktree-claimed"
+	branch := "user/" + slug
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, worktree, "checkout", "--detach")
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Status = "archived"
+	manifest.ArchiveCleanup = archiveCleanupProof(decision.proof)
+	runArchiveGit(t, repo, "update-ref", "-d", "refs/heads/"+branch)
+	manifest.ArchiveCleanup.BranchPresent = false
+	manifest.ArchiveCleanup.ExpectedBranchTip = ""
+	manifest.ArchiveCleanup.BranchState = project.ArchiveCleanupDone
+	manifest.ArchiveCleanup.WorktreeState = project.ArchiveCleanupClaimed
+	if _, err := stageArchivedProject(
+		filepath.Join(project.ActiveDir(), slug),
+		filepath.Join(project.ArchivedDir(), slug),
+		manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = retryArchivedProjectCleanup(loadArchivedManifest(t, slug))
+	if err == nil || !strings.Contains(err.Error(), "already claimed") ||
+		!strings.Contains(err.Error(), "will not retry removal") {
+		t.Fatalf("retryArchivedProjectCleanup error = %v, want claimed-state preservation", err)
+	}
+	if !pathExists(worktree) {
+		t.Fatal("claimed-state retry removed the worktree")
+	}
+}
+
 func TestArchivedCleanupRetryDoesNotReplayClaimedBranchDeletion(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)

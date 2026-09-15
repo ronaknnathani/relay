@@ -209,8 +209,10 @@ func (index projectResourceOwnershipIndex) requireExclusive(path string) error {
 		return fmt.Errorf("project ownership index has no identity for %s", path)
 	}
 	var issues []error
-	if owners := index.branchOwners[identity.branch]; len(owners) != 1 || owners[0].path != path {
-		issues = append(issues, duplicateResourceOwnershipError("branch", owners, path))
+	if identity.branch != "" {
+		if owners := index.branchOwners[identity.branch]; len(owners) != 1 || owners[0].path != path {
+			issues = append(issues, duplicateResourceOwnershipError("branch", owners, path))
+		}
 	}
 	if identity.worktree != "" {
 		if owners := index.worktreeOwners[identity.worktree]; len(owners) != 1 || owners[0].path != path {
