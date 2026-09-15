@@ -154,6 +154,23 @@ func TestOriginURLPreservesGitDiagnostic(t *testing.T) {
 	}
 }
 
+func TestIsWorktreePreservesGitDiagnostic(t *testing.T) {
+	repo := t.TempDir()
+
+	registered, err := IsWorktree(repo, filepath.Join(repo, "worktree"))
+	if err == nil {
+		t.Fatal("IsWorktree error = nil")
+	}
+	if registered {
+		t.Fatal("IsWorktree reported a worktree after git failed")
+	}
+	for _, want := range []string{"git worktree list", "not a git repository"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("IsWorktree error %q is missing %q", err, want)
+		}
+	}
+}
+
 func TestSanitizeDiagnosticRedactsGitURLUserinfo(t *testing.T) {
 	input := strings.Join([]string{
 		"fatal: unable to access 'https://relay:secret@example.com/repo.git/': denied",
@@ -225,6 +242,16 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			input: "remote: git@git.example.io:team/repo.git?identity=secret#scope",
 			want:  "remote: [redacted]@git.example.io:team/repo.git",
 		},
+		{
+			name:  "scp-like ssh alias",
+			input: "remote: deploy-token@git_alias_1:team/repo.git?identity=secret#scope",
+			want:  "remote: [redacted]@git_alias_1:team/repo.git",
+		},
+		{
+			name:  "unrelated text",
+			input: "status ops@example.com:ready",
+			want:  "status ops@example.com:ready",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -253,6 +280,29 @@ func TestWorkMerged(t *testing.T) {
 	}
 	if !merged {
 		t.Fatal("WorkMerged = false, want true")
+	}
+}
+
+func TestWorkMergedUsesQualifiedBranchRefWhenTagConflicts(t *testing.T) {
+	repo := initRepo(t)
+	base := currentBranchInRepo(t, repo)
+	start := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "-q", "-b", "qualified-work")
+	if err := os.WriteFile(filepath.Join(repo, "qualified.txt"), []byte("merged\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "qualified.txt")
+	runGit(t, repo, "commit", "-q", "-m", "qualified work")
+	runGit(t, repo, "checkout", "-q", base)
+	runGit(t, repo, "merge", "-q", "--ff-only", "refs/heads/qualified-work")
+	runGit(t, repo, "tag", "qualified-work", start)
+
+	merged, err := WorkMerged(repo, "qualified-work", "refs/heads/"+base, start)
+	if err != nil {
+		t.Fatalf("WorkMerged: %v", err)
+	}
+	if !merged {
+		t.Fatal("WorkMerged followed the conflicting tag instead of refs/heads/qualified-work")
 	}
 }
 
@@ -325,15 +375,20 @@ func TestWorkMergedReturnsEvaluationError(t *testing.T) {
 }
 
 func TestDetectDefaultBranchFallsBackWhenOriginHEADIsMalformed(t *testing.T) {
-	repo := initRepo(t)
-	runGit(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/main")
+	for _, base := range []string{"main", "master"} {
+		t.Run(base, func(t *testing.T) {
+			repo := initRepo(t)
+			runGit(t, repo, "branch", "-M", base)
+			runGit(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/"+base)
 
-	branch, err := DetectDefaultBranchWithError(repo)
-	if err != nil {
-		t.Fatalf("DetectDefaultBranchWithError: %v", err)
-	}
-	if branch != "main" {
-		t.Fatalf("default branch = %q, want main", branch)
+			branch, err := DetectDefaultBranchWithError(repo)
+			if err != nil {
+				t.Fatalf("DetectDefaultBranchWithError: %v", err)
+			}
+			if branch != base {
+				t.Fatalf("default branch = %q, want %q", branch, base)
+			}
+		})
 	}
 }
 

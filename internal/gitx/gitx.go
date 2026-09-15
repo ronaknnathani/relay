@@ -16,7 +16,7 @@ import (
 var (
 	gitURLPattern     = regexp.MustCompile(`(?i)(?:file|ftp|ftps|git|https?|ssh)://[^\s'"<>]+`)
 	scpLikeURLPattern = regexp.MustCompile(
-		`(?i)\b[^\s'"<>/@:]+@(?:\[[0-9a-f:.]+\]|[a-z0-9][a-z0-9.-]*):[^\s'"<>]+`,
+		`(?i)\b[^\s'"<>/@:]+@(?:\[[0-9a-f:.]+\]|[^\s'"<>/:]+):[^\s'"<>]+`,
 	)
 )
 
@@ -280,14 +280,29 @@ func sanitizeGitDiagnosticURL(rawURL string) string {
 }
 
 func sanitizeSCPStyleURL(rawURL string) string {
-	if secretStart := strings.IndexAny(rawURL, "?#"); secretStart >= 0 {
-		rawURL = rawURL[:secretStart]
-	}
 	userinfoEnd := strings.LastIndexByte(rawURL, '@')
 	if userinfoEnd < 0 {
 		return rawURL
 	}
-	return "[redacted]" + rawURL[userinfoEnd:]
+	hostPath := rawURL[userinfoEnd+1:]
+	pathStart := strings.IndexByte(hostPath, ':')
+	if strings.HasPrefix(hostPath, "[") {
+		pathStart = strings.Index(hostPath, "]:")
+		if pathStart >= 0 {
+			pathStart++
+		}
+	}
+	if pathStart <= 0 || pathStart == len(hostPath)-1 {
+		return rawURL
+	}
+	path := hostPath[pathStart+1:]
+	if secretStart := strings.IndexAny(path, "?#"); secretStart >= 0 {
+		path = path[:secretStart]
+	}
+	if path == "" || (!strings.Contains(path, "/") && !strings.HasSuffix(path, ".git")) {
+		return rawURL
+	}
+	return "[redacted]@" + hostPath[:pathStart+1] + path
 }
 
 // WorktreeAdd creates a new worktree at dir on a new branch, started from startPoint.
@@ -302,9 +317,9 @@ func WorktreeAdd(repo, dir, branch, startPoint string) error {
 // IsWorktree reports whether dir is registered as a git worktree of repo.
 // The returned bool is only meaningful when err is nil.
 func IsWorktree(repo, dir string) (bool, error) {
-	out, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").Output()
+	out, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").CombinedOutput()
 	if err != nil {
-		return false, fmt.Errorf("git worktree list: %w", err)
+		return false, gitCommandError("git worktree list", err, out)
 	}
 	target := canonPath(dir)
 	for _, line := range strings.Split(string(out), "\n") {
@@ -331,9 +346,9 @@ func canonPath(p string) string {
 // uncommitted changes and no untracked files (i.e. `git status --porcelain`
 // is empty). The bool is only meaningful when err is nil.
 func WorktreeClean(dir string) (bool, error) {
-	out, err := exec.Command("git", "-C", dir, "status", "--porcelain").Output()
+	out, err := exec.Command("git", "-C", dir, "status", "--porcelain").CombinedOutput()
 	if err != nil {
-		return false, fmt.Errorf("git -C %s status: %w", dir, err)
+		return false, gitCommandError("git -C "+dir+" status --porcelain", err, out)
 	}
 	return strings.TrimSpace(string(out)) == "", nil
 }

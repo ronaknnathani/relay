@@ -660,6 +660,41 @@ func TestGCSharedRefreshFailureWarnsOnceAndProtectsStaleRef(t *testing.T) {
 	}
 }
 
+func TestGCFetchWarningRedactsCredentials(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "credential-fetch-failure"
+	branch, worktree := addGCProject(t, fixture, slug)
+	scriptPath := filepath.Join(t.TempDir(), "failing-upload-pack")
+	script := "#!/bin/sh\n" +
+		"echo \"fatal: unable to access 'https://fetch-user:fetch-secret@git_alias_1/team/repo.git?access_token=query-secret#fragment-secret': denied\" >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	runArchiveGit(t, fixture.repo, "config", "remote.origin.uploadpack", scriptPath)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, secret := range []string{
+		"fetch-user", "fetch-secret", "access_token", "query-secret", "fragment-secret",
+	} {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr %q leaked %q", stderr, secret)
+		}
+	}
+	if !strings.Contains(stderr, "https://[redacted]@git_alias_1/team/repo.git") {
+		t.Fatalf("stderr %q is missing the sanitized fetch URL", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC changed a project after its credential-bearing fetch failure")
+	}
+}
+
 func TestGCRefreshFailureDoesNotBlockAnotherRepository(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	failingRepo := newGCRepoFixture(t, "main")
