@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ronaknnathani/relay/internal/gitx"
@@ -14,8 +15,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// loadArchivePRIndex resolves authoritative pull request state for archive.
-var loadArchivePRIndex = programview.GitHubPRIndex
+var (
+	loadArchivePullRequestProof = programview.GitHubPullRequestProof
+	loadArchiveRepository       = programview.GitHubRepository
+)
 
 func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, error) {
 	hasPR, ref, err := programview.RecordedPR(m, project.StatePath(slug))
@@ -25,12 +28,40 @@ func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, err
 	if !hasPR {
 		return false, nil
 	}
-	index := loadArchivePRIndex(m.Repo, []string{ref})
-	if index == nil {
+	proof, err := loadArchivePullRequestProof(m.Repo, ref)
+	if err != nil {
+		return false, fmt.Errorf("lookup recorded pull request %s for %s: %w", ref, slug, err)
+	}
+	if proof.State != programview.PRStateMerged {
 		return false, nil
 	}
-	state, found := index.Lookup(ref)
-	return found && state == programview.PRStateMerged, nil
+	repository, err := loadArchiveRepository(m.Repo)
+	if err != nil {
+		return false, fmt.Errorf("resolve repository for recorded pull request %s for %s: %w", ref, slug, err)
+	}
+	if !strings.EqualFold(proof.Repository, repository) {
+		return false, fmt.Errorf(
+			"recorded pull request %s for %s belongs to repository %q, want %q",
+			ref, slug, proof.Repository, repository,
+		)
+	}
+	if proof.HeadSHA == "" {
+		return false, fmt.Errorf("recorded pull request %s for %s has no head SHA", ref, slug)
+	}
+	branchTip, found, err := gitx.LocalBranchTip(m.Repo, m.Branch)
+	if err != nil {
+		return false, fmt.Errorf("resolve branch %q tip for recorded pull request %s for %s: %w", m.Branch, ref, slug, err)
+	}
+	if !found {
+		return false, fmt.Errorf("cannot verify recorded pull request %s for %s: branch %q does not exist", ref, slug, m.Branch)
+	}
+	if branchTip != proof.HeadSHA {
+		return false, fmt.Errorf(
+			"recorded pull request %s for %s head %s does not match branch %q tip %s",
+			ref, slug, proof.HeadSHA, m.Branch, branchTip,
+		)
+	}
+	return true, nil
 }
 
 // recordedPullRequestMerged reports whether the project's recorded pull request
@@ -115,6 +146,14 @@ func renderArchive(out io.Writer, result archiveResult) {
 // discards dirty and untracked files in the worktree and force-deletes an
 // unmerged branch: the caller has already decided that work is finished.
 func archiveProject(slug string, force bool) (archiveResult, error) {
+	return archiveProjectWithMergeProof(slug, force, false)
+}
+
+func archiveMergedProject(slug string, force bool) (archiveResult, error) {
+	return archiveProjectWithMergeProof(slug, force, true)
+}
+
+func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archiveResult, error) {
 	srcDir := filepath.Join(project.ActiveDir(), slug)
 	manifestPath := filepath.Join(srcDir, "manifest.json")
 	m, err := project.Load(manifestPath)
@@ -128,7 +167,7 @@ func archiveProject(slug string, force bool) (archiveResult, error) {
 	var (
 		deleteBranchAfter      bool
 		forceDeleteBranchAfter bool
-		workMerged             bool
+		workMerged             = mergeProven
 	)
 	// The recorded pull request is authoritative about merge state and is
 	// resolved lazily, at most once, so a locally merged branch costs no GitHub
@@ -143,7 +182,7 @@ func archiveProject(slug string, force bool) (archiveResult, error) {
 		if base != "" {
 			if gitx.HasOrigin(m.Repo) && gitx.RevParse(m.Repo, "origin/"+base) != "" {
 				reachable = gitx.IsBranchReachable(m.Repo, m.Branch, "origin/"+base)
-				workMerged = gitx.IsWorkMerged(m.Repo, m.Branch, "origin/"+base, m.StartSHA)
+				workMerged = workMerged || gitx.IsWorkMerged(m.Repo, m.Branch, "origin/"+base, m.StartSHA)
 			}
 			if !reachable {
 				reachable = gitx.IsBranchReachable(m.Repo, m.Branch, base)

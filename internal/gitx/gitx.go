@@ -45,6 +45,21 @@ func RevParse(repo, ref string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// LocalBranchTip resolves a local branch tip. A missing branch is returned as
+// found=false; other Git failures are returned to the caller.
+func LocalBranchTip(repo, branch string) (sha string, found bool, err error) {
+	exists, err := localBranchExists(repo, branch)
+	if err != nil || !exists {
+		return "", exists, err
+	}
+	ref := "refs/heads/" + branch
+	out, err := exec.Command("git", "-C", repo, "rev-parse", "--verify", ref+"^{commit}").CombinedOutput()
+	if err != nil {
+		return "", false, gitCommandError("git rev-parse --verify "+ref+"^{commit}", err, out)
+	}
+	return strings.TrimSpace(string(out)), true, nil
+}
+
 // HasOrigin reports whether the repo has an "origin" remote configured.
 func HasOrigin(repo string) bool {
 	return exec.Command("git", "-C", repo, "remote", "get-url", "origin").Run() == nil

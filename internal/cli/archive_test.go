@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -255,9 +256,7 @@ func TestArchiveStillProtectsUnmergedPullRequest(t *testing.T) {
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
 
-// A local branch that is already deleted is not evidence of abandoned work: the
-// branch is usually gone precisely because its pull request merged.
-func TestArchiveRecordsMergedPullRequestWhenTheLocalBranchIsGone(t *testing.T) {
+func TestArchiveDoesNotRecordMergedPullRequestWhenTheLocalBranchIsGone(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
 	slug := "deleted-branch-work"
@@ -276,8 +275,8 @@ func TestArchiveRecordsMergedPullRequestWhenTheLocalBranchIsGone(t *testing.T) {
 		t.Fatalf("runArchive with a deleted local branch: %v", err)
 	}
 	archived := loadArchivedManifest(t, slug)
-	if !archived.Merged {
-		t.Fatal("merged pull request with a deleted local branch was not recorded as merged")
+	if archived.Merged {
+		t.Fatal("archive recorded an unverifiable pull request as merged")
 	}
 	if archived.Status != "archived" {
 		t.Fatalf("archived status = %q, want archived", archived.Status)
@@ -310,6 +309,88 @@ func TestResolveRecordedPullRequestMergeReturnsStateReadError(t *testing.T) {
 	}
 	if recordedPullRequestMerged(project.Manifest{Slug: slug}, slug) {
 		t.Fatal("recordedPullRequestMerged should remain conservative on state errors")
+	}
+}
+
+func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "verified-pr"
+	branch := "user/verified-pr"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "verified\n", "verified work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	recordArchiveManifestPR(t, slug, 407)
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	branchTip := gitx.RevParse(repo, "refs/heads/"+branch)
+
+	tests := []struct {
+		name       string
+		repository string
+		headSHA    string
+		wantMerged bool
+		wantError  string
+	}{
+		{
+			name:       "matching proof",
+			repository: "acme/widgets",
+			headSHA:    branchTip,
+			wantMerged: true,
+		},
+		{
+			name:       "different repository",
+			repository: "acme/other",
+			headSHA:    branchTip,
+			wantError:  "repository",
+		},
+		{
+			name:       "different head",
+			repository: "acme/widgets",
+			headSHA:    manifest.StartSHA,
+			wantError:  "head",
+		},
+		{
+			name:       "missing head",
+			repository: "acme/widgets",
+			wantError:  "head",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			previousProof := loadArchivePullRequestProof
+			previousRepository := loadArchiveRepository
+			loadArchivePullRequestProof = func(string, string) (programview.PullRequestProof, error) {
+				return programview.PullRequestProof{
+					State:      programview.PRStateMerged,
+					Repository: test.repository,
+					HeadSHA:    test.headSHA,
+				}, nil
+			}
+			loadArchiveRepository = func(string) (string, error) {
+				return "acme/widgets", nil
+			}
+			t.Cleanup(func() {
+				loadArchivePullRequestProof = previousProof
+				loadArchiveRepository = previousRepository
+			})
+
+			merged, err := resolveRecordedPullRequestMerge(manifest, slug)
+			if merged != test.wantMerged {
+				t.Fatalf("merged = %t, want %t", merged, test.wantMerged)
+			}
+			if test.wantError == "" {
+				if err != nil {
+					t.Fatalf("resolveRecordedPullRequestMerge: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("error = %v, want %q diagnostic", err, test.wantError)
+			}
+		})
 	}
 }
 
@@ -355,14 +436,51 @@ func recordArchiveManifestPR(t *testing.T, slug string, number int) {
 
 func installArchivePRIndex(t *testing.T, states map[string]programview.PRState) {
 	t.Helper()
-	previous := loadArchivePRIndex
-	loadArchivePRIndex = func(string, []string) programview.PRIndex {
-		return prIndexStub(func(ref string) (programview.PRState, bool) {
-			state, found := states[ref]
-			return state, found
-		})
+	proofs := make(map[string]programview.PullRequestProof, len(states))
+	manifests, err := project.LoadAll(project.ActiveDir())
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { loadArchivePRIndex = previous })
+	for _, manifest := range manifests {
+		hasPR, ref, err := programview.RecordedPR(manifest, project.StatePath(manifest.Slug))
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, found := states[ref]
+		if !hasPR || !found {
+			continue
+		}
+		proofs[ref] = programview.PullRequestProof{
+			State:      state,
+			Repository: "acme/widgets",
+			HeadSHA:    gitx.RevParse(manifest.Repo, "refs/heads/"+manifest.Branch),
+		}
+	}
+	previousProof := loadArchivePullRequestProof
+	previousRepository := loadArchiveRepository
+	loadArchivePullRequestProof = func(_, ref string) (programview.PullRequestProof, error) {
+		proof, found := proofs[ref]
+		if !found {
+			return programview.PullRequestProof{}, errors.New("pull request not found")
+		}
+		return proof, nil
+	}
+	loadArchiveRepository = func(string) (string, error) {
+		return "acme/widgets", nil
+	}
+	t.Cleanup(func() {
+		loadArchivePullRequestProof = previousProof
+		loadArchiveRepository = previousRepository
+	})
+}
+
+func installArchivePRLookupError(t *testing.T, lookupErr error) {
+	t.Helper()
+	previous := loadArchivePullRequestProof
+	loadArchivePullRequestProof = func(string, string) (programview.PullRequestProof, error) {
+		return programview.PullRequestProof{}, lookupErr
+	}
+	t.Cleanup(func() { loadArchivePullRequestProof = previous })
 }
 
 func TestArchiveProjectReturnsAResultWithoutWritingToStdout(t *testing.T) {

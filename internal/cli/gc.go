@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/project"
@@ -14,17 +13,12 @@ import (
 
 var (
 	errGCCompletedWithErrors = errors.New("relay gc completed with errors")
-	gcArchiveProject         = archiveProject
+	gcArchiveProject         = archiveMergedProject
 )
 
 type gcRefreshKey struct {
 	repo string
 	base string
-}
-
-type gcRefreshResult struct {
-	diagnostic string
-	err        error
 }
 
 func newCmdGC() *cobra.Command {
@@ -43,7 +37,7 @@ func runGC() error {
 	if err != nil {
 		return err
 	}
-	refreshes := make(map[gcRefreshKey]gcRefreshResult)
+	refreshErrors := make(map[gcRefreshKey]error)
 	hadErrors := false
 	for _, loadResult := range loadResults {
 		if loadResult.Err != nil {
@@ -81,21 +75,25 @@ func runGC() error {
 			continue
 		}
 		key := gcRefreshKey{repo: m.Repo, base: base}
-		refresh, found := refreshes[key]
+		refreshErr, found := refreshErrors[key]
 		if !found {
-			refresh.diagnostic, refresh.err = gitx.Fetch(m.Repo, base)
-			refreshes[key] = refresh
-			if refresh.err != nil {
+			diagnostic, err := gitx.Fetch(m.Repo, base)
+			refreshErr = err
+			if refreshErr != nil && diagnostic != "" {
+				refreshErr = fmt.Errorf("%w\n%s", refreshErr, diagnostic)
+			}
+			refreshErrors[key] = refreshErr
+			if refreshErr != nil {
 				ui.Warn(
 					"refresh repository %s base %s: %s",
-					m.Repo, base, formatGCRefreshError(refresh),
+					m.Repo, base, refreshErr,
 				)
 			}
 		}
 
-		merged := false
+		var merged bool
 		var evaluationErr error
-		if refresh.err == nil {
+		if refreshErr == nil {
 			if m.StartSHA == "" {
 				evaluationErr = fmt.Errorf("project %s has no start_sha", m.Slug)
 			} else {
@@ -104,24 +102,21 @@ func runGC() error {
 				)
 			}
 		}
+		var prErr error
 		if !merged {
-			var prErr error
 			merged, prErr = resolveRecordedPullRequestMerge(m, m.Slug)
-			if !merged {
-				if refresh.err != nil {
-					hadErrors = true
-				}
-				if evaluationErr != nil {
-					ui.Warn("evaluate project %s: %s", m.Slug, evaluationErr)
-					hadErrors = true
-				}
-				if prErr != nil {
-					ui.Warn("evaluate project %s: %s", m.Slug, prErr)
-					hadErrors = true
-				}
-			}
 		}
 		if !merged {
+			if refreshErr != nil {
+				hadErrors = true
+			}
+			for _, err := range []error{evaluationErr, prErr} {
+				if err == nil {
+					continue
+				}
+				ui.Warn("evaluate project %s: %s", m.Slug, err)
+				hadErrors = true
+			}
 			continue
 		}
 		fmt.Printf("[relay] Branch %s is merged. Archiving project %s.\n", m.Branch, m.Slug)
@@ -160,11 +155,4 @@ func validateGCManifest(result project.ManifestLoadResult) error {
 		return fmt.Errorf("invalid project metadata %s: branch is empty", result.Path)
 	}
 	return nil
-}
-
-func formatGCRefreshError(refresh gcRefreshResult) string {
-	if refresh.diagnostic == "" {
-		return refresh.err.Error()
-	}
-	return refresh.err.Error() + "\n" + strings.TrimSpace(refresh.diagnostic)
 }

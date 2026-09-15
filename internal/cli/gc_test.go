@@ -54,6 +54,15 @@ func addGCProject(t *testing.T, fixture gcRepoFixture, slug string) (branch, wor
 	return branch, worktree
 }
 
+func addGCBranch(t *testing.T, fixture gcRepoFixture, name string) (branch, worktree string) {
+	t.Helper()
+	branch = "user/" + name
+	worktree = filepath.Join(fixture.repo, ".worktrees", name)
+	runArchiveGit(t, fixture.repo, "worktree", "add", "-q", worktree, "-b", branch, fixture.startSHA)
+	commitArchiveFile(t, worktree, name+".txt", name+"\n", name)
+	return branch, worktree
+}
+
 func writeGCManifest(t *testing.T, slug string, fixture gcRepoFixture, branch, worktree string) {
 	t.Helper()
 	dir := filepath.Join(project.ActiveDir(), slug)
@@ -145,33 +154,107 @@ func TestGCArchivesUpstreamMergedMainAndMaster(t *testing.T) {
 	}
 }
 
-func TestGCArchivesMergedPullRequestWithSquashOrDeletedBranch(t *testing.T) {
-	for _, deleteBranch := range []bool{false, true} {
-		name := "squash"
-		if deleteBranch {
-			name = "deleted-branch"
-		}
-		t.Run(name, func(t *testing.T) {
+func TestGCArchivesMergedPullRequestWithMatchingBranchTip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "pr-squash"
+	_, _ = addGCProject(t, fixture, slug)
+	recordArchiveManifestPR(t, slug, 701)
+	installArchivePRIndex(t, map[string]programview.PRState{"#701": programview.PRStateMerged})
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if err != nil {
+		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("GC left the merged-PR project active")
+	}
+	if archived := loadArchivedManifest(t, slug); !archived.Merged {
+		t.Fatal("GC did not record the merged pull request")
+	}
+}
+
+func TestGCKeepsMergedPullRequestWhenBranchTipIsUnavailable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "pr-deleted-branch"
+	branch, worktree := addGCProject(t, fixture, slug)
+	recordArchiveManifestPR(t, slug, 701)
+	installArchivePRIndex(t, map[string]programview.PRState{"#701": programview.PRStateMerged})
+	runArchiveGit(t, fixture.repo, "worktree", "remove", "--force", worktree)
+	runArchiveGit(t, fixture.repo, "branch", "-D", branch)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "branch "+`"`+branch+`"`+" does not exist") {
+		t.Fatalf("stderr %q is missing the unverifiable branch diagnostic", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("GC removed a project whose merged PR could not be bound to a branch tip")
+	}
+}
+
+func TestGCKeepsMergedPullRequestWithMismatchedProof(t *testing.T) {
+	tests := []struct {
+		name       string
+		repository string
+		headSHA    func(gcRepoFixture, string) string
+		wantError  string
+	}{
+		{
+			name:       "different repository",
+			repository: "acme/other",
+			headSHA: func(fixture gcRepoFixture, branch string) string {
+				return gitx.RevParse(fixture.repo, "refs/heads/"+branch)
+			},
+			wantError: "repository",
+		},
+		{
+			name:       "different branch head",
+			repository: "acme/widgets",
+			headSHA: func(fixture gcRepoFixture, _ string) string {
+				return fixture.startSHA
+			},
+			wantError: "does not match",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			fixture := newGCRepoFixture(t, "main")
-			slug := "pr-" + name
+			slug := "pr-mismatch"
 			branch, worktree := addGCProject(t, fixture, slug)
-			recordArchiveManifestPR(t, slug, 701)
-			installArchivePRIndex(t, map[string]programview.PRState{"#701": programview.PRStateMerged})
-			if deleteBranch {
-				runArchiveGit(t, fixture.repo, "worktree", "remove", "--force", worktree)
-				runArchiveGit(t, fixture.repo, "branch", "-D", branch)
+			recordArchiveManifestPR(t, slug, 708)
+			previousProof := loadArchivePullRequestProof
+			previousRepository := loadArchiveRepository
+			loadArchivePullRequestProof = func(string, string) (programview.PullRequestProof, error) {
+				return programview.PullRequestProof{
+					State:      programview.PRStateMerged,
+					Repository: test.repository,
+					HeadSHA:    test.headSHA(fixture, branch),
+				}, nil
 			}
+			loadArchiveRepository = func(string) (string, error) {
+				return "acme/widgets", nil
+			}
+			t.Cleanup(func() {
+				loadArchivePullRequestProof = previousProof
+				loadArchiveRepository = previousRepository
+			})
 
 			_, stderr, err := captureGCOutput(t, runGC)
-			if err != nil {
-				t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+			if !errors.Is(err, errGCCompletedWithErrors) {
+				t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
 			}
-			if pathExists(filepath.Join(project.ActiveDir(), slug)) {
-				t.Fatal("GC left the merged-PR project active")
+			if !strings.Contains(stderr, test.wantError) {
+				t.Fatalf("stderr %q is missing %q", stderr, test.wantError)
 			}
-			if archived := loadArchivedManifest(t, slug); !archived.Merged {
-				t.Fatal("GC did not record the merged pull request")
+			if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+				!pathExists(worktree) ||
+				!gitx.BranchExists(fixture.repo, branch) {
+				t.Fatal("GC changed a project whose merged PR proof did not match")
 			}
 		})
 	}
@@ -219,18 +302,13 @@ func TestGCKeepsUnmergedOpenAndClosedPullRequestProjects(t *testing.T) {
 	}
 }
 
-func TestGCKeepsMissingBranchAndUnknownPullRequest(t *testing.T) {
+func TestGCKeepsMissingBranchWithoutPullRequest(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")
-	for _, slug := range []string{"missing-branch", "unknown-pr"} {
-		branch, worktree := addGCProject(t, fixture, slug)
-		runArchiveGit(t, fixture.repo, "worktree", "remove", "--force", worktree)
-		runArchiveGit(t, fixture.repo, "branch", "-D", branch)
-	}
-	recordArchiveManifestPR(t, "unknown-pr", 706)
-	previous := loadArchivePRIndex
-	loadArchivePRIndex = func(string, []string) programview.PRIndex { return nil }
-	t.Cleanup(func() { loadArchivePRIndex = previous })
+	slug := "missing-branch"
+	branch, worktree := addGCProject(t, fixture, slug)
+	runArchiveGit(t, fixture.repo, "worktree", "remove", "--force", worktree)
+	runArchiveGit(t, fixture.repo, "branch", "-D", branch)
 
 	stdout, stderr, err := captureGCOutput(t, runGC)
 	if err != nil {
@@ -239,10 +317,30 @@ func TestGCKeepsMissingBranchAndUnknownPullRequest(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("runGC wrote unexpected output: %q", stdout)
 	}
-	for _, slug := range []string{"missing-branch", "unknown-pr"} {
-		if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
-			t.Fatalf("GC removed unresolved project %s", slug)
-		}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatalf("GC removed unresolved project %s", slug)
+	}
+}
+
+func TestGCPullRequestLookupFailureIsActionable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "lookup-failure"
+	branch, worktree := addGCProject(t, fixture, slug)
+	recordArchiveManifestPR(t, slug, 706)
+	installArchivePRLookupError(t, errors.New("GitHub unavailable"))
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "GitHub unavailable") {
+		t.Fatalf("stderr %q is missing the pull request lookup failure", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC changed a project after its pull request lookup failed")
 	}
 }
 
@@ -333,6 +431,33 @@ func TestGCSharedRefreshFailureWarnsOnceAndProtectsStaleRef(t *testing.T) {
 	}
 }
 
+func TestGCRefreshFailureDoesNotBlockAnotherRepository(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	failingRepo := newGCRepoFixture(t, "main")
+	failingBranch, failingWorktree := addGCProject(t, failingRepo, "a-refresh-failure")
+	runArchiveGit(t, failingRepo.upstream, "push", "-q", "origin", ":main")
+
+	successRepo := newGCRepoFixture(t, "main")
+	successBranch, _ := addGCProject(t, successRepo, "z-refresh-success")
+	mergeGCProjectUpstream(t, successRepo, successBranch)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "refresh repository "+failingRepo.repo+" base main:") {
+		t.Fatalf("stderr %q is missing repository A's refresh failure", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), "a-refresh-failure")) ||
+		!pathExists(failingWorktree) ||
+		!gitx.BranchExists(failingRepo.repo, failingBranch) {
+		t.Fatal("GC changed the project whose repository refresh failed")
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), "z-refresh-success")) {
+		t.Fatal("repository A's refresh failure blocked repository B cleanup")
+	}
+}
+
 func TestGCRefreshFailureAllowsMergedPullRequest(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")
@@ -393,6 +518,82 @@ func TestGCContinuesAfterMalformedAndInvalidMetadata(t *testing.T) {
 	}
 	if pathExists(filepath.Join(project.ActiveDir(), "z-eligible")) {
 		t.Fatal("GC did not continue to archive an independent eligible project")
+	}
+}
+
+func TestGCRejectsPathLikeManifestSlugWithoutChangingVictim(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	victimSlug := "nested/victim"
+	victimBranch, victimWorktree := addGCProject(t, fixture, victimSlug)
+	proofBranch, proofWorktree := addGCBranch(t, fixture, "path-proof")
+	mergeGCProjectUpstream(t, fixture, proofBranch)
+	writeGCManifest(t, "a-attacker", fixture, proofBranch, proofWorktree)
+	updateGCManifest(t, "a-attacker", func(manifest *project.Manifest) {
+		manifest.Slug = victimSlug
+	})
+	victimPath := project.ManifestPath(project.ActiveDir(), victimSlug)
+	before, err := os.ReadFile(victimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "invalid slug") {
+		t.Fatalf("stderr %q is missing the invalid slug diagnostic", stderr)
+	}
+	assertGCProjectUnchanged(t, victimPath, before, fixture.repo, victimBranch, victimWorktree)
+}
+
+func TestGCRejectsDirectoryManifestSlugMismatchWithoutChangingVictim(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	victimSlug := "victim"
+	victimBranch, victimWorktree := addGCProject(t, fixture, victimSlug)
+	proofBranch, proofWorktree := addGCBranch(t, fixture, "mismatch-proof")
+	mergeGCProjectUpstream(t, fixture, proofBranch)
+	writeGCManifest(t, "a-attacker", fixture, proofBranch, proofWorktree)
+	updateGCManifest(t, "a-attacker", func(manifest *project.Manifest) {
+		manifest.Slug = victimSlug
+	})
+	victimPath := project.ManifestPath(project.ActiveDir(), victimSlug)
+	before, err := os.ReadFile(victimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, `slug "victim" does not match directory "a-attacker"`) {
+		t.Fatalf("stderr %q is missing the slug mismatch diagnostic", stderr)
+	}
+	assertGCProjectUnchanged(t, victimPath, before, fixture.repo, victimBranch, victimWorktree)
+}
+
+func TestGCSkipsManifestlessDirectories(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	manifestlessDir := filepath.Join(project.ActiveDir(), "empty")
+	if err := os.MkdirAll(manifestlessDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newGCRepoFixture(t, "main")
+	branch, _ := addGCProject(t, fixture, "eligible")
+	mergeGCProjectUpstream(t, fixture, branch)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if err != nil {
+		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	}
+	if !pathExists(manifestlessDir) {
+		t.Fatal("GC removed the manifest-less directory")
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), "eligible")) {
+		t.Fatal("GC did not archive the independent eligible project")
 	}
 }
 
@@ -481,17 +682,36 @@ func TestGCRecordedStateFailureIsActionable(t *testing.T) {
 
 func TestGCSkipsProgramManagedProjects(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	for _, manifest := range []project.Manifest{
-		{Slug: "program-only", Program: "delivery"},
-		{Slug: "item-only", ProgramItem: "worker-1"},
+	fixture := newGCRepoFixture(t, "main")
+	type managedProject struct {
+		slug     string
+		branch   string
+		worktree string
+		before   []byte
+	}
+	var managed []managedProject
+	for _, ownership := range []struct {
+		slug    string
+		program string
+		item    string
+	}{
+		{slug: "program-only", program: "delivery"},
+		{slug: "item-only", item: "worker-1"},
 	} {
-		dir := filepath.Join(project.ActiveDir(), manifest.Slug)
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		branch, worktree := addGCProject(t, fixture, ownership.slug)
+		mergeGCProjectUpstream(t, fixture, branch)
+		updateGCManifest(t, ownership.slug, func(manifest *project.Manifest) {
+			manifest.Program = ownership.program
+			manifest.ProgramItem = ownership.item
+		})
+		manifestPath := project.ManifestPath(project.ActiveDir(), ownership.slug)
+		before, err := os.ReadFile(manifestPath)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if err := project.Save(filepath.Join(dir, "manifest.json"), manifest); err != nil {
-			t.Fatal(err)
-		}
+		managed = append(managed, managedProject{
+			slug: ownership.slug, branch: branch, worktree: worktree, before: before,
+		})
 	}
 
 	stdout, stderr, err := captureGCOutput(t, runGC)
@@ -508,10 +728,15 @@ func TestGCSkipsProgramManagedProjects(t *testing.T) {
 			t.Fatalf("stdout %q is missing %q", stdout, want)
 		}
 	}
-	for _, slug := range []string{"program-only", "item-only"} {
-		if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
-			t.Fatalf("GC removed program-managed project %s", slug)
-		}
+	for _, item := range managed {
+		assertGCProjectUnchanged(
+			t,
+			project.ManifestPath(project.ActiveDir(), item.slug),
+			item.before,
+			fixture.repo,
+			item.branch,
+			item.worktree,
+		)
 	}
 }
 
@@ -562,5 +787,27 @@ func updateGCManifest(t *testing.T, slug string, update func(*project.Manifest))
 	update(&manifest)
 	if err := project.Save(path, manifest); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func assertGCProjectUnchanged(
+	t *testing.T,
+	manifestPath string,
+	before []byte,
+	repo, branch, worktree string,
+) {
+	t.Helper()
+	after, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read preserved manifest: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("GC changed potential victim metadata")
+	}
+	if !pathExists(worktree) {
+		t.Fatal("GC removed potential victim worktree")
+	}
+	if !gitx.BranchExists(repo, branch) {
+		t.Fatal("GC removed potential victim branch")
 	}
 }

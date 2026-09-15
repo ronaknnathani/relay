@@ -43,6 +43,14 @@ type PRIndex interface {
 // references a program actually links.
 type PRIndexLoader func(repo string, refs []string) PRIndex
 
+// PullRequestProof contains the GitHub fields needed to bind a merged pull
+// request to a specific repository and commit.
+type PullRequestProof struct {
+	State      PRState
+	Repository string
+	HeadSHA    string
+}
+
 type githubPRIndex struct {
 	byNumber map[int]PRState
 	byURL    map[string]PRState
@@ -106,6 +114,28 @@ type ghPRIndexLoader struct {
 	run         GHCommandRunner
 	cache       *prStateCache
 	parallelism int
+}
+
+type ghPullRequestLookup struct {
+	hasOrigin func(string) bool
+	lookPath  func(string) (string, error)
+	run       GHCommandRunner
+}
+
+func (l ghPullRequestLookup) validate(repo, operation string) error {
+	if l.hasOrigin == nil || !l.hasOrigin(repo) {
+		return fmt.Errorf("%s in %s: origin remote is unavailable", operation, repo)
+	}
+	if l.lookPath == nil {
+		return fmt.Errorf("%s in %s: gh lookup is not configured", operation, repo)
+	}
+	if _, err := l.lookPath("gh"); err != nil {
+		return fmt.Errorf("%s in %s: find gh: %w", operation, repo, err)
+	}
+	if l.run == nil {
+		return fmt.Errorf("%s in %s: GitHub command runner is not configured", operation, repo)
+	}
+	return nil
 }
 
 // Load resolves only the supplied recorded references, so programs whose
@@ -221,6 +251,86 @@ func PullRequestNumber(ref string) (int, bool) {
 func positiveNumber(value string) (int, bool) {
 	number, err := strconv.Atoi(value)
 	return number, err == nil && number > 0
+}
+
+// Lookup resolves one pull request and returns the repository and head commit
+// needed to verify that it belongs to the local project branch.
+func (l ghPullRequestLookup) Lookup(repo, ref string) (PullRequestProof, error) {
+	if err := l.validate(repo, fmt.Sprintf("lookup pull request %q", ref)); err != nil {
+		return PullRequestProof{}, err
+	}
+
+	timeoutContext, cancel := context.WithTimeout(context.Background(), githubPRRefTimeout)
+	defer cancel()
+	output, err := l.run(
+		timeoutContext, repo, "gh", "pr", "view", ref, "--json", "state,url,headRefOid",
+	)
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		if detail == "" {
+			return PullRequestProof{}, fmt.Errorf("view pull request %q in %s: %w", ref, repo, err)
+		}
+		return PullRequestProof{}, fmt.Errorf("view pull request %q in %s: %w: %s", ref, repo, err, detail)
+	}
+	var response struct {
+		State      string `json:"state"`
+		URL        string `json:"url"`
+		HeadRefOID string `json:"headRefOid"`
+	}
+	if err := json.Unmarshal(output, &response); err != nil {
+		return PullRequestProof{}, fmt.Errorf("parse pull request %q JSON: %w", ref, err)
+	}
+	state, ok := parsePRState(response.State)
+	if !ok {
+		return PullRequestProof{}, fmt.Errorf("parse pull request %q JSON: unknown state %q", ref, response.State)
+	}
+	repository, err := pullRequestRepository(response.URL)
+	if err != nil {
+		return PullRequestProof{}, fmt.Errorf("parse pull request %q repository: %w", ref, err)
+	}
+	return PullRequestProof{
+		State:      state,
+		Repository: repository,
+		HeadSHA:    strings.TrimSpace(response.HeadRefOID),
+	}, nil
+}
+
+func (l ghPullRequestLookup) Repository(repo string) (string, error) {
+	if err := l.validate(repo, "resolve GitHub repository"); err != nil {
+		return "", err
+	}
+	timeoutContext, cancel := context.WithTimeout(context.Background(), githubPRRefTimeout)
+	defer cancel()
+	output, err := l.run(timeoutContext, repo, "gh", "repo", "view", "--json", "nameWithOwner")
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		if detail == "" {
+			return "", fmt.Errorf("resolve GitHub repository in %s: %w", repo, err)
+		}
+		return "", fmt.Errorf("resolve GitHub repository in %s: %w: %s", repo, err, detail)
+	}
+	var response struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	}
+	if err := json.Unmarshal(output, &response); err != nil {
+		return "", fmt.Errorf("parse GitHub repository JSON in %s: %w", repo, err)
+	}
+	if strings.TrimSpace(response.NameWithOwner) == "" {
+		return "", fmt.Errorf("parse GitHub repository JSON in %s: nameWithOwner is empty", repo)
+	}
+	return strings.TrimSpace(response.NameWithOwner), nil
+}
+
+func pullRequestRepository(rawURL string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return "", fmt.Errorf("parse URL %q: %w", rawURL, err)
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) < 4 || segments[0] == "" || segments[1] == "" || segments[2] != "pull" {
+		return "", fmt.Errorf("URL %q does not identify a pull request repository", rawURL)
+	}
+	return segments[0] + "/" + strings.TrimSuffix(segments[1], ".git"), nil
 }
 
 // fetchPRState reads one recorded pull request. Referencing the pull request
@@ -344,6 +454,25 @@ type GHFetcher struct {
 // recorded pull request references, returning nil when GitHub is unavailable.
 func GitHubPRIndex(repo string, refs []string) PRIndex {
 	return githubPRIndexForRefs(repo, refs)
+}
+
+// GitHubPullRequestProof resolves one pull request with repository and head
+// commit metadata. Lookup failures are returned to callers.
+func GitHubPullRequestProof(repo, ref string) (PullRequestProof, error) {
+	return ghPullRequestLookup{
+		hasOrigin: gitx.HasOrigin,
+		lookPath:  exec.LookPath,
+		run:       runGHCommand,
+	}.Lookup(repo, ref)
+}
+
+// GitHubRepository resolves the GitHub owner/name associated with repo.
+func GitHubRepository(repo string) (string, error) {
+	return ghPullRequestLookup{
+		hasOrigin: gitx.HasOrigin,
+		lookPath:  exec.LookPath,
+		run:       runGHCommand,
+	}.Repository(repo)
 }
 
 func githubPRIndexForRefs(repo string, refs []string) PRIndex {

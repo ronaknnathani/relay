@@ -2,7 +2,9 @@ package project
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -94,6 +96,9 @@ func LoadAllResults(dir string) ([]ManifestLoadResult, error) {
 		}
 		path := ManifestPath(dir, e.Name())
 		m, err := Load(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		results = append(results, ManifestLoadResult{
 			Name:     e.Name(),
 			Path:     path,

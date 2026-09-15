@@ -56,12 +56,13 @@ func TestFindNotFound(t *testing.T) {
 	}
 }
 
-func TestLoadAllResultsReportsEveryProjectDirectory(t *testing.T) {
+func TestLoadAllResultsReportsReadableManifestPaths(t *testing.T) {
 	dir := t.TempDir()
 	validDir := filepath.Join(dir, "a-valid")
 	malformedDir := filepath.Join(dir, "b-malformed")
 	missingDir := filepath.Join(dir, "c-missing")
-	for _, path := range []string{validDir, malformedDir, missingDir} {
+	unreadableDir := filepath.Join(dir, "d-unreadable")
+	for _, path := range []string{validDir, malformedDir, missingDir, unreadableDir} {
 		if err := os.MkdirAll(path, 0755); err != nil {
 			t.Fatal(err)
 		}
@@ -71,6 +72,9 @@ func TestLoadAllResultsReportsEveryProjectDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(malformedDir, "manifest.json"), []byte("{"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(unreadableDir, "manifest.json"), 0755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -93,11 +97,11 @@ func TestLoadAllResultsReportsEveryProjectDirectory(t *testing.T) {
 		!strings.Contains(results[1].Err.Error(), "parse manifest") {
 		t.Fatalf("malformed result = %+v", results[1])
 	}
-	if results[2].Name != "c-missing" ||
-		results[2].Path != filepath.Join(missingDir, "manifest.json") ||
+	if results[2].Name != "d-unreadable" ||
+		results[2].Path != filepath.Join(unreadableDir, "manifest.json") ||
 		results[2].Err == nil ||
 		!strings.Contains(results[2].Err.Error(), "read manifest") {
-		t.Fatalf("missing result = %+v", results[2])
+		t.Fatalf("unreadable result = %+v", results[2])
 	}
 }
 

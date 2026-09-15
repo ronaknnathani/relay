@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -225,6 +226,83 @@ func TestGHPRIndexLoaderFallsBackConservatively(t *testing.T) {
 				t.Fatalf("gh runs = %d, want %d", runs, test.wantRuns)
 			}
 		})
+	}
+}
+
+func TestGHPullRequestLookupReturnsRepositoryAndHead(t *testing.T) {
+	var gotArgs []string
+	lookup := ghPullRequestLookup{
+		hasOrigin: func(string) bool { return true },
+		lookPath:  func(string) (string, error) { return "/usr/bin/gh", nil },
+		run: func(_ context.Context, dir, name string, args ...string) ([]byte, error) {
+			if dir != "/repo" || name != "gh" {
+				t.Fatalf("command = dir %q name %q", dir, name)
+			}
+			gotArgs = append([]string(nil), args...)
+			return []byte(`{
+				"state":"MERGED",
+				"url":"https://github.example/acme/widgets/pull/42",
+				"headRefOid":"abc123"
+			}`), nil
+		},
+	}
+
+	proof, err := lookup.Lookup("/repo", "#42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof != (PullRequestProof{
+		State:      PRStateMerged,
+		Repository: "acme/widgets",
+		HeadSHA:    "abc123",
+	}) {
+		t.Fatalf("proof = %+v", proof)
+	}
+	wantArgs := []string{"pr", "view", "#42", "--json", "state,url,headRefOid"}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("args = %v, want %v", gotArgs, wantArgs)
+	}
+}
+
+func TestGHPullRequestLookupReturnsCommandFailure(t *testing.T) {
+	lookup := ghPullRequestLookup{
+		hasOrigin: func(string) bool { return true },
+		lookPath:  func(string) (string, error) { return "/usr/bin/gh", nil },
+		run: func(context.Context, string, string, ...string) ([]byte, error) {
+			return []byte("authentication failed"), errors.New("exit status 1")
+		},
+	}
+
+	_, err := lookup.Lookup("/repo", "#42")
+	if err == nil {
+		t.Fatal("Lookup error = nil")
+	}
+	for _, want := range []string{"#42", "/repo", "authentication failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Lookup error %q is missing %q", err, want)
+		}
+	}
+}
+
+func TestGHPullRequestLookupReturnsRepositoryName(t *testing.T) {
+	lookup := ghPullRequestLookup{
+		hasOrigin: func(string) bool { return true },
+		lookPath:  func(string) (string, error) { return "/usr/bin/gh", nil },
+		run: func(_ context.Context, dir, name string, args ...string) ([]byte, error) {
+			wantArgs := []string{"repo", "view", "--json", "nameWithOwner"}
+			if dir != "/repo" || name != "gh" || !reflect.DeepEqual(args, wantArgs) {
+				t.Fatalf("command = dir %q name %q args %v", dir, name, args)
+			}
+			return []byte(`{"nameWithOwner":"acme/widgets"}`), nil
+		},
+	}
+
+	repository, err := lookup.Repository("/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository != "acme/widgets" {
+		t.Fatalf("repository = %q, want acme/widgets", repository)
 	}
 }
 
