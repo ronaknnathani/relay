@@ -19,6 +19,7 @@ var (
 	loadArchivePullRequestProof = programview.GitHubPullRequestProof
 	loadArchiveRepository       = programview.GitHubRepository
 	saveArchiveManifest         = project.Save
+	archiveForceDeleteBranch    = gitx.ForceDeleteBranch
 )
 
 func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, error) {
@@ -300,7 +301,7 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 	if deleteBranchAfter {
 		var branchDeleteErr error
 		if forceDeleteBranchAfter {
-			branchDeleteErr = gitx.ForceDeleteBranch(m.Repo, m.Branch)
+			branchDeleteErr = archiveForceDeleteBranch(m.Repo, m.Branch)
 		} else {
 			branchDeleteErr = gitx.DeleteBranch(m.Repo, m.Branch)
 		}
@@ -313,6 +314,36 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 			result.BranchDeleted = true
 		}
 	}
+	return result, nil
+}
+
+func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
+	result := archiveResult{
+		Slug:         m.Slug,
+		Branch:       m.Branch,
+		Merged:       m.Merged,
+		ArchivedPath: filepath.Join(project.ArchivedDir(), m.Slug),
+		Warnings:     []string{},
+	}
+	if m.Worktree != nil && *m.Worktree != "" {
+		result.Worktree = *m.Worktree
+		worktreePresent := pathExists(*m.Worktree)
+		if err := gitx.WorktreeRemove(m.Repo, *m.Worktree, true); err != nil {
+			return result, fmt.Errorf("finish archived worktree cleanup for %s: %w", m.Slug, err)
+		}
+		result.WorktreeRemoved = worktreePresent
+	}
+	if m.Branch == "" || !gitx.BranchExists(m.Repo, m.Branch) {
+		return result, nil
+	}
+	if err := archiveForceDeleteBranch(m.Repo, m.Branch); err != nil {
+		result.BranchDeletionWarning = fmt.Sprintf(
+			"%s\nhint: delete manually with: %s",
+			err, manualBranchDeleteCommand(m.Repo, m.Branch),
+		)
+		return result, nil
+	}
+	result.BranchDeleted = true
 	return result, nil
 }
 

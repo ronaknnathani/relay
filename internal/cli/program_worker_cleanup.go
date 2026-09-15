@@ -133,6 +133,21 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 
 	if archived {
 		result.AlreadyArchived = true
+		archiveOutcome, cleanupErr := retryArchivedProjectCleanup(manifest)
+		if cleanupErr != nil {
+			return failProgramWorkerCleanup(out, &result, jsonOutput, fmt.Errorf(
+				"cleanup %s/%s: child project %q is archived but its worktree or branch cleanup is incomplete: %w",
+				p.Slug, item.ID, manifest.Slug, cleanupErr,
+			))
+		}
+		result.Archive = &archiveOutcome
+		result.Warnings = append(result.Warnings, archiveOutcome.Warnings...)
+		if archiveOutcome.BranchDeletionWarning != "" {
+			result.Warnings = append(result.Warnings, archiveOutcome.BranchDeletionWarning)
+			result.NextCommand = fmt.Sprintf(
+				"relay program worker cleanup %s %s", p.Slug, item.ID,
+			)
+		}
 		result.Status = cleanupFinalStatus(result)
 		return renderProgramWorkerCleanup(out, result, jsonOutput)
 	}
