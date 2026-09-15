@@ -186,6 +186,28 @@ func TestSnapshotDoesNotExecuteTextconv(t *testing.T) {
 	}
 }
 
+func TestSnapshotDoesNotExecuteExternalDiff(t *testing.T) {
+	repo := initRepo(t)
+	marker := filepath.Join(repo, "external-diff-ran")
+	script := filepath.Join(repo, "external-diff.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "config", "diff.external", script+" "+marker)
+	t.Setenv("GIT_EXTERNAL_DIFF", script+" "+marker)
+	base := RevParse(repo, "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, "README"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Snapshot(repo, base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("snapshot executed external diff command: %v", err)
+	}
+}
+
 func TestSnapshotChangesForRepeatedTrackedSubmoduleEdits(t *testing.T) {
 	repo := initRepo(t)
 	nestedSource := t.TempDir()
@@ -261,6 +283,81 @@ func TestSnapshotBaseRefPrefersCurrentBaseOverStartSHA(t *testing.T) {
 	snapshot := mustSnapshot(t, repo, baseRef)
 	if snapshot.FileCount != 1 || snapshot.ChangedLines != 1 {
 		t.Fatalf("rebased snapshot = %+v, want only feature change", snapshot)
+	}
+}
+
+func TestSnapshotBaseRefResolvesHEADToStartSHA(t *testing.T) {
+	repo := initRepo(t)
+	start := RevParse(repo, "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, "later.txt"), []byte("later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "later.txt")
+	runGit(t, repo, "commit", "-q", "-m", "later")
+
+	if got := SnapshotBaseRef(repo, "HEAD", start); got != start {
+		t.Fatalf("snapshot base ref = %q, want immutable start %q", got, start)
+	}
+	snapshot := mustSnapshot(t, repo, SnapshotBaseRef(repo, "HEAD", start))
+	if snapshot.FileCount != 1 || snapshot.ChangedLines != 1 {
+		t.Fatalf("HEAD-based snapshot = %+v, want committed work since start", snapshot)
+	}
+}
+
+func TestSnapshotFingerprintTracksBaseTipBeyondMergeBase(t *testing.T) {
+	repo := initRepo(t)
+	runGit(t, repo, "branch", "-M", "main")
+	runGit(t, repo, "checkout", "-q", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "feature.txt")
+	runGit(t, repo, "commit", "-q", "-m", "feature")
+	before := mustSnapshot(t, repo, "main")
+
+	runGit(t, repo, "checkout", "-q", "main")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "base.txt")
+	runGit(t, repo, "commit", "-q", "-m", "advance base")
+	runGit(t, repo, "checkout", "-q", "feature")
+	after := mustSnapshot(t, repo, "main")
+
+	if before.BaseSHA != after.BaseSHA {
+		t.Fatalf("merge base changed unexpectedly: before=%s after=%s", before.BaseSHA, after.BaseSHA)
+	}
+	if before.BaseTipSHA == after.BaseTipSHA {
+		t.Fatal("base tip advancement was not recorded")
+	}
+	assertFingerprintChanged(t, before, after)
+}
+
+func TestSnapshotIgnoresConfiguredSubmoduleExclusion(t *testing.T) {
+	repo := initRepo(t)
+	nestedSource := t.TempDir()
+	runGit(t, nestedSource, "init", "-q")
+	if err := os.WriteFile(filepath.Join(nestedSource, "tracked.txt"), []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, nestedSource, "add", "tracked.txt")
+	runGit(t, nestedSource, "commit", "-q", "-m", "initial")
+	runGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", nestedSource, "nested")
+	runGit(t, repo, "commit", "-q", "-am", "add submodule")
+	base := RevParse(repo, "HEAD")
+	runGit(t, repo, "config", "diff.ignoreSubmodules", "all")
+
+	nested := filepath.Join(repo, "nested")
+	if err := os.WriteFile(filepath.Join(nested, "tracked.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, nested, "add", "tracked.txt")
+	runGit(t, nested, "commit", "-q", "-m", "change")
+	runGit(t, repo, "add", "nested")
+
+	snapshot := mustSnapshot(t, repo, base)
+	if snapshot.FileCount != 1 || snapshot.ChangedLines != 2 {
+		t.Fatalf("submodule snapshot = %+v, want one changed gitlink", snapshot)
 	}
 }
 

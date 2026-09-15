@@ -11,7 +11,7 @@ func TestWatcherHandoffHasOneWorklistAndOneWriter(t *testing.T) {
 	monitor := readFile(t, filepath.Join(root, "skills", "pr-monitor", "SKILL.md"))
 	for _, want := range []string{
 		"read-only", "one authoritative worklist", "re-observe once", "never mutates",
-		"`watcher_mode`", "`owner_slug`",
+		"`watcher_mode`", "`owner_slug`", "`digest.mode`", "digest fingerprint",
 	} {
 		if !strings.Contains(monitor, want) {
 			t.Errorf("pr-monitor missing handoff contract %q", want)
@@ -22,6 +22,10 @@ func TestWatcherHandoffHasOneWorklistAndOneWriter(t *testing.T) {
 		"sole mutation owner", "authoritative worklist schema", "no reassessment loop",
 		"ready-for-owner", "`watcher_mode`", "`owner_slug`",
 		"stack orchestrator is the sole auto-merge owner",
+		"`reason`, `source`, `id`, `key`, `answers`, `updated_at`, `body`",
+		"`thread_id`, `path`, `line`",
+		"`check_name`, `check_run_id`",
+		"`fixed|replied|ready-for-owner|escalated|failed`",
 	} {
 		if !strings.Contains(fix, want) {
 			t.Errorf("pr-fix missing ownership contract %q", want)

@@ -971,7 +971,8 @@ func childRepositorySnapshot(manifest project.Manifest, projectDir string) (proj
 		return project.RepositorySnapshot{}, err
 	}
 	return project.RepositorySnapshot{
-		BaseSHA: snapshot.BaseSHA, HeadSHA: snapshot.HeadSHA, Fingerprint: snapshot.Fingerprint,
+		BaseSHA: snapshot.BaseSHA, BaseTipSHA: snapshot.BaseTipSHA,
+		HeadSHA: snapshot.HeadSHA, Fingerprint: snapshot.Fingerprint,
 		InputRevision: inputRevision,
 		FileCount:     snapshot.FileCount, ChangedLines: snapshot.ChangedLines,
 	}, nil

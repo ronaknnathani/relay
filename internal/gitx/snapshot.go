@@ -18,6 +18,7 @@ import (
 // RepoSnapshot identifies one exact repository state and its change size.
 type RepoSnapshot struct {
 	BaseSHA      string `json:"base_sha"`
+	BaseTipSHA   string `json:"base_tip_sha"`
 	HeadSHA      string `json:"head_sha"`
 	Fingerprint  string `json:"fingerprint"`
 	FileCount    int    `json:"file_count"`
@@ -31,7 +32,10 @@ func SnapshotBaseRef(repo, baseBranch, startSHA string) string {
 	candidates := make([]string, 0, 2)
 	baseBranch = strings.TrimSpace(baseBranch)
 	if baseBranch == "HEAD" {
-		return baseBranch
+		if strings.TrimSpace(startSHA) != "" {
+			return startSHA
+		}
+		return "HEAD"
 	}
 	if baseBranch != "" {
 		if HasOrigin(repo) && !strings.Contains(baseBranch, "/") {
@@ -72,22 +76,27 @@ func Snapshot(repo, baseRef string) (RepoSnapshot, error) {
 	if strings.TrimSpace(baseRef) == "" {
 		baseRef = "HEAD"
 	}
-	baseSHA, err := gitOutput(root, "merge-base", "HEAD", baseRef)
+	baseTipSHA, err := gitOutput(root, "rev-parse", baseRef)
+	if err != nil {
+		return RepoSnapshot{}, fmt.Errorf("resolve base tip %q in %s: %w", baseRef, root, err)
+	}
+	baseTipSHA = strings.TrimSpace(baseTipSHA)
+	baseSHA, err := gitOutput(root, "merge-base", "HEAD", baseTipSHA)
 	if err != nil {
 		return RepoSnapshot{}, fmt.Errorf("resolve base %q in %s: %w", baseRef, root, err)
 	}
 	baseSHA = strings.TrimSpace(baseSHA)
 	headSHA = strings.TrimSpace(headSHA)
 
-	diff, err := gitBytes(root, "diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", baseSHA, "--")
+	diff, err := gitBytes(root, "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--binary", "--full-index", baseSHA, "--")
 	if err != nil {
 		return RepoSnapshot{}, fmt.Errorf("read tracked diff in %s: %w", root, err)
 	}
-	numstat, err := gitOutput(root, "diff", "--no-ext-diff", "--no-textconv", "--numstat", baseSHA, "--")
+	numstat, err := gitOutput(root, "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--numstat", baseSHA, "--")
 	if err != nil {
 		return RepoSnapshot{}, fmt.Errorf("measure tracked diff in %s: %w", root, err)
 	}
-	names, err := gitBytes(root, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", baseSHA, "--")
+	names, err := gitBytes(root, "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--name-only", "-z", baseSHA, "--")
 	if err != nil {
 		return RepoSnapshot{}, fmt.Errorf("list tracked changes in %s: %w", root, err)
 	}
@@ -105,7 +114,10 @@ func Snapshot(repo, baseRef string) (RepoSnapshot, error) {
 	untracked := splitNUL(untrackedRaw)
 	sort.Strings(untracked)
 	hash := sha256.New()
-	hash.Write([]byte("base\x00" + baseSHA + "\x00head\x00" + headSHA + "\x00tracked\x00"))
+	hash.Write([]byte(
+		"base\x00" + baseSHA + "\x00base-tip\x00" + baseTipSHA +
+			"\x00head\x00" + headSHA + "\x00tracked\x00",
+	))
 	hash.Write(diff)
 	if err := writeTrackedGitlinkDigests(hash, root, make(map[string]bool)); err != nil {
 		return RepoSnapshot{}, err
@@ -123,7 +135,7 @@ func Snapshot(repo, baseRef string) (RepoSnapshot, error) {
 	}
 
 	return RepoSnapshot{
-		BaseSHA: baseSHA, HeadSHA: headSHA,
+		BaseSHA: baseSHA, BaseTipSHA: baseTipSHA, HeadSHA: headSHA,
 		Fingerprint: hex.EncodeToString(hash.Sum(nil)),
 		FileCount:   trackedCount + len(untracked), ChangedLines: changedLines,
 	}, nil
@@ -270,6 +282,7 @@ func nestedRepositoryDigestVisited(repo string, visited map[string]bool) ([]byte
 		"diff",
 		"--no-ext-diff",
 		"--no-textconv",
+		"--ignore-submodules=none",
 		"--binary",
 		"--full-index",
 		"--",

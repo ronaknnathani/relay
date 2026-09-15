@@ -38,10 +38,13 @@ Open the finished change; performs no new review and reruns no passing gate.
    containing only commands that actually ran. Clearly disclose automated authorship and whose behalf
    the agent acts on.
 7. For a Relay project, while the current-route `open-pr` dispatch remains active, record the
-   returned PR number and URL with `relay state pr`. The guarded command atomically completes the
+   returned PR number and URL with
+   `relay state pr "$SLUG" --number <n> --url <url> --dispatch-token "$DISPATCH_TOKEN"`.
+   The guarded command atomically completes the
    phase, writes the production `FinalResult` telemetry, and rejects stale evidence, wrong route or gate
    bindings, or a superseded dispatch. On terminal failure, record
-   `relay state final "$SLUG" failed --reason "<specific reason>"`. Then return the PR URL or failure.
+   `relay state final "$SLUG" failed --reason "<specific reason>" --dispatch-token "$DISPATCH_TOKEN"`.
+   Then return the PR URL or failure.
 
 `--draft` is supported when the caller requests a draft. Never merge, enable auto-merge, invent test
 results, post a second review, or open a duplicate PR.

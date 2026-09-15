@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 
+	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/project"
 	deliveryroute "github.com/ronaknnathani/relay/internal/route"
 	"github.com/spf13/cobra"
@@ -43,7 +45,55 @@ func newCmdRoute() *cobra.Command {
 	}
 	command.AddCommand(
 		newCmdRouteSnapshot(), newCmdRouteClassify(), newCmdRouteRefresh(), newCmdRouteEscalate(),
+		newCmdRouteBase(),
 	)
+	return command
+}
+
+func newCmdRouteBase() *cobra.Command {
+	var base string
+	command := &cobra.Command{
+		Use:   "base <slug>",
+		Short: "Update the project base before refreshing its route",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			base = strings.TrimSpace(base)
+			if base == "" {
+				return fmt.Errorf("route base requires --base <branch-or-commit>")
+			}
+			manifestPath, err := project.Find(args[0])
+			if err != nil {
+				return err
+			}
+			manifest, err := project.Load(manifestPath)
+			if err != nil {
+				return err
+			}
+			if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {
+				return fmt.Errorf("project %q has no worktree", args[0])
+			}
+			resolved := base
+			if base != "HEAD" && gitx.HasOrigin(*manifest.Worktree) &&
+				!strings.Contains(base, "/") &&
+				gitx.RevParse(*manifest.Worktree, "origin/"+base) != "" {
+				resolved = "origin/" + base
+			}
+			startSHA := gitx.RevParse(*manifest.Worktree, resolved)
+			if startSHA == "" {
+				return fmt.Errorf("resolve new base %q for project %q", base, args[0])
+			}
+			manifest.BaseBranch = base
+			manifest.StartSHA = startSHA
+			if err := project.Save(manifestPath, manifest); err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(struct {
+				BaseBranch string `json:"base_branch"`
+				StartSHA   string `json:"start_sha"`
+			}{BaseBranch: base, StartSHA: startSHA})
+		},
+	}
+	command.Flags().StringVar(&base, "base", "", "new base branch or commit")
 	return command
 }
 
@@ -242,6 +292,8 @@ func newCmdRouteEscalate() *cobra.Command {
 				current.Facts,
 				snapshot.Revision(),
 			)
+			current.Facts.ActualFileCount = snapshot.FileCount
+			current.Facts.ActualChangedLines = snapshot.ChangedLines
 			if stackRationale != "" {
 				current.Facts.StackRationale = stackRationale
 				current.StackRationale = stackRationale

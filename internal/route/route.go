@@ -63,6 +63,11 @@ func Classify(input Input) (Decision, error) {
 	if err != nil {
 		return Decision{}, err
 	}
+	if normalizedPolicy.Mode == project.GatePolicyUnknown {
+		return Decision{}, fmt.Errorf(
+			"repository gate policy is unknown; pass --gate id=command or --no-repository-gates",
+		)
+	}
 	input.GatePolicy = normalizedPolicy
 	if err := validateInput(input); err != nil {
 		return Decision{}, err

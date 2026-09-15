@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ronaknnathani/relay/internal/project"
+	"github.com/ronaknnathani/relay/internal/prwatch"
 )
 
 func runRoute(t *testing.T, args ...string) (string, error) {
@@ -118,16 +119,16 @@ func TestRouteReclassifyRebindsImplementationAndKeepsEasyDeliveryAtTwoDispatches
 		"--no-repository-gates", "--risk-assessment-complete",
 		"--predicted-size-known", "--predicted-files", "1", "--predicted-lines", "20",
 	}
-	if _, err := runState(t, "dispatch", "demo", "route", "--inline"); err != nil {
-		t.Fatal(err)
-	}
+	routeToken := dispatchPhase(t, "demo", "route")
 	if _, err := runRoute(t, classify...); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runState(t, "finish", "demo", "route", "done", "--outcome", "material"); err != nil {
+	finishPhase(t, "demo", "route", routeToken, "done", "--outcome", "material")
+	implementToken := dispatchPhase(t, "demo", "implement")
+	beforeChange, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	implementToken := dispatchPhase(t, "demo", "implement")
 	if err := os.WriteFile(filepath.Join(repo, "changed.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +143,8 @@ func TestRouteReclassifyRebindsImplementationAndKeepsEasyDeliveryAtTwoDispatches
 		got.Phases["implement"].Dispatch == nil ||
 		got.Phases["implement"].Dispatch.RouteRevision != got.Route.Revision ||
 		got.Phases["implement"].Dispatch.RouteDigest != got.Route.Digest {
-		t.Fatalf("reclassified implementation = %+v", got.Phases["implement"])
+		t.Fatalf("reclassified implementation = %+v\nprevious=%+v\nnext=%+v",
+			got.Phases["implement"], beforeChange.Route, got.Route)
 	}
 	if _, err := runState(t, "evidence", "record", "demo", "review",
 		"--result", "passed", "--role", "code-reviewer", "--dispatch-token", implementToken); err != nil {
@@ -152,11 +154,10 @@ func TestRouteReclassifyRebindsImplementationAndKeepsEasyDeliveryAtTwoDispatches
 		"--result", "passed", "--no-gates", "--dispatch-token", implementToken); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runState(t, "finish", "demo", "implement", "done", "--outcome", "material"); err != nil {
-		t.Fatal(err)
-	}
-	dispatchPhase(t, "demo", "open-pr")
-	if _, err := runState(t, "pr", "demo", "--number", "42", "--url", "https://example.test/pull/42"); err != nil {
+	finishPhase(t, "demo", "implement", implementToken, "done", "--outcome", "material")
+	openPRToken := dispatchPhase(t, "demo", "open-pr")
+	if _, err := runState(t, "pr", "demo", "--number", "42", "--url", "https://example.test/pull/42",
+		"--dispatch-token", openPRToken); err != nil {
 		t.Fatal(err)
 	}
 	got, err = project.LoadState(project.StatePath("demo"))
@@ -164,7 +165,7 @@ func TestRouteReclassifyRebindsImplementationAndKeepsEasyDeliveryAtTwoDispatches
 		t.Fatal(err)
 	}
 	dispatches, handoffs := got.DeliveryMetrics()
-	if dispatches != 2 || handoffs != 1 {
+	if dispatches != 1 || handoffs != 0 {
 		t.Fatalf("easy delivery metrics = dispatches:%d handoffs:%d", dispatches, handoffs)
 	}
 }
@@ -276,10 +277,8 @@ func TestRouteClassifyPersistsChangedGatePolicyAndStalesValidation(t *testing.T)
 	if err := classify("test=go test ./..."); err != nil {
 		t.Fatal(err)
 	}
-	dispatchPhase(t, "demo", "route")
-	if _, err := runState(t, "finish", "demo", "route", "done", "--outcome", "material"); err != nil {
-		t.Fatal(err)
-	}
+	routeToken := dispatchPhase(t, "demo", "route")
+	finishPhase(t, "demo", "route", routeToken, "done", "--outcome", "material")
 	token := dispatchPhase(t, "demo", "implement")
 	if _, err := runState(t, "evidence", "record", "demo", "validation",
 		"--result", "passed", "--gate", "test=go test ./...", "--exit-status", "0",
@@ -370,6 +369,7 @@ func TestRouteClassifyRejectsConflictingAndDuplicateGatePolicies(t *testing.T) {
 		"--predicted-files", "1", "--predicted-lines", "20",
 	}
 	tests := map[string][]string{
+		"unknown": append([]string(nil), base...),
 		"conflicting": append(append([]string(nil), base...),
 			"--gate", "test=go test ./...", "--no-repository-gates"),
 		"duplicate id": append(append([]string(nil), base...),
@@ -377,12 +377,126 @@ func TestRouteClassifyRejectsConflictingAndDuplicateGatePolicies(t *testing.T) {
 		"duplicate command": append(append([]string(nil), base...),
 			"--gate", "unit=go test ./...", "--gate", "all=go test ./..."),
 	}
+
 	for name, args := range tests {
 		t.Run(name, func(t *testing.T) {
 			if _, err := runRoute(t, args...); err == nil {
 				t.Fatal("invalid gate policy was accepted")
 			}
 		})
+	}
+}
+
+func TestRouteEscalateRefreshesActualSizeFacts(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRoute(t, "classify", "demo",
+		"--requested-behavior-explicit", "--no-repository-gates",
+		"--risk-assessment-complete", "--predicted-size-known",
+		"--predicted-files", "1", "--predicted-lines", "20",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "changed.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRoute(t, "escalate", "demo", "standard", "--reason", "explicit escalation"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Route.Facts.ActualFileCount != got.Route.Snapshot.FileCount ||
+		got.Route.Facts.ActualChangedLines != got.Route.Snapshot.ChangedLines ||
+		got.Route.Facts.ActualFileCount != 1 ||
+		got.Route.Facts.ActualChangedLines != 2 {
+		t.Fatalf("escalated actual size facts = %+v, snapshot = %+v", got.Route.Facts, got.Route.Snapshot)
+	}
+}
+
+func TestRouteBaseUpdatesManifestBeforeRefresh(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	gitOutput(t, repo, "branch", "-M", "main")
+	gitOutput(t, repo, "checkout", "-q", "-b", "parent")
+	if err := os.WriteFile(filepath.Join(repo, "parent.txt"), []byte("parent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	gitOutput(t, repo, "add", "parent.txt")
+	gitOutput(t, repo, "commit", "-q", "-m", "parent")
+	gitOutput(t, repo, "checkout", "-q", "main")
+	gitOutput(t, repo, "branch", "-D", "parent")
+	mainSHA := gitRevParse(t, repo, "main")
+
+	if _, err := runRoute(t, "base", "demo", "--base", "main"); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath, err := project.Find("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.BaseBranch != "main" || manifest.StartSHA != mainSHA {
+		t.Fatalf("updated manifest base = %q at %q", manifest.BaseBranch, manifest.StartSHA)
+	}
+}
+
+func TestRouteRefreshPreservesRecordedPRForStackWatcher(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	gitOutput(t, repo, "branch", "-M", "main")
+	gitOutput(t, repo, "checkout", "-q", "-b", "feature")
+	saveDeliveryProject(t, "demo", repo)
+	if _, err := runRoute(t, "base", "demo", "--base", "main"); err != nil {
+		t.Fatal(err)
+	}
+	state := openPRReadyState(t, "demo")
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	token := dispatchPhase(t, "demo", "open-pr")
+	if _, err := runState(t, "pr", "demo", "--number", "42",
+		"--url", "https://example.test/pull/42", "--dispatch-token", token); err != nil {
+		t.Fatal(err)
+	}
+
+	tree := gitRevParse(t, repo, "main^{tree}")
+	newBase := strings.TrimSpace(gitOutput(t, repo, "commit-tree", tree, "-p", "main", "-m", "advance base"))
+	gitOutput(t, repo, "update-ref", "refs/heads/main", newBase)
+	if _, err := runRoute(t, "refresh", "demo"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PR.Number != 42 || got.PR.URL != "https://example.test/pull/42" ||
+		got.FinalResult != nil || got.Phases["open-pr"].Status != project.PhaseEscalated {
+		t.Fatalf("refreshed open PR state = pr:%+v final:%+v phase:%+v",
+			got.PR, got.FinalResult, got.Phases["open-pr"])
+	}
+	target, err := prwatch.LoadTarget("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.PRNumber != 42 {
+		t.Fatalf("watch target PR = %d, want 42", target.PRNumber)
 	}
 }
 
@@ -457,10 +571,8 @@ func TestRouteRefreshEscalatesStaleEasyEvidenceToIndependentPhases(t *testing.T)
 	); err != nil {
 		t.Fatal(err)
 	}
-	dispatchPhase(t, "demo", "route")
-	if _, err := runState(t, "finish", "demo", "route", "done", "--outcome", "material"); err != nil {
-		t.Fatal(err)
-	}
+	routeToken := dispatchPhase(t, "demo", "route")
+	finishPhase(t, "demo", "route", routeToken, "done", "--outcome", "material")
 	token := dispatchPhase(t, "demo", "implement")
 	if _, err := runState(t, "evidence", "record", "demo", "review",
 		"--result", "passed", "--artifact", "implementation.md",
@@ -699,10 +811,8 @@ func TestRouteRiskRevisionInvalidatesExistingEvidence(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	dispatchPhase(t, "demo", "route")
-	if _, err := runState(t, "finish", "demo", "route", "done", "--outcome", "material"); err != nil {
-		t.Fatal(err)
-	}
+	routeToken := dispatchPhase(t, "demo", "route")
+	finishPhase(t, "demo", "route", routeToken, "done", "--outcome", "material")
 	token := dispatchPhase(t, "demo", "implement")
 	if _, err := runState(t, "evidence", "record", "demo", "review",
 		"--result", "passed", "--role", "code-reviewer",

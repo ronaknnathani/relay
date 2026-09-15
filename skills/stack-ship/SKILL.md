@@ -33,7 +33,7 @@ relay "<child intent and acceptance criteria>" \
 
 Relay creates and records the child branch, worktree, manifest, parent base, and start SHA. Then
 launch an adaptive `deliver-pr` worker in the manifest's worktree with that child slug, intent,
-exclusions, and acceptance criteria. The child owns its route, evidence, commits, PR, and watcher;
+exclusions, and acceptance criteria. The child owns its route, evidence, commits, and PR;
 this stack orchestrator owns topology, parent/base updates, front advancement, and stack state.
 Do not create an arbitrary worktree first or copy child phase procedures here.
 
@@ -60,9 +60,11 @@ After the front merges:
 1. `relay pr watch stop <front-project-slug>`;
 2. rebase/retarget the next PR onto the dynamically detected default branch using the `rebase`
    contract;
-3. verify descendant base refs and intended diffs did not collapse;
-4. cascade the new parent tip through descendants with `--force-with-lease`;
-5. start the next front watcher.
+3. run `relay route base <next-project-slug> --base <default-branch>` and then
+   `relay route refresh <next-project-slug>`;
+4. verify descendant base refs and intended diffs did not collapse;
+5. cascade the new parent tip through descendants with `--force-with-lease`;
+6. start the next front watcher.
 
 Auto-merge is armed only on the front and fires only after genuine human code-owner approval. Never
 self-approve, merge immediately, or arm a child PR based on another feature branch.

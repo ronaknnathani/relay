@@ -35,7 +35,7 @@ and normalized item reasons; do not re-derive it with your own `gh` sweep. Fetch
 
 Triage only enough to preserve one authoritative worklist. Pass every actionable item to one
 `pr-fix` sub-agent in delegated mode, using the authoritative worklist schema defined in that skill.
-Do not restate or alter its item field contract here. Wrap it with `watcher_mode` from the digest and
+Do not restate or alter its item field contract here. Set `watcher_mode` from `digest.mode` and
 `owner_slug` from watcher status, include the digest fingerprint, and tell `pr-fix` the list is
 complete. Copy both values exactly; never infer mode or ownership from the PR.
 

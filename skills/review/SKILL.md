@@ -91,9 +91,10 @@ If review cannot run because authentication, tooling, or required input is unava
 `--result blocked --blocker-category <category> --blocker-reason "<reason>"`. Relay blocks the
 canonical review owner for coordinator recovery; it does not misclassify the blocker as a code
 finding or reopen implementation by default. Include `--role` only for roles actually executed;
-a blocked review may omit roles entirely. Never fabricate role coverage. If any Critical or Important
-finding was already established, record `failed` instead; failure takes precedence while retaining
-the blocker metadata.
+a blocked review may omit roles entirely. Never fabricate role coverage. If a Critical or Important
+finding was already established before the blocker, submit `--result blocked`, the blocker metadata,
+and the nonzero finding counts together; Relay promotes the evidence to `failed` while retaining the
+blocker metadata.
 
 ## Inline mode
 

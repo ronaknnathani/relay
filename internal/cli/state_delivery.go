@@ -30,7 +30,7 @@ type dispatchOutput struct {
 
 func newCmdStateDispatch() *cobra.Command {
 	var inline bool
-	var task string
+	var task, owner string
 	command := &cobra.Command{
 		Use:   "dispatch <slug> <phase>",
 		Short: "Mark a phase in progress and count its worker dispatch",
@@ -46,6 +46,12 @@ func newCmdStateDispatch() *cobra.Command {
 			if state.UsesAdaptiveDelivery() && args[1] == "route" && !inline {
 				return fmt.Errorf("adaptive route phase must be dispatched inline with --inline")
 			}
+			if state.UsesAdaptiveDelivery() && args[1] == "open-pr" && !inline {
+				return fmt.Errorf("adaptive open-pr phase must be dispatched inline with --inline")
+			}
+			if state.UsesAdaptiveDelivery() && !inline && strings.TrimSpace(owner) == "" {
+				return fmt.Errorf("adaptive worker phase %q requires --owner", args[1])
+			}
 			if args[1] == "open-pr" {
 				snapshot, err := projectSnapshot(args[0])
 				if err != nil {
@@ -54,7 +60,6 @@ func newCmdStateDispatch() *cobra.Command {
 				if err := state.ValidateOpenPRReadiness(snapshot, false); err != nil {
 					return err
 				}
-				state.PR = project.PRRef{}
 				state.FinalResult = nil
 			}
 			startedAt := time.Now().UTC().Format(time.RFC3339)
@@ -73,7 +78,11 @@ func newCmdStateDispatch() *cobra.Command {
 			phase := state.Phases[args[1]]
 			phase.Dispatch = dispatch
 			state.Phases[args[1]] = phase
-			state.RecordDeliveryDispatch(args[1], dispatch.ID)
+			if !inline {
+				state.RecordDeliveryDispatch(args[1], dispatch.ID, owner)
+			} else {
+				state.RecordInlineDispatch(args[1], dispatch.ID)
+			}
 			state.InvalidateEvidenceForOwner(args[1])
 			if err := project.SaveState(statePath, state); err != nil {
 				return err
@@ -83,6 +92,7 @@ func newCmdStateDispatch() *cobra.Command {
 	}
 	command.Flags().BoolVar(&inline, "inline", false, "record coordinator work without incrementing the worker count")
 	command.Flags().StringVar(&task, "task", "", "free-form progress marker")
+	command.Flags().StringVar(&owner, "owner", "", "stable worker identity for handoff telemetry")
 	return command
 }
 
@@ -151,7 +161,7 @@ func randomToken(size int) (string, error) {
 }
 
 func newCmdStateFinish() *cobra.Command {
-	var reason, artifact, outcome, task string
+	var reason, artifact, outcome, task, dispatchToken string
 	command := &cobra.Command{
 		Use:   "finish <slug> <phase> <status>",
 		Short: "Record a phase result and completion metadata",
@@ -174,6 +184,11 @@ func newCmdStateFinish() *cobra.Command {
 			if err := state.ValidateAdaptiveFinish(args[1], status); err != nil {
 				return err
 			}
+			if state.UsesAdaptiveDelivery() {
+				if err := validatePhaseDispatchToken(state, args[1], dispatchToken); err != nil {
+					return err
+				}
+			}
 			if args[1] == "open-pr" && status == project.PhaseDone {
 				if err := validateAdaptiveOpenPRCompletion(args[0], state); err != nil {
 					return err
@@ -192,6 +207,7 @@ func newCmdStateFinish() *cobra.Command {
 	command.Flags().StringVar(&artifact, "artifact", "", "artifact the phase produced")
 	command.Flags().StringVar(&outcome, "outcome", "", "material or no-op")
 	command.Flags().StringVar(&task, "task", "", "free-form progress marker")
+	command.Flags().StringVar(&dispatchToken, "dispatch-token", "", "token returned by state dispatch")
 	return command
 }
 
@@ -483,6 +499,32 @@ func validateEvidenceDispatch(
 	return owner, dispatch, nil
 }
 
+func validatePhaseDispatchToken(
+	state project.WorkflowState,
+	phaseName string,
+	token string,
+) error {
+	phase, ok := state.Phases[phaseName]
+	if !ok || phase.Status != project.PhaseInProgress || phase.Dispatch == nil {
+		return fmt.Errorf("canonical phase owner %q is not actively dispatched", phaseName)
+	}
+	dispatch := phase.Dispatch
+	if state.Route == nil ||
+		dispatch.RouteRevision != state.Route.Revision ||
+		dispatch.RouteDigest != state.Route.Digest {
+		return fmt.Errorf("dispatch for canonical phase owner %q is stale", phaseName)
+	}
+	sum := sha256.Sum256([]byte(token))
+	expected, err := decodeSHA256(dispatch.TokenHash)
+	if err != nil {
+		return fmt.Errorf("invalid stored dispatch token hash: %w", err)
+	}
+	if subtle.ConstantTimeCompare(sum[:], expected) != 1 {
+		return fmt.Errorf("invalid dispatch token for canonical phase owner %q", phaseName)
+	}
+	return nil
+}
+
 func decodeSHA256(value string) ([]byte, error) {
 	decoded, err := hex.DecodeString(value)
 	if err != nil {
@@ -603,7 +645,8 @@ func projectSnapshot(slug string) (project.RepositorySnapshot, error) {
 		return project.RepositorySnapshot{}, fmt.Errorf("snapshot project %q: %w", slug, err)
 	}
 	return project.RepositorySnapshot{
-		BaseSHA: snapshot.BaseSHA, HeadSHA: snapshot.HeadSHA, Fingerprint: snapshot.Fingerprint,
+		BaseSHA: snapshot.BaseSHA, BaseTipSHA: snapshot.BaseTipSHA,
+		HeadSHA: snapshot.HeadSHA, Fingerprint: snapshot.Fingerprint,
 		InputRevision: inputRevision,
 		FileCount:     snapshot.FileCount, ChangedLines: snapshot.ChangedLines,
 	}, nil

@@ -47,12 +47,15 @@ func TestGeneratedPackagesInstallTheTLSkill(t *testing.T) {
 	}
 }
 
-// The shipped source docs and skills carry the same guarantee, so a reader
-// never meets the retired role either.
+// The shipped skills must not expose the retired role. The decision inventory
+// may name it once to document the migration.
 func TestSourceDocsAndSkillsNeverNameTheRetiredRole(t *testing.T) {
 	root := repoRoot(t)
 	for _, dir := range []string{"skills", "docs"} {
 		walkTextFiles(t, filepath.Join(root, dir), func(path, body string) {
+			if filepath.Clean(path) == filepath.Join(root, "docs", "skill-decisions.md") {
+				return
+			}
 			if match := retiredRole.FindString(body); match != "" {
 				t.Errorf("%s still names the retired role %q", path, match)
 			}

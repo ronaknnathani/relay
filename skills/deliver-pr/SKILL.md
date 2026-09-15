@@ -59,7 +59,8 @@ For a new adaptive run, mark routing inline, invoke the `route` skill once, and 
 ```bash
 relay state dispatch "$SLUG" route --inline
 # run route inline; it invokes relay route classify and writes route.md
-relay state finish "$SLUG" route done --artifact route.md --outcome material
+relay state finish "$SLUG" route done --artifact route.md --outcome material \
+  --dispatch-token "$DISPATCH_TOKEN"
 ```
 
 The route command durably marks unselected phases `skipped` with reasons. A forced-full manifest
@@ -70,10 +71,12 @@ selects all eight phases. A stack-candidate remains a conservative single-PR run
 
 Ask `relay state next "$SLUG"` after every state change.
 
-- **Selected worker phase:** run `relay state dispatch "$SLUG" "$PHASE"` and capture its JSON
+- **Selected worker phase:** run
+  `relay state dispatch "$SLUG" "$PHASE" --owner "$WORKER_ID"` and capture its JSON
   `dispatch_token`. Dispatch exactly that skill with the task, route revision/digest, token, and fresh
   upstream artifact, then record its structured result with
-  `relay state finish`. Give workers the worktree/branch and require an artifact path, material/no-op
+  `relay state finish --dispatch-token "$DISPATCH_TOKEN"`. Reuse the same stable worker identity only
+  when resuming the same worker; a replacement gets a new identity. Give workers the worktree/branch and require an artifact path, material/no-op
   outcome, checks, and blocking question; never ask for file dumps.
 - **Other subagents:** only after classification, on non-easy or forced-full routes, record helpers not represented by a phase dispatch with
   `relay state worker "$SLUG" --task "<purpose>"`. An unforced easy route launches no off-route helper; stale
@@ -86,8 +89,8 @@ Ask `relay state next "$SLUG"` after every state change.
 - **`open-pr`:** always inline. It consumes the shared commit/rebase contracts and must not launch
   another review.
 
-An unforced easy route therefore has exactly two selected delivery phases and phase dispatches after routing:
-`implement -> open-pr`, with one handoff. It qualifies only when current task and repository facts
+An unforced easy route therefore has two selected delivery phases after routing, one worker dispatch
+for `implement`, and no inter-worker handoff; coordinator-owned `open-pr` is inline. It qualifies only when current task and repository facts
 satisfy every easy-path rule, including an exact required gate set or verified no-gates state.
 Routing performs any needed exploration inline; while the route remains easy, do not launch helper,
 `clarify`, `plan`, `simplify`, `review`, or `validate` workers. `implement` applies every selected
@@ -145,7 +148,12 @@ passes. Acknowledge the grant only after the open PR is verified and recorded wi
 
 ## Watcher handoff and completion
 
-After the PR opens, run exactly one watcher command. If the project has a managed-program
+Pass the active `open-pr` dispatch token to the `open-pr` skill. That skill records the verified PR
+exactly once with
+`relay state pr "$SLUG" --number <n> --url <url> --dispatch-token "$DISPATCH_TOKEN"` before it
+returns. Do not call `relay state pr` again. Verify the durable result with `relay state next`.
+
+After the PR is durably recorded, run exactly one watcher command. If the project has a managed-program
 `assignment.md`, use managed mode; otherwise use standalone mode:
 
 ```bash
@@ -161,9 +169,7 @@ refuses before it creates anything unless ownership is unambiguous. Watcher star
 report a warning and point to manual `/pr-monitor`. A `stack-ship` sub-agent must
 not start a project watcher because the surrounding pane is not the project owner.
 
-While the current-route `open-pr` dispatch is still active, record the verified PR with
-`relay state pr`; that command atomically records the opened result and completes `open-pr`.
-It rejects stale evidence or a superseded dispatch. Stop when `relay state next` prints empty. Report the PR URL,
+Stop when `relay state next` prints empty. Report the PR URL,
 route class, worker count, and watcher status. Do not merge, poll CI, or expand scope.
 
 ## Red flags

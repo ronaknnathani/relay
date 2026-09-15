@@ -286,8 +286,9 @@ func TestDeliverPRUsesAdaptiveRoutingAndLegacyResume(t *testing.T) {
 		`relay route refresh "$SLUG"`,
 		"legacy seven-phase state",
 		"exact required gate set",
-		"exactly two selected delivery phases",
-		"one handoff",
+		"two selected delivery phases",
+		"one worker dispatch",
+		"no inter-worker handoff",
 		"relay state evidence fresh",
 		"open-pr` performs no second review",
 	} {

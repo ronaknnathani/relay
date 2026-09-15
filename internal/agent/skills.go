@@ -93,6 +93,9 @@ func isRetiredManagedTarget(
 			filepath.Join(root, "skills", name),
 			filepath.Join(root, "agents", a.Name(), "skills", name),
 		)
+		if a.Name() == "claude" {
+			candidates = append(candidates, filepath.Join(root, "dist", "claude", "skills", name))
+		}
 	}
 	for _, candidate := range candidates {
 		absolute, err := filepath.Abs(candidate)

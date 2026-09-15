@@ -139,6 +139,62 @@ func TestAdaptiveStateRejectsIncompleteEasyEligibility(t *testing.T) {
 	}
 }
 
+func TestAdaptiveStateRejectsContradictoryForcedFullSemantics(t *testing.T) {
+	tests := map[string]func(*WorkflowState){
+		"flag without fact": func(state *WorkflowState) {
+			state.Route.ForcedFull = true
+		},
+		"fact without flag": func(state *WorkflowState) {
+			state.Route.Facts.AuthorRequestedFullWorkflow = true
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			state := validAdaptiveState(t)
+			mutate(&state)
+			digest, err := RouteDigest(*state.Route)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.Route.Digest = digest
+			if err := state.validate(); err == nil {
+				t.Fatal("contradictory forced-full route was accepted")
+			}
+		})
+	}
+}
+
+func TestAdaptiveStateRejectsNonCanonicalEasyPhases(t *testing.T) {
+	state := validAdaptiveState(t)
+	state.Route.Class = RouteEasy
+	state.Route.PreviousClass = ""
+	state.Route.EscalationReasons = nil
+	state.Route.SelectedPhases = []string{"route", "clarify", "implement", "open-pr"}
+	state.Route.ReviewOwner = EvidenceOwnerImplement
+	state.Route.ValidationOwner = EvidenceOwnerImplement
+	digest, err := RouteDigest(*state.Route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route.Digest = digest
+	if err := state.validate(); err == nil {
+		t.Fatal("unforced easy route with extra phases was accepted")
+	}
+}
+
+func TestAdaptiveStateRejectsUnknownGatePolicy(t *testing.T) {
+	state := validAdaptiveState(t)
+	state.Route.Facts.GatePolicy = GatePolicy{Mode: GatePolicyUnknown}
+	digest, err := RouteDigest(*state.Route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route.Digest = digest
+	if err := state.validate(); err == nil {
+		t.Fatal("route with unknown gate policy was accepted")
+	}
+}
+
 func TestDeliveryStateRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	state := validAdaptiveState(t)
@@ -215,17 +271,18 @@ func TestAdaptiveOpenedResultMustMatchRouteEvidenceDispatchAndPhase(t *testing.T
 	}
 }
 
-func TestRouteChangeClearsOpenedResult(t *testing.T) {
+func TestRouteChangeReopensOpenedResultWithoutLosingPRIdentity(t *testing.T) {
 	state := validOpenedAdaptiveState(t)
+	recordedPR := state.PR
 	changed := *state.Route
 	changed.Snapshot.Fingerprint = "changed"
 	changed.Facts.AssessmentFingerprint = "changed"
 	if err := state.ApplyRoute(changed); err != nil {
 		t.Fatal(err)
 	}
-	if state.FinalResult != nil || state.PR != (PRRef{}) ||
+	if state.FinalResult != nil || state.PR != recordedPR ||
 		state.Phases["open-pr"].Status != PhaseEscalated {
-		t.Fatalf("route change retained opened result: result=%+v pr=%+v phase=%+v",
+		t.Fatalf("route change result=%+v pr=%+v phase=%+v",
 			state.FinalResult, state.PR, state.Phases["open-pr"])
 	}
 }
@@ -452,6 +509,83 @@ func TestRouteChangeReopensActiveSelectedPhaseForRedispatch(t *testing.T) {
 	}
 	if err := state.ValidateAdaptiveDispatch("implement"); err != nil {
 		t.Fatalf("reopened implementation is not redispatchable: %v", err)
+	}
+}
+
+func TestDeliveryInputChangeInvalidatesActiveImplementationDispatch(t *testing.T) {
+	state := validAdaptiveState(t)
+	for _, name := range []string{"route", "clarify", "plan"} {
+		state.Phases[name] = PhaseState{Status: PhaseDone}
+	}
+	state.Route.Snapshot.InputRevision = "old-inputs"
+	state.Route.Facts.AssessmentFingerprint = state.Route.Snapshot.Revision()
+	digest, err := RouteDigest(*state.Route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route.Digest = digest
+	state.Phases["implement"] = PhaseState{
+		Status: PhaseInProgress,
+		Dispatch: &PhaseDispatch{
+			ID: "implement-dispatch", TokenHash: strings.Repeat("a", 64),
+			RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
+		},
+	}
+
+	changed := *state.Route
+	changed.Snapshot.InputRevision = "new-inputs"
+	changed.Facts.AssessmentFingerprint = changed.Snapshot.Revision()
+	if err := state.ApplyRoute(changed); err != nil {
+		t.Fatal(err)
+	}
+	implement := state.Phases["implement"]
+	if implement.Status != PhaseEscalated || implement.Dispatch != nil {
+		t.Fatalf("input change rebound active implementation: %+v", implement)
+	}
+}
+
+func TestDeliveryInputChangeReopensCompletedImplementationAndDependents(t *testing.T) {
+	state := validAdaptiveState(t)
+	for _, name := range state.Route.SelectedPhases {
+		state.Phases[name] = PhaseState{Status: PhaseDone, Outcome: PhaseOutcomeMaterial}
+	}
+	state.Route.Snapshot.InputRevision = "old-inputs"
+	state.Route.Facts.AssessmentFingerprint = state.Route.Snapshot.Revision()
+	digest, err := RouteDigest(*state.Route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route.Digest = digest
+	state.Evidence.Review = &EvidenceRecord{
+		Snapshot: state.Route.Snapshot, RouteRevision: state.Route.Revision,
+		RouteDigest: state.Route.Digest, DispatchID: "review-dispatch",
+		Result: EvidencePassed, Owner: EvidenceOwnerReview,
+		CompletedAt: "2026-09-15T00:05:00Z", Roles: state.Route.ReviewRoles,
+	}
+	state.Evidence.Validation = &EvidenceRecord{
+		Snapshot: state.Route.Snapshot, RouteRevision: state.Route.Revision,
+		RouteDigest: state.Route.Digest, DispatchID: "validate-dispatch",
+		Result: EvidencePassed, Owner: EvidenceOwnerValidate,
+		CompletedAt: "2026-09-15T00:06:00Z",
+		Commands:    []CommandEvidence{testCommandEvidence("go test ./...", 0)},
+	}
+
+	changed := *state.Route
+	changed.Snapshot.InputRevision = "new-inputs"
+	changed.Facts.AssessmentFingerprint = changed.Snapshot.Revision()
+	if err := state.ApplyRoute(changed); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"implement", "review", "validate", "open-pr"} {
+		if got := state.Phases[name].Status; got != PhaseEscalated {
+			t.Fatalf("%s status = %q, want escalated", name, got)
+		}
+	}
+	if state.Evidence.Review != nil || state.Evidence.Validation != nil {
+		t.Fatalf("input change retained evidence: %+v", state.Evidence)
+	}
+	if state.Next() != "implement" {
+		t.Fatalf("next phase = %q, want implement", state.Next())
 	}
 }
 
@@ -1003,6 +1137,7 @@ func TestRouteApplicationPreservesUnresolvedPhaseState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	state.Phases["validate"] = PhaseState{
 		Status: PhaseEscalated,
 		Reason: "validation failed",
@@ -1021,5 +1156,21 @@ func TestRouteApplicationPreservesUnresolvedPhaseState(t *testing.T) {
 	}
 	if got := state.Phases["validate"]; got.Status != PhaseEscalated || got.Reason != "validation failed" {
 		t.Fatalf("unresolved validation was rewritten: %+v", got)
+	}
+}
+
+func TestDeliveryHandoffsTrackWorkerOwnership(t *testing.T) {
+	state := validAdaptiveState(t)
+	state.RecordDeliveryDispatch("implement", "dispatch-1", "worker-a")
+	state.RecordDeliveryDispatch("implement", "dispatch-2", "worker-b")
+	state.RecordDeliveryDispatch("review", "dispatch-3", "worker-b")
+	state.RecordDeliveryDispatch("validate", "dispatch-4", "worker-c")
+
+	dispatches, handoffs := state.DeliveryMetrics()
+	if dispatches != 4 || handoffs != 2 {
+		t.Fatalf("delivery metrics = dispatches:%d handoffs:%d, want 4 and 2", dispatches, handoffs)
+	}
+	if state.LastWorkerOwner != "worker-c" {
+		t.Fatalf("last worker owner = %q, want worker-c", state.LastWorkerOwner)
 	}
 }

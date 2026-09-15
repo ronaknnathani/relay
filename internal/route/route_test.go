@@ -2,6 +2,7 @@ package route
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ronaknnathani/relay/internal/project"
@@ -30,6 +31,16 @@ func TestRiskAssessmentRequiresFingerprint(t *testing.T) {
 	}
 	if decision.Class != ClassStandard || decision.Facts.RiskAssessmentComplete {
 		t.Fatalf("unbound assessment remained eligible: %+v", decision)
+	}
+}
+
+func TestClassifyRejectsUnknownGatePolicy(t *testing.T) {
+	input := easyInput()
+	input.GatePolicy = project.GatePolicy{Mode: project.GatePolicyUnknown}
+	if _, err := Classify(input); err == nil ||
+		!strings.Contains(err.Error(), "--gate") ||
+		!strings.Contains(err.Error(), "--no-repository-gates") {
+		t.Fatalf("unknown gate policy error = %v", err)
 	}
 }
 
@@ -126,6 +137,12 @@ func TestEasyEligibilityRequiresEveryInclusionRule(t *testing.T) {
 			input := easyInput()
 			mutate(&input)
 			decision, err := Classify(input)
+			if name == "known checks" {
+				if err == nil {
+					t.Fatal("unknown gate policy was accepted")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -150,6 +167,69 @@ func TestEveryRiskTriggerExcludesEasy(t *testing.T) {
 			}
 			if decision.Class != ClassHighRisk {
 				t.Fatalf("risk %q class = %q, want high-risk", trigger, decision.Class)
+			}
+		})
+	}
+}
+
+func TestEveryRiskTriggerSelectsRequiredReviewRoles(t *testing.T) {
+	expected := map[RiskTrigger][]string{
+		RiskPublicContract: {
+			project.ReviewRoleCodeReviewer,
+			project.ReviewRoleTypeDesignAnalyzer,
+			project.ReviewRoleGitHistory,
+			project.ReviewRolePriorPRHistory,
+		},
+		RiskPersistenceMigration: {
+			project.ReviewRoleCodeReviewer,
+			project.ReviewRoleTypeDesignAnalyzer,
+			project.ReviewRoleGitHistory,
+		},
+		RiskAuthSecurity: {
+			project.ReviewRoleCodeReviewer,
+			project.ReviewRoleSecurity,
+		},
+		RiskConcurrencyDistributed: {
+			project.ReviewRoleCodeReviewer,
+			project.ReviewRoleSilentFailureHunter,
+			project.ReviewRoleGitHistory,
+		},
+		RiskDependencyBuildRelease: {
+			project.ReviewRoleCodeReviewer,
+			project.ReviewRolePRTestAnalyzer,
+			project.ReviewRoleSecurity,
+		},
+		RiskGeneratedArtifact: {
+			project.ReviewRoleCodeReviewer,
+			project.ReviewRolePRTestAnalyzer,
+		},
+		RiskDestructiveOperation: {
+			project.ReviewRoleCodeReviewer,
+			project.ReviewRoleSilentFailureHunter,
+			project.ReviewRoleSecurity,
+		},
+		RiskUnresolvedReviewCI: {
+			project.ReviewRoleCodeReviewer,
+			project.ReviewRolePRTestAnalyzer,
+			project.ReviewRoleCommentAnalyzer,
+			project.ReviewRolePriorPRHistory,
+		},
+		RiskFailedGate: {
+			project.ReviewRoleCodeReviewer,
+			project.ReviewRolePRTestAnalyzer,
+			project.ReviewRolePriorPRHistory,
+		},
+	}
+	for _, trigger := range requiredRiskTriggers {
+		t.Run(string(trigger), func(t *testing.T) {
+			input := easyInput()
+			input.RiskTriggers = []RiskTrigger{trigger}
+			decision, err := Classify(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(decision.ReviewRoles, expected[trigger]) {
+				t.Fatalf("risk %q roles = %v, want %v", trigger, decision.ReviewRoles, expected[trigger])
 			}
 		})
 	}
@@ -350,9 +430,14 @@ func TestExplicitEscalationRetainsFactsPhasesRolesAndHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, phase := range []string{"simplify", "clarify", "plan", "validate"} {
+	for _, phase := range []string{"simplify", "validate"} {
 		if !slices.Contains(escalated.SelectedPhases, phase) {
 			t.Errorf("escalation dropped phase %q: %+v", phase, escalated)
+		}
+	}
+	for _, phase := range []string{"clarify", "plan"} {
+		if slices.Contains(escalated.SelectedPhases, phase) {
+			t.Errorf("failed-gate correction added unnecessary phase %q: %+v", phase, escalated)
 		}
 	}
 	for _, role := range []string{

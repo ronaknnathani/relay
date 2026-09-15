@@ -45,9 +45,13 @@ git rebase --onto origin/master <merged-parent-tip> <next-branch>
 git push --force-with-lease origin <next-branch>
 gh pr edit <next-pr> --base master
 gh pr view <next-pr> --json baseRefName,mergeStateStatus   # confirm baseRefName == "master"
+relay route base <next-project-slug> --base master
+relay route refresh <next-project-slug>
 relay pr watch start <next-project-slug> --mode stack --owner <stack-orchestrator-slug>
 ```
 
+The base update is required after squash merges, merge commits, and deleted parent branches: it
+records the new base identity and immutable start SHA before route freshness is recomputed.
 Then verify every other descendant still targets its intended parent feature branch (not `master`),
 and let the new front watcher wake you once auto-merge can be armed on the `master`-based PR.
 

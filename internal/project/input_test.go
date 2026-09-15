@@ -35,4 +35,14 @@ func TestProjectInputRevisionTracksNormalizedDeliveryInputs(t *testing.T) {
 	if changed == first {
 		t.Fatal("requirements change did not alter the input revision")
 	}
+	if err := os.WriteFile(filepath.Join(dir, "assignment.md"), []byte("new assignment\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	assignmentChanged, err := ProjectInputRevision(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignmentChanged == changed {
+		t.Fatal("assignment change did not alter the input revision")
+	}
 }

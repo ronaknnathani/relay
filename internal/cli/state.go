@@ -212,7 +212,7 @@ func newCmdStateAdvance() *cobra.Command {
 
 func newCmdStatePR() *cobra.Command {
 	var number int
-	var url string
+	var url, dispatchToken string
 	cmd := &cobra.Command{
 		Use:   "pr <slug>",
 		Short: "Record the pull request the project produced",
@@ -233,6 +233,16 @@ func newCmdStatePR() *cobra.Command {
 				}
 				if err := ws.ValidateOpenPRReadiness(snapshot, true); err != nil {
 					return err
+				}
+				if err := validatePhaseDispatchToken(ws, "open-pr", dispatchToken); err != nil {
+					return err
+				}
+				if ws.PR.Number > 0 &&
+					(ws.PR.Number != number || ws.PR.URL != url) {
+					return fmt.Errorf(
+						"adaptive PR recording cannot replace existing PR %d at %s",
+						ws.PR.Number, ws.PR.URL,
+					)
 				}
 				dispatchID := ws.Phases["open-pr"].Dispatch.ID
 				ws.PR = project.PRRef{Number: number, URL: url}
@@ -271,11 +281,12 @@ func newCmdStatePR() *cobra.Command {
 	}
 	cmd.Flags().IntVar(&number, "number", 0, "PR number")
 	cmd.Flags().StringVar(&url, "url", "", "PR url")
+	cmd.Flags().StringVar(&dispatchToken, "dispatch-token", "", "token returned by state dispatch")
 	return cmd
 }
 
 func newCmdStateFinal() *cobra.Command {
-	var reason string
+	var reason, dispatchToken string
 	cmd := &cobra.Command{
 		Use:   "final <slug> <opened|blocked|failed>",
 		Short: "Record the final delivery result",
@@ -305,6 +316,9 @@ func newCmdStateFinal() *cobra.Command {
 				if err := ws.ValidateAdaptiveFinish("open-pr", project.PhaseBlocked); err != nil {
 					return fmt.Errorf("record %s final result: %w", result.Status, err)
 				}
+				if err := validatePhaseDispatchToken(ws, "open-pr", dispatchToken); err != nil {
+					return fmt.Errorf("record %s final result: %w", result.Status, err)
+				}
 				ws.PR = project.PRRef{}
 				ws.FinalResult = &result
 				if err := ws.SetPhaseWithDelivery(
@@ -320,6 +334,7 @@ func newCmdStateFinal() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&reason, "reason", "", "required reason for blocked or failed delivery")
+	cmd.Flags().StringVar(&dispatchToken, "dispatch-token", "", "token returned by state dispatch")
 	return cmd
 }
 

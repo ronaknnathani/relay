@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -62,21 +63,22 @@ type PRRef struct {
 // last-write-wins. This is acceptable because callers serialize writes per
 // project (one writer per branch/run), which the orchestrator guarantees.
 type WorkflowState struct {
-	Version        int                   `json:"version,omitempty"`
-	Slug           string                `json:"slug"`
-	Workflow       string                `json:"workflow"`
-	Order          []string              `json:"order"`
-	Phases         map[string]PhaseState `json:"phases"`
-	Route          *RouteDecision        `json:"route,omitempty"`
-	Evidence       DeliveryEvidence      `json:"evidence,omitempty"`
-	SubagentCount  int                   `json:"subagent_count,omitempty"`
-	DispatchCount  int                   `json:"delivery_dispatch_count,omitempty"`
-	HandoffCount   int                   `json:"delivery_handoff_count,omitempty"`
-	LastDispatch   string                `json:"last_delivery_dispatch,omitempty"`
-	LastDispatchID string                `json:"last_delivery_dispatch_id,omitempty"`
-	FinalResult    *FinalResult          `json:"final_result,omitempty"`
-	PR             PRRef                 `json:"pr"`
-	Updated        string                `json:"updated"`
+	Version         int                   `json:"version,omitempty"`
+	Slug            string                `json:"slug"`
+	Workflow        string                `json:"workflow"`
+	Order           []string              `json:"order"`
+	Phases          map[string]PhaseState `json:"phases"`
+	Route           *RouteDecision        `json:"route,omitempty"`
+	Evidence        DeliveryEvidence      `json:"evidence,omitempty"`
+	SubagentCount   int                   `json:"subagent_count,omitempty"`
+	DispatchCount   int                   `json:"delivery_dispatch_count,omitempty"`
+	HandoffCount    int                   `json:"delivery_handoff_count,omitempty"`
+	LastDispatch    string                `json:"last_delivery_dispatch,omitempty"`
+	LastDispatchID  string                `json:"last_delivery_dispatch_id,omitempty"`
+	LastWorkerOwner string                `json:"last_delivery_worker_owner,omitempty"`
+	FinalResult     *FinalResult          `json:"final_result,omitempty"`
+	PR              PRRef                 `json:"pr"`
+	Updated         string                `json:"updated"`
 }
 
 // validStatus reports whether s is a supported phase status.
@@ -196,14 +198,14 @@ func (ws WorkflowState) validate() error {
 		return fmt.Errorf("state %q: invalid delivery dispatch metrics", ws.Slug)
 	}
 	if ws.LastDispatch != "" {
-		if ws.DispatchCount == 0 {
+		if ws.DispatchCount == 0 && ws.LastWorkerOwner != "" {
 			return fmt.Errorf("state %q: last delivery dispatch requires a dispatch count", ws.Slug)
 		}
 		if _, ok := ws.Phases[ws.LastDispatch]; !ok || ws.LastDispatch == "route" {
 			return fmt.Errorf("state %q: invalid last delivery dispatch %q", ws.Slug, ws.LastDispatch)
 		}
-	} else if ws.LastDispatchID != "" {
-		return fmt.Errorf("state %q: last delivery dispatch id requires a phase", ws.Slug)
+	} else if ws.LastDispatchID != "" || ws.LastWorkerOwner != "" {
+		return fmt.Errorf("state %q: last delivery dispatch identity requires a phase", ws.Slug)
 	}
 	if !ws.hasAdaptiveState() {
 		return nil
@@ -227,7 +229,7 @@ func (ws WorkflowState) hasAdaptiveState() bool {
 	if ws.Version > 0 || ws.Route != nil || ws.Evidence.Review != nil ||
 		ws.Evidence.Validation != nil || ws.SubagentCount != 0 ||
 		ws.DispatchCount != 0 || ws.HandoffCount != 0 || ws.LastDispatch != "" ||
-		ws.LastDispatchID != "" || ws.FinalResult != nil {
+		ws.LastDispatchID != "" || ws.LastWorkerOwner != "" || ws.FinalResult != nil {
 		return true
 	}
 	for _, phase := range ws.Phases {
@@ -239,16 +241,27 @@ func (ws WorkflowState) hasAdaptiveState() bool {
 	return false
 }
 
-// RecordDeliveryDispatch records one actual non-routing phase dispatch and
-// counts an inter-phase handoff when ownership moves to another phase.
-func (ws *WorkflowState) RecordDeliveryDispatch(name, dispatchID string) {
+// RecordDeliveryDispatch records one worker-owned phase dispatch and counts a
+// handoff only when the persisted worker owner changes.
+func (ws *WorkflowState) RecordDeliveryDispatch(name, dispatchID, owner string) {
 	if name == "route" {
 		return
 	}
-	if ws.LastDispatch != "" && ws.LastDispatch != name {
+	if ws.LastWorkerOwner != "" && ws.LastWorkerOwner != owner {
 		ws.HandoffCount++
 	}
 	ws.DispatchCount++
+	ws.LastDispatch = name
+	ws.LastDispatchID = dispatchID
+	ws.LastWorkerOwner = owner
+}
+
+// RecordInlineDispatch binds terminal state to an inline coordinator dispatch
+// without counting it as a worker dispatch or inter-worker handoff.
+func (ws *WorkflowState) RecordInlineDispatch(name, dispatchID string) {
+	if name == "route" {
+		return
+	}
 	ws.LastDispatch = name
 	ws.LastDispatchID = dispatchID
 }
@@ -295,6 +308,9 @@ func (ws WorkflowState) validateRoute() error {
 	}
 	if route.ForcedFull && len(selected) != len(ws.Order) {
 		return fmt.Errorf("forced-full route must select every phase")
+	}
+	if route.ForcedFull != route.Facts.AuthorRequestedFullWorkflow {
+		return fmt.Errorf("forced-full route must match the author-requested full-workflow fact")
 	}
 	if len(route.ReviewRoles) == 0 {
 		return fmt.Errorf("route requires at least one review role")
@@ -359,6 +375,11 @@ func (ws WorkflowState) validateRoute() error {
 	if route.Class == RouteEasy && !EasyRouteEligible(route.Facts) {
 		return fmt.Errorf("easy route facts do not prove easy eligibility")
 	}
+	requiredPhases := RequiredRoutePhases(route.Class, route.Facts, route.ForcedFull)
+	if route.Class == RouteEasy && !route.ForcedFull &&
+		!slices.Equal(route.SelectedPhases, requiredPhases) {
+		return fmt.Errorf("unforced easy route must use the canonical phase selection")
+	}
 	minimumClass := MinimumRouteClass(route.Facts)
 	if RouteRank(route.Class) < RouteRank(minimumClass) {
 		return fmt.Errorf(
@@ -366,7 +387,7 @@ func (ws WorkflowState) validateRoute() error {
 			route.Class, minimumClass,
 		)
 	}
-	for _, phase := range RequiredRoutePhases(route.Class, route.Facts, route.ForcedFull) {
+	for _, phase := range requiredPhases {
 		if !selected[phase] {
 			return fmt.Errorf("route class %q requires selected phase %q", route.Class, phase)
 		}
@@ -414,8 +435,14 @@ func validateRouteFacts(facts RouteFacts) error {
 			return fmt.Errorf("route %s cannot be negative", value.name)
 		}
 	}
-	if _, err := NormalizeGatePolicy(facts.GatePolicy); err != nil {
+	policy, err := NormalizeGatePolicy(facts.GatePolicy)
+	if err != nil {
 		return fmt.Errorf("route gate policy: %w", err)
+	}
+	if policy.Mode == GatePolicyUnknown {
+		return fmt.Errorf(
+			"route gate policy is unknown; classify with --gate id=command or --no-repository-gates",
+		)
 	}
 	seen := make(map[RiskTrigger]bool, len(facts.RiskTriggers))
 	for _, trigger := range facts.RiskTriggers {
@@ -522,6 +549,9 @@ func CreateState(path string, ws WorkflowState) error {
 // phase is done. A resume-first skill calls this to learn what to do next: an
 // interrupted in-progress phase is returned so the run continues it.
 func (ws WorkflowState) Next() string {
+	if ws.UsesAdaptiveDelivery() && ws.Route != nil {
+		return ws.currentSelectedPhase()
+	}
 	for _, p := range ws.Order {
 		if !terminalPhaseStatus(ws.Phases[p].Status) {
 			return p
@@ -533,6 +563,9 @@ func (ws WorkflowState) Next() string {
 // Current returns the phase the run is on: the in-progress phase if one exists,
 // otherwise the first not-done phase, otherwise "" when all phases are done.
 func (ws WorkflowState) Current() string {
+	if ws.UsesAdaptiveDelivery() && ws.Route != nil {
+		return ws.currentSelectedPhase()
+	}
 	for _, p := range ws.Order {
 		if ws.Phases[p].Status == PhaseInProgress {
 			return p

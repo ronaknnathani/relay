@@ -169,6 +169,15 @@ Each record uses the same fields so additions and retirements remain reviewable.
 - Decision: Simplified.
 - Migration impact: Workers classify first and execute only route-selected delivery phases.
 
+### `cto`
+- Observed aggregate use: Legacy program-orchestration entry point.
+- Distinct contribution: None beyond the retained `tl` contract.
+- Overlap: Fully duplicated tech-lead program ownership and dispatch.
+- Feedback relevance: A single program owner avoids conflicting orchestration instructions.
+- Safety role: Retirement preserves `tl` decision, approval, and worker-boundary safeguards.
+- Decision: Retired and merged into `tl`.
+- Migration impact: Replace `/cto` with `/tl`; setup removes only exact Relay-managed links.
+
 ### `validate`
 - Observed aggregate use: Recurring phase that exposed real gate and acceptance failures.
 - Distinct contribution: Produces a ship-readiness verdict from repository-defined checks.
@@ -183,7 +192,8 @@ Each record uses the same fields so additions and retirements remain reviewable.
 - Distinct contribution: Writes first-person prose in the author's voice.
 - Overlap: None with delivery orchestration.
 - Feedback relevance: Prevents robotic outward-facing text.
-- Safety role: Preserves visible automated-authorship requirements.
+- Safety role: Voice matching does not itself authorize publication; callers that post externally
+  remain responsible for Relay's visible automated-authorship disclosure requirement.
 - Decision: Retained.
 - Migration impact: Excluded from the delivery instruction budget.
 

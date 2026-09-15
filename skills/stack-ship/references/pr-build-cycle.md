@@ -8,9 +8,9 @@ not prescribe a fixed sequence.
 Independent items may run concurrently in separate worktrees. Dependent items start only after their
 parent surface is stable and remain based on the parent branch until front advancement.
 
-The worker returns branch, tip SHA, PR number, base, route class, evidence status, criteria covered,
-and blocking decisions. It does not start a watcher: the stack orchestrator owns exactly one watcher
-for the front PR.
+The worker returns terminal child status, branch, tip SHA, PR number, base, route class, evidence
+status, criteria covered, and blocking decisions. It does not start a watcher: the stack orchestrator
+owns exactly one watcher for the front PR.
 
 Before a managed worker opens a PR it must run its recorded `can-open-pr` command. Standalone stack
 workers follow stack capacity and approval rules supplied by the orchestrator.

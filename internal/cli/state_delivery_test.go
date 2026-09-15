@@ -17,13 +17,16 @@ import (
 func dispatchPhase(t *testing.T, slug, phase string) string {
 	t.Helper()
 	args := []string{"dispatch", slug, phase}
-	if phase == "route" {
+	if phase == "route" || phase == "open-pr" {
 		args = append(args, "--inline")
+	} else {
+		args = append(args, "--owner", phase+"-worker")
 	}
 	out, err := runState(t, args...)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	var dispatch dispatchOutput
 	if err := json.Unmarshal([]byte(out), &dispatch); err != nil {
 		t.Fatal(err)
@@ -32,6 +35,55 @@ func dispatchPhase(t *testing.T, slug, phase string) string {
 		t.Fatal("dispatch returned an empty token")
 	}
 	return dispatch.DispatchToken
+}
+
+func TestAdaptiveOpenPRDispatchMustBeInline(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state := openPRReadyState(t, "demo")
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runState(t, "dispatch", "demo", "open-pr"); err == nil ||
+		!strings.Contains(err.Error(), "must be dispatched inline") {
+		t.Fatalf("non-inline open-pr dispatch error = %v", err)
+	}
+}
+
+func TestAdaptiveWorkerDispatchRequiresOwner(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route = testRouteDecision(project.RouteEasy)
+	snapshot, err := projectSnapshot("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route.Snapshot = snapshot
+	prepareAdaptivePhase(&state, "implement")
+	refreshRouteDigest(t, state.Route)
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runState(t, "dispatch", "demo", "implement"); err == nil ||
+		!strings.Contains(err.Error(), "--owner") {
+		t.Fatalf("ownerless worker dispatch error = %v", err)
+	}
+}
+
+func finishPhase(t *testing.T, slug, phase, token string, args ...string) {
+	t.Helper()
+	command := []string{"finish", slug, phase}
+	command = append(command, args...)
+	command = append(command, "--dispatch-token", token)
+	if _, err := runState(t, command...); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestStateDispatchAndFinish(t *testing.T) {
@@ -58,12 +110,9 @@ func TestStateDispatchAndFinish(t *testing.T) {
 		state.Phases["route"].Dispatch.TokenHash == routeDispatch.DispatchToken {
 		t.Fatalf("dispatch token was not stored as a one-way hash: %+v", state.Phases["route"].Dispatch)
 	}
-	if _, err := runState(t, "finish", "demo", "route", "done", "--outcome", "material", "--artifact", "route.md"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runState(t, "dispatch", "demo", "implement"); err != nil {
-		t.Fatal(err)
-	}
+	finishPhase(t, "demo", "route", routeDispatch.DispatchToken,
+		"done", "--outcome", "material", "--artifact", "route.md")
+	dispatchPhase(t, "demo", "implement")
 	state, err = project.LoadState(project.StatePath("demo"))
 	if err != nil {
 		t.Fatal(err)
@@ -104,10 +153,8 @@ func TestAdaptiveFinishRequiresActiveCurrentSelectedPhase(t *testing.T) {
 	if _, err := runState(t, "finish", "demo", "implement", "done", "--outcome", "material"); err == nil {
 		t.Fatal("out-of-order adaptive finish was accepted")
 	}
-	dispatchPhase(t, "demo", "route")
-	if _, err := runState(t, "finish", "demo", "route", "done", "--outcome", "material"); err != nil {
-		t.Fatal(err)
-	}
+	routeToken := dispatchPhase(t, "demo", "route")
+	finishPhase(t, "demo", "route", routeToken, "done", "--outcome", "material")
 	if _, err := runState(t, "finish", "demo", "clarify", "done", "--outcome", "material"); err == nil {
 		t.Fatal("pending adaptive phase was completed without a dispatch")
 	}
@@ -237,9 +284,7 @@ func TestPassingEvidenceRejectsFailuresAndMissingReviewRoles(t *testing.T) {
 			}
 		})
 	}
-	if _, err := runState(t, "finish", "demo", "review", "done", "--outcome", "material"); err != nil {
-		t.Fatal(err)
-	}
+	finishPhase(t, "demo", "review", reviewToken, "done", "--outcome", "material")
 	validationToken := dispatchPhase(t, "demo", "validate")
 	if _, err := runState(t, "evidence", "record", "demo", "validation",
 		"--result", "passed", "--gate", "test=go test ./...", "--exit-status", "1",
@@ -429,9 +474,7 @@ func TestRedispatchInvalidatesCanonicalOwnerEvidence(t *testing.T) {
 			} else if _, err := runState(t, args...); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := runState(t, "finish", "demo", test.owner, "escalated", "--reason", "redo required"); err != nil {
-				t.Fatal(err)
-			}
+			finishPhase(t, "demo", test.owner, token, "escalated", "--reason", "redo required")
 			dispatchPhase(t, "demo", test.owner)
 			got, err := project.LoadState(project.StatePath("demo"))
 			if err != nil {
@@ -499,8 +542,8 @@ func TestFailedValidationEvidenceReopensImplementation(t *testing.T) {
 		!slices.Contains(got.Route.EscalationReasons, "validation evidence failed") {
 		t.Fatalf("failed validation route = %+v", got.Route)
 	}
-	if got.Next() != "clarify" {
-		t.Fatalf("next phase = %q, want clarify", got.Next())
+	if got.Next() != "implement" {
+		t.Fatalf("next phase = %q, want implement; validation=%+v", got.Next(), *got.Evidence.Validation)
 	}
 }
 
@@ -541,8 +584,8 @@ func TestImportantReviewEvidenceReopensImplementation(t *testing.T) {
 	}
 	if got.Phases["review"].Status != project.PhaseEscalated ||
 		got.Phases["implement"].Status != project.PhaseEscalated ||
-		got.Next() != "clarify" {
-		t.Fatalf("failed review routing = %+v", got.Phases)
+		got.Next() != "implement" {
+		t.Fatalf("failed review routing = %+v; review=%+v", got.Phases, *got.Evidence.Review)
 	}
 }
 
@@ -773,9 +816,12 @@ func TestFailedEasyReviewRestoresNewlySelectedPhases(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, phase := range []string{"clarify", "plan"} {
-		if got.Phases[phase].Status != project.PhasePending {
+		if got.Phases[phase].Status != project.PhaseSkipped {
 			t.Errorf("high-risk escalation left selected %s phase as %q", phase, got.Phases[phase].Status)
 		}
+	}
+	if got.Next() != "implement" {
+		t.Errorf("failed review next phase = %q, want implement; review=%+v", got.Next(), *got.Evidence.Review)
 	}
 	if got.Phases["review"].Status != project.PhaseEscalated {
 		t.Errorf("review status = %q, want escalated", got.Phases["review"].Status)
@@ -875,18 +921,21 @@ func TestAdaptiveOpenPRTransitionsRequireFreshEvidenceAndActiveDispatch(t *testi
 	if _, err := runState(t, "pr", "demo", "--number", "42", "--url", "https://example.test/pull/42"); err == nil {
 		t.Fatal("adaptive PR recording succeeded without an active open-pr dispatch")
 	}
-	dispatchPhase(t, "demo", "open-pr")
+	openPRToken := dispatchPhase(t, "demo", "open-pr")
 	if _, err := runState(t, "finish", "demo", "open-pr", "skipped",
-		"--reason", "not needed", "--outcome", "no-op"); err == nil {
+		"--reason", "not needed", "--outcome", "no-op",
+		"--dispatch-token", openPRToken); err == nil {
 		t.Fatal("selected open-pr phase was skipped")
 	}
-	if _, err := runState(t, "finish", "demo", "open-pr", "done", "--outcome", "material"); err == nil {
+	if _, err := runState(t, "finish", "demo", "open-pr", "done", "--outcome", "material",
+		"--dispatch-token", openPRToken); err == nil {
 		t.Fatal("open-pr completed before the PR result was recorded")
 	}
 	if _, err := runState(t, "pr", "demo", "--number", "42"); err == nil {
 		t.Fatal("adaptive PR recording accepted a partial replacement")
 	}
-	if _, err := runState(t, "pr", "demo", "--number", "42", "--url", "https://example.test/pull/42"); err != nil {
+	if _, err := runState(t, "pr", "demo", "--number", "42", "--url", "https://example.test/pull/42",
+		"--dispatch-token", openPRToken); err != nil {
 		t.Fatal(err)
 	}
 	got, err := project.LoadState(project.StatePath("demo"))
@@ -908,7 +957,7 @@ func TestAdaptiveOpenPRSuccessCommandsRejectPostDispatchMutation(t *testing.T) {
 	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
 		t.Fatal(err)
 	}
-	dispatchPhase(t, "demo", "open-pr")
+	openPRToken := dispatchPhase(t, "demo", "open-pr")
 	if err := os.WriteFile(filepath.Join(repo, "changed-after-dispatch.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -918,6 +967,7 @@ func TestAdaptiveOpenPRSuccessCommandsRejectPostDispatchMutation(t *testing.T) {
 	}
 	if _, err := runState(
 		t, "pr", "demo", "--number", "42", "--url", "https://example.test/pull/42",
+		"--dispatch-token", openPRToken,
 	); err == nil {
 		t.Fatal("successful open-pr transition accepted a post-dispatch repository mutation")
 	}
@@ -938,11 +988,12 @@ func TestAdaptiveFinalResultTransitionsOpenPRAtomically(t *testing.T) {
 	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
 		t.Fatal(err)
 	}
-	dispatchPhase(t, "demo", "open-pr")
+	openPRToken := dispatchPhase(t, "demo", "open-pr")
 	if _, err := runState(t, "final", "demo", "opened"); err == nil {
 		t.Fatal("adaptive final opened bypassed state pr")
 	}
-	if _, err := runState(t, "final", "demo", "failed", "--reason", "push rejected"); err != nil {
+	if _, err := runState(t, "final", "demo", "failed", "--reason", "push rejected",
+		"--dispatch-token", openPRToken); err != nil {
 		t.Fatal(err)
 	}
 	got, err := project.LoadState(project.StatePath("demo"))
@@ -953,6 +1004,54 @@ func TestAdaptiveFinalResultTransitionsOpenPRAtomically(t *testing.T) {
 		got.Phases["open-pr"].Status != project.PhaseBlocked ||
 		got.Phases["open-pr"].Dispatch != nil {
 		t.Fatalf("atomic failed result = %+v, phase = %+v", got.FinalResult, got.Phases["open-pr"])
+	}
+}
+
+func TestAdaptiveTerminalMutationsRequireCanonicalDispatchToken(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T, token string) error
+	}{
+		{
+			name: "finish",
+			run: func(t *testing.T, token string) error {
+				_, err := runState(t, "finish", "demo", "open-pr", "blocked",
+					"--reason", "push rejected", "--dispatch-token", token)
+				return err
+			},
+		},
+		{
+			name: "pr",
+			run: func(t *testing.T, token string) error {
+				_, err := runState(t, "pr", "demo", "--number", "42",
+					"--url", "https://example.test/pull/42", "--dispatch-token", token)
+				return err
+			},
+		},
+		{
+			name: "final",
+			run: func(t *testing.T, token string) error {
+				_, err := runState(t, "final", "demo", "failed",
+					"--reason", "push rejected", "--dispatch-token", token)
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			repo := initCLIGitRepo(t)
+			saveDeliveryProject(t, "demo", repo)
+			state := openPRReadyState(t, "demo")
+			if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+				t.Fatal(err)
+			}
+			dispatchPhase(t, "demo", "open-pr")
+			if err := test.run(t, "forged"); err == nil ||
+				!strings.Contains(err.Error(), "invalid dispatch token") {
+				t.Fatalf("forged token error = %v", err)
+			}
+		})
 	}
 }
 
@@ -1128,6 +1227,7 @@ func TestStateWorkerAllowsHelpersForForcedFullEasyDelivery(t *testing.T) {
 	}
 	state.Route = testRouteDecision(project.RouteEasy)
 	state.Route.ForcedFull = true
+	state.Route.Facts.AuthorRequestedFullWorkflow = true
 	state.Route.SelectedPhases = append([]string(nil), project.AdaptiveDeliveryPhases...)
 	state.Route.ReviewOwner = project.EvidenceOwnerReview
 	state.Route.ValidationOwner = project.EvidenceOwnerValidate

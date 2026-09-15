@@ -583,6 +583,10 @@ func TestProgramDispatchReusesPreLinkedExistingChild(t *testing.T) {
 	if bytes.Equal(assignment, []byte("stale assignment\n")) || !bytes.Contains(assignment, []byte(item.Title)) {
 		t.Fatalf("assignment was not rewritten: %q", assignment)
 	}
+	if bytes.Contains(assignment, []byte("adaptive delivery route-first")) ||
+		!bytes.Contains(assignment, []byte("legacy seven-phase")) {
+		t.Fatalf("legacy assignment instructions = %q", assignment)
+	}
 	for _, relative := range []string{
 		"mail/inbox",
 		"mail/outbox",

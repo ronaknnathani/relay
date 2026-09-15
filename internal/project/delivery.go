@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -69,6 +70,7 @@ var AdaptiveDeliveryPhases = []string{
 // route or evidence record.
 type RepositorySnapshot struct {
 	BaseSHA       string `json:"base_sha"`
+	BaseTipSHA    string `json:"base_tip_sha,omitempty"`
 	HeadSHA       string `json:"head_sha"`
 	Fingerprint   string `json:"fingerprint"`
 	InputRevision string `json:"input_revision,omitempty"`
@@ -203,8 +205,22 @@ func RequiredRoutePhases(class string, facts RouteFacts, forcedFull bool) []stri
 	switch class {
 	case RouteEasy:
 		return []string{"route", "implement", "open-pr"}
-	case RouteHighRisk, RouteStackCandidate:
+	case RouteStackCandidate:
 		selected := []string{"route", "clarify", "plan", "implement"}
+		if RouteNeedsSimplification(facts) {
+			selected = append(selected, "simplify")
+		}
+		return append(selected, "review", "validate", "open-pr")
+	case RouteHighRisk:
+		selected := []string{"route"}
+		if !facts.RequestedBehaviorExplicit || facts.UnresolvedDecision {
+			selected = append(selected, "clarify")
+		}
+		if facts.UnresolvedDecision || RouteSizeExceedsEasy(facts) ||
+			hasPlanningRisk(facts.RiskTriggers) {
+			selected = append(selected, "plan")
+		}
+		selected = append(selected, "implement")
 		if RouteNeedsSimplification(facts) {
 			selected = append(selected, "simplify")
 		}
@@ -223,6 +239,15 @@ func RequiredRoutePhases(class string, facts RouteFacts, forcedFull bool) []stri
 		}
 		return append(selected, "review", "validate", "open-pr")
 	}
+}
+
+func hasPlanningRisk(triggers []RiskTrigger) bool {
+	for _, trigger := range triggers {
+		if trigger != RiskUnresolvedReviewCI && trigger != RiskFailedGate {
+			return true
+		}
+	}
+	return false
 }
 
 // RequiredReviewRoles returns every review lens required by current facts.
@@ -826,7 +851,13 @@ func (ws WorkflowState) validateAdaptiveFinalState() error {
 	}
 	if ws.FinalResult == nil {
 		if ws.PR.Number != 0 || ws.PR.URL != "" {
-			return fmt.Errorf("adaptive PR identity requires a final result")
+			if ws.PR.Number <= 0 || strings.TrimSpace(ws.PR.URL) == "" {
+				return fmt.Errorf("adaptive PR identity requires both number and URL")
+			}
+			if openPR.Status == PhaseDone {
+				return fmt.Errorf("completed open-pr phase requires an opened final result")
+			}
+			return nil
 		}
 		if openPR.Status == PhaseDone {
 			return fmt.Errorf("completed open-pr phase requires an opened final result")
@@ -965,6 +996,11 @@ func (ws WorkflowState) currentSelectedPhase() string {
 	if ws.Route == nil {
 		return ""
 	}
+	if phase, ok := ws.Phases[EvidenceOwnerImplement]; ok &&
+		(phase.Status == PhaseEscalated || phase.Status == PhaseInProgress) &&
+		ws.hasFailedEvidence() {
+		return EvidenceOwnerImplement
+	}
 	for _, name := range ws.Order {
 		if slices.Contains(ws.Route.SelectedPhases, name) &&
 			!terminalPhaseStatus(ws.Phases[name].Status) {
@@ -972,6 +1008,11 @@ func (ws WorkflowState) currentSelectedPhase() string {
 		}
 	}
 	return ""
+}
+
+func (ws WorkflowState) hasFailedEvidence() bool {
+	return ws.Evidence.Review != nil && ws.Evidence.Review.Result == EvidenceFailed ||
+		ws.Evidence.Validation != nil && ws.Evidence.Validation.Result == EvidenceFailed
 }
 
 // ValidateOpenPRReadiness requires fresh route-bound review and validation
@@ -1045,9 +1086,11 @@ func (ws *WorkflowState) ApplyRoute(decision RouteDecision) error {
 	}
 	previousRevision := 0
 	routeChanged := true
+	inputsChanged := false
 	if ws.Route != nil {
 		previousRevision = ws.Route.Revision
 		routeChanged = ws.Route.Digest != digest
+		inputsChanged = ws.Route.Snapshot.InputRevision != decision.Snapshot.InputRevision
 	}
 	decision.Revision = max(1, previousRevision)
 	if ws.Route != nil && routeChanged {
@@ -1055,7 +1098,9 @@ func (ws *WorkflowState) ApplyRoute(decision RouteDecision) error {
 	}
 	decision.Digest = digest
 	reboundPhase := ""
-	if ws.Route != nil && routeChanged && canRebindActiveDispatch(*ws.Route, decision) {
+	if route := ws.Phases["route"]; route.Status == PhaseInProgress && route.Dispatch != nil {
+		reboundPhase = "route"
+	} else if ws.Route != nil && routeChanged && canRebindActiveDispatch(*ws.Route, decision) {
 		current := ws.currentSelectedPhase()
 		phase := ws.Phases[current]
 		if current == EvidenceOwnerImplement &&
@@ -1069,6 +1114,12 @@ func (ws *WorkflowState) ApplyRoute(decision RouteDecision) error {
 			return fmt.Errorf("route selected unknown phase %q", phase)
 		}
 		selected[phase] = true
+	}
+	if inputsChanged {
+		ws.reopenImplementationDependents(
+			selected,
+			"delivery inputs changed; fresh implementation required",
+		)
 	}
 	for _, name := range ws.Order {
 		phase := ws.Phases[name]
@@ -1086,12 +1137,11 @@ func (ws *WorkflowState) ApplyRoute(decision RouteDecision) error {
 				phase.Outcome = ""
 				phase.EndedAt = ""
 			}
-			if previousRevision > 0 && routeChanged &&
-				phase.Status == PhaseInProgress && phase.Dispatch != nil {
+			if routeChanged && phase.Status == PhaseInProgress && phase.Dispatch != nil {
 				if name == reboundPhase {
 					phase.Dispatch.RouteRevision = decision.Revision
 					phase.Dispatch.RouteDigest = decision.Digest
-				} else {
+				} else if previousRevision > 0 {
 					phase.Status = PhaseEscalated
 					phase.Reason = "route revision invalidated active dispatch"
 					phase.Outcome = ""
@@ -1119,7 +1169,6 @@ func (ws *WorkflowState) ApplyRoute(decision RouteDecision) error {
 	ws.Version = WorkflowStateVersion
 	ws.Route = &copyDecision
 	if routeChanged && previousRevision > 0 {
-		ws.PR = PRRef{}
 		ws.FinalResult = nil
 		if phase := ws.Phases["open-pr"]; phase.Status == PhaseDone {
 			phase.Status = PhaseEscalated
@@ -1130,6 +1179,9 @@ func (ws *WorkflowState) ApplyRoute(decision RouteDecision) error {
 			ws.Phases["open-pr"] = phase
 		}
 		ws.invalidateEvidenceForRouteChange(reboundPhase)
+		if inputsChanged {
+			ws.Evidence = DeliveryEvidence{}
+		}
 	}
 	return nil
 }
@@ -1139,10 +1191,58 @@ func canRebindActiveDispatch(previous, next RouteDecision) bool {
 		next.Class == RouteEasy &&
 		!previous.ForcedFull &&
 		!next.ForcedFull &&
+		previous.Snapshot.InputRevision == next.Snapshot.InputRevision &&
+		rebindRelevantFactsEqual(previous.Facts, next.Facts) &&
 		slices.Equal(previous.SelectedPhases, next.SelectedPhases) &&
 		slices.Equal(previous.ReviewRoles, next.ReviewRoles) &&
 		previous.EffectiveReviewOwner() == next.EffectiveReviewOwner() &&
 		previous.ValidationOwner == next.ValidationOwner
+}
+
+func rebindRelevantFactsEqual(previous, next RouteFacts) bool {
+	previousPolicy, previousErr := NormalizeGatePolicy(previous.GatePolicy)
+	nextPolicy, nextErr := NormalizeGatePolicy(next.GatePolicy)
+	if previousErr != nil || nextErr != nil || !reflect.DeepEqual(previousPolicy, nextPolicy) {
+		return false
+	}
+	if !slices.Equal(previous.RiskTriggers, next.RiskTriggers) {
+		return false
+	}
+	previous.GatePolicy = GatePolicy{}
+	previous.RiskTriggers = nil
+	previous.ActualFileCount = 0
+	previous.ActualChangedLines = 0
+	previous.RiskAssessmentComplete = false
+	previous.AssessmentFingerprint = ""
+	next.GatePolicy = GatePolicy{}
+	next.RiskTriggers = nil
+	next.ActualFileCount = 0
+	next.ActualChangedLines = 0
+	next.RiskAssessmentComplete = false
+	next.AssessmentFingerprint = ""
+	return reflect.DeepEqual(previous, next)
+}
+
+func (ws *WorkflowState) reopenImplementationDependents(selected map[string]bool, reason string) {
+	reopen := false
+	for _, name := range ws.Order {
+		if name == EvidenceOwnerImplement {
+			reopen = true
+		}
+		if !reopen || !selected[name] {
+			continue
+		}
+		phase := ws.Phases[name]
+		if phase.Status != PhaseDone {
+			continue
+		}
+		phase.Status = PhaseEscalated
+		phase.Reason = reason
+		phase.Outcome = ""
+		phase.EndedAt = ""
+		phase.Dispatch = nil
+		ws.Phases[name] = phase
+	}
 }
 
 func (ws *WorkflowState) invalidateEvidenceForRouteChange(reboundPhase string) {
