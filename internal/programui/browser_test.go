@@ -877,6 +877,127 @@ func TestBrowserPreservesPreHydrationRoadmapSelection(t *testing.T) {
 	}
 }
 
+func TestBrowserRoadmapRebuildsWhenDependenciesChange(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	initial := browserTestSnapshot()
+	initial.Progress.Total = 3
+	initial.Graph.Nodes = append(initial.Graph.Nodes,
+		programview.GraphNodeDTO{ID: "w3", Title: "Third task", Lane: "dispatched", Layer: 1},
+	)
+	initial.Graph.Edges = []programview.GraphEdgeDTO{{From: "w1", To: "w3"}}
+	initial.Graph.Layers = [][]string{{"w1", "w2"}, {"w3"}}
+	initial.Items = append(initial.Items, programview.ItemDTO{
+		ID: "w3", Title: "Third task", Status: "dispatched", Lane: "dispatched", Priority: "P1",
+		Dependencies: []string{"w1"}, Dependents: []string{}, Contracts: []string{},
+		Notes: []string{}, Decisions: []programview.DecisionDTO{}, Warnings: []string{},
+		Mailbox: programview.MailboxDTO{InboxIDs: []string{}, OutboxIDs: []string{}},
+	})
+	initial.Items[0].Dependents = []string{"w3"}
+
+	updated := initial
+	updated.Graph.Nodes = append([]programview.GraphNodeDTO(nil), initial.Graph.Nodes...)
+	updated.Graph.Nodes[1].Layer = 1
+	updated.Graph.Edges = []programview.GraphEdgeDTO{{From: "w1", To: "w2"}}
+	updated.Graph.Layers = [][]string{{"w1"}, {"w2", "w3"}}
+	updated.Items = append([]programview.ItemDTO(nil), initial.Items...)
+	updated.Items[0].Dependents = []string{"w2"}
+	updated.Items[1].Dependencies = []string{"w1"}
+	updated.Items[2].Dependencies = []string{}
+
+	feed := newSnapshotFeed(initial, time.Minute, time.Now, func() (programview.Snapshot, error) {
+		return updated, nil
+	})
+	url := startBrowserHTTPHandler(t, func(port int) http.Handler {
+		return newHandler(
+			initial.Program.Slug,
+			strconv.Itoa(port),
+			newSnapshotCache(time.Minute, time.Now, nil),
+			feed,
+			nil,
+		)
+	})
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+	if err := chromedp.Run(browser,
+		chromedp.Navigate(url),
+		chromedp.Poll(`state.snapshot?.schema === "relay.program.v1" &&
+			document.querySelectorAll(".card").length === 3`, nil),
+		chromedp.Evaluate(`
+			(() => {
+				const first = document.querySelector('.card[data-item="w1"]');
+				first.focus();
+				first.dispatchEvent(new KeyboardEvent(
+					"keydown", {key: "ArrowRight", bubbles: true, cancelable: true}));
+			})()
+		`, nil),
+		chromedp.Poll(`state.selected === "w2" &&
+			document.activeElement?.dataset.item === "w2"`, nil),
+	); err != nil {
+		t.Fatalf("initial roadmap selection: %v", err)
+	}
+
+	feed.Refresh()
+	eventually(t, time.Second, func() bool {
+		return slices.Equal(feed.Get().Graph.Layers[0], []string{"w1"})
+	})
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+		chromedp.Poll(`JSON.stringify(
+			Array.from(document.querySelectorAll("#graph-nodes > .stage"),
+				(stage) => Array.from(stage.querySelectorAll(":scope > .card"),
+					(card) => card.dataset.item))) === JSON.stringify([["w1"], ["w2", "w3"]]) &&
+			JSON.stringify(Array.from(document.querySelectorAll("#graph-nodes > .stage"),
+				(stage) => stage.dataset.label)) ===
+				JSON.stringify(["Stage 1 · 1 task", "Stage 2 · 2 tasks"]) &&
+			document.querySelector('.card[data-item="w2"]').dataset.stage === "1" &&
+			state.selected === "w2" &&
+			document.activeElement?.dataset.item === "w2" &&
+			JSON.stringify(state.connectorPaths.map(({from, to, downward}) =>
+				({from, to, downward}))) ===
+				JSON.stringify([{from: "w1", to: "w2", downward: true}])`, nil),
+		chromedp.Evaluate(`
+			document.activeElement.dispatchEvent(new KeyboardEvent(
+				"keydown", {key: "ArrowUp", bubbles: true, cancelable: true}))
+		`, nil),
+		chromedp.Poll(`state.selected === "w1" &&
+			document.activeElement?.dataset.item === "w1"`, nil),
+		chromedp.Evaluate(`
+			window.__relayStableCards = Array.from(document.querySelectorAll(".card"));
+			window.__relayNextGeneration = state.programGeneration + 1;
+		`, nil),
+	); err != nil {
+		t.Fatalf("dependency-only roadmap refresh: %v", err)
+	}
+
+	feed.Refresh()
+	eventually(t, time.Second, func() bool { return !feed.Get().Refresh.Refreshing })
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+		chromedp.Poll(`state.programGeneration >= window.__relayNextGeneration &&
+			programController === null`, nil),
+		chromedp.Poll(`window.__relayStableCards.every(
+			(card, index) => card === document.querySelectorAll(".card")[index]) &&
+			state.selected === "w1" &&
+			document.activeElement?.dataset.item === "w1"`, nil),
+	); err != nil {
+		t.Fatalf("unchanged roadmap refresh: %v", err)
+	}
+}
+
 func TestBrowserShowsSixSecondExternalRefreshProvenance(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")

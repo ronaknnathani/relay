@@ -854,13 +854,10 @@ function renderRoadmap() {
   const plan = planOf();
   renderRoadmapSummary(graph, plan, nodes);
 
-  state.cards.clear();
-  state.connectorPaths = [];
-  if (dom.graphEdges.firstChild) {
-    dom.graphEdges.replaceChildren();
-  }
-
   if (nodes.length === 0) {
+    state.cards.clear();
+    state.connectorPaths = [];
+    dom.graphEdges.replaceChildren();
     dom.roadmapEmpty.hidden = false;
     dom.roadmapEmpty.textContent = state.snapshot
       ? "No work items yet. The tech lead adds tasks when the program is planned."
@@ -881,8 +878,20 @@ function renderRoadmap() {
     : null;
   const hasSelection = Boolean(selectedItem());
   const existingCards = Array.from(dom.graphNodes.querySelectorAll(".card"));
-  if (existingCards.length === nodes.length &&
+  const existingStages = Array.from(dom.graphNodes.children);
+  const sameStages = existingStages.length === stages.length &&
+    stages.every((entries, index) => {
+      const expected = entries.map((entry) => typeof entry === "string" ? entry : entry.id);
+      const rendered = Array.from(existingStages[index].children)
+        .filter((child) => child.classList.contains("card"))
+        .map((card) => card.dataset.item);
+      return expected.length === rendered.length &&
+        expected.every((id, itemIndex) => id === rendered[itemIndex]);
+    });
+  if (sameStages &&
+      existingCards.length === nodes.length &&
       existingCards.every((card) => nodes.some((node) => node.id === card.dataset.item))) {
+    state.cards.clear();
     existingCards.forEach((card, index) => {
       const id = card.dataset.item;
       const item = itemByID(id);
@@ -890,13 +899,23 @@ function renderRoadmap() {
       taskCard(node, item, index, hasSelection, card);
       state.cards.set(id, card);
     });
-    const renderedEdges = Array.from(dom.graphEdges.querySelectorAll(".edge"))
-      .reduce((total, path) => total + count(path.dataset.edgeCount), 0);
-    if (renderedEdges !== list(graph.edges).length) {
+    const edges = list(graph.edges);
+    const sameEdges = edges.length === state.connectorPaths.length &&
+      edges.every((edge, index) => {
+        const rendered = state.connectorPaths[index];
+        return rendered && rendered.from === edge.from && rendered.to === edge.to;
+      });
+    if (!sameEdges) {
       drawConnectorsForCurrentGraph();
     }
     return true;
   }
+  const focusedItem = dom.graphNodes.contains(document.activeElement)
+    ? document.activeElement.dataset.item
+    : "";
+  state.cards.clear();
+  state.connectorPaths = [];
+  dom.graphEdges.replaceChildren();
   let position = 0;
   let stageIndex = 0;
   let itemIndex = 0;
@@ -942,6 +961,9 @@ function renderRoadmap() {
     ? nodes.length
     : INITIAL_ROADMAP_CARDS;
   if (renderBatch(initialBatch)) {
+    if (focusedItem && state.cards.has(focusedItem)) {
+      state.cards.get(focusedItem).focus({ preventScroll: true });
+    }
     drawConnectorsForCurrentGraph();
     return true;
   }
@@ -951,6 +973,9 @@ function renderRoadmap() {
     }
     if (renderBatch(ROADMAP_RENDER_BATCH)) {
       state.dirtyTabs.delete("roadmap");
+      if (focusedItem && state.cards.has(focusedItem)) {
+        state.cards.get(focusedItem).focus({ preventScroll: true });
+      }
       drawConnectorsForCurrentGraph();
       return;
     }
