@@ -237,6 +237,46 @@ func createWorkerFixture(t *testing.T, status program.ItemStatus) (program.Progr
 	return p, loadedItem, manifest
 }
 
+func createLegacyWorkerFixture(
+	t *testing.T, status program.ItemStatus,
+) (program.Program, program.WorkItem, project.Manifest) {
+	t.Helper()
+	p, item, manifest := createWorkerFixture(t, status)
+	expectedWorktree := filepath.Join(
+		manifest.Repo, ".worktrees", strings.ReplaceAll(manifest.Branch, "/", "_"),
+	)
+	runArchiveGit(t, manifest.Repo, "worktree", "move", *manifest.Worktree, expectedWorktree)
+	manifest.Worktree = &expectedWorktree
+	if err := project.Save(
+		project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	programPath := program.ManifestPath(program.ActiveDir(), p.Slug)
+	loaded, err := program.Load(programPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range loaded.Items {
+		if loaded.Items[i].ID == item.ID {
+			loaded.Items[i].ProjectBranch = ""
+			loaded.Items[i].ProjectWorktree = ""
+		}
+	}
+	if err := program.Save(programPath, loaded); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := program.Load(programPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyItem, ok := reloaded.Item(item.ID)
+	if !ok {
+		t.Fatal("legacy item disappeared")
+	}
+	return reloaded, legacyItem, manifest
+}
+
 // installManagedHerdrFakes puts a test inside a healthy Herdr workspace, which
 // every managed program and managed child command now requires.
 func installManagedHerdrFakes(t *testing.T, client *fakeHerdrClient) *fakeHerdrClient {
@@ -336,6 +376,260 @@ func TestProgramWorkerStartCreatesRunsPollsAndRenames(t *testing.T) {
 	}
 	if !reflect.DeepEqual(programAfter, programBefore) || !reflect.DeepEqual(projectAfter, projectBefore) {
 		t.Fatal("worker start persisted runtime state")
+	}
+}
+
+func TestProgramWorkerStartRepairsLegacyDispatchIdentity(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createLegacyWorkerFixture(t, program.ItemDispatched)
+	worker := herdr.Agent{
+		Status: herdr.StatusIdle, PaneID: "w7:p9", TabID: "w7:t9", WorkspaceID: "w7",
+		TerminalTitle: "relay:" + manifest.Slug + " - GitHub Copilot",
+		ForegroundCWD: *manifest.Worktree,
+	}
+	client := &fakeHerdrClient{
+		agentResponses: [][]herdr.Agent{nil, nil, {worker}},
+		tab:            herdr.Tab{ID: "w7:t9", RootPaneID: "w7:p9"},
+	}
+	installWorkerFakes(t, client)
+
+	if _, err := runProgramCommand(t, "worker", "start", p.Slug, item.ID, "--json"); err != nil {
+		t.Fatalf("worker start: %v", err)
+	}
+	reloaded, err := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repaired, ok := reloaded.Item(item.ID)
+	if !ok {
+		t.Fatal("repaired item disappeared")
+	}
+	if repaired.ProjectBranch != manifest.Branch ||
+		repaired.ProjectWorktree != *manifest.Worktree {
+		t.Fatalf(
+			"repaired identity = %q/%q, want %q/%q",
+			repaired.ProjectBranch, repaired.ProjectWorktree,
+			manifest.Branch, *manifest.Worktree,
+		)
+	}
+	if len(client.created) != 1 || len(client.runPane) != 1 || len(client.renamed) != 1 {
+		t.Fatalf(
+			"worker was not started after repair: created=%v run=%v renamed=%v",
+			client.created, client.runPane, client.renamed,
+		)
+	}
+}
+
+func TestProgramWorkerEnsureRepairsLegacyDispatchIdentity(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createLegacyWorkerFixture(t, program.ItemDispatched)
+	worker := herdr.Agent{
+		Status: herdr.StatusIdle, PaneID: "w7:p9", TabID: "w7:t9", WorkspaceID: "w7",
+		TerminalTitle: "relay:" + manifest.Slug + " - GitHub Copilot",
+		ForegroundCWD: *manifest.Worktree,
+	}
+	client := &fakeHerdrClient{agentResponses: [][]herdr.Agent{{worker}}}
+	installWorkerFakes(t, client)
+
+	out, err := runProgramCommand(t, "worker", "ensure", p.Slug, "--json")
+	if err != nil {
+		t.Fatalf("worker ensure: %v", err)
+	}
+	var result programWorkerEnsureOutput
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode output %q: %v", out, err)
+	}
+	if len(result.Warnings) != 0 || len(result.Entries) != 1 ||
+		result.Entries[0].Worker == nil || !result.Entries[0].Worker.Adopted {
+		t.Fatalf("worker ensure result = %+v, want adopted repaired worker", result)
+	}
+	reloaded, err := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repaired, ok := reloaded.Item(item.ID)
+	if !ok {
+		t.Fatal("repaired item disappeared")
+	}
+	if repaired.ProjectBranch != manifest.Branch ||
+		repaired.ProjectWorktree != *manifest.Worktree {
+		t.Fatalf(
+			"repaired identity = %q/%q, want %q/%q",
+			repaired.ProjectBranch, repaired.ProjectWorktree,
+			manifest.Branch, *manifest.Worktree,
+		)
+	}
+}
+
+func TestProgramWorkerStartRejectsLegacyManifestRedirectToVictimWorktree(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createLegacyWorkerFixture(t, program.ItemDispatched)
+	originalBranch := manifest.Branch
+	originalWorktree := *manifest.Worktree
+	victimBranch := "test/legacy-worker-victim"
+	victimWorktree := addArchiveWorktree(t, manifest.Repo, "legacy-worker-victim", victimBranch)
+	manifest.Branch = victimBranch
+	manifest.Worktree = &victimWorktree
+	if err := project.Save(
+		project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{agentResponses: [][]herdr.Agent{{{
+		Status: herdr.StatusIdle, PaneID: "w7:p9", TabID: "w7:t9", WorkspaceID: "w7",
+		TerminalTitle: "relay:" + manifest.Slug + " - GitHub Copilot",
+		ForegroundCWD: victimWorktree,
+	}}}}
+	installWorkerFakes(t, client)
+
+	_, err := runProgramCommand(t, "worker", "start", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), "expected canonical worktree path") {
+		t.Fatalf("worker start error = %v, want victim worktree rejection", err)
+	}
+	if client.agentCalls != 0 || len(client.created) != 0 ||
+		len(client.runPane) != 0 || len(client.renamed) != 0 {
+		t.Fatalf(
+			"victim rejection mutated Herdr: agents=%d created=%v run=%v renamed=%v",
+			client.agentCalls, client.created, client.runPane, client.renamed,
+		)
+	}
+	reloaded, loadErr := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	unchanged, _ := reloaded.Item(item.ID)
+	if unchanged.ProjectBranch != "" || unchanged.ProjectWorktree != "" {
+		t.Fatalf("victim identity was persisted: %+v", unchanged)
+	}
+	if !pathExists(originalWorktree) || !gitx.BranchExists(manifest.Repo, originalBranch) ||
+		!pathExists(victimWorktree) || !gitx.BranchExists(manifest.Repo, victimBranch) {
+		t.Fatal("legacy worker repair changed original or victim resources")
+	}
+}
+
+func TestProgramWorkerStartRejectsAmbiguousLegacyResourceOwnership(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createLegacyWorkerFixture(t, program.ItemDispatched)
+	duplicate := manifest
+	duplicate.Slug = "duplicate-legacy-worker"
+	duplicate.Program = "other-program"
+	duplicate.ProgramItem = "other-item"
+	duplicatePath := project.ManifestPath(project.ActiveDir(), duplicate.Slug)
+	if err := os.MkdirAll(filepath.Dir(duplicatePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(duplicatePath, duplicate); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{}
+	installWorkerFakes(t, client)
+
+	_, err := runProgramCommand(t, "worker", "start", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), duplicate.Slug) ||
+		!strings.Contains(err.Error(), "also claimed") {
+		t.Fatalf("worker start error = %v, want ambiguous ownership rejection", err)
+	}
+	if client.agentCalls != 0 || len(client.created) != 0 ||
+		len(client.runPane) != 0 || len(client.renamed) != 0 {
+		t.Fatalf(
+			"ownership rejection mutated Herdr: agents=%d created=%v run=%v renamed=%v",
+			client.agentCalls, client.created, client.runPane, client.renamed,
+		)
+	}
+	reloaded, loadErr := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	unchanged, _ := reloaded.Item(item.ID)
+	if unchanged.ProjectBranch != "" || unchanged.ProjectWorktree != "" {
+		t.Fatalf("ambiguous identity was persisted: %+v", unchanged)
+	}
+	if !pathExists(*manifest.Worktree) || !gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("ambiguous repair changed the shared resources")
+	}
+}
+
+func TestProgramWorkerStartLegacyRepairSaveFailureStopsBeforeHerdr(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createLegacyWorkerFixture(t, program.ItemDispatched)
+	previousSave := programWorkerStartSaveProgram
+	programWorkerStartSaveProgram = func(string, program.Program) error {
+		return errors.New("injected worker identity save failure")
+	}
+	t.Cleanup(func() { programWorkerStartSaveProgram = previousSave })
+	client := &fakeHerdrClient{}
+	installWorkerFakes(t, client)
+
+	_, err := runProgramCommand(t, "worker", "start", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), "injected worker identity save failure") ||
+		!strings.Contains(err.Error(), "no Herdr state was changed") {
+		t.Fatalf("worker start error = %v, want fail-closed save failure", err)
+	}
+	if client.agentCalls != 0 || len(client.created) != 0 ||
+		len(client.runPane) != 0 || len(client.renamed) != 0 {
+		t.Fatalf(
+			"save failure mutated Herdr: agents=%d created=%v run=%v renamed=%v",
+			client.agentCalls, client.created, client.runPane, client.renamed,
+		)
+	}
+	reloaded, loadErr := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	unchanged, _ := reloaded.Item(item.ID)
+	if unchanged.ProjectBranch != "" || unchanged.ProjectWorktree != "" {
+		t.Fatalf("failed repair changed the item: %+v", unchanged)
+	}
+	if !pathExists(*manifest.Worktree) || !gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("save failure changed the child resources")
+	}
+}
+
+func TestProgramWorkerStartLegacyRepairRevalidatesSavedIdentityBeforeHerdr(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createLegacyWorkerFixture(t, program.ItemDispatched)
+	previousSave := programWorkerStartSaveProgram
+	programWorkerStartSaveProgram = func(path string, candidate program.Program) error {
+		if err := program.Save(path, candidate); err != nil {
+			return err
+		}
+		redirected, err := program.Load(path)
+		if err != nil {
+			return err
+		}
+		for i := range redirected.Items {
+			if redirected.Items[i].ID == item.ID {
+				redirected.Items[i].ProjectWorktree = filepath.Join(
+					manifest.Repo, ".worktrees", "post-save-victim",
+				)
+			}
+		}
+		return program.Save(path, redirected)
+	}
+	t.Cleanup(func() { programWorkerStartSaveProgram = previousSave })
+	client := &fakeHerdrClient{}
+	installWorkerFakes(t, client)
+
+	_, err := runProgramCommand(t, "worker", "start", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), "reloaded program/item/manifest identity") ||
+		!strings.Contains(err.Error(), "no Herdr state was changed") {
+		t.Fatalf("worker start error = %v, want post-save revalidation failure", err)
+	}
+	if client.agentCalls != 0 || len(client.created) != 0 ||
+		len(client.runPane) != 0 || len(client.renamed) != 0 {
+		t.Fatalf(
+			"post-save mismatch mutated Herdr: agents=%d created=%v run=%v renamed=%v",
+			client.agentCalls, client.created, client.runPane, client.renamed,
+		)
+	}
+	if !pathExists(*manifest.Worktree) || !gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("post-save mismatch changed the child resources")
 	}
 }
 
