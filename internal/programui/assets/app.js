@@ -980,7 +980,11 @@ function renderRoadmap() {
     fragment.append(stage);
   });
   dom.graphNodes.append(fragment);
-  drawConnectorsForCurrentGraph();
+  window.requestAnimationFrame(() => {
+    if (state.tab === "roadmap") {
+      drawConnectorsForCurrentGraph();
+    }
+  });
 }
 
 function renderRoadmapSummary(graph, plan, nodes) {

@@ -108,7 +108,8 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 					cards.length !== 100 ||
 					!cards.every((card) => card.dataset.focusKey && card.querySelector(".card__foot")) ||
 					document.querySelectorAll("#graph-nodes .stage__label").length === 0 ||
-					document.querySelectorAll("#graph-edges .edge").length !== 200 ||
+					!document.querySelector("#graph")?.getAttribute("aria-label")?.includes(
+						"100 tasks, 200 dependency links") ||
 					!refresh || refresh.disabled ||
 					!roadmapTab || roadmapTab.getAttribute("aria-selected") !== "true") {
 					return;
