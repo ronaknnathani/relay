@@ -67,14 +67,14 @@ func Classify(input Input) (Decision, error) {
 	if err := validateInput(input); err != nil {
 		return Decision{}, err
 	}
-	class := classify(input)
-	selected := selectedPhases(class, input, input.AuthorRequestedFullWorkflow)
+	class := project.MinimumRouteClass(input)
+	selected := project.RequiredRoutePhases(class, input, input.AuthorRequestedFullWorkflow)
 	decision := Decision{
 		Class:           class,
 		ForcedFull:      input.AuthorRequestedFullWorkflow,
 		SelectedPhases:  selected,
 		PhaseReasons:    phaseReasons(class, selected, input),
-		ReviewRoles:     reviewRoles(input),
+		ReviewRoles:     project.RequiredReviewRoles(input),
 		ReviewOwner:     project.EvidenceOwnerReview,
 		ValidationOwner: project.EvidenceOwnerValidate,
 		StackRationale:  strings.TrimSpace(input.StackRationale),
@@ -97,12 +97,12 @@ func PreserveMonotonic(previous, next Decision, reason string) (Decision, error)
 	next.Facts = mergeFacts(previous.Facts, next.Facts)
 	next.ForcedFull = previous.ForcedFull || next.ForcedFull ||
 		next.Facts.AuthorRequestedFullWorkflow
-	if factsClass := classify(next.Facts); project.RouteRank(factsClass) > project.RouteRank(next.Class) {
+	if factsClass := project.MinimumRouteClass(next.Facts); project.RouteRank(factsClass) > project.RouteRank(next.Class) {
 		next.Class = factsClass
 	}
-	next.SelectedPhases = selectedPhases(next.Class, next.Facts, next.ForcedFull)
+	next.SelectedPhases = project.RequiredRoutePhases(next.Class, next.Facts, next.ForcedFull)
 	next.PhaseReasons = phaseReasons(next.Class, next.SelectedPhases, next.Facts)
-	next.ReviewRoles = reviewRoles(next.Facts)
+	next.ReviewRoles = project.RequiredReviewRoles(next.Facts)
 	next.ReviewOwner = project.EvidenceOwnerReview
 	next.ValidationOwner = project.EvidenceOwnerValidate
 	if next.Class == ClassEasy && !next.ForcedFull {
@@ -180,9 +180,9 @@ func Escalate(current Decision, target, reason string, trigger RiskTrigger) (Dec
 	}
 	next.Class = target
 	next.ForcedFull = current.ForcedFull
-	next.SelectedPhases = selectedPhases(target, current.Facts, current.ForcedFull)
+	next.SelectedPhases = project.RequiredRoutePhases(target, current.Facts, current.ForcedFull)
 	next.PhaseReasons = phaseReasons(target, next.SelectedPhases, current.Facts)
-	next.ReviewRoles = reviewRoles(current.Facts)
+	next.ReviewRoles = project.RequiredReviewRoles(current.Facts)
 	next.ReviewOwner = project.EvidenceOwnerReview
 	next.ValidationOwner = project.EvidenceOwnerValidate
 	return PreserveMonotonic(current, next, reason)
@@ -214,56 +214,6 @@ func validateInput(input Input) error {
 		return fmt.Errorf("stack decomposition requires a rationale")
 	}
 	return nil
-}
-
-func classify(input Input) string {
-	if input.StackDecomposition {
-		return ClassStackCandidate
-	}
-	if len(input.RiskTriggers) > 0 {
-		return ClassHighRisk
-	}
-	if project.EasyRouteEligible(input) {
-		return ClassEasy
-	}
-	return ClassStandard
-}
-
-func selectedPhases(class string, input Input, forcedFull bool) []string {
-	if forcedFull {
-		return append([]string(nil), AllPhases...)
-	}
-	switch class {
-	case ClassEasy:
-		return []string{"route", "implement", "open-pr"}
-	case ClassHighRisk, ClassStackCandidate:
-		selected := []string{"route", "clarify", "plan", "implement"}
-		if simplifySelected(input) {
-			selected = append(selected, "simplify")
-		}
-		return append(selected, "review", "validate", "open-pr")
-	default:
-		selected := []string{"route"}
-		if !input.RequestedBehaviorExplicit || input.UnresolvedDecision {
-			selected = append(selected, "clarify")
-		}
-		if input.UnresolvedDecision || sizeExceedsEasy(input) {
-			selected = append(selected, "plan")
-		}
-		selected = append(selected, "implement")
-		if simplifySelected(input) {
-			selected = append(selected, "simplify")
-		}
-		return append(selected, "review", "validate", "open-pr")
-	}
-}
-
-func sizeExceedsEasy(input Input) bool {
-	return project.RouteSizeExceedsEasy(input)
-}
-
-func simplifySelected(input Input) bool {
-	return project.RouteNeedsSimplification(input)
 }
 
 func phaseReasons(class string, selected []string, input Input) map[string]string {
@@ -316,70 +266,6 @@ func selectedReason(selected []string, phase, yes, no string) string {
 		return yes
 	}
 	return no
-}
-
-func reviewRoles(input Input) []string {
-	roles := []string{project.ReviewRoleCodeReviewer}
-	for _, role := range []struct {
-		selected bool
-		name     string
-	}{
-		{input.ChangesTests, project.ReviewRolePRTestAnalyzer},
-		{input.ChangesDocumentationComments, project.ReviewRoleCommentAnalyzer},
-		{input.ChangesTypeDesign, project.ReviewRoleTypeDesignAnalyzer},
-		{input.HistorySensitive, project.ReviewRoleGitHistory},
-		{input.ChangesRepositoryGuidelines, project.ReviewRolePriorPRHistory},
-	} {
-		if role.selected {
-			roles = append(roles, role.name)
-		}
-	}
-	if input.GeneratedChurn {
-		roles = append(roles, project.ReviewRolePRTestAnalyzer)
-	}
-	for _, role := range []struct {
-		name     string
-		triggers []RiskTrigger
-	}{
-		{
-			project.ReviewRoleTypeDesignAnalyzer,
-			[]RiskTrigger{RiskPublicContract, RiskPersistenceMigration},
-		},
-		{
-			project.ReviewRoleSecurity,
-			[]RiskTrigger{RiskAuthSecurity, RiskDependencyBuildRelease, RiskDestructiveOperation},
-		},
-		{
-			project.ReviewRoleSilentFailureHunter,
-			[]RiskTrigger{RiskConcurrencyDistributed, RiskDestructiveOperation},
-		},
-		{
-			project.ReviewRoleGitHistory,
-			[]RiskTrigger{RiskPublicContract, RiskPersistenceMigration, RiskConcurrencyDistributed},
-		},
-		{
-			project.ReviewRolePriorPRHistory,
-			[]RiskTrigger{RiskPublicContract, RiskUnresolvedReviewCI, RiskFailedGate},
-		},
-		{project.ReviewRoleCommentAnalyzer, []RiskTrigger{RiskUnresolvedReviewCI}},
-		{
-			project.ReviewRolePRTestAnalyzer,
-			[]RiskTrigger{
-				RiskDependencyBuildRelease,
-				RiskGeneratedArtifact,
-				RiskUnresolvedReviewCI,
-				RiskFailedGate,
-			},
-		},
-	} {
-		for _, trigger := range role.triggers {
-			if slices.Contains(input.RiskTriggers, trigger) && !slices.Contains(roles, role.name) {
-				roles = append(roles, role.name)
-				break
-			}
-		}
-	}
-	return orderedUnion(allReviewRoles(), nil, roles)
 }
 
 func validClass(class string) bool {

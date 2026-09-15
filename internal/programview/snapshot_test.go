@@ -789,6 +789,10 @@ func TestBuildMapsRoutedWorkflowState(t *testing.T) {
 		BaseSHA: current.BaseSHA, HeadSHA: current.HeadSHA, Fingerprint: current.Fingerprint,
 		FileCount: current.FileCount, ChangedLines: current.ChangedLines,
 	}
+	snapshot.InputRevision, err = project.ProjectInputRevision(childDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	reasons := make(map[string]string, len(project.AdaptiveDeliveryPhases))
 	for _, phase := range project.AdaptiveDeliveryPhases {
 		reasons[phase] = "test route decision"
@@ -806,7 +810,7 @@ func TestBuildMapsRoutedWorkflowState(t *testing.T) {
 			RequestedBehaviorExplicit: true,
 			GatePolicy:                project.GatePolicy{Mode: project.GatePolicyNone},
 			RiskAssessmentComplete:    true,
-			AssessmentFingerprint:     snapshot.Fingerprint,
+			AssessmentFingerprint:     snapshot.Revision(),
 			PredictedSizeKnown:        true,
 			PredictedFileCount:        1,
 			PredictedChangedLines:     10,
@@ -852,7 +856,7 @@ func TestBuildMapsRoutedWorkflowState(t *testing.T) {
 	item := findSnapshotItem(t, mustBuild(t, p.Slug).Items, "w1")
 	workflow := item.Child.Workflow
 	if workflow == nil || workflow.RouteClass != project.RouteEasy || workflow.SubagentCount != 1 ||
-		!workflow.ReviewFresh || workflow.ValidationFresh || workflow.CurrentPhase != "plan" {
+		!workflow.ReviewFresh || workflow.ValidationFresh || workflow.CurrentPhase != "implement" {
 		t.Fatalf("routed workflow = %+v", workflow)
 	}
 	if workflow.Phases[1].Reason != "requirements are explicit" ||

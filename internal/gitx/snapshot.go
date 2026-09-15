@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,6 +22,39 @@ type RepoSnapshot struct {
 	Fingerprint  string `json:"fingerprint"`
 	FileCount    int    `json:"file_count"`
 	ChangedLines int    `json:"changed_lines"`
+}
+
+// SnapshotBaseRef returns the current base branch ref used for change sizing
+// and freshness. The immutable start SHA is only a fallback when no base ref
+// can be resolved.
+func SnapshotBaseRef(repo, baseBranch, startSHA string) string {
+	candidates := make([]string, 0, 2)
+	baseBranch = strings.TrimSpace(baseBranch)
+	if baseBranch == "HEAD" {
+		return baseBranch
+	}
+	if baseBranch != "" {
+		if HasOrigin(repo) && !strings.Contains(baseBranch, "/") {
+			candidates = append(candidates, "origin/"+baseBranch)
+		}
+		candidates = append(candidates, baseBranch)
+	}
+	selected := ""
+	for _, candidate := range candidates {
+		if RevParse(repo, candidate) == "" {
+			continue
+		}
+		if selected == "" || IsBranchReachable(repo, selected, candidate) {
+			selected = candidate
+		}
+	}
+	if selected != "" {
+		return selected
+	}
+	if strings.TrimSpace(startSHA) != "" {
+		return startSHA
+	}
+	return "HEAD"
 }
 
 // Snapshot fingerprints all committed, staged, unstaged, and untracked work
@@ -45,15 +79,15 @@ func Snapshot(repo, baseRef string) (RepoSnapshot, error) {
 	baseSHA = strings.TrimSpace(baseSHA)
 	headSHA = strings.TrimSpace(headSHA)
 
-	diff, err := gitBytes(root, "diff", "--no-ext-diff", "--binary", "--full-index", baseSHA, "--")
+	diff, err := gitBytes(root, "diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", baseSHA, "--")
 	if err != nil {
 		return RepoSnapshot{}, fmt.Errorf("read tracked diff in %s: %w", root, err)
 	}
-	numstat, err := gitOutput(root, "diff", "--numstat", baseSHA, "--")
+	numstat, err := gitOutput(root, "diff", "--no-ext-diff", "--no-textconv", "--numstat", baseSHA, "--")
 	if err != nil {
 		return RepoSnapshot{}, fmt.Errorf("measure tracked diff in %s: %w", root, err)
 	}
-	names, err := gitBytes(root, "diff", "--name-only", "-z", baseSHA, "--")
+	names, err := gitBytes(root, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", baseSHA, "--")
 	if err != nil {
 		return RepoSnapshot{}, fmt.Errorf("list tracked changes in %s: %w", root, err)
 	}
@@ -73,6 +107,9 @@ func Snapshot(repo, baseRef string) (RepoSnapshot, error) {
 	hash := sha256.New()
 	hash.Write([]byte("base\x00" + baseSHA + "\x00head\x00" + headSHA + "\x00tracked\x00"))
 	hash.Write(diff)
+	if err := writeTrackedGitlinkDigests(hash, root, make(map[string]bool)); err != nil {
+		return RepoSnapshot{}, err
+	}
 	for _, relative := range untracked {
 		file, err := readUntracked(root, relative)
 		if err != nil {
@@ -98,7 +135,7 @@ func gitOutput(repo string, args ...string) (string, error) {
 }
 
 func gitBytes(repo string, args ...string) ([]byte, error) {
-	command := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	command := snapshotGitCommand(repo, args...)
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	output, err := command.Output()
@@ -199,6 +236,20 @@ func readUntracked(root, relative string) (untrackedFile, error) {
 }
 
 func nestedRepositoryDigest(repo string) ([]byte, error) {
+	return nestedRepositoryDigestVisited(repo, make(map[string]bool))
+}
+
+func nestedRepositoryDigestVisited(repo string, visited map[string]bool) ([]byte, error) {
+	canonical, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		return nil, fmt.Errorf("resolve nested Git repository %s: %w", repo, err)
+	}
+	if visited[canonical] {
+		return nil, fmt.Errorf("nested Git repository cycle at %s", repo)
+	}
+	visited[canonical] = true
+	defer delete(visited, canonical)
+
 	head, err := gitOutput(repo, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		if _, symbolicErr := gitOutput(repo, "symbolic-ref", "-q", "HEAD"); symbolicErr != nil {
@@ -218,11 +269,15 @@ func nestedRepositoryDigest(repo string) ([]byte, error) {
 		repo,
 		"diff",
 		"--no-ext-diff",
+		"--no-textconv",
 		"--binary",
 		"--full-index",
 		"--",
 	); err != nil {
 		return nil, fmt.Errorf("read nested Git worktree %s: %w", repo, err)
+	}
+	if err := writeTrackedGitlinkDigests(identity, repo, visited); err != nil {
+		return nil, err
 	}
 
 	untrackedRaw, err := gitBytes(repo, "ls-files", "--others", "--exclude-standard", "-z")
@@ -240,6 +295,63 @@ func nestedRepositoryDigest(repo string) ([]byte, error) {
 		identity.Write(digest)
 	}
 	return []byte(hex.EncodeToString(identity.Sum(nil))), nil
+}
+
+func writeTrackedGitlinkDigests(writer io.Writer, repo string, visited map[string]bool) error {
+	raw, err := gitBytes(repo, "ls-files", "--stage", "-z")
+	if err != nil {
+		return fmt.Errorf("list tracked Git links in %s: %w", repo, err)
+	}
+	for _, entry := range splitNUL(raw) {
+		metadata, relative, ok := strings.Cut(entry, "\t")
+		if !ok {
+			return fmt.Errorf("parse tracked Git entry in %s", repo)
+		}
+		fields := strings.Fields(metadata)
+		if len(fields) != 3 || fields[0] != "160000" || fields[2] != "0" {
+			continue
+		}
+		path := filepath.Join(repo, filepath.FromSlash(relative))
+		if !pathWithin(path, repo) {
+			return fmt.Errorf("tracked Git link %q escapes repository %s", relative, repo)
+		}
+		if _, err := io.WriteString(
+			writer,
+			"\x00gitlink\x00"+relative+"\x00index\x00"+fields[1]+"\x00",
+		); err != nil {
+			return fmt.Errorf("hash tracked Git link %s: %w", path, err)
+		}
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect tracked Git link %s: %w", path, err)
+		}
+		if !info.IsDir() {
+			continue
+		}
+		top, err := gitOutput(path, "rev-parse", "--show-toplevel")
+		if err != nil {
+			return fmt.Errorf("locate tracked nested Git repository %s: %w", path, err)
+		}
+		topInfo, topErr := os.Stat(strings.TrimSpace(top))
+		pathInfo, pathErr := os.Stat(path)
+		if topErr != nil || pathErr != nil || !os.SameFile(topInfo, pathInfo) {
+			continue
+		}
+		digest, err := nestedRepositoryDigestVisited(path, visited)
+		if err != nil {
+			return err
+		}
+		if _, err := io.WriteString(writer, "worktree\x00"); err != nil {
+			return fmt.Errorf("hash tracked Git link %s: %w", path, err)
+		}
+		if _, err := writer.Write(digest); err != nil {
+			return fmt.Errorf("hash tracked Git link %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func nestedUntrackedDigest(root, relative string) (string, []byte, error) {
@@ -284,7 +396,7 @@ func nestedUntrackedDigest(root, relative string) (string, []byte, error) {
 }
 
 func writeGitOutput(writer io.Writer, repo string, args ...string) error {
-	command := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	command := snapshotGitCommand(repo, args...)
 	var stderr bytes.Buffer
 	command.Stdout = writer
 	command.Stderr = &stderr
@@ -297,6 +409,22 @@ func writeGitOutput(writer io.Writer, repo string, args ...string) error {
 		)
 	}
 	return nil
+}
+
+func snapshotGitCommand(repo string, args ...string) *exec.Cmd {
+	command := exec.Command("git", append([]string{
+		"-c", "core.fsmonitor=false",
+		"-c", "core.hooksPath=/dev/null",
+		"-C", repo,
+	}, args...)...)
+	command.Env = append(os.Environ(),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_ATTR_NOSYSTEM=1",
+		"GIT_EXTERNAL_DIFF=",
+		"GIT_PAGER=cat",
+		"PAGER=cat",
+	)
+	return command
 }
 
 func pathWithin(path, root string) bool {

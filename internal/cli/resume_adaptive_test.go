@@ -37,6 +37,33 @@ func TestResumeUsesAdaptiveCompletionInsteadOfStaleManifestPhase(t *testing.T) {
 				Outcome: project.PhaseOutcomeNoOp,
 			}
 		}
+		state.Evidence.Review = &project.EvidenceRecord{
+			Snapshot: state.Route.Snapshot, RouteRevision: state.Route.Revision,
+			RouteDigest: state.Route.Digest, DispatchID: "implement-dispatch",
+			Result: project.EvidencePassed, Owner: project.EvidenceOwnerImplement,
+			CompletedAt: "2026-09-15T00:01:00Z",
+			Roles:       append([]string(nil), state.Route.ReviewRoles...),
+		}
+		state.Evidence.Validation = &project.EvidenceRecord{
+			Snapshot: state.Route.Snapshot, RouteRevision: state.Route.Revision,
+			RouteDigest: state.Route.Digest, DispatchID: "implement-dispatch",
+			Result: project.EvidencePassed, Owner: project.EvidenceOwnerImplement,
+			CompletedAt: "2026-09-15T00:02:00Z",
+			Commands: []project.CommandEvidence{{
+				GateID: "test", Display: "go <redacted-args>",
+				Digest: commandDigestForTest("go test ./..."),
+			}},
+		}
+		state.DispatchCount = 2
+		state.HandoffCount = 1
+		state.LastDispatch = "open-pr"
+		state.LastDispatchID = "open-pr-dispatch"
+		state.PR = project.PRRef{Number: 42, URL: "https://example.test/pull/42"}
+		state.FinalResult = &project.FinalResult{
+			Status: "opened", PRNumber: 42, PRURL: state.PR.URL,
+			RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
+			Snapshot: state.Route.Snapshot, DispatchID: state.LastDispatchID,
+		}
 	}
 	if err := project.SaveState(filepath.Join(projectDir, "state.json"), state); err != nil {
 		t.Fatal(err)

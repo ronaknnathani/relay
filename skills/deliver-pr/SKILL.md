@@ -75,8 +75,8 @@ Ask `relay state next "$SLUG"` after every state change.
   upstream artifact, then record its structured result with
   `relay state finish`. Give workers the worktree/branch and require an artifact path, material/no-op
   outcome, checks, and blocking question; never ask for file dumps.
-- **Other subagents:** on non-easy routes, record helpers not represented by a phase dispatch with
-  `relay state worker "$SLUG" --task "<purpose>"`. An easy route launches no off-route helper; stale
+- **Other subagents:** only after classification, on non-easy or forced-full routes, record helpers not represented by a phase dispatch with
+  `relay state worker "$SLUG" --task "<purpose>"`. An unforced easy route launches no off-route helper; stale
   inputs require route refresh and escalation before more discovery.
 - **`route`:** always inline. Reclassify from fresh facts after mutations; use
   `relay route refresh "$SLUG"` only when the changed snapshot cannot be fully reassessed, which
@@ -86,7 +86,7 @@ Ask `relay state next "$SLUG"` after every state change.
 - **`open-pr`:** always inline. It consumes the shared commit/rebase contracts and must not launch
   another review.
 
-An easy route therefore has exactly two selected delivery phases and phase dispatches after routing:
+An unforced easy route therefore has exactly two selected delivery phases and phase dispatches after routing:
 `implement -> open-pr`, with one handoff. It qualifies only when current task and repository facts
 satisfy every easy-path rule, including an exact required gate set or verified no-gates state.
 Routing performs any needed exploration inline; while the route remains easy, do not launch helper,
@@ -106,7 +106,7 @@ stop for the program response.
 
 ## Evidence and failure routing
 
-`implement` owns targeted red/green checks. On easy routes it also performs the proportional
+`implement` owns targeted red/green checks. On unforced easy routes it also performs the proportional
 correctness/criteria/scope/clarity review, runs the repository's final required gates, and records
 both passing evidence records for the exact final snapshot. Other routes keep independent `review`
 and `validate` owners.
@@ -162,8 +162,8 @@ report a warning and point to manual `/pr-monitor`. A `stack-ship` sub-agent mus
 not start a project watcher because the surrounding pane is not the project owner.
 
 While the current-route `open-pr` dispatch is still active, record the verified PR with
-`relay state pr`, then finish `open-pr` with its material outcome. Both commands reject stale
-evidence or a superseded dispatch. Stop when `relay state next` prints empty. Report the PR URL,
+`relay state pr`; that command atomically records the opened result and completes `open-pr`.
+It rejects stale evidence or a superseded dispatch. Stop when `relay state next` prints empty. Report the PR URL,
 route class, worker count, and watcher status. Do not merge, poll CI, or expand scope.
 
 ## Red flags

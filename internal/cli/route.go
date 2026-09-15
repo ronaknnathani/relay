@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"strings"
 
 	"github.com/ronaknnathani/relay/internal/project"
 	deliveryroute "github.com/ronaknnathani/relay/internal/route"
@@ -153,7 +152,7 @@ func newCmdRouteRefresh() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			facts := project.NormalizeRiskAssessment(state.Route.Facts, snapshot.Fingerprint)
+			facts := project.NormalizeRiskAssessment(state.Route.Facts, snapshot.Revision())
 			facts.ActualFileCount = snapshot.FileCount
 			facts.ActualChangedLines = snapshot.ChangedLines
 			staleEasyEvidence := easyEvidenceIsStale(state, snapshot)
@@ -241,11 +240,14 @@ func newCmdRouteEscalate() *cobra.Command {
 			}
 			current.Facts = project.NormalizeRiskAssessment(
 				current.Facts,
-				snapshot.Fingerprint,
+				snapshot.Revision(),
 			)
 			if stackRationale != "" {
 				current.Facts.StackRationale = stackRationale
 				current.StackRationale = stackRationale
+			}
+			if args[1] == deliveryroute.ClassStackCandidate {
+				current.Facts.StackDecomposition = true
 			}
 			if args[1] == deliveryroute.ClassStackCandidate &&
 				current.Facts.StackRationale == "" {
@@ -315,26 +317,10 @@ func (flags routeFlags) input(snapshot project.RepositorySnapshot) (project.Rout
 	}
 	if len(flags.gates) > 0 {
 		gatePolicy.Mode = project.GatePolicyRequired
-		for _, value := range flags.gates {
-			id, command, ok := strings.Cut(value, "=")
-			if !ok {
-				return project.RouteFacts{}, fmt.Errorf(
-					"invalid --gate %q: expected id=command",
-					value,
-				)
-			}
-			id = strings.TrimSpace(id)
-			if id == "" {
-				return project.RouteFacts{}, fmt.Errorf(
-					"invalid --gate %q: gate id cannot be empty",
-					"=<redacted-command>",
-				)
-			}
-			if strings.TrimSpace(command) == "" {
-				return project.RouteFacts{}, fmt.Errorf(
-					"invalid --gate %q: gate command cannot be empty",
-					value,
-				)
+		for index, value := range flags.gates {
+			id, command, err := parseGateFlag(value, index)
+			if err != nil {
+				return project.RouteFacts{}, err
 			}
 			evidence := redactCommand(id, command, 0)
 			gatePolicy.Gates = append(gatePolicy.Gates, project.RequiredGate{
@@ -348,7 +334,7 @@ func (flags routeFlags) input(snapshot project.RepositorySnapshot) (project.Rout
 		UnresolvedDecision:        flags.unresolved,
 		GatePolicy:                gatePolicy,
 		RiskAssessmentComplete:    flags.risksEvaluated, PredictedSizeKnown: flags.predictedSizeKnown,
-		AssessmentFingerprint: snapshot.Fingerprint,
+		AssessmentFingerprint: snapshot.Revision(),
 		PredictedFileCount:    flags.predictedFiles, PredictedChangedLines: flags.predictedLines,
 		ActualFileCount: snapshot.FileCount, ActualChangedLines: snapshot.ChangedLines,
 		StackDecomposition: flags.stack, StackRationale: flags.stackRationale,

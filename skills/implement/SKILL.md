@@ -7,9 +7,9 @@ description: Execute an implementation plan (from `plan`) task by task, writing 
 
 Turn the selected implementation input into working, tested code, one thin slice at a time, keeping the build and
 existing tests green at every step. The bar: at any moment you could stop and the system is committable
-— nothing half-built, nothing red. When `plan` was selected, consume its artifact. An easy route uses
-the explicit task, requirements, and `route.md` as its sole upstream discovery artifact; do not require
-or repeat a separate exploration. A standard route may legitimately omit `plan`; then consume the
+— nothing half-built, nothing red. When `plan` was selected, consume its artifact. An unforced easy route uses
+the explicit task, requirements, and `route.md` handoff, including its embedded findings or linked
+fresh `exploration.md`; do not dispatch or repeat a separate exploration. A standard route may legitimately omit `plan`; then consume the
 explicit task, route decision, requirements, and fresh exploration artifact instead. This phase does
 **not** invent unresolved design decisions or open a PR.
 
@@ -25,7 +25,7 @@ did.
 ## Process
 
 1. **Load the selected inputs critically.** If `plan` is selected, read it end to end. On an easy
-   route, use the task, requirements, and `route.md`; routing already performed the one allowed
+   route, use the task, requirements, and reusable exploration handoff in `route.md`; routing already performed the one allowed
    exploration. On another route without `plan`, also consume its fresh exploration artifact. If
    those selected inputs leave an unresolved design choice or omit a necessary step, surface the gap
    rather than inventing a design. Turn the settled work into an ordered checklist of slices.
@@ -59,7 +59,7 @@ did.
     dispatch to the new route revision, so keep using the original dispatch token below. If the route
     escalates or changes owners, stop and let the coordinator dispatch the newly selected phase.
 11. **Honor review and validation ownership.**
-    - On an easy route, inspect the exact final diff yourself without a separate review worker. Cover
+    - On an unforced easy route, inspect the exact final diff yourself without a separate review worker. Cover
       the mandatory review axes: correctness, acceptance-criteria compliance, scope/minimality, and
       clarity. Apply every route-selected specialist lens for tests, documentation/comments, type
       design, history, or repository guidelines in that same pass. Record all selected role

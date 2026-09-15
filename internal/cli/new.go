@@ -26,6 +26,7 @@ type newOpts struct {
 	agent    string
 	workflow string
 	reclaim  bool
+	base     string
 }
 
 type projectCreateOpts struct {
@@ -38,6 +39,7 @@ type projectCreateOpts struct {
 	repo         string
 	program      string
 	programItem  string
+	base         string
 }
 
 type projectCreateResult struct {
@@ -73,6 +75,7 @@ func newCmdNew() *cobra.Command {
 	cmd.Flags().StringVar(&opts.agent, "agent", "", "coding agent to launch (default from config)")
 	cmd.Flags().StringVar(&opts.workflow, "workflow", defaultWorkflow, "workflow skill to launch (deliver-pr or stack-ship)")
 	cmd.Flags().BoolVar(&opts.reclaim, "reclaim", false, "reclaim leftover branch/worktree from an interrupted setup without prompting")
+	cmd.Flags().StringVar(&opts.base, "base", "", "base branch or commit for the new project")
 	return cmd
 }
 
@@ -91,6 +94,7 @@ func runNew(opts newOpts) error {
 		workflow:     opts.workflow,
 		deliveryMode: deliveryMode,
 		reclaim:      opts.reclaim,
+		base:         opts.base,
 	})
 	if err != nil {
 		return err
@@ -165,9 +169,16 @@ func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResu
 		return projectCreateResult{}, fmt.Errorf("not in a git repository")
 	}
 
-	baseBranch := gitx.DetectDefaultBranch(repoRoot)
+	baseBranch := strings.TrimSpace(opts.base)
+	explicitBase := baseBranch != ""
+	if baseBranch == "" {
+		baseBranch = gitx.DetectDefaultBranch(repoRoot)
+	}
 	if baseBranch == "" {
 		return projectCreateResult{}, fmt.Errorf("could not determine default branch (no origin/HEAD, main, or master)")
+	}
+	if gitx.RevParse(repoRoot, baseBranch) == "" {
+		return projectCreateResult{}, fmt.Errorf("base %q does not resolve to a commit", baseBranch)
 	}
 
 	cfg, err := config.EnsureForAgent(opts.agent)
@@ -210,7 +221,7 @@ func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResu
 	}
 
 	startPoint := baseBranch
-	if gitx.HasOrigin(repoRoot) {
+	if !explicitBase && gitx.HasOrigin(repoRoot) {
 		if out, err := gitx.Fetch(repoRoot, baseBranch); err != nil {
 			ui.Warn("%s\n%s", err, out)
 		}

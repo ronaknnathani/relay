@@ -160,6 +160,110 @@ func TestSnapshotTreatsUntrackedNestedRepositoryAsOpaqueIdentity(t *testing.T) {
 	assertFingerprintChanged(t, repeatedUntracked, committed)
 }
 
+func TestSnapshotDoesNotExecuteTextconv(t *testing.T) {
+	repo := initRepo(t)
+	marker := filepath.Join(repo, "textconv-ran")
+	script := filepath.Join(repo, "textconv.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch \"$1\"\ncat \"$2\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "config", "diff.relay.textconv", script+" "+marker)
+	if err := os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte("README diff=relay\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".gitattributes")
+	runGit(t, repo, "commit", "-q", "-m", "configure textconv")
+	base := RevParse(repo, "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, "README"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Snapshot(repo, base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("snapshot executed configured textconv command: %v", err)
+	}
+}
+
+func TestSnapshotChangesForRepeatedTrackedSubmoduleEdits(t *testing.T) {
+	repo := initRepo(t)
+	nestedSource := t.TempDir()
+	runGit(t, nestedSource, "init", "-q")
+	if err := os.WriteFile(filepath.Join(nestedSource, "tracked.txt"), []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, nestedSource, "add", "tracked.txt")
+	runGit(t, nestedSource, "commit", "-q", "-m", "initial")
+	runGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", nestedSource, "nested")
+	runGit(t, repo, "commit", "-q", "-am", "add submodule")
+	base := RevParse(repo, "HEAD")
+	nested := filepath.Join(repo, "nested")
+
+	initial := mustSnapshot(t, repo, base)
+	if err := os.WriteFile(filepath.Join(nested, "tracked.txt"), []byte("first edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first := mustSnapshot(t, repo, base)
+	assertFingerprintChanged(t, initial, first)
+
+	if err := os.WriteFile(filepath.Join(nested, "tracked.txt"), []byte("second edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := mustSnapshot(t, repo, base)
+	assertFingerprintChanged(t, first, second)
+}
+
+func TestSnapshotAllowsUninitializedTrackedSubmodule(t *testing.T) {
+	repo := initRepo(t)
+	nestedSource := t.TempDir()
+	runGit(t, nestedSource, "init", "-q")
+	if err := os.WriteFile(filepath.Join(nestedSource, "tracked.txt"), []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, nestedSource, "add", "tracked.txt")
+	runGit(t, nestedSource, "commit", "-q", "-m", "initial")
+	runGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", nestedSource, "nested")
+	runGit(t, repo, "commit", "-q", "-am", "add submodule")
+	base := RevParse(repo, "HEAD")
+	runGit(t, repo, "submodule", "deinit", "-q", "-f", "nested")
+
+	first := mustSnapshot(t, repo, base)
+	second := mustSnapshot(t, repo, base)
+	if first != second {
+		t.Fatalf("unchanged uninitialized submodule snapshot differs:\nfirst %+v\nsecond %+v", first, second)
+	}
+}
+
+func TestSnapshotBaseRefPrefersCurrentBaseOverStartSHA(t *testing.T) {
+	repo := initRepo(t)
+	start := RevParse(repo, "HEAD")
+	runGit(t, repo, "branch", "-M", "main")
+	runGit(t, repo, "checkout", "-q", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "feature.txt")
+	runGit(t, repo, "commit", "-q", "-m", "feature")
+	runGit(t, repo, "checkout", "-q", "main")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "base.txt")
+	runGit(t, repo, "commit", "-q", "-m", "advance base")
+	runGit(t, repo, "checkout", "-q", "feature")
+	runGit(t, repo, "rebase", "-q", "main")
+
+	baseRef := SnapshotBaseRef(repo, "main", start)
+	if baseRef != "main" {
+		t.Fatalf("snapshot base ref = %q, want main", baseRef)
+	}
+	snapshot := mustSnapshot(t, repo, baseRef)
+	if snapshot.FileCount != 1 || snapshot.ChangedLines != 1 {
+		t.Fatalf("rebased snapshot = %+v, want only feature change", snapshot)
+	}
+}
+
 func TestSnapshotRejectsInvalidRepository(t *testing.T) {
 	if _, err := Snapshot(t.TempDir(), "HEAD"); err == nil {
 		t.Fatal("Snapshot accepted a non-git directory")

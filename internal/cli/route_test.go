@@ -159,9 +159,6 @@ func TestRouteReclassifyRebindsImplementationAndKeepsEasyDeliveryAtTwoDispatches
 	if _, err := runState(t, "pr", "demo", "--number", "42", "--url", "https://example.test/pull/42"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runState(t, "finish", "demo", "open-pr", "done", "--outcome", "material"); err != nil {
-		t.Fatal(err)
-	}
 	got, err = project.LoadState(project.StatePath("demo"))
 	if err != nil {
 		t.Fatal(err)
@@ -206,6 +203,51 @@ func TestRouteClassifyIsIdempotentForUnchangedFacts(t *testing.T) {
 		after.Route.Digest != before.Route.Digest ||
 		!slices.Equal(after.Route.EscalationReasons, before.Route.EscalationReasons) {
 		t.Fatalf("unchanged classify churned route: before=%+v after=%+v", before.Route, after.Route)
+	}
+}
+
+func TestRouteRefreshInvalidatesChangedTaskInputs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRoute(t,
+		"classify", "demo",
+		"--requested-behavior-explicit",
+		"--no-repository-gates",
+		"--risk-assessment-complete",
+		"--predicted-size-known",
+		"--predicted-files", "1",
+		"--predicted-lines", "20",
+	); err != nil {
+		t.Fatal(err)
+	}
+	before, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(project.ActiveDir(), "demo", "task.md")
+	if err := os.WriteFile(taskPath, []byte("# Task\n\nChanged acceptance criteria.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRoute(t, "refresh", "demo"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Route.Snapshot.InputRevision == before.Route.Snapshot.InputRevision ||
+		after.Route.Revision <= before.Route.Revision ||
+		after.Route.Facts.RiskAssessmentComplete ||
+		after.Route.Class != project.RouteStandard {
+		t.Fatalf("task input refresh = before %+v after %+v", before.Route, after.Route)
 	}
 }
 
@@ -366,15 +408,15 @@ func TestRouteClassifyReportsActionableGateFlagErrors(t *testing.T) {
 	}{
 		"missing separator": {
 			flags: []string{"--gate", "test"},
-			want:  `invalid --gate "test": expected id=command`,
+			want:  "--gate #1 must use id=command",
 		},
 		"empty id": {
 			flags: []string{"--gate", "=TOKEN=super-secret go test ./..."},
-			want:  `invalid --gate "=<redacted-command>": gate id cannot be empty`,
+			want:  "--gate #1 has an empty id",
 		},
 		"empty command": {
 			flags: []string{"--gate", "test= "},
-			want:  `invalid --gate "test= ": gate command cannot be empty`,
+			want:  `--gate "test" has an empty command`,
 		},
 		"conflicting declarations": {
 			flags: []string{"--gate", "test=go test ./...", "--no-repository-gates"},
@@ -727,6 +769,10 @@ func TestRouteClassifyPersistsConservativelyMergedFacts(t *testing.T) {
 	}
 	state.Route = testRouteDecision(project.RouteHighRisk)
 	state.Route.Facts.RiskTriggers = []project.RiskTrigger{project.RiskAuthSecurity}
+	state.Route.ReviewRoles = []string{
+		project.ReviewRoleCodeReviewer,
+		project.ReviewRoleSecurity,
+	}
 	state.Route.Facts.UnresolvedDecision = true
 	refreshRouteDigest(t, state.Route)
 	if err := project.SaveState(project.StatePath("demo"), state); err != nil {

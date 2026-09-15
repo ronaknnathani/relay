@@ -8,7 +8,7 @@ description: Review a change with route-proportional roles, mandatory correctnes
 Review without editing or running repository gates. Pin the current repository snapshot and evaluate
 the diff against task criteria and applicable coding guidance.
 
-This skill is the independent review owner when the persisted route selects `review`. A genuinely
+This skill is the independent review owner when the persisted route selects `review`. An unforced
 easy route assigns review ownership to `implement` and skips this phase unless risk, failure, scope
 growth, stale evidence, or a blocking finding escalates the route.
 
@@ -90,7 +90,10 @@ diffs, command output, transcript text, or secrets in state.
 If review cannot run because authentication, tooling, or required input is unavailable, record
 `--result blocked --blocker-category <category> --blocker-reason "<reason>"`. Relay blocks the
 canonical review owner for coordinator recovery; it does not misclassify the blocker as a code
-finding or reopen implementation by default.
+finding or reopen implementation by default. Include `--role` only for roles actually executed;
+a blocked review may omit roles entirely. Never fabricate role coverage. If any Critical or Important
+finding was already established, record `failed` instead; failure takes precedence while retaining
+the blocker metadata.
 
 ## Inline mode
 

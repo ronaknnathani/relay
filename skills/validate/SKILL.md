@@ -11,7 +11,7 @@ commit, push, review, or ship.
 ## Process
 
 1. Read the task, acceptance criteria, route decision, repository snapshot, and existing normalized
-   validation evidence. Confirm `validate` is the route's validation owner; easy routes normally skip
+   validation evidence. Confirm `validate` is the route's validation owner; unforced easy routes normally skip
    this phase because `implement` owns their final gates. If an easy route escalated, require
    `validate` ownership and independently run or reuse the now-required gate evidence.
    For a route-less legacy seven-phase project, `validate` owns the complete repository gate set,

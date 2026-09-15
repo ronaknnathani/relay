@@ -14,7 +14,7 @@ func TestValidationOwnershipContracts(t *testing.T) {
 		"review owner", "mandatory review axes", "without a separate review worker",
 		"targeted checks", "legacy seven-phase", "standard route",
 		"may legitimately omit `plan`", "--dispatch-token", "route-selected specialist lens",
-		"`route.md` as its sole upstream discovery artifact",
+		"reusable exploration handoff in `route.md`",
 	} {
 		if !strings.Contains(implement, want) {
 			t.Errorf("implement missing validation ownership %q", want)
@@ -63,7 +63,7 @@ func TestRouteAndOpenPROwnershipContracts(t *testing.T) {
 		"reopens independent `review` and `validate`",
 		"exact required", "--gate <id>", "--no-repository-gates",
 		"--changes-tests", "--changes-documentation-comments", "--changes-type-design",
-		"--history-sensitive", "--changes-repository-guidelines", "bound to the snapshot fingerprint",
+		"--history-sensitive", "--changes-repository-guidelines", "normalized `task.md`",
 		"`--stack-rationale` is required whenever the target is `stack-candidate`",
 	} {
 		if !strings.Contains(route, want) {

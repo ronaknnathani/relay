@@ -6,7 +6,7 @@ description: Classify a Relay delivery as easy, standard, high-risk, or stack-ca
 # Route
 
 Classify delivery work; do not implement it. Bind the project slug to `$SLUG`, read `task.md`,
-`manifest.json`, and any existing fresh exploration artifact, then gather only the normalized facts
+`manifest.json`, and any existing fresh `exploration.md`, then gather only the normalized facts
 accepted by `relay route classify`.
 
 ## First classification
@@ -47,11 +47,15 @@ Use a stable, descriptive ID for each gate. Relay stores only each ID, a redacte
 SHA-256 digest of the exact command. `--no-repository-gates` is valid only after checking the
 repository's manifest, scripts, Makefile, and CI and finding no relevant gate. Omit
 `--risk-assessment-complete` or `--predicted-size-known` when that work was not done. A completed
-risk assessment is bound to the snapshot fingerprint captured by classification; a changed snapshot
-clears it. Missing safety or size facts, an unknown gate policy, or conflicting gate flags produce
+risk assessment is bound to the repository fingerprint plus the normalized `task.md`,
+`requirements.md`, and `assignment.md` input revision captured by classification; a changed
+repository or project input clears it. Missing safety or size facts, an unknown gate policy, or conflicting gate flags produce
 the standard route or an error, never easy. Write `route.md` with the returned
 class, selected/skipped phases and reasons,
-review roles, review owner, validation owner, gate IDs, snapshot fingerprint, and any stack recommendation. Do not include
+review roles, review owner, validation owner, gate IDs, snapshot and input revisions, any stack recommendation,
+and either the reusable findings from `exploration.md` or an explicit relative link to that artifact.
+The handoff must name relevant files, symbols, constraints, existing patterns, and repository commands
+so `implement` does not repeat discovery. Do not include
 transcript text, command output, secrets, or file contents.
 
 ## Refresh and escalation

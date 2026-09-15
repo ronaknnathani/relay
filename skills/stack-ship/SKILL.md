@@ -24,9 +24,18 @@ scope choice remains.
 
 ## Build each PR
 
-Create one worktree/branch per PR and invoke an adaptive `deliver-pr` worker with that PR's slug,
-intent, exclusions, acceptance criteria, parent base, and worktree. It owns route classification,
-selected phases, evidence, commits, and opening the PR. Do not copy its phase procedures here.
+Create each child as a registered Relay project from its exact parent base:
+
+```bash
+relay "<child intent and acceptance criteria>" \
+  --name <child-project-slug> --base <parent-branch-or-commit> --no-launch
+```
+
+Relay creates and records the child branch, worktree, manifest, parent base, and start SHA. Then
+launch an adaptive `deliver-pr` worker in the manifest's worktree with that child slug, intent,
+exclusions, and acceptance criteria. The child owns its route, evidence, commits, PR, and watcher;
+this stack orchestrator owns topology, parent/base updates, front advancement, and stack state.
+Do not create an arbitrary worktree first or copy child phase procedures here.
 
 Parallelize only independent branches; one writer per branch. A managed program worker must honor its
 recorded `can-open-pr` grant immediately before `open-pr`, but stack-ship itself is standalone and

@@ -24,7 +24,7 @@ func Execute() error {
 
 // rootFlags holds the flags the root command exposes.
 // `--no-color` is persistent (applies to all subcommands).
-// `--no-launch`, `--quick`, and `--name`/`-n` are local to root: they only
+// Project-creation flags such as `--no-launch`, `--base`, and `--name`/`-n` are local to root: they only
 // make sense for the implicit "new project" form (`relay "<task>"`) and
 // would be misleading on subcommands like `status` or `archive`.
 type rootFlags struct {
@@ -36,6 +36,7 @@ type rootFlags struct {
 	agent    string
 	workflow string
 	reclaim  bool
+	base     string
 }
 
 func newRootCmd() *cobra.Command {
@@ -59,7 +60,8 @@ func newRootCmd() *cobra.Command {
 				// If the user passed any of them with no task, they meant to
 				// create one — surface that as a usage error rather than
 				// silently listing status.
-				if flags.quick || flags.full || flags.noLaunch || flags.name != "" || flags.reclaim {
+				if flags.quick || flags.full || flags.noLaunch || flags.name != "" ||
+					flags.reclaim || flags.base != "" {
 					return fmt.Errorf("usage: relay \"<task description>\"")
 				}
 				return runStatus(statusOpts{})
@@ -73,6 +75,7 @@ func newRootCmd() *cobra.Command {
 				agent:    flags.agent,
 				workflow: flags.workflow,
 				reclaim:  flags.reclaim,
+				base:     flags.base,
 			})
 		},
 	}
@@ -85,6 +88,7 @@ func newRootCmd() *cobra.Command {
 	cmd.Flags().StringVar(&flags.agent, "agent", "", "coding agent to launch (default from config)")
 	cmd.Flags().StringVar(&flags.workflow, "workflow", defaultWorkflow, "workflow skill to launch (deliver-pr or stack-ship)")
 	cmd.Flags().BoolVar(&flags.reclaim, "reclaim", false, "reclaim leftover branch/worktree from an interrupted setup without prompting")
+	cmd.Flags().StringVar(&flags.base, "base", "", "base branch or commit for the new project")
 
 	cmd.AddCommand(
 		newCmdNew(),

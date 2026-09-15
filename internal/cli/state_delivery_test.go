@@ -16,7 +16,11 @@ import (
 
 func dispatchPhase(t *testing.T, slug, phase string) string {
 	t.Helper()
-	out, err := runState(t, "dispatch", slug, phase)
+	args := []string{"dispatch", slug, phase}
+	if phase == "route" {
+		args = append(args, "--inline")
+	}
+	out, err := runState(t, args...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,8 +499,8 @@ func TestFailedValidationEvidenceReopensImplementation(t *testing.T) {
 		!slices.Contains(got.Route.EscalationReasons, "validation evidence failed") {
 		t.Fatalf("failed validation route = %+v", got.Route)
 	}
-	if got.Next() != "implement" {
-		t.Fatalf("next phase = %q, want implement", got.Next())
+	if got.Next() != "clarify" {
+		t.Fatalf("next phase = %q, want clarify", got.Next())
 	}
 }
 
@@ -537,8 +541,78 @@ func TestImportantReviewEvidenceReopensImplementation(t *testing.T) {
 	}
 	if got.Phases["review"].Status != project.PhaseEscalated ||
 		got.Phases["implement"].Status != project.PhaseEscalated ||
-		got.Next() != "implement" {
+		got.Next() != "clarify" {
 		t.Fatalf("failed review routing = %+v", got.Phases)
+	}
+}
+
+func TestBlockedEvidenceFailuresTakePrecedence(t *testing.T) {
+	tests := map[string]struct {
+		phase string
+		kind  string
+		args  []string
+	}{
+		"review": {
+			phase: "review",
+			kind:  "review",
+			args: []string{
+				"--result", "blocked", "--role", "code-reviewer", "--important", "1",
+				"--blocker-category", "authentication",
+				"--blocker-reason", "review service login expired",
+			},
+		},
+		"validation": {
+			phase: "validate",
+			kind:  "validation",
+			args: []string{
+				"--result", "blocked", "--gate", "test=go test ./...", "--exit-status", "1",
+				"--blocker-category", "authentication",
+				"--blocker-reason", "artifact registry login expired",
+			},
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			repo := initCLIGitRepo(t)
+			saveDeliveryProject(t, "demo", repo)
+			state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.Route = testRouteDecision(project.RouteStandard)
+			snapshot, err := projectSnapshot("demo")
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.Route.Snapshot = snapshot
+			prepareAdaptivePhase(&state, test.phase)
+			refreshRouteDigest(t, state.Route)
+			if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+				t.Fatal(err)
+			}
+			token := dispatchPhase(t, "demo", test.phase)
+			args := append([]string{"evidence", "record", "demo", test.kind}, test.args...)
+			args = append(args, "--dispatch-token", token)
+			if _, err := runState(t, args...); err != nil {
+				t.Fatal(err)
+			}
+			got, err := project.LoadState(project.StatePath("demo"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var evidence *project.EvidenceRecord
+			if test.kind == project.EvidenceKindReview {
+				evidence = got.Evidence.Review
+			} else {
+				evidence = got.Evidence.Validation
+			}
+			if evidence == nil || evidence.Result != project.EvidenceFailed ||
+				evidence.BlockerCategory == "" || evidence.BlockerReason == "" ||
+				got.Phases["implement"].Status != project.PhaseEscalated {
+				t.Fatalf("failure precedence state = evidence %+v phases %+v", evidence, got.Phases)
+			}
+		})
 	}
 }
 
@@ -563,7 +637,7 @@ func TestBlockedReviewEvidenceStaysWithEvidenceOwner(t *testing.T) {
 	}
 	token := dispatchPhase(t, "demo", "review")
 	if _, err := runState(t, "evidence", "record", "demo", "review",
-		"--result", "blocked", "--role", "code-reviewer",
+		"--result", "blocked",
 		"--blocker-category", "authentication",
 		"--blocker-reason", "review service login expired",
 		"--dispatch-token", token); err != nil {
@@ -699,8 +773,8 @@ func TestFailedEasyReviewRestoresNewlySelectedPhases(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, phase := range []string{"clarify", "plan"} {
-		if got.Phases[phase].Status != project.PhaseSkipped {
-			t.Errorf("completed routing decision reopened historical %s phase as %q", phase, got.Phases[phase].Status)
+		if got.Phases[phase].Status != project.PhasePending {
+			t.Errorf("high-risk escalation left selected %s phase as %q", phase, got.Phases[phase].Status)
 		}
 	}
 	if got.Phases["review"].Status != project.PhaseEscalated {
@@ -815,9 +889,6 @@ func TestAdaptiveOpenPRTransitionsRequireFreshEvidenceAndActiveDispatch(t *testi
 	if _, err := runState(t, "pr", "demo", "--number", "42", "--url", "https://example.test/pull/42"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runState(t, "finish", "demo", "open-pr", "done", "--outcome", "material"); err != nil {
-		t.Fatal(err)
-	}
 	got, err := project.LoadState(project.StatePath("demo"))
 	if err != nil {
 		t.Fatal(err)
@@ -830,62 +901,58 @@ func TestAdaptiveOpenPRTransitionsRequireFreshEvidenceAndActiveDispatch(t *testi
 }
 
 func TestAdaptiveOpenPRSuccessCommandsRejectPostDispatchMutation(t *testing.T) {
-	tests := map[string]struct {
-		prepare func(*project.WorkflowState)
-		args    []string
-	}{
-		"state pr": {
-			prepare: func(*project.WorkflowState) {},
-			args: []string{
-				"pr", "demo", "--number", "42", "--url", "https://example.test/pull/42",
-			},
-		},
-		"state final opened": {
-			prepare: func(state *project.WorkflowState) {
-				state.PR = project.PRRef{
-					Number: 42,
-					URL:    "https://example.test/pull/42",
-				}
-			},
-			args: []string{"final", "demo", "opened"},
-		},
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state := openPRReadyState(t, "demo")
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
 	}
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			repo := initCLIGitRepo(t)
-			saveDeliveryProject(t, "demo", repo)
-			state := openPRReadyState(t, "demo")
-			if err := project.SaveState(project.StatePath("demo"), state); err != nil {
-				t.Fatal(err)
-			}
-			dispatchPhase(t, "demo", "open-pr")
-			state, err := project.LoadState(project.StatePath("demo"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			test.prepare(&state)
-			if err := project.SaveState(project.StatePath("demo"), state); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(repo, "changed-after-dispatch.txt"), []byte("changed\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			before, err := os.ReadFile(project.StatePath("demo"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := runState(t, test.args...); err == nil {
-				t.Fatal("successful open-pr transition accepted a post-dispatch repository mutation")
-			}
-			after, err := os.ReadFile(project.StatePath("demo"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !slices.Equal(before, after) {
-				t.Fatal("rejected successful open-pr transition mutated state")
-			}
-		})
+	dispatchPhase(t, "demo", "open-pr")
+	if err := os.WriteFile(filepath.Join(repo, "changed-after-dispatch.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runState(
+		t, "pr", "demo", "--number", "42", "--url", "https://example.test/pull/42",
+	); err == nil {
+		t.Fatal("successful open-pr transition accepted a post-dispatch repository mutation")
+	}
+	after, err := os.ReadFile(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(before, after) {
+		t.Fatal("rejected successful open-pr transition mutated state")
+	}
+}
+
+func TestAdaptiveFinalResultTransitionsOpenPRAtomically(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state := openPRReadyState(t, "demo")
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	dispatchPhase(t, "demo", "open-pr")
+	if _, err := runState(t, "final", "demo", "opened"); err == nil {
+		t.Fatal("adaptive final opened bypassed state pr")
+	}
+	if _, err := runState(t, "final", "demo", "failed", "--reason", "push rejected"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FinalResult == nil || got.FinalResult.Status != "failed" ||
+		got.Phases["open-pr"].Status != project.PhaseBlocked ||
+		got.Phases["open-pr"].Dispatch != nil {
+		t.Fatalf("atomic failed result = %+v, phase = %+v", got.FinalResult, got.Phases["open-pr"])
 	}
 }
 
@@ -984,6 +1051,12 @@ func TestStateWorkerRejectsOffRouteHelpersForEasyDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runState(t, "worker", "demo", "--task", "premature exploration"); err == nil {
+		t.Fatal("adaptive delivery accepted a helper before classification")
+	}
 	state.Route = testRouteDecision(project.RouteEasy)
 	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
 		t.Fatal(err)
@@ -1026,6 +1099,25 @@ func TestStateWorkerRejectsOffRouteHelpersForEasyDelivery(t *testing.T) {
 	}
 }
 
+func TestAdaptiveRouteDispatchMustBeInline(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runState(t, "dispatch", "demo", "route"); err == nil {
+		t.Fatal("adaptive route accepted a non-inline dispatch")
+	}
+	if _, err := runState(t, "dispatch", "demo", "route", "--inline"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStateWorkerAllowsHelpersForForcedFullEasyDelivery(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := initCLIGitRepo(t)
@@ -1060,11 +1152,14 @@ func TestStateWorkerAllowsHelpersForForcedFullEasyDelivery(t *testing.T) {
 }
 
 func testRouteDecision(class string) *project.RouteDecision {
-	selected := append([]string(nil), project.AdaptiveDeliveryPhases...)
+	selected := []string{"route", "implement", "review", "validate", "open-pr"}
 	reviewOwner, validationOwner := "review", "validate"
-	if class == project.RouteEasy {
+	switch class {
+	case project.RouteEasy:
 		selected = []string{"route", "implement", "open-pr"}
 		reviewOwner, validationOwner = "implement", "implement"
+	case project.RouteHighRisk, project.RouteStackCandidate:
+		selected = []string{"route", "clarify", "plan", "implement", "review", "validate", "open-pr"}
 	}
 	reasons := make(map[string]string, len(project.AdaptiveDeliveryPhases))
 	for _, phase := range project.AdaptiveDeliveryPhases {
@@ -1135,7 +1230,7 @@ func commandDigestForTest(command string) string {
 func refreshRouteDigest(t *testing.T, route *project.RouteDecision) {
 	t.Helper()
 	if route.Facts.RiskAssessmentComplete {
-		route.Facts.AssessmentFingerprint = route.Snapshot.Fingerprint
+		route.Facts.AssessmentFingerprint = route.Snapshot.Revision()
 	}
 	route.Revision = 1
 	digest, err := project.RouteDigest(*route)

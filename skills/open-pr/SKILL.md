@@ -38,8 +38,8 @@ Open the finished change; performs no new review and reruns no passing gate.
    containing only commands that actually ran. Clearly disclose automated authorship and whose behalf
    the agent acts on.
 7. For a Relay project, while the current-route `open-pr` dispatch remains active, record the
-   returned PR number and URL with `relay state pr`, then finish the phase. The guarded command also
-   writes the production `FinalResult` telemetry and rejects stale evidence, wrong route or gate
+   returned PR number and URL with `relay state pr`. The guarded command atomically completes the
+   phase, writes the production `FinalResult` telemetry, and rejects stale evidence, wrong route or gate
    bindings, or a superseded dispatch. On terminal failure, record
    `relay state final "$SLUG" failed --reason "<specific reason>"`. Then return the PR URL or failure.
 

@@ -22,6 +22,10 @@ evidence, PR, final-result, and watcher state. Keep stack topology, parent/base 
 acceptance-criteria mapping in `plan.md`; read live watcher details from
 `relay pr watch status <front-project-slug> --json`.
 
+Create each child project with `relay "<child task>" --name <slug> --base <parent-ref> --no-launch`.
+The child manifest owns its generated branch/worktree and adaptive delivery state. The parent stack
+project owns only the dependency graph, current front, and later rebase/retarget decisions.
+
 ## `progress.md` — append-only log
 One line per material event: PR opened (tip/base), commit pushed (hash), rebase/cascade (old→new
 tips), comment addressed (thread id), decision opened/closed, auto-merge armed/fired, PR merged,

@@ -43,6 +43,9 @@ func newCmdStateDispatch() *cobra.Command {
 			if err := state.ValidateAdaptiveDispatch(args[1]); err != nil {
 				return err
 			}
+			if state.UsesAdaptiveDelivery() && args[1] == "route" && !inline {
+				return fmt.Errorf("adaptive route phase must be dispatched inline with --inline")
+			}
 			if args[1] == "open-pr" {
 				snapshot, err := projectSnapshot(args[0])
 				if err != nil {
@@ -51,6 +54,8 @@ func newCmdStateDispatch() *cobra.Command {
 				if err := state.ValidateOpenPRReadiness(snapshot, false); err != nil {
 					return err
 				}
+				state.PR = project.PRRef{}
+				state.FinalResult = nil
 			}
 			startedAt := time.Now().UTC().Format(time.RFC3339)
 			if err := state.SetPhaseWithDelivery(
@@ -68,7 +73,7 @@ func newCmdStateDispatch() *cobra.Command {
 			phase := state.Phases[args[1]]
 			phase.Dispatch = dispatch
 			state.Phases[args[1]] = phase
-			state.RecordDeliveryDispatch(args[1])
+			state.RecordDeliveryDispatch(args[1], dispatch.ID)
 			state.InvalidateEvidenceForOwner(args[1])
 			if err := project.SaveState(statePath, state); err != nil {
 				return err
@@ -94,6 +99,9 @@ func newCmdStateWorker() *cobra.Command {
 			}
 			if strings.TrimSpace(task) == "" {
 				return fmt.Errorf("worker count requires --task")
+			}
+			if state.UsesAdaptiveDelivery() && state.Route == nil {
+				return fmt.Errorf("adaptive delivery must classify a route before dispatching helpers")
 			}
 			if state.Route != nil && state.Route.Class == project.RouteEasy &&
 				!state.Route.ForcedFull {
@@ -257,7 +265,7 @@ func newCmdStateEvidenceRecord() *cobra.Command {
 				len(gates) == 0 && !noGates {
 				return fmt.Errorf("validation evidence requires at least one --gate and --exit-status or --no-gates")
 			}
-			if kind == "review" && len(roles) == 0 {
+			if kind == "review" && result != project.EvidenceBlocked && len(roles) == 0 {
 				return fmt.Errorf("review evidence requires at least one --role")
 			}
 			state, statePath, err := loadStateAt(args[0])
@@ -276,12 +284,20 @@ func newCmdStateEvidenceRecord() *cobra.Command {
 			}
 			commandEvidence := make([]project.CommandEvidence, len(gates))
 			for i := range gates {
-				id, commandText, ok := strings.Cut(gates[i], "=")
-				if !ok || strings.TrimSpace(id) == "" || strings.TrimSpace(commandText) == "" {
-					return fmt.Errorf("--gate must use id=command")
+				id, commandText, err := parseGateFlag(gates[i], i)
+				if err != nil {
+					return err
 				}
-				commandEvidence[i] = redactCommand(strings.TrimSpace(id), commandText, exitStatuses[i])
+				commandEvidence[i] = redactCommand(id, commandText, exitStatuses[i])
 			}
+			result = evidenceResultWithFailurePrecedence(
+				kind,
+				result,
+				commandEvidence,
+				project.FindingCounts{
+					Critical: critical, Important: important, Suggestion: suggestion,
+				},
+			)
 			record := &project.EvidenceRecord{
 				Snapshot: snapshot, RouteRevision: state.Route.Revision,
 				RouteDigest: state.Route.Digest, DispatchID: dispatch.ID,
@@ -309,7 +325,7 @@ func newCmdStateEvidenceRecord() *cobra.Command {
 			} else {
 				state.Evidence.Validation = record
 			}
-			if result == project.EvidenceBlocked {
+			if record.Result == project.EvidenceBlocked {
 				reason := fmt.Sprintf(
 					"%s evidence blocked (%s): %s",
 					kind, strings.TrimSpace(blockerCategory), strings.TrimSpace(blockerReason),
@@ -326,14 +342,14 @@ func newCmdStateEvidenceRecord() *cobra.Command {
 			}
 			phase, reason, routeError, reopenError := "", "", "", ""
 			if kind == "review" {
-				if result == project.EvidenceFailed || critical > 0 || important > 0 {
+				if record.Result == project.EvidenceFailed || critical > 0 || important > 0 {
 					phase = "review"
 					reason = "review found Critical or Important issues"
 					routeError = "route failed review"
 					reopenError = "reopen implementation after failed review"
 				}
 			} else {
-				if result == project.EvidenceFailed {
+				if record.Result == project.EvidenceFailed {
 					phase = "validate"
 					reason = "validation evidence " + result
 					routeError = "route failed validation"
@@ -346,10 +362,6 @@ func newCmdStateEvidenceRecord() *cobra.Command {
 					trigger = deliveryroute.RiskFailedGate
 				}
 				if state.Route != nil {
-					priorPhases := make(map[string]project.PhaseState, len(state.Phases))
-					for name, phaseState := range state.Phases {
-						priorPhases[name] = phaseState
-					}
 					facts := state.Route.Facts
 					if !slices.Contains(facts.RiskTriggers, trigger) {
 						facts.RiskTriggers = append(facts.RiskTriggers, trigger)
@@ -365,14 +377,6 @@ func newCmdStateEvidenceRecord() *cobra.Command {
 					}
 					if err := state.ApplyRoute(decision); err != nil {
 						return fmt.Errorf("%s: %w", routeError, err)
-					}
-					for _, name := range state.Order {
-						if name == "implement" {
-							break
-						}
-						if prior := priorPhases[name]; prior.Status == project.PhaseSkipped {
-							state.Phases[name] = prior
-						}
 					}
 				}
 				if err := state.SetPhaseWithDelivery(
@@ -419,6 +423,29 @@ func newCmdStateEvidenceRecord() *cobra.Command {
 	_ = command.MarkFlagRequired("result")
 	_ = command.MarkFlagRequired("dispatch-token")
 	return command
+}
+
+func evidenceResultWithFailurePrecedence(
+	kind string,
+	result string,
+	commands []project.CommandEvidence,
+	findings project.FindingCounts,
+) string {
+	if result != project.EvidenceBlocked {
+		return result
+	}
+	if kind == project.EvidenceKindReview &&
+		(findings.Critical > 0 || findings.Important > 0) {
+		return project.EvidenceFailed
+	}
+	if kind == project.EvidenceKindValidation {
+		for _, command := range commands {
+			if command.ExitStatus != 0 {
+				return project.EvidenceFailed
+			}
+		}
+	}
+	return result
 }
 
 func validateEvidenceDispatch(
@@ -486,6 +513,22 @@ func redactCommand(gateID, command string, exitStatus int) project.CommandEviden
 	}
 }
 
+func parseGateFlag(value string, index int) (string, string, error) {
+	id, command, ok := strings.Cut(value, "=")
+	if !ok {
+		return "", "", fmt.Errorf("--gate #%d must use id=command", index+1)
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", "", fmt.Errorf("--gate #%d has an empty id", index+1)
+	}
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "", "", fmt.Errorf("--gate %q has an empty command", id)
+	}
+	return id, command, nil
+}
+
 func newCmdStateEvidenceFresh() *cobra.Command {
 	return &cobra.Command{
 		Use:   "fresh <slug> <review|validation>",
@@ -550,16 +593,18 @@ func projectSnapshot(slug string) (project.RepositorySnapshot, error) {
 	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {
 		return project.RepositorySnapshot{}, fmt.Errorf("project %q has no worktree", slug)
 	}
-	base := manifest.StartSHA
-	if base == "" {
-		base = manifest.BaseBranch
+	inputRevision, err := project.ProjectInputRevision(filepath.Dir(path))
+	if err != nil {
+		return project.RepositorySnapshot{}, fmt.Errorf("snapshot project %q inputs: %w", slug, err)
 	}
+	base := gitx.SnapshotBaseRef(*manifest.Worktree, manifest.BaseBranch, manifest.StartSHA)
 	snapshot, err := gitx.Snapshot(*manifest.Worktree, base)
 	if err != nil {
 		return project.RepositorySnapshot{}, fmt.Errorf("snapshot project %q: %w", slug, err)
 	}
 	return project.RepositorySnapshot{
 		BaseSHA: snapshot.BaseSHA, HeadSHA: snapshot.HeadSHA, Fingerprint: snapshot.Fingerprint,
-		FileCount: snapshot.FileCount, ChangedLines: snapshot.ChangedLines,
+		InputRevision: inputRevision,
+		FileCount:     snapshot.FileCount, ChangedLines: snapshot.ChangedLines,
 	}, nil
 }

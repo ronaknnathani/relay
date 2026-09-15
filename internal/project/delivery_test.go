@@ -154,14 +154,13 @@ func TestDeliveryStateRoundTrip(t *testing.T) {
 		Commands:      []CommandEvidence{testCommandEvidence("go test ./...", 0)},
 	}
 	state.SubagentCount = 2
-	state.FinalResult = &FinalResult{Status: "opened", PRNumber: 42, PRURL: "https://example.test/pull/42"}
 	state.Phases["route"] = PhaseState{
 		Status: PhaseDone, Outcome: PhaseOutcomeMaterial,
 		StartedAt: "2026-09-15T00:00:00Z", EndedAt: "2026-09-15T00:01:00Z",
 	}
 	state.Phases["clarify"] = PhaseState{
-		Status: PhaseSkipped, Reason: "requirements are explicit",
-		Outcome: PhaseOutcomeNoOp, EndedAt: "2026-09-15T00:01:00Z",
+		Status: PhaseDone, Outcome: PhaseOutcomeNoOp,
+		EndedAt: "2026-09-15T00:01:00Z",
 	}
 
 	if err := SaveState(path, state); err != nil {
@@ -176,6 +175,90 @@ func TestDeliveryStateRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(got, state) {
 		t.Fatalf("round-trip mismatch:\n got: %#v\nwant: %#v", got, state)
 	}
+}
+
+func TestAdaptiveOpenedResultMustMatchRouteEvidenceDispatchAndPhase(t *testing.T) {
+	state := validOpenedAdaptiveState(t)
+	if err := state.validate(); err != nil {
+		t.Fatalf("valid opened state rejected: %v", err)
+	}
+	tests := map[string]func(*WorkflowState){
+		"route": func(candidate *WorkflowState) {
+			candidate.FinalResult.RouteDigest = strings.Repeat("b", 64)
+		},
+		"snapshot": func(candidate *WorkflowState) {
+			candidate.FinalResult.Snapshot.Fingerprint = "stale"
+		},
+		"dispatch": func(candidate *WorkflowState) {
+			candidate.FinalResult.DispatchID = "older-dispatch"
+		},
+		"phase": func(candidate *WorkflowState) {
+			candidate.Phases["open-pr"] = PhaseState{Status: PhaseInProgress}
+		},
+		"pr identity": func(candidate *WorkflowState) {
+			candidate.PR.Number = 43
+		},
+		"review": func(candidate *WorkflowState) {
+			candidate.Evidence.Review.Result = EvidenceBlocked
+			candidate.Evidence.Review.BlockerCategory = "tooling"
+			candidate.Evidence.Review.BlockerReason = "review unavailable"
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := validOpenedAdaptiveState(t)
+			mutate(&candidate)
+			if err := candidate.validate(); err == nil {
+				t.Fatal("inconsistent opened result was accepted")
+			}
+		})
+	}
+}
+
+func TestRouteChangeClearsOpenedResult(t *testing.T) {
+	state := validOpenedAdaptiveState(t)
+	changed := *state.Route
+	changed.Snapshot.Fingerprint = "changed"
+	changed.Facts.AssessmentFingerprint = "changed"
+	if err := state.ApplyRoute(changed); err != nil {
+		t.Fatal(err)
+	}
+	if state.FinalResult != nil || state.PR != (PRRef{}) ||
+		state.Phases["open-pr"].Status != PhaseEscalated {
+		t.Fatalf("route change retained opened result: result=%+v pr=%+v phase=%+v",
+			state.FinalResult, state.PR, state.Phases["open-pr"])
+	}
+}
+
+func validOpenedAdaptiveState(t *testing.T) WorkflowState {
+	t.Helper()
+	state := validAdaptiveState(t)
+	for _, name := range state.Route.SelectedPhases {
+		state.Phases[name] = PhaseState{Status: PhaseDone}
+	}
+	snapshot := state.Route.Snapshot
+	state.Evidence.Review = &EvidenceRecord{
+		Snapshot: snapshot, RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
+		DispatchID: "review-dispatch", Result: EvidencePassed, Owner: EvidenceOwnerReview,
+		CompletedAt: "2026-09-15T00:05:00Z", Roles: append([]string(nil), state.Route.ReviewRoles...),
+	}
+	state.Evidence.Validation = &EvidenceRecord{
+		Snapshot: snapshot, RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
+		DispatchID: "validate-dispatch", Result: EvidencePassed, Owner: EvidenceOwnerValidate,
+		CompletedAt: "2026-09-15T00:06:00Z",
+		Commands:    []CommandEvidence{testCommandEvidence("go test ./...", 0)},
+	}
+	state.DispatchCount = 4
+	state.HandoffCount = 3
+	state.LastDispatch = "open-pr"
+	state.LastDispatchID = "open-pr-dispatch"
+	state.PR = PRRef{Number: 42, URL: "https://example.test/pull/42"}
+	state.FinalResult = &FinalResult{
+		Status: "opened", PRNumber: 42, PRURL: "https://example.test/pull/42",
+		RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
+		Snapshot: snapshot, DispatchID: state.LastDispatchID,
+	}
+	return state
 }
 
 func TestAdaptiveStateValidationRejectsMalformedRouteAndEvidence(t *testing.T) {
@@ -227,6 +310,39 @@ func TestAdaptiveStateRejectsImplementOwnershipWhenValidateIsSelected(t *testing
 	state.Route.ValidationOwner = "implement"
 	if err := state.validate(); err == nil {
 		t.Fatal("implement ownership with selected validate phase was accepted")
+	}
+}
+
+func TestAdaptiveStateRejectsLessConservativePersistedRouteSemantics(t *testing.T) {
+	tests := map[string]func(*WorkflowState){
+		"class": func(state *WorkflowState) {
+			state.Route.Class = RouteStandard
+			state.Route.Facts.RiskTriggers = []RiskTrigger{RiskAuthSecurity}
+		},
+		"phase": func(state *WorkflowState) {
+			state.Route.Class = RouteHighRisk
+			state.Route.Facts.RiskTriggers = []RiskTrigger{RiskAuthSecurity}
+			state.Route.SelectedPhases = []string{"route", "implement", "review", "validate", "open-pr"}
+		},
+		"role": func(state *WorkflowState) {
+			state.Route.Class = RouteHighRisk
+			state.Route.Facts.RiskTriggers = []RiskTrigger{RiskAuthSecurity}
+			state.Route.ReviewRoles = []string{ReviewRoleCodeReviewer}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			state := validAdaptiveState(t)
+			mutate(&state)
+			digest, err := RouteDigest(*state.Route)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.Route.Digest = digest
+			if err := state.validate(); err == nil {
+				t.Fatal("less-conservative persisted route was accepted")
+			}
+		})
 	}
 }
 
@@ -306,6 +422,9 @@ func TestAdaptiveFinishRequiresActiveCurrentSelectedPhase(t *testing.T) {
 	}
 	if err := state.ValidateAdaptiveFinish("clarify", PhaseDone); err != nil {
 		t.Fatalf("active current phase was rejected: %v", err)
+	}
+	if err := state.ValidateAdaptiveFinish("clarify", PhaseSkipped); err == nil {
+		t.Fatal("selected adaptive phase was allowed to finish as skipped")
 	}
 }
 
@@ -636,6 +755,12 @@ func TestEvidenceFreshRequiresPassingExactSnapshot(t *testing.T) {
 	if record.Fresh(snapshot) {
 		t.Fatal("passing evidence with a blocking finding reported fresh")
 	}
+	record.Findings.Important = 0
+	changedInputs := snapshot
+	changedInputs.InputRevision = "changed-input-revision"
+	if record.Fresh(changedInputs) {
+		t.Fatal("evidence remained fresh after project inputs changed")
+	}
 }
 
 func TestGatePolicyNormalizationAndRouteDigest(t *testing.T) {
@@ -736,6 +861,12 @@ func TestValidationEvidenceRequiresExactGatePolicy(t *testing.T) {
 			}
 		})
 	}
+	missing := base
+	missing.Commands = missing.Commands[:1]
+	if err := ValidateValidationEvidence(missing, policy); err == nil ||
+		!strings.Contains(err.Error(), "missing required gates: test") {
+		t.Fatalf("missing gate error = %v", err)
+	}
 	noGates := base
 	noGates.Commands = nil
 	noGates.NoGates = true
@@ -774,6 +905,35 @@ func TestBlockedValidationEvidenceCanOmitGateExecution(t *testing.T) {
 		if err := ValidateValidationEvidence(record, policy); err != nil {
 			t.Fatalf("blocked validation with policy %+v was rejected: %v", policy, err)
 		}
+	}
+}
+
+func TestBlockedEvidenceCannotMaskFailures(t *testing.T) {
+	review := EvidenceRecord{
+		Snapshot: RepositorySnapshot{
+			BaseSHA: "base", HeadSHA: "head", Fingerprint: "fingerprint",
+		},
+		RouteRevision: 1, RouteDigest: strings.Repeat("a", 64),
+		DispatchID: "dispatch", Result: EvidenceBlocked, Owner: EvidenceOwnerReview,
+		BlockerCategory: "authentication", BlockerReason: "review service unavailable",
+		CompletedAt: "2026-09-15T00:00:00Z",
+		Roles:       []string{ReviewRoleCodeReviewer},
+		Findings:    FindingCounts{Important: 1},
+	}
+	if err := ValidateEvidence(EvidenceKindReview, review, nil); err == nil {
+		t.Fatal("blocked review masked an Important finding")
+	}
+
+	validation := EvidenceRecord{
+		Snapshot:      review.Snapshot,
+		RouteRevision: 1, RouteDigest: strings.Repeat("a", 64),
+		DispatchID: "dispatch", Result: EvidenceBlocked, Owner: EvidenceOwnerValidate,
+		BlockerCategory: "authentication", BlockerReason: "artifact registry unavailable",
+		CompletedAt: "2026-09-15T00:00:00Z",
+		Commands:    []CommandEvidence{testCommandEvidence("go test ./...", 1)},
+	}
+	if err := ValidateEvidence(EvidenceKindValidation, validation, nil); err == nil {
+		t.Fatal("blocked validation masked a failed gate")
 	}
 }
 

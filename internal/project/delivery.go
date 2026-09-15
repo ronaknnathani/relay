@@ -68,11 +68,23 @@ var AdaptiveDeliveryPhases = []string{
 // RepositorySnapshot identifies the exact repository state associated with a
 // route or evidence record.
 type RepositorySnapshot struct {
-	BaseSHA      string `json:"base_sha"`
-	HeadSHA      string `json:"head_sha"`
-	Fingerprint  string `json:"fingerprint"`
-	FileCount    int    `json:"file_count"`
-	ChangedLines int    `json:"changed_lines"`
+	BaseSHA       string `json:"base_sha"`
+	HeadSHA       string `json:"head_sha"`
+	Fingerprint   string `json:"fingerprint"`
+	InputRevision string `json:"input_revision,omitempty"`
+	FileCount     int    `json:"file_count"`
+	ChangedLines  int    `json:"changed_lines"`
+}
+
+// Revision binds freshness-sensitive assessment to both repository and
+// project-side delivery inputs. Legacy snapshots without an input revision
+// retain their historical repository-only identity.
+func (snapshot RepositorySnapshot) Revision() string {
+	if snapshot.InputRevision == "" {
+		return snapshot.Fingerprint
+	}
+	sum := sha256.Sum256([]byte(snapshot.Fingerprint + "\x00" + snapshot.InputRevision))
+	return hex.EncodeToString(sum[:])
 }
 
 // RouteDecision is the durable result of deterministic delivery routing.
@@ -166,6 +178,121 @@ func EasyRouteEligible(facts RouteFacts) bool {
 		!RouteNeedsSimplification(facts) &&
 		!facts.StackDecomposition &&
 		len(facts.RiskTriggers) == 0
+}
+
+// MinimumRouteClass returns the least conservative class permitted by the
+// persisted current facts.
+func MinimumRouteClass(facts RouteFacts) string {
+	if facts.StackDecomposition {
+		return RouteStackCandidate
+	}
+	if len(facts.RiskTriggers) > 0 {
+		return RouteHighRisk
+	}
+	if EasyRouteEligible(facts) {
+		return RouteEasy
+	}
+	return RouteStandard
+}
+
+// RequiredRoutePhases returns the minimum selected phase set for a route.
+func RequiredRoutePhases(class string, facts RouteFacts, forcedFull bool) []string {
+	if forcedFull {
+		return append([]string(nil), AdaptiveDeliveryPhases...)
+	}
+	switch class {
+	case RouteEasy:
+		return []string{"route", "implement", "open-pr"}
+	case RouteHighRisk, RouteStackCandidate:
+		selected := []string{"route", "clarify", "plan", "implement"}
+		if RouteNeedsSimplification(facts) {
+			selected = append(selected, "simplify")
+		}
+		return append(selected, "review", "validate", "open-pr")
+	default:
+		selected := []string{"route"}
+		if !facts.RequestedBehaviorExplicit || facts.UnresolvedDecision {
+			selected = append(selected, "clarify")
+		}
+		if facts.UnresolvedDecision || RouteSizeExceedsEasy(facts) {
+			selected = append(selected, "plan")
+		}
+		selected = append(selected, "implement")
+		if RouteNeedsSimplification(facts) {
+			selected = append(selected, "simplify")
+		}
+		return append(selected, "review", "validate", "open-pr")
+	}
+}
+
+// RequiredReviewRoles returns every review lens required by current facts.
+func RequiredReviewRoles(facts RouteFacts) []string {
+	roles := []string{ReviewRoleCodeReviewer}
+	add := func(role string) {
+		if !slices.Contains(roles, role) {
+			roles = append(roles, role)
+		}
+	}
+	if facts.ChangesTests || facts.GeneratedChurn {
+		add(ReviewRolePRTestAnalyzer)
+	}
+	if facts.ChangesDocumentationComments {
+		add(ReviewRoleCommentAnalyzer)
+	}
+	if facts.ChangesTypeDesign {
+		add(ReviewRoleTypeDesignAnalyzer)
+	}
+	if facts.HistorySensitive {
+		add(ReviewRoleGitHistory)
+	}
+	if facts.ChangesRepositoryGuidelines {
+		add(ReviewRolePriorPRHistory)
+	}
+	for _, trigger := range facts.RiskTriggers {
+		switch trigger {
+		case RiskPublicContract:
+			add(ReviewRoleTypeDesignAnalyzer)
+			add(ReviewRoleGitHistory)
+			add(ReviewRolePriorPRHistory)
+		case RiskPersistenceMigration:
+			add(ReviewRoleTypeDesignAnalyzer)
+			add(ReviewRoleGitHistory)
+		case RiskAuthSecurity:
+			add(ReviewRoleSecurity)
+		case RiskConcurrencyDistributed:
+			add(ReviewRoleSilentFailureHunter)
+			add(ReviewRoleGitHistory)
+		case RiskDependencyBuildRelease:
+			add(ReviewRoleSecurity)
+			add(ReviewRolePRTestAnalyzer)
+		case RiskGeneratedArtifact:
+			add(ReviewRolePRTestAnalyzer)
+		case RiskDestructiveOperation:
+			add(ReviewRoleSecurity)
+			add(ReviewRoleSilentFailureHunter)
+		case RiskUnresolvedReviewCI:
+			add(ReviewRolePriorPRHistory)
+			add(ReviewRoleCommentAnalyzer)
+			add(ReviewRolePRTestAnalyzer)
+		case RiskFailedGate:
+			add(ReviewRolePriorPRHistory)
+			add(ReviewRolePRTestAnalyzer)
+		}
+	}
+	order := []string{
+		ReviewRoleCodeReviewer,
+		ReviewRoleSilentFailureHunter,
+		ReviewRoleTypeDesignAnalyzer,
+		ReviewRolePRTestAnalyzer,
+		ReviewRoleCommentAnalyzer,
+		ReviewRoleSecurity,
+		ReviewRoleGitHistory,
+		ReviewRolePriorPRHistory,
+	}
+	slices.SortFunc(roles, func(left, right string) int {
+		return slices.Index(order, left) - slices.Index(order, right)
+	})
+	return roles
 }
 
 // GatePolicy is the exact repository validation contract bound to a route.
@@ -282,7 +409,8 @@ func (record EvidenceRecord) Fresh(snapshot RepositorySnapshot) bool {
 	}
 	return record.Snapshot.BaseSHA == snapshot.BaseSHA &&
 		record.Snapshot.HeadSHA == snapshot.HeadSHA &&
-		record.Snapshot.Fingerprint == snapshot.Fingerprint
+		record.Snapshot.Fingerprint == snapshot.Fingerprint &&
+		record.Snapshot.InputRevision == snapshot.InputRevision
 }
 
 // FreshForOwner reports whether passing evidence applies to the exact snapshot
@@ -351,13 +479,17 @@ func ValidateEvidence(kind string, record EvidenceRecord, requiredRoles []string
 	if strings.TrimSpace(record.Owner) == "" {
 		return fmt.Errorf("evidence requires a canonical owner")
 	}
+	hasBlockerCategory := strings.TrimSpace(record.BlockerCategory) != ""
+	hasBlockerReason := strings.TrimSpace(record.BlockerReason) != ""
+	if hasBlockerCategory != hasBlockerReason {
+		return fmt.Errorf("evidence blocker metadata requires both category and reason")
+	}
 	if record.Result == EvidenceBlocked {
-		if strings.TrimSpace(record.BlockerCategory) == "" ||
-			strings.TrimSpace(record.BlockerReason) == "" {
+		if !hasBlockerCategory {
 			return fmt.Errorf("blocked evidence requires a blocker category and reason")
 		}
-	} else if record.BlockerCategory != "" || record.BlockerReason != "" {
-		return fmt.Errorf("only blocked evidence may contain blocker metadata")
+	} else if record.Result == EvidencePassed && hasBlockerCategory {
+		return fmt.Errorf("passing evidence cannot contain blocker metadata")
 	}
 	if record.Findings.Critical < 0 || record.Findings.Important < 0 || record.Findings.Suggestion < 0 {
 		return fmt.Errorf("review finding counts cannot be negative")
@@ -381,7 +513,7 @@ func validateReviewEvidence(record EvidenceRecord, requiredRoles []string) error
 	if len(record.Commands) > 0 || record.NoGates {
 		return fmt.Errorf("review evidence cannot contain validation commands")
 	}
-	if len(record.Roles) == 0 {
+	if record.Result != EvidenceBlocked && len(record.Roles) == 0 {
 		return fmt.Errorf("review evidence requires at least one role")
 	}
 	seen := make(map[string]bool, len(record.Roles))
@@ -396,6 +528,9 @@ func validateReviewEvidence(record EvidenceRecord, requiredRoles []string) error
 	}
 	if record.Result == EvidencePassed && (record.Findings.Critical > 0 || record.Findings.Important > 0) {
 		return fmt.Errorf("passing review evidence cannot contain Critical or Important findings")
+	}
+	if record.Result == EvidenceBlocked && (record.Findings.Critical > 0 || record.Findings.Important > 0) {
+		return fmt.Errorf("blocked review evidence cannot contain Critical or Important findings")
 	}
 	if record.Result == EvidenceFailed && record.Findings.Critical == 0 && record.Findings.Important == 0 {
 		return fmt.Errorf("failed review evidence requires a Critical or Important finding")
@@ -444,13 +579,12 @@ func ValidateValidationEvidence(record EvidenceRecord, policy GatePolicy) error 
 	if record.NoGates {
 		return fmt.Errorf("required gate policy cannot use no-gates validation evidence")
 	}
-	return validateRecordedGates(record.Commands, normalized.Gates, true)
+	requireAll := record.Result != EvidenceFailed ||
+		(strings.TrimSpace(record.BlockerCategory) == "" && strings.TrimSpace(record.BlockerReason) == "")
+	return validateRecordedGates(record.Commands, normalized.Gates, requireAll)
 }
 
 func validateRecordedGates(commands []CommandEvidence, required []RequiredGate, requireAll bool) error {
-	if requireAll && len(commands) != len(required) {
-		return fmt.Errorf("validation evidence covers %d gates, want %d", len(commands), len(required))
-	}
 	expected := make(map[string]string, len(required))
 	for _, gate := range required {
 		expected[gate.ID] = gate.CommandDigest
@@ -468,6 +602,17 @@ func validateRecordedGates(commands []CommandEvidence, required []RequiredGate, 
 			return fmt.Errorf("validation evidence gate %q has the wrong command digest", command.GateID)
 		}
 		seen[command.GateID] = true
+	}
+	if requireAll {
+		missing := make([]string, 0, len(expected)-len(seen))
+		for _, gate := range required {
+			if !seen[gate.ID] {
+				missing = append(missing, gate.ID)
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("validation evidence is missing required gates: %s", strings.Join(missing, ", "))
+		}
 	}
 	return nil
 }
@@ -517,6 +662,9 @@ func validateValidationEvidence(record EvidenceRecord) error {
 
 	if record.Result == EvidencePassed && failed {
 		return fmt.Errorf("passing validation evidence cannot contain failed commands")
+	}
+	if record.Result == EvidenceBlocked && failed {
+		return fmt.Errorf("blocked validation evidence cannot contain failed commands")
 	}
 	if record.Result == EvidenceFailed && !failed {
 		return fmt.Errorf("failed validation evidence requires a failed command")
@@ -641,10 +789,14 @@ func (decision RouteDecision) EffectiveReviewOwner() string {
 
 // FinalResult records the durable delivery outcome.
 type FinalResult struct {
-	Status   string `json:"status"`
-	PRNumber int    `json:"pr_number,omitempty"`
-	PRURL    string `json:"pr_url,omitempty"`
-	Reason   string `json:"reason,omitempty"`
+	Status        string             `json:"status"`
+	PRNumber      int                `json:"pr_number,omitempty"`
+	PRURL         string             `json:"pr_url,omitempty"`
+	Reason        string             `json:"reason,omitempty"`
+	RouteRevision int                `json:"route_revision,omitempty"`
+	RouteDigest   string             `json:"route_digest,omitempty"`
+	Snapshot      RepositorySnapshot `json:"snapshot,omitempty"`
+	DispatchID    string             `json:"dispatch_id,omitempty"`
 }
 
 // ValidateFinalResult rejects incomplete or success-shaped delivery outcomes.
@@ -660,6 +812,72 @@ func ValidateFinalResult(result FinalResult) error {
 	case "blocked", "failed":
 		if strings.TrimSpace(result.Reason) == "" {
 			return fmt.Errorf("%s final result requires a reason", result.Status)
+		}
+	default:
+		return fmt.Errorf("invalid final result status %q", result.Status)
+	}
+	return nil
+}
+
+func (ws WorkflowState) validateAdaptiveFinalState() error {
+	openPR, ok := ws.Phases["open-pr"]
+	if !ok {
+		return fmt.Errorf("adaptive delivery requires an open-pr phase")
+	}
+	if ws.FinalResult == nil {
+		if ws.PR.Number != 0 || ws.PR.URL != "" {
+			return fmt.Errorf("adaptive PR identity requires a final result")
+		}
+		if openPR.Status == PhaseDone {
+			return fmt.Errorf("completed open-pr phase requires an opened final result")
+		}
+		return nil
+	}
+	result := *ws.FinalResult
+	if ws.Route == nil {
+		return fmt.Errorf("adaptive final result requires a route")
+	}
+	switch result.Status {
+	case "opened":
+		if openPR.Status != PhaseDone || openPR.Dispatch != nil {
+			return fmt.Errorf("opened final result requires a completed open-pr phase")
+		}
+		if ws.PR.Number != result.PRNumber || ws.PR.URL != result.PRURL {
+			return fmt.Errorf("opened final result does not match the recorded PR identity")
+		}
+		if result.RouteRevision != ws.Route.Revision ||
+			result.RouteDigest != ws.Route.Digest ||
+			result.Snapshot != ws.Route.Snapshot {
+			return fmt.Errorf("opened final result is stale for the current route")
+		}
+		if result.DispatchID == "" ||
+			ws.LastDispatch != "open-pr" ||
+			ws.LastDispatchID != result.DispatchID {
+			return fmt.Errorf("opened final result is not bound to the latest open-pr dispatch")
+		}
+		if ws.Evidence.Review == nil ||
+			!ws.Evidence.Review.FreshForReviewRoute(
+				ws.Route.Snapshot,
+				*ws.Route,
+				ws.Route.ReviewRoles,
+				ws.Route.EffectiveReviewOwner(),
+			) {
+			return fmt.Errorf("opened final result requires fresh review evidence")
+		}
+		if ws.Evidence.Validation == nil ||
+			!ws.Evidence.Validation.FreshForValidationRoute(
+				ws.Route.Snapshot,
+				*ws.Route,
+				ws.Route.ValidationOwner,
+			) {
+			return fmt.Errorf("opened final result requires fresh validation evidence")
+		}
+	case "blocked", "failed":
+		if ws.PR.Number != 0 || ws.PR.URL != "" {
+			return fmt.Errorf("%s final result cannot retain a PR identity", result.Status)
+		}
+		if openPR.Status != PhaseBlocked || openPR.Dispatch != nil {
+			return fmt.Errorf("%s final result requires a blocked open-pr phase", result.Status)
 		}
 	default:
 		return fmt.Errorf("invalid final result status %q", result.Status)
@@ -719,8 +937,8 @@ func (ws WorkflowState) ValidateAdaptiveFinish(name, status string) error {
 	if phase.Status != PhaseInProgress || phase.Dispatch == nil {
 		return fmt.Errorf("phase %q requires an active dispatch before finishing", name)
 	}
-	if name == "open-pr" && status == PhaseSkipped {
-		return fmt.Errorf("selected open-pr phase cannot be skipped")
+	if status == PhaseSkipped {
+		return fmt.Errorf("selected phase %q cannot be skipped", name)
 	}
 	return nil
 }
@@ -806,8 +1024,9 @@ func (ws WorkflowState) ValidateOpenPRReadiness(
 	return nil
 }
 
-// ApplyRoute updates selected/skipped phases without overwriting completed
-// work. Automatic route changes may only become more conservative.
+// ApplyRoute updates selected/skipped phases while preserving completed
+// non-evidence work. Route changes may reopen stale evidence owners and
+// open-pr, and automatic changes may only become more conservative.
 func (ws *WorkflowState) ApplyRoute(decision RouteDecision) error {
 	if !validRouteClass(decision.Class) {
 		return fmt.Errorf("invalid route class %q", decision.Class)
@@ -900,6 +1119,16 @@ func (ws *WorkflowState) ApplyRoute(decision RouteDecision) error {
 	ws.Version = WorkflowStateVersion
 	ws.Route = &copyDecision
 	if routeChanged && previousRevision > 0 {
+		ws.PR = PRRef{}
+		ws.FinalResult = nil
+		if phase := ws.Phases["open-pr"]; phase.Status == PhaseDone {
+			phase.Status = PhaseEscalated
+			phase.Reason = "route revision invalidated opened PR result"
+			phase.Outcome = ""
+			phase.EndedAt = ""
+			phase.Dispatch = nil
+			ws.Phases["open-pr"] = phase
+		}
 		ws.invalidateEvidenceForRouteChange(reboundPhase)
 	}
 	return nil

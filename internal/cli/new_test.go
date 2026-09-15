@@ -259,6 +259,49 @@ func TestFreshStackProjectCanLogProgressWithoutWorkflowState(t *testing.T) {
 	}
 }
 
+func TestRunNewCreatesStackChildFromExplicitParentBase(t *testing.T) {
+	repo := newTestRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(repo)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/", DefaultAgent: "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "checkout", "-q", "-b", "stack/parent").CombinedOutput(); err != nil {
+		t.Fatalf("create parent branch: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "parent.txt"), []byte("parent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "add", "parent.txt").CombinedOutput(); err != nil {
+		t.Fatalf("add parent change: %v\n%s", err, out)
+	}
+	command := exec.Command("git", "-C", repo, "commit", "-q", "-m", "parent")
+	command.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=relay", "GIT_AUTHOR_EMAIL=relay@example.com",
+		"GIT_COMMITTER_NAME=relay", "GIT_COMMITTER_EMAIL=relay@example.com",
+	)
+	if out, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("commit parent change: %v\n%s", err, out)
+	}
+	parentSHA := gitx.RevParse(repo, "stack/parent")
+	if err := runNew(newOpts{
+		task: "child task", name: "child", base: "stack/parent", noLaunch: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), "child"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.BaseBranch != "stack/parent" || manifest.StartSHA != parentSHA ||
+		manifest.Worktree == nil || gitx.RevParse(*manifest.Worktree, "HEAD") != parentSHA {
+		t.Fatalf("stack child manifest = %+v", manifest)
+	}
+}
+
 func TestReclaimLeftoversRemovesBranchWorktreeAndDir(t *testing.T) {
 	repo := newTestRepo(t)
 	worktreeDir := filepath.Join(repo, ".worktrees", "wt")

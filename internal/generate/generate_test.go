@@ -1,8 +1,10 @@
 package generate
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -146,6 +148,65 @@ func TestStackWorkflowDocsUseStableNamedReferences(t *testing.T) {
 				t.Errorf("%s contains stale numbered reference %q", rel, phrase)
 			}
 		}
+	}
+}
+
+func TestSkillMarkdownLinksResolveInSourceAndRenderedPackages(t *testing.T) {
+	root := repoRoot(t)
+	assertSkillMarkdownLinks(t, filepath.Join(root, "skills"))
+	for _, agentName := range []string{"claude", "copilot", "codex"} {
+		t.Run(agentName, func(t *testing.T) {
+			_, out := generateAgent(t, agentName)
+			assertSkillMarkdownLinks(t, filepath.Join(out, "skills"))
+		})
+	}
+}
+
+var markdownLinkPattern = regexp.MustCompile(`\[[^\]]+\]\(([^)]+)\)`)
+
+func assertSkillMarkdownLinks(t *testing.T, skillsRoot string) {
+	t.Helper()
+	err := filepath.WalkDir(skillsRoot, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".md" {
+			return nil
+		}
+		relative, err := filepath.Rel(skillsRoot, path)
+		if err != nil {
+			return err
+		}
+		parts := strings.Split(filepath.ToSlash(relative), "/")
+		if len(parts) < 2 {
+			return nil
+		}
+		skillRoot := filepath.Join(skillsRoot, parts[0])
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, match := range markdownLinkPattern.FindAllStringSubmatch(string(body), -1) {
+			target := strings.TrimSpace(match[1])
+			if target == "" || strings.HasPrefix(target, "#") ||
+				strings.Contains(target, "://") || strings.HasPrefix(target, "mailto:") {
+				continue
+			}
+			target = strings.SplitN(target, "#", 2)[0]
+			resolved := filepath.Clean(filepath.Join(filepath.Dir(path), filepath.FromSlash(target)))
+			within, err := filepath.Rel(skillRoot, resolved)
+			if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
+				t.Errorf("%s link %q escapes owning skill directory", path, match[1])
+				continue
+			}
+			if _, err := os.Stat(resolved); err != nil {
+				t.Errorf("%s link %q does not resolve: %v", path, match[1], err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk skill Markdown under %s: %v", skillsRoot, err)
 	}
 }
 

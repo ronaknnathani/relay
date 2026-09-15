@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/spf13/cobra"
@@ -226,10 +227,31 @@ func newCmdStatePR() *cobra.Command {
 				if number <= 0 || strings.TrimSpace(url) == "" {
 					return fmt.Errorf("adaptive PR recording requires --number and --url together")
 				}
-				if err := validateAdaptiveOpenPRSuccess(slug, ws); err != nil {
+				snapshot, err := projectSnapshot(slug)
+				if err != nil {
 					return err
 				}
+				if err := ws.ValidateOpenPRReadiness(snapshot, true); err != nil {
+					return err
+				}
+				dispatchID := ws.Phases["open-pr"].Dispatch.ID
 				ws.PR = project.PRRef{Number: number, URL: url}
+				result := project.FinalResult{
+					Status: "opened", PRNumber: number, PRURL: url,
+					RouteRevision: ws.Route.Revision, RouteDigest: ws.Route.Digest,
+					Snapshot: snapshot, DispatchID: dispatchID,
+				}
+				if err := project.ValidateFinalResult(result); err != nil {
+					return err
+				}
+				ws.FinalResult = &result
+				if err := ws.SetPhaseWithDelivery(
+					"open-pr", project.PhaseDone, "", "", "", project.PhaseOutcomeMaterial,
+					"", time.Now().UTC().Format(time.RFC3339),
+				); err != nil {
+					return err
+				}
+				return project.SaveState(statePath, ws)
 			} else {
 				ws.SetPR(number, url)
 				if ws.PR.Number <= 0 || strings.TrimSpace(ws.PR.URL) == "" {
@@ -263,8 +285,13 @@ func newCmdStateFinal() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result := project.FinalResult{
-				Status: args[1], PRNumber: ws.PR.Number, PRURL: ws.PR.URL, Reason: reason,
+			if ws.UsesAdaptiveDelivery() && args[1] == "opened" {
+				return fmt.Errorf("adaptive opened results must be recorded with `relay state pr`")
+			}
+			result := project.FinalResult{Status: args[1], Reason: reason}
+			if !ws.UsesAdaptiveDelivery() {
+				result.PRNumber = ws.PR.Number
+				result.PRURL = ws.PR.URL
 			}
 			if err := project.ValidateFinalResult(result); err != nil {
 				return err
@@ -273,6 +300,20 @@ func newCmdStateFinal() *cobra.Command {
 				if err := validateAdaptiveOpenPRSuccess(args[0], ws); err != nil {
 					return err
 				}
+			}
+			if ws.UsesAdaptiveDelivery() {
+				if err := ws.ValidateAdaptiveFinish("open-pr", project.PhaseBlocked); err != nil {
+					return fmt.Errorf("record %s final result: %w", result.Status, err)
+				}
+				ws.PR = project.PRRef{}
+				ws.FinalResult = &result
+				if err := ws.SetPhaseWithDelivery(
+					"open-pr", project.PhaseBlocked, reason, "", "", "", "",
+					time.Now().UTC().Format(time.RFC3339),
+				); err != nil {
+					return err
+				}
+				return project.SaveState(statePath, ws)
 			}
 			ws.FinalResult = &result
 			return project.SaveState(statePath, ws)

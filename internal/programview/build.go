@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -911,19 +912,23 @@ func childDTO(manifest project.Manifest, childDir string, archived bool, warning
 			Reason: phase.Reason, Outcome: phase.Outcome,
 			StartedAt: phase.StartedAt, EndedAt: phase.EndedAt,
 		})
-		if workflow.CurrentPhase == "" &&
-			phase.Status != project.PhaseDone && phase.Status != project.PhaseSkipped {
-			workflow.CurrentPhase = name
-		}
 	}
 	if state.Route != nil {
 		workflow.RouteClass = state.Route.Class
+		for _, name := range state.Order {
+			phase := state.Phases[name]
+			if slices.Contains(state.Route.SelectedPhases, name) &&
+				phase.Status != project.PhaseDone && phase.Status != project.PhaseSkipped {
+				workflow.CurrentPhase = name
+				break
+			}
+		}
 		hasEvidence := state.Evidence.Review != nil || state.Evidence.Validation != nil
 		if !hasEvidence || archived || !child.Manifest.WorktreePresent {
 			child.Workflow = workflow
 			return child
 		}
-		current, err := childRepositorySnapshot(manifest)
+		current, err := childRepositorySnapshot(manifest, childDir)
 		if err != nil {
 			*warnings = append(*warnings, fmt.Sprintf(
 				"compute current workflow snapshot for project %q: %v",
@@ -939,26 +944,36 @@ func childDTO(manifest project.Manifest, childDir string, archived bool, warning
 					current, *state.Route, state.Route.ValidationOwner,
 				)
 		}
+	} else {
+		for _, name := range state.Order {
+			phase := state.Phases[name]
+			if phase.Status != project.PhaseDone && phase.Status != project.PhaseSkipped {
+				workflow.CurrentPhase = name
+				break
+			}
+		}
 	}
 	child.Workflow = workflow
 	return child
 }
 
-func childRepositorySnapshot(manifest project.Manifest) (project.RepositorySnapshot, error) {
+func childRepositorySnapshot(manifest project.Manifest, projectDir string) (project.RepositorySnapshot, error) {
 	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {
 		return project.RepositorySnapshot{}, fmt.Errorf("project has no worktree")
 	}
-	base := manifest.StartSHA
-	if base == "" {
-		base = manifest.BaseBranch
+	inputRevision, err := project.ProjectInputRevision(projectDir)
+	if err != nil {
+		return project.RepositorySnapshot{}, err
 	}
+	base := gitx.SnapshotBaseRef(*manifest.Worktree, manifest.BaseBranch, manifest.StartSHA)
 	snapshot, err := gitx.Snapshot(*manifest.Worktree, base)
 	if err != nil {
 		return project.RepositorySnapshot{}, err
 	}
 	return project.RepositorySnapshot{
 		BaseSHA: snapshot.BaseSHA, HeadSHA: snapshot.HeadSHA, Fingerprint: snapshot.Fingerprint,
-		FileCount: snapshot.FileCount, ChangedLines: snapshot.ChangedLines,
+		InputRevision: inputRevision,
+		FileCount:     snapshot.FileCount, ChangedLines: snapshot.ChangedLines,
 	}, nil
 }
 

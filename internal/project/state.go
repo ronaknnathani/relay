@@ -62,20 +62,21 @@ type PRRef struct {
 // last-write-wins. This is acceptable because callers serialize writes per
 // project (one writer per branch/run), which the orchestrator guarantees.
 type WorkflowState struct {
-	Version       int                   `json:"version,omitempty"`
-	Slug          string                `json:"slug"`
-	Workflow      string                `json:"workflow"`
-	Order         []string              `json:"order"`
-	Phases        map[string]PhaseState `json:"phases"`
-	Route         *RouteDecision        `json:"route,omitempty"`
-	Evidence      DeliveryEvidence      `json:"evidence,omitempty"`
-	SubagentCount int                   `json:"subagent_count,omitempty"`
-	DispatchCount int                   `json:"delivery_dispatch_count,omitempty"`
-	HandoffCount  int                   `json:"delivery_handoff_count,omitempty"`
-	LastDispatch  string                `json:"last_delivery_dispatch,omitempty"`
-	FinalResult   *FinalResult          `json:"final_result,omitempty"`
-	PR            PRRef                 `json:"pr"`
-	Updated       string                `json:"updated"`
+	Version        int                   `json:"version,omitempty"`
+	Slug           string                `json:"slug"`
+	Workflow       string                `json:"workflow"`
+	Order          []string              `json:"order"`
+	Phases         map[string]PhaseState `json:"phases"`
+	Route          *RouteDecision        `json:"route,omitempty"`
+	Evidence       DeliveryEvidence      `json:"evidence,omitempty"`
+	SubagentCount  int                   `json:"subagent_count,omitempty"`
+	DispatchCount  int                   `json:"delivery_dispatch_count,omitempty"`
+	HandoffCount   int                   `json:"delivery_handoff_count,omitempty"`
+	LastDispatch   string                `json:"last_delivery_dispatch,omitempty"`
+	LastDispatchID string                `json:"last_delivery_dispatch_id,omitempty"`
+	FinalResult    *FinalResult          `json:"final_result,omitempty"`
+	PR             PRRef                 `json:"pr"`
+	Updated        string                `json:"updated"`
 }
 
 // validStatus reports whether s is a supported phase status.
@@ -201,6 +202,8 @@ func (ws WorkflowState) validate() error {
 		if _, ok := ws.Phases[ws.LastDispatch]; !ok || ws.LastDispatch == "route" {
 			return fmt.Errorf("state %q: invalid last delivery dispatch %q", ws.Slug, ws.LastDispatch)
 		}
+	} else if ws.LastDispatchID != "" {
+		return fmt.Errorf("state %q: last delivery dispatch id requires a phase", ws.Slug)
 	}
 	if !ws.hasAdaptiveState() {
 		return nil
@@ -214,6 +217,9 @@ func (ws WorkflowState) validate() error {
 	if err := ws.validateRoute(); err != nil {
 		return fmt.Errorf("state %q: %w", ws.Slug, err)
 	}
+	if err := ws.validateAdaptiveFinalState(); err != nil {
+		return fmt.Errorf("state %q: %w", ws.Slug, err)
+	}
 	return nil
 }
 
@@ -221,7 +227,7 @@ func (ws WorkflowState) hasAdaptiveState() bool {
 	if ws.Version > 0 || ws.Route != nil || ws.Evidence.Review != nil ||
 		ws.Evidence.Validation != nil || ws.SubagentCount != 0 ||
 		ws.DispatchCount != 0 || ws.HandoffCount != 0 || ws.LastDispatch != "" ||
-		ws.FinalResult != nil {
+		ws.LastDispatchID != "" || ws.FinalResult != nil {
 		return true
 	}
 	for _, phase := range ws.Phases {
@@ -235,7 +241,7 @@ func (ws WorkflowState) hasAdaptiveState() bool {
 
 // RecordDeliveryDispatch records one actual non-routing phase dispatch and
 // counts an inter-phase handoff when ownership moves to another phase.
-func (ws *WorkflowState) RecordDeliveryDispatch(name string) {
+func (ws *WorkflowState) RecordDeliveryDispatch(name, dispatchID string) {
 	if name == "route" {
 		return
 	}
@@ -244,6 +250,7 @@ func (ws *WorkflowState) RecordDeliveryDispatch(name string) {
 	}
 	ws.DispatchCount++
 	ws.LastDispatch = name
+	ws.LastDispatchID = dispatchID
 }
 
 // DeliveryMetrics returns dispatch and handoff counts recorded by state
@@ -270,6 +277,9 @@ func (ws WorkflowState) validateRoute() error {
 		}
 		if selected[phase] {
 			return fmt.Errorf("route selected duplicate phase %q", phase)
+		}
+		if ws.Phases[phase].Status == PhaseSkipped {
+			return fmt.Errorf("selected phase %q cannot be skipped", phase)
 		}
 		selected[phase] = true
 	}
@@ -342,12 +352,29 @@ func (ws WorkflowState) validateRoute() error {
 	if err := validateRouteFacts(route.Facts); err != nil {
 		return err
 	}
-	if normalized := NormalizeRiskAssessment(route.Facts, route.Snapshot.Fingerprint); normalized.RiskAssessmentComplete != route.Facts.RiskAssessmentComplete ||
+	if normalized := NormalizeRiskAssessment(route.Facts, route.Snapshot.Revision()); normalized.RiskAssessmentComplete != route.Facts.RiskAssessmentComplete ||
 		normalized.AssessmentFingerprint != route.Facts.AssessmentFingerprint {
 		return fmt.Errorf("route risk assessment does not match the current snapshot")
 	}
 	if route.Class == RouteEasy && !EasyRouteEligible(route.Facts) {
 		return fmt.Errorf("easy route facts do not prove easy eligibility")
+	}
+	minimumClass := MinimumRouteClass(route.Facts)
+	if RouteRank(route.Class) < RouteRank(minimumClass) {
+		return fmt.Errorf(
+			"route class %q is less conservative than facts require (%q)",
+			route.Class, minimumClass,
+		)
+	}
+	for _, phase := range RequiredRoutePhases(route.Class, route.Facts, route.ForcedFull) {
+		if !selected[phase] {
+			return fmt.Errorf("route class %q requires selected phase %q", route.Class, phase)
+		}
+	}
+	for _, role := range RequiredReviewRoles(route.Facts) {
+		if !roles[role] {
+			return fmt.Errorf("route facts require review role %q", role)
+		}
 	}
 	digest, err := RouteDigest(route)
 	if err != nil {
