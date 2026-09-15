@@ -943,6 +943,44 @@ func TestWorkerCleanupPreservesWorktreeAttachedToWrongBranch(t *testing.T) {
 	}
 }
 
+func TestWorkerCleanupReportsArchivedAfterPostDeleteSaveFailure(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installStubWatcherState(t, manifest.Slug, false)
+	previous := saveArchiveManifest
+	saveArchiveManifest = func(path string, candidate project.Manifest) error {
+		if candidate.ArchiveCleanup != nil &&
+			candidate.ArchiveCleanup.WorktreeState == project.ArchiveCleanupDone &&
+			candidate.ArchiveCleanup.BranchState == project.ArchiveCleanupPending {
+			return errors.New("injected cleanup completion save failure")
+		}
+		return project.Save(path, candidate)
+	}
+	t.Cleanup(func() { saveArchiveManifest = previous })
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("worker cleanup: %v", err)
+	}
+	result := decodeCleanupOutput(t, out)
+	if result.Status != cleanupIncomplete || !result.Archived || result.AlreadyArchived ||
+		result.Archive == nil || !result.Archive.WorktreeRemoved {
+		t.Fatalf("result = %+v, want archived incomplete cleanup with removed worktree", result)
+	}
+	if strings.Contains(result.Error, "project is still active") ||
+		!strings.Contains(result.Error, "archived") ||
+		!strings.Contains(result.Error, "injected cleanup completion save failure") {
+		t.Fatalf("cleanup error = %q, want accurate archived partial failure", result.Error)
+	}
+	if pathExists(*manifest.Worktree) ||
+		pathExists(filepath.Join(project.ActiveDir(), manifest.Slug)) ||
+		!pathExists(filepath.Join(project.ArchivedDir(), manifest.Slug)) {
+		t.Fatal("worker cleanup result did not match persisted resources")
+	}
+}
+
 func TestWorkerCleanupPreservesWatcherRetryWhenBranchDeletionAlsoFails(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
 	actualWorktree := *manifest.Worktree
@@ -989,15 +1027,16 @@ func TestWorkerCleanupPreservesWatcherRetryWhenBranchDeletionAlsoFails(t *testin
 		retried.NextCommand != watcherRetry {
 		t.Fatalf("retry result = %+v, want pending archived cleanup", retried)
 	}
-	if !strings.Contains(strings.Join(retried.Warnings, "\n"), branchDelete) {
-		t.Fatalf("retry warnings = %v, want branch deletion failure", retried.Warnings)
+	if !strings.Contains(retried.Error, branchDelete) ||
+		!strings.Contains(retried.Error, "will not retry removal") {
+		t.Fatalf("retry error = %q, want claimed branch guidance", retried.Error)
 	}
 	if !gitx.BranchExists(manifest.Repo, manifest.Branch) || !pathExists(actualWorktree) {
 		t.Fatal("retry reported clean while branch/worktree cleanup remained")
 	}
 }
 
-func TestWorkerCleanupRetryFinishesArchivedBranchCleanup(t *testing.T) {
+func TestWorkerCleanupDoesNotReplayClaimedBranchDeletion(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
 	client := &fakeHerdrClient{closeErr: errors.New("herdr refused to close the watcher tab")}
 	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
@@ -1054,14 +1093,28 @@ func TestWorkerCleanupRetryFinishesArchivedBranchCleanup(t *testing.T) {
 		t.Fatalf("retry cleanup: %v", err)
 	}
 	second := decodeCleanupOutput(t, out)
-	if !second.AlreadyArchived || second.Status != cleanupClean || second.NextCommand != "" {
-		t.Fatalf("retry result = %+v, want clean archived cleanup", second)
+	if !second.AlreadyArchived || second.Status != cleanupIncomplete ||
+		!strings.Contains(second.Error, "will not retry removal") {
+		t.Fatalf("retry result = %+v, want claimed cleanup preservation", second)
 	}
-	if gitx.BranchExists(manifest.Repo, manifest.Branch) {
-		t.Fatal("retry reported clean while the branch remained")
+	if !gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("retry replayed claimed branch deletion")
 	}
-	if deleteAttempts != 2 {
-		t.Fatalf("branch deletion attempts = %d, want 2", deleteAttempts)
+	if deleteAttempts != 1 {
+		t.Fatalf("branch deletion attempts = %d, want 1", deleteAttempts)
+	}
+
+	runArchiveGit(t, manifest.Repo, "branch", "-D", manifest.Branch)
+	out, err = runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("cleanup after manual branch deletion: %v", err)
+	}
+	third := decodeCleanupOutput(t, out)
+	if !third.AlreadyArchived || third.Status != cleanupClean || third.NextCommand != "" {
+		t.Fatalf("manual recovery result = %+v, want clean archived cleanup", third)
+	}
+	if deleteAttempts != 1 {
+		t.Fatalf("manual recovery replayed branch deletion: attempts = %d", deleteAttempts)
 	}
 	archived = loadArchivedManifest(t, manifest.Slug)
 	if archived.ArchiveCleanup.BranchPresent ||

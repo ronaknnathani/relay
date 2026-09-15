@@ -31,17 +31,29 @@ type Manifest struct {
 // ArchiveCleanupProof records the resource identities authorized for cleanup
 // after project metadata has moved to the archive.
 type ArchiveCleanupProof struct {
-	Repository             string `json:"repository"`
-	Branch                 string `json:"branch"`
-	Worktree               string `json:"worktree,omitempty"`
-	BranchPresent          bool   `json:"branch_present"`
-	ExpectedBranchTip      string `json:"expected_branch_tip,omitempty"`
-	WorktreePresent        bool   `json:"worktree_present"`
-	ExpectedWorktreeTip    string `json:"expected_worktree_tip,omitempty"`
-	ExpectedWorktreeBranch string `json:"expected_worktree_branch,omitempty"`
-	WorktreeDetached       bool   `json:"worktree_detached,omitempty"`
-	AuthoritativeCommit    string `json:"authoritative_commit,omitempty"`
+	Repository             string              `json:"repository"`
+	Branch                 string              `json:"branch"`
+	Worktree               string              `json:"worktree,omitempty"`
+	BranchPresent          bool                `json:"branch_present"`
+	ExpectedBranchTip      string              `json:"expected_branch_tip,omitempty"`
+	BranchState            ArchiveCleanupState `json:"branch_state,omitempty"`
+	WorktreePresent        bool                `json:"worktree_present"`
+	ExpectedWorktreeTip    string              `json:"expected_worktree_tip,omitempty"`
+	ExpectedWorktreeBranch string              `json:"expected_worktree_branch,omitempty"`
+	WorktreeDetached       bool                `json:"worktree_detached,omitempty"`
+	AuthoritativeCommit    string              `json:"authoritative_commit,omitempty"`
+	WorktreeState          ArchiveCleanupState `json:"worktree_state,omitempty"`
 }
+
+// ArchiveCleanupState records whether one destructive cleanup authorization
+// is available, has been consumed by an attempt, or is complete.
+type ArchiveCleanupState string
+
+const (
+	ArchiveCleanupPending ArchiveCleanupState = "pending"
+	ArchiveCleanupClaimed ArchiveCleanupState = "claimed"
+	ArchiveCleanupDone    ArchiveCleanupState = "done"
+)
 
 type PRInfo struct {
 	Number   *int    `json:"number"`

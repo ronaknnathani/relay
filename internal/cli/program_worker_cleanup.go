@@ -134,16 +134,18 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 	if archived {
 		result.AlreadyArchived = true
 		archiveOutcome, cleanupErr := retryArchivedProjectCleanup(manifest)
+		result.Archive = &archiveOutcome
+		result.Warnings = append(result.Warnings, archiveOutcome.Warnings...)
+		if archiveOutcome.BranchDeletionWarning != "" {
+			result.Warnings = append(result.Warnings, archiveOutcome.BranchDeletionWarning)
+		}
 		if cleanupErr != nil {
 			return failProgramWorkerCleanup(out, &result, jsonOutput, fmt.Errorf(
 				"cleanup %s/%s: child project %q is archived but its worktree or branch cleanup is incomplete: %w",
 				p.Slug, item.ID, manifest.Slug, cleanupErr,
 			))
 		}
-		result.Archive = &archiveOutcome
-		result.Warnings = append(result.Warnings, archiveOutcome.Warnings...)
 		if archiveOutcome.BranchDeletionWarning != "" {
-			result.Warnings = append(result.Warnings, archiveOutcome.BranchDeletionWarning)
 			result.NextCommand = fmt.Sprintf(
 				"relay program worker cleanup %s %s", p.Slug, item.ID,
 			)
@@ -152,7 +154,20 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 		return renderProgramWorkerCleanup(out, result, jsonOutput)
 	}
 	archiveOutcome, err := archiveProject(manifest.Slug, true)
+	result.Archive = &archiveOutcome
+	result.Archived = archiveOutcome.ArchivedPath != ""
+	result.Warnings = append(result.Warnings, archiveOutcome.Warnings...)
+	if archiveOutcome.BranchDeletionWarning != "" {
+		result.Warnings = append(result.Warnings, archiveOutcome.BranchDeletionWarning)
+	}
 	if err != nil {
+		if result.Archived {
+			return failProgramWorkerCleanup(out, &result, jsonOutput, fmt.Errorf(
+				"cleanup %s/%s: child project %q is archived but its worktree or branch cleanup "+
+					"is incomplete: %w; retry with: relay program worker cleanup %s %s",
+				p.Slug, item.ID, manifest.Slug, err, p.Slug, item.ID,
+			))
+		}
 		return failProgramWorkerCleanup(out, &result, jsonOutput, fmt.Errorf(
 			"cleanup %s/%s: the watcher is stopped and the worker session is gone, but child project %q "+
 				"could not be archived: %w; item %s is still merged and the project is still active — "+
@@ -160,13 +175,13 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 			p.Slug, item.ID, manifest.Slug, err, item.ID, p.Slug, item.ID,
 		))
 	}
-	result.Archived = true
-	result.Archive = &archiveOutcome
-	result.Warnings = append(result.Warnings, archiveOutcome.Warnings...)
 	if archiveOutcome.BranchDeletionWarning != "" {
-		result.Warnings = append(result.Warnings, archiveOutcome.BranchDeletionWarning)
 		if result.NextCommand == "" {
-			result.NextCommand = manualBranchDeleteCommand(manifest.Repo, manifest.Branch)
+			if archiveOutcome.BranchDeleted {
+				result.NextCommand = manualBranchConfigRemoveCommand(manifest.Repo, manifest.Branch)
+			} else {
+				result.NextCommand = manualBranchDeleteCommand(manifest.Repo, manifest.Branch)
+			}
 		}
 	}
 	result.Status = cleanupFinalStatus(result)

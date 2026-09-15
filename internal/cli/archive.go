@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,6 +23,8 @@ var (
 	saveArchiveManifest         = project.Save
 	archiveBranchExists         = gitx.LocalBranchExists
 	archiveForceDeleteBranchAt  = gitx.ForceDeleteBranchAt
+	archiveRemoveBranchConfig   = gitx.RemoveBranchConfig
+	archiveWorktreeRemove       = gitx.WorktreeRemove
 	archiveRename               = os.Rename
 	archiveRemoveFile           = os.Remove
 )
@@ -216,8 +219,10 @@ func renderArchive(out io.Writer, result archiveResult) {
 	if result.WorktreeRemoved {
 		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Dim, "Worktree removed:"), result.Worktree)
 	}
-	if result.BranchDeletionWarning != "" {
+	if result.BranchDeletionWarning != "" && !result.BranchDeleted {
 		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Yellow, "Branch still present:"), result.Branch)
+	} else if result.BranchDeletionWarning != "" {
+		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Yellow, "Branch config cleanup incomplete:"), result.Branch)
 	}
 	fmt.Fprintln(out)
 }
@@ -275,10 +280,10 @@ func archiveProject(slug string, force bool) (archiveResult, error) {
 		return archiveResult{}, err
 	}
 	result, err := archiveProjectWithProof(decision.proof, force)
-	if err != nil {
-		return archiveResult{}, err
-	}
 	result.Warnings = append(result.Warnings, decision.warnings...)
+	if err != nil {
+		return result, err
+	}
 	return result, nil
 }
 
@@ -564,20 +569,45 @@ func archiveProjectWithProof(proof archiveProofSnapshot, force bool) (archiveRes
 			}
 			return archiveResult{}, err
 		}
-		if err := gitx.WorktreeRemove(proof.Repository, proof.Worktree, force); err != nil {
-			if rollbackErr := rollbackMetadata(); rollbackErr != nil {
-				err = fmt.Errorf("%w; rollback archive metadata: %v", err, rollbackErr)
+		if proof.WorktreePresent {
+			if err := claimArchivedWorktreeCleanup(&m); err != nil {
+				if rollbackErr := rollbackMetadata(); rollbackErr != nil {
+					return result, fmt.Errorf(
+						"claim worktree %s cleanup: %w; rollback archive metadata: %v",
+						proof.Worktree, err, rollbackErr,
+					)
+				}
+				result.ArchivedPath = ""
+				return result, fmt.Errorf("claim worktree %s cleanup: %w", proof.Worktree, err)
 			}
-			if !force {
-				return archiveResult{}, fmt.Errorf(
-					"%w\nhint: use --force to remove worktrees with untracked/modified files", err,
-				)
+		}
+		if err := archiveWorktreeRemove(proof.Repository, proof.Worktree, force); err != nil {
+			present, unchanged, inspectErr := archiveWorktreeStateAfterFailure(proof)
+			if inspectErr == nil && unchanged {
+				if rollbackErr := rollbackMetadata(); rollbackErr != nil {
+					err = fmt.Errorf("%w; rollback archive metadata: %v", err, rollbackErr)
+					return result, err
+				}
+				result.ArchivedPath = ""
+				if !force {
+					return result, fmt.Errorf(
+						"%w\nhint: use --force to remove worktrees with untracked/modified files", err,
+					)
+				}
+				return result, err
 			}
-			return archiveResult{}, err
+			if inspectErr == nil {
+				result.WorktreeRemoved = !present
+			}
+			return result, fmt.Errorf(
+				"remove worktree %s after claiming cleanup: %w; cleanup outcome is ambiguous and "+
+					"will not be retried automatically; inspect the archived project and worktree manually",
+				proof.Worktree, errors.Join(err, inspectErr),
+			)
 		}
 		result.WorktreeRemoved = true
 		if err := consumeArchivedWorktreeProof(&m); err != nil {
-			return archiveResult{}, fmt.Errorf(
+			return result, fmt.Errorf(
 				"worktree %s was removed, but its archived cleanup proof could not be consumed: %w",
 				proof.Worktree, err,
 			)
@@ -585,17 +615,36 @@ func archiveProjectWithProof(proof archiveProofSnapshot, force bool) (archiveRes
 	}
 
 	if proof.BranchPresent {
+		if err := claimArchivedBranchCleanup(&m); err != nil {
+			return result, fmt.Errorf("claim branch %q cleanup: %w", proof.Branch, err)
+		}
 		if err := archiveForceDeleteBranchAt(
 			proof.Repository, proof.Branch, proof.ExpectedBranchTip,
 		); err != nil {
-			result.BranchDeletionWarning = fmt.Sprintf(
-				"%s\nhint: delete manually with: %s",
-				err, manualBranchDeleteCommand(proof.Repository, proof.Branch),
-			)
+			_, branchPresent, inspectErr := gitx.LocalBranchTip(proof.Repository, proof.Branch)
+			switch {
+			case inspectErr != nil:
+				result.BranchDeletionWarning = fmt.Sprintf(
+					"%s; inspect branch after cleanup failure: %v",
+					err, inspectErr,
+				)
+			case branchPresent:
+				result.BranchDeletionWarning = fmt.Sprintf(
+					"%s\ncleanup was already claimed and will not be retried automatically\n"+
+						"hint: delete manually with: %s",
+					err, manualBranchDeleteCommand(proof.Repository, proof.Branch),
+				)
+			default:
+				result.BranchDeleted = true
+				result.BranchDeletionWarning = fmt.Sprintf(
+					"%s\nbranch ref was deleted; finish config cleanup with: %s",
+					err, manualBranchConfigRemoveCommand(proof.Repository, proof.Branch),
+				)
+			}
 		} else {
 			result.BranchDeleted = true
 			if err := consumeArchivedBranchProof(&m); err != nil {
-				return archiveResult{}, fmt.Errorf(
+				return result, fmt.Errorf(
 					"branch %q was deleted, but its archived cleanup proof could not be consumed: %w",
 					proof.Branch, err,
 				)
@@ -603,6 +652,19 @@ func archiveProjectWithProof(proof archiveProofSnapshot, force bool) (archiveRes
 		}
 	}
 	return result, nil
+}
+
+func archiveWorktreeStateAfterFailure(
+	proof archiveProofSnapshot,
+) (present, unchanged bool, err error) {
+	state, found, err := gitx.RegisteredWorktreeState(proof.Repository, proof.Worktree)
+	if err != nil {
+		return false, false, err
+	}
+	return found, found &&
+		state.Head == proof.ExpectedWorktreeTip &&
+		state.Branch == proof.ExpectedWorktreeBranch &&
+		state.Detached == proof.WorktreeDetached, nil
 }
 
 func validateArchiveProof(proof archiveProofSnapshot) (project.Manifest, error) {
@@ -715,30 +777,60 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 	if err != nil {
 		return result, err
 	}
-	if proof.WorktreePresent && !current.worktreePresent {
+	switch proof.WorktreeState {
+	case project.ArchiveCleanupClaimed:
+		if current.worktreePresent {
+			return result, claimedCleanupError(m, "worktree", proof.Worktree)
+		}
 		if err := consumeArchivedWorktreeProof(&m); err != nil {
 			return result, fmt.Errorf(
-				"finish archived worktree cleanup for %s: worktree is absent, but its cleanup proof "+
-					"could not be consumed: %w",
+				"finish archived worktree cleanup for %s: worktree is absent, but its claimed cleanup "+
+					"state could not be completed: %w",
 				m.Slug, err,
 			)
 		}
-	}
-	if current.worktreePresent {
-		if err := gitx.WorktreeRemove(m.Repo, *m.Worktree, true); err != nil {
-			return result, fmt.Errorf("finish archived worktree cleanup for %s: %w", m.Slug, err)
+	case project.ArchiveCleanupPending:
+		if !current.worktreePresent {
+			if err := consumeArchivedWorktreeProof(&m); err != nil {
+				return result, fmt.Errorf(
+					"finish archived worktree cleanup for %s: worktree is absent, but its cleanup proof "+
+						"could not be consumed: %w",
+					m.Slug, err,
+				)
+			}
+			break
+		}
+		if err := claimArchivedWorktreeCleanup(&m); err != nil {
+			return result, fmt.Errorf(
+				"finish archived worktree cleanup for %s: claim removal: %w", m.Slug, err,
+			)
+		}
+		if err := archiveWorktreeRemove(m.Repo, *m.Worktree, true); err != nil {
+			return result, fmt.Errorf(
+				"finish archived worktree cleanup for %s: removal was claimed and will not be "+
+					"retried automatically: %w; inspect %s and remove it manually if it still belongs "+
+					"to this project",
+				m.Slug, err, *m.Worktree,
+			)
 		}
 		result.WorktreeRemoved = true
 		if err := consumeArchivedWorktreeProof(&m); err != nil {
 			return result, fmt.Errorf(
-				"finish archived worktree cleanup for %s: worktree was removed, but its cleanup proof "+
-					"could not be consumed: %w",
+				"finish archived worktree cleanup for %s: worktree was removed, but its claimed cleanup "+
+					"state could not be completed: %w",
 				m.Slug, err,
 			)
 		}
 	}
 	if !current.branchPresent {
-		if proof.BranchPresent {
+		if proof.BranchState != project.ArchiveCleanupDone {
+			if err := archiveRemoveBranchConfig(m.Repo, m.Branch); err != nil {
+				return result, fmt.Errorf(
+					"finish archived branch cleanup for %s: branch ref is absent, but its local "+
+						"config could not be removed: %w; retry with: %s",
+					m.Slug, err, manualBranchConfigRemoveCommand(m.Repo, m.Branch),
+				)
+			}
 			if err := consumeArchivedBranchProof(&m); err != nil {
 				return result, fmt.Errorf(
 					"finish archived branch cleanup for %s: branch is absent, but its cleanup proof "+
@@ -749,11 +841,20 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 		}
 		return result, nil
 	}
+	if proof.BranchState == project.ArchiveCleanupClaimed {
+		return result, claimedCleanupError(m, "branch", proof.Branch)
+	}
+	if err := claimArchivedBranchCleanup(&m); err != nil {
+		return result, fmt.Errorf(
+			"finish archived branch cleanup for %s: claim deletion: %w", m.Slug, err,
+		)
+	}
 	if err := archiveForceDeleteBranchAt(
 		m.Repo, m.Branch, proof.ExpectedBranchTip,
 	); err != nil {
 		result.BranchDeletionWarning = fmt.Sprintf(
-			"%s\nhint: delete manually with: %s",
+			"%s\ncleanup was already claimed and will not be retried automatically\n"+
+				"hint: delete manually with: %s",
 			err, manualBranchDeleteCommand(m.Repo, m.Branch),
 		)
 		return result, nil
@@ -769,45 +870,182 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 	return result, nil
 }
 
+func claimedCleanupError(m project.Manifest, resource, identity string) error {
+	manual := identity
+	if resource == "branch" {
+		manual = manualBranchDeleteCommand(m.Repo, identity)
+	} else {
+		manual = "git -C " + shellQuote(m.Repo) + " worktree remove --force " + shellQuote(identity)
+	}
+	return fmt.Errorf(
+		"finish archived %s cleanup for %s: cleanup was already claimed and its outcome is ambiguous; "+
+			"will not retry removal of %s; inspect it and remove it manually only if it still belongs "+
+			"to this archived project\nhint: remove manually with: %s",
+		resource, m.Slug, identity, manual,
+	)
+}
+
 type archivedCleanupResources struct {
 	branchPresent   bool
 	worktreePresent bool
 }
 
 func archiveCleanupProof(proof archiveProofSnapshot) *project.ArchiveCleanupProof {
+	branchState := project.ArchiveCleanupDone
+	if proof.BranchPresent {
+		branchState = project.ArchiveCleanupPending
+	}
+	worktreeState := project.ArchiveCleanupDone
+	if proof.WorktreePresent {
+		worktreeState = project.ArchiveCleanupPending
+	}
 	return &project.ArchiveCleanupProof{
 		Repository:             proof.Repository,
 		Branch:                 proof.Branch,
 		Worktree:               proof.Worktree,
 		BranchPresent:          proof.BranchPresent,
 		ExpectedBranchTip:      proof.ExpectedBranchTip,
+		BranchState:            branchState,
 		WorktreePresent:        proof.WorktreePresent,
 		ExpectedWorktreeTip:    proof.ExpectedWorktreeTip,
 		ExpectedWorktreeBranch: proof.ExpectedWorktreeBranch,
 		WorktreeDetached:       proof.WorktreeDetached,
 		AuthoritativeCommit:    proof.AuthoritativeCommit,
+		WorktreeState:          worktreeState,
 	}
 }
 
+func claimArchivedWorktreeCleanup(m *project.Manifest) error {
+	return updateArchivedCleanupProof(m, func(proof *project.ArchiveCleanupProof) error {
+		if cleanupState(proof.WorktreeState, proof.WorktreePresent) != project.ArchiveCleanupPending {
+			return fmt.Errorf("worktree cleanup state is %q, want pending", proof.WorktreeState)
+		}
+		proof.WorktreeState = project.ArchiveCleanupClaimed
+		return nil
+	})
+}
+
+func claimArchivedBranchCleanup(m *project.Manifest) error {
+	return updateArchivedCleanupProof(m, func(proof *project.ArchiveCleanupProof) error {
+		if cleanupState(proof.BranchState, proof.BranchPresent) != project.ArchiveCleanupPending {
+			return fmt.Errorf("branch cleanup state is %q, want pending", proof.BranchState)
+		}
+		proof.BranchState = project.ArchiveCleanupClaimed
+		return nil
+	})
+}
+
 func consumeArchivedWorktreeProof(m *project.Manifest) error {
-	m.ArchiveCleanup.WorktreePresent = false
-	m.ArchiveCleanup.ExpectedWorktreeTip = ""
-	m.ArchiveCleanup.ExpectedWorktreeBranch = ""
-	m.ArchiveCleanup.WorktreeDetached = false
-	return persistArchivedCleanupProof(*m)
+	return updateArchivedCleanupProof(m, func(proof *project.ArchiveCleanupProof) error {
+		proof.WorktreeState = project.ArchiveCleanupDone
+		proof.WorktreePresent = false
+		proof.ExpectedWorktreeTip = ""
+		proof.ExpectedWorktreeBranch = ""
+		proof.WorktreeDetached = false
+		return nil
+	})
 }
 
 func consumeArchivedBranchProof(m *project.Manifest) error {
-	m.ArchiveCleanup.BranchPresent = false
-	m.ArchiveCleanup.ExpectedBranchTip = ""
-	return persistArchivedCleanupProof(*m)
+	return updateArchivedCleanupProof(m, func(proof *project.ArchiveCleanupProof) error {
+		proof.BranchState = project.ArchiveCleanupDone
+		proof.BranchPresent = false
+		proof.ExpectedBranchTip = ""
+		return nil
+	})
+}
+
+func updateArchivedCleanupProof(
+	m *project.Manifest, update func(*project.ArchiveCleanupProof) error,
+) error {
+	if m.ArchiveCleanup == nil {
+		return fmt.Errorf("archive cleanup proof is missing")
+	}
+	next := *m
+	proof := *m.ArchiveCleanup
+	next.ArchiveCleanup = &proof
+	if err := update(next.ArchiveCleanup); err != nil {
+		return err
+	}
+	if err := persistArchivedCleanupProof(next); err != nil {
+		return err
+	}
+	*m = next
+	return nil
 }
 
 func persistArchivedCleanupProof(m project.Manifest) error {
 	path := project.ManifestPath(project.ArchivedDir(), m.Slug)
-	if err := saveArchiveManifest(path, m); err != nil {
-		return fmt.Errorf("save archived cleanup proof %s: %w", path, err)
+	temp, err := os.CreateTemp(filepath.Dir(path), ".manifest.cleanup-*")
+	if err != nil {
+		return fmt.Errorf("create atomic archived cleanup proof in %s: %w", filepath.Dir(path), err)
 	}
+	tempPath := temp.Name()
+	if err := temp.Close(); err != nil {
+		err = archiveCleanupError(err, archiveRemoveFile(tempPath))
+		return fmt.Errorf("close atomic archived cleanup proof %s: %w", tempPath, err)
+	}
+	if err := saveArchiveManifest(tempPath, m); err != nil {
+		err = archiveCleanupError(err, archiveRemoveFile(tempPath))
+		return fmt.Errorf("write atomic archived cleanup proof %s: %w", tempPath, err)
+	}
+	if err := archiveRename(tempPath, path); err != nil {
+		err = archiveCleanupError(err, archiveRemoveFile(tempPath))
+		return fmt.Errorf("install atomic archived cleanup proof %s: %w", path, err)
+	}
+	return nil
+}
+
+func cleanupState(
+	state project.ArchiveCleanupState, present bool,
+) project.ArchiveCleanupState {
+	if state != "" {
+		return state
+	}
+	if present {
+		return project.ArchiveCleanupPending
+	}
+	return project.ArchiveCleanupDone
+}
+
+func validateCleanupState(
+	resource string, state project.ArchiveCleanupState, present bool,
+) (project.ArchiveCleanupState, error) {
+	state = cleanupState(state, present)
+	switch state {
+	case project.ArchiveCleanupPending, project.ArchiveCleanupClaimed:
+		if !present {
+			return "", fmt.Errorf(
+				"%s cleanup state %q has no recorded resource", resource, state,
+			)
+		}
+	case project.ArchiveCleanupDone:
+		if present {
+			return "", fmt.Errorf(
+				"%s cleanup state is done but the cleanup proof still records it as present", resource,
+			)
+		}
+	default:
+		return "", fmt.Errorf("%s cleanup state %q is invalid", resource, state)
+	}
+	return state, nil
+}
+
+func normalizeArchivedCleanupStates(
+	proof *project.ArchiveCleanupProof,
+) error {
+	branchState, err := validateCleanupState("branch", proof.BranchState, proof.BranchPresent)
+	if err != nil {
+		return err
+	}
+	worktreeState, err := validateCleanupState(
+		"worktree", proof.WorktreeState, proof.WorktreePresent,
+	)
+	if err != nil {
+		return err
+	}
+	proof.BranchState = branchState
+	proof.WorktreeState = worktreeState
 	return nil
 }
 
@@ -850,6 +1088,13 @@ func validateArchivedCleanupProof(m project.Manifest) (project.ArchiveCleanupPro
 		)
 	}
 	proof := *m.ArchiveCleanup
+	if err := normalizeArchivedCleanupStates(&proof); err != nil {
+		return project.ArchiveCleanupProof{}, fmt.Errorf(
+			"archived project %s cleanup proof has ambiguous cleanup state: %w; preserving resources "+
+				"for manual inspection",
+			m.Slug, err,
+		)
+	}
 	worktree := ""
 	if m.Worktree != nil {
 		worktree = *m.Worktree
@@ -966,6 +1211,11 @@ func archivedCleanupDriftError(proof project.ArchiveCleanupProof, detail string)
 
 func manualBranchDeleteCommand(repo, branch string) string {
 	return "git -C " + shellQuote(repo) + " branch -D " + shellQuote(branch)
+}
+
+func manualBranchConfigRemoveCommand(repo, branch string) string {
+	return "git -C " + shellQuote(repo) + " config --local --remove-section " +
+		shellQuote("branch."+branch)
 }
 
 func stageArchivedProject(srcDir, dstDir string, m project.Manifest) (func() error, error) {

@@ -22,6 +22,7 @@ var (
 	scpLikeURLPattern = regexp.MustCompile(
 		`(?i)\b[^\s'"<>/@:]+@(?:\[[0-9a-f:.]+\]|[^\s'"<>/:]+):[^\s'"<>]+`,
 	)
+	removeBranchConfig = removeLocalBranchConfig
 )
 
 // RepoRoot returns the absolute path to the top-level directory of the
@@ -179,6 +180,9 @@ func ForceDeleteBranch(repo, branch string) error {
 
 // ForceDeleteBranchAt removes a branch only when it still points at expectedSHA.
 func ForceDeleteBranchAt(repo, branch, expectedSHA string) error {
+	if err := validateBranchName(repo, branch); err != nil {
+		return err
+	}
 	ref := "refs/heads/" + branch
 	worktree, checkedOut, err := branchCheckout(repo, ref)
 	if err != nil {
@@ -195,6 +199,12 @@ func ForceDeleteBranchAt(repo, branch, expectedSHA string) error {
 		"git", "-C", repo, "update-ref", "-d", ref, expectedSHA,
 	).CombinedOutput()
 	if err == nil {
+		if err := removeBranchConfig(repo, branch); err != nil {
+			return fmt.Errorf(
+				"branch ref %q was deleted, but its local config could not be removed: %w",
+				branch, err,
+			)
+		}
 		return nil
 	}
 	deleteErr := gitCommandError(command, err, out)
@@ -212,6 +222,63 @@ func ForceDeleteBranchAt(repo, branch, expectedSHA string) error {
 		)
 	}
 	return deleteErr
+}
+
+// RemoveBranchConfig removes the local branch.<name> configuration section.
+// A branch without a section is already clean.
+func RemoveBranchConfig(repo, branch string) error {
+	if err := validateBranchName(repo, branch); err != nil {
+		return err
+	}
+	return removeLocalBranchConfig(repo, branch)
+}
+
+func validateBranchName(repo, branch string) error {
+	out, err := exec.Command(
+		"git", "-C", repo, "check-ref-format", "--branch", branch,
+	).CombinedOutput()
+	if err != nil {
+		return gitCommandError("git check-ref-format --branch "+branch, err, out)
+	}
+	return nil
+}
+
+func removeLocalBranchConfig(repo, branch string) error {
+	present, err := localBranchConfigExists(repo, branch)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return nil
+	}
+	section := "branch." + branch
+	out, err := exec.Command(
+		"git", "-C", repo, "config", "--local", "--remove-section", section,
+	).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	return gitCommandError("git config --local --remove-section "+section, err, out)
+}
+
+func localBranchConfigExists(repo, branch string) (bool, error) {
+	out, err := exec.Command(
+		"git", "-C", repo, "config", "--local", "--name-only", "--get-regexp", `^branch\.`,
+	).CombinedOutput()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, gitCommandError("git config --local --name-only --get-regexp ^branch\\.", err, out)
+	}
+	prefix := "branch." + branch + "."
+	for _, key := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.HasPrefix(key, prefix) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func branchCheckout(repo, ref string) (string, bool, error) {

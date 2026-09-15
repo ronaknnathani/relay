@@ -393,6 +393,47 @@ func TestForceDeleteBranchAtRejectsBranchCheckedOutInLinkedWorktree(t *testing.T
 	}
 }
 
+func TestForceDeleteBranchAtRemovesBranchConfig(t *testing.T) {
+	repo := initRepo(t)
+	tip := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "branch", "feature/config", tip)
+	runGit(t, repo, "config", "--local", "branch.feature/config.remote", "origin")
+	runGit(t, repo, "config", "--local", "branch.feature/config.merge", "refs/heads/feature/config")
+
+	if err := ForceDeleteBranchAt(repo, "feature/config", tip); err != nil {
+		t.Fatalf("ForceDeleteBranchAt: %v", err)
+	}
+	if BranchExists(repo, "feature/config") {
+		t.Fatal("branch ref survived deletion")
+	}
+	cmd := exec.Command(
+		"git", "-C", repo, "config", "--local", "--get", "branch.feature/config.remote",
+	)
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("branch config survived deletion: %s", out)
+	}
+}
+
+func TestForceDeleteBranchAtDoesNotRecreateRefWhenConfigCleanupFails(t *testing.T) {
+	repo := initRepo(t)
+	tip := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "branch", "feature", tip)
+	previous := removeBranchConfig
+	removeBranchConfig = func(string, string) error {
+		return errors.New("injected branch config cleanup failure")
+	}
+	t.Cleanup(func() { removeBranchConfig = previous })
+
+	err := ForceDeleteBranchAt(repo, "feature", tip)
+	if err == nil || !strings.Contains(err.Error(), "injected branch config cleanup failure") ||
+		!strings.Contains(err.Error(), "was deleted") {
+		t.Fatalf("ForceDeleteBranchAt error = %v, want partial config cleanup failure", err)
+	}
+	if BranchExists(repo, "feature") {
+		t.Fatal("branch ref was recreated after config cleanup failed")
+	}
+}
+
 func TestIsWorktreePreservesGitDiagnostic(t *testing.T) {
 	repo := t.TempDir()
 
