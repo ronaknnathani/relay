@@ -95,6 +95,23 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 	}
 }
 
+func TestOverviewRendersMergedProgressContract(t *testing.T) {
+	script := readAsset(t, "assets/app.js")
+	requireContains(t, "app.js", script, []string{
+		"dom.percent.textContent = String(percent);",
+		"count(progress.percent)",
+		"dom.progressCounts.textContent = `${count(progress.merged)} of ${count(progress.total)} merged`;",
+	})
+
+	index := readAsset(t, "assets/index.html")
+	requireContains(t, "index.html", index, []string{
+		"<dt>Completion</dt>",
+		`<span id="progress-percent" class="signal__value mono">`,
+		`<span class="signal__unit">%</span>`,
+		`<p id="progress-counts" class="signal__note"></p>`,
+	})
+}
+
 func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	index := readAsset(t, "assets/index.html")
 	requireContains(t, "index.html", index, []string{

@@ -17,6 +17,10 @@ import (
 )
 
 func TestHandlerSecurityRoutesAndSelectedItem(t *testing.T) {
+	expectedProgress := programview.ProgressDTO{
+		Total: 39, Pending: 14, Dispatched: 1, Merged: 21,
+		Canceled: 3, Completed: 24, Percent: 53,
+	}
 	handler := NewHandler(HandlerOptions{
 		Slug: "relay-v1",
 		Port: 4321,
@@ -24,6 +28,7 @@ func TestHandlerSecurityRoutesAndSelectedItem(t *testing.T) {
 			return programview.Snapshot{
 				Schema:     programview.SchemaVersion,
 				DetailItem: detail,
+				Progress:   expectedProgress,
 				Items:      []programview.ItemDTO{},
 				Contracts:  []programview.ContractDTO{},
 				Warnings:   []string{},
@@ -49,6 +54,9 @@ func TestHandlerSecurityRoutesAndSelectedItem(t *testing.T) {
 	}
 	if snapshot.DetailItem != "w2" {
 		t.Fatalf("detail item = %q", snapshot.DetailItem)
+	}
+	if snapshot.Progress != expectedProgress {
+		t.Fatalf("progress = %+v, want %+v", snapshot.Progress, expectedProgress)
 	}
 
 	for _, test := range []struct {

@@ -25,6 +25,74 @@ func artifactText(artifact ArtifactDTO) string {
 	return *artifact.Text
 }
 
+func TestProgressDTOUsesMergedRatio(t *testing.T) {
+	tests := []struct {
+		name     string
+		items    []program.WorkItem
+		expected ProgressDTO
+	}{
+		{
+			name:     "zero items",
+			expected: ProgressDTO{},
+		},
+		{
+			name:  "one of every status",
+			items: progressItems(1, 1, 1, 1, 1, 1),
+			expected: ProgressDTO{
+				Total: 6, Pending: 1, Dispatched: 1, InReview: 1, Blocked: 1,
+				Merged: 1, Canceled: 1, Completed: 2, Percent: 16,
+			},
+		},
+		{
+			name:  "reference distribution",
+			items: progressItems(14, 1, 0, 0, 21, 3),
+			expected: ProgressDTO{
+				Total: 39, Pending: 14, Dispatched: 1, Merged: 21,
+				Canceled: 3, Completed: 24, Percent: 53,
+			},
+		},
+		{
+			name:  "all canceled",
+			items: progressItems(0, 0, 0, 0, 0, 4),
+			expected: ProgressDTO{
+				Total: 4, Canceled: 4, Completed: 4,
+			},
+		},
+		{
+			name:  "all merged",
+			items: progressItems(0, 0, 0, 0, 4, 0),
+			expected: ProgressDTO{
+				Total: 4, Merged: 4, Completed: 4, Percent: 100,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := progressDTO(test.items); got != test.expected {
+				t.Fatalf("progressDTO() = %+v, want %+v", got, test.expected)
+			}
+		})
+	}
+}
+
+func progressItems(pending, dispatched, inReview, blocked, merged, canceled int) []program.WorkItem {
+	var items []program.WorkItem
+	for status, count := range map[program.ItemStatus]int{
+		program.ItemPending:    pending,
+		program.ItemDispatched: dispatched,
+		program.ItemInReview:   inReview,
+		program.ItemBlocked:    blocked,
+		program.ItemMerged:     merged,
+		program.ItemCancelled:  canceled,
+	} {
+		for range count {
+			items = append(items, program.WorkItem{Status: status})
+		}
+	}
+	return items
+}
+
 func TestBuildPopulatesProgramDetailAndDegradesPerSource(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -127,7 +195,7 @@ func TestBuildPopulatesProgramDetailAndDegradesPerSource(t *testing.T) {
 	}
 	if got.DetailItem != "w2" || got.Progress != (ProgressDTO{
 		Total: 6, Pending: 1, Dispatched: 1, InReview: 1, Blocked: 1, Merged: 1,
-		Canceled: 1, Completed: 2, Percent: 33,
+		Canceled: 1, Completed: 2, Percent: 16,
 	}) {
 		t.Fatalf("snapshot progress/detail = %+v / %q", got.Progress, got.DetailItem)
 	}
@@ -314,6 +382,9 @@ func TestBuildUsesStalePRAndReportsDegradedSources(t *testing.T) {
 	if !archived.Program.Archived || archived.DetailItem != "" ||
 		!strings.Contains(strings.Join(archived.Warnings, "\n"), `detail item "w99" not found`) {
 		t.Fatalf("archived snapshot = %+v", archived)
+	}
+	if archived.Progress != got.Progress {
+		t.Fatalf("archived progress = %+v, want %+v", archived.Progress, got.Progress)
 	}
 }
 
