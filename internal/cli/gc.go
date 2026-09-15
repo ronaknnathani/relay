@@ -127,7 +127,7 @@ func runGC() error {
 			continue
 		}
 		renderArchive(os.Stdout, result)
-		if len(result.Warnings) > 0 {
+		if len(result.Warnings) > 0 || result.BranchDeletionWarning != "" {
 			hadErrors = true
 		}
 	}

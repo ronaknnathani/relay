@@ -148,6 +148,9 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 	result.Archived = true
 	result.Archive = &archiveOutcome
 	result.Warnings = append(result.Warnings, archiveOutcome.Warnings...)
+	if archiveOutcome.BranchDeletionWarning != "" {
+		result.Warnings = append(result.Warnings, archiveOutcome.BranchDeletionWarning)
+	}
 	result.Status = cleanupFinalStatus(result)
 	return renderProgramWorkerCleanup(out, result, jsonOutput)
 }

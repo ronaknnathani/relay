@@ -133,14 +133,15 @@ func newCmdArchive() *cobra.Command {
 // printing lets a caller that owns its own output — a JSON command, for
 // instance — report the same facts without archive writing into its stream.
 type archiveResult struct {
-	Slug            string   `json:"slug"`
-	Worktree        string   `json:"worktree,omitempty"`
-	WorktreeRemoved bool     `json:"worktree_removed"`
-	Branch          string   `json:"branch,omitempty"`
-	BranchDeleted   bool     `json:"branch_deleted"`
-	Merged          bool     `json:"merged"`
-	ArchivedPath    string   `json:"archived_path"`
-	Warnings        []string `json:"warnings"`
+	Slug                  string   `json:"slug"`
+	Worktree              string   `json:"worktree,omitempty"`
+	WorktreeRemoved       bool     `json:"worktree_removed"`
+	Branch                string   `json:"branch,omitempty"`
+	BranchDeleted         bool     `json:"branch_deleted"`
+	BranchDeletionWarning string   `json:"branch_deletion_warning,omitempty"`
+	Merged                bool     `json:"merged"`
+	ArchivedPath          string   `json:"archived_path"`
+	Warnings              []string `json:"warnings"`
 }
 
 // runArchive archives a project and prints the human-facing report.
@@ -159,12 +160,15 @@ func renderArchive(out io.Writer, result archiveResult) {
 	for _, warning := range result.Warnings {
 		ui.Warn("%s", warning)
 	}
+	if result.BranchDeletionWarning != "" {
+		ui.Warn("%s", result.BranchDeletionWarning)
+	}
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Green, "Archived:"), result.Slug)
 	if result.WorktreeRemoved {
 		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Dim, "Worktree removed:"), result.Worktree)
 	}
-	if !result.BranchDeleted && result.Branch != "" && len(result.Warnings) > 0 {
+	if result.BranchDeletionWarning != "" {
 		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Yellow, "Branch still present:"), result.Branch)
 	}
 	fmt.Fprintln(out)
@@ -231,7 +235,10 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 			// the recorded pull request when its identity matches the branch.
 			pullRequestMerged, err := recordedMerge()
 			if err != nil {
-				return archiveResult{}, err
+				return archiveResult{}, fmt.Errorf(
+					"branch %q has unmerged work; re-run with --force to delete it anyway, or merge it first; recorded pull request lookup failed: %w",
+					m.Branch, err,
+				)
 			}
 			if !pullRequestMerged {
 				return archiveResult{}, fmt.Errorf("branch %q has unmerged work; re-run with --force to delete it anyway, or merge it first", m.Branch)
@@ -244,9 +251,6 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 	if !workMerged {
 		pullRequestMerged, err := recordedMerge()
 		if err != nil {
-			if !force && branchExists {
-				return archiveResult{}, err
-			}
 			result.Warnings = append(result.Warnings, err.Error())
 		} else {
 			workMerged = pullRequestMerged
@@ -273,9 +277,9 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 			branchDeleteErr = gitx.DeleteBranch(m.Repo, m.Branch)
 		}
 		if branchDeleteErr != nil {
-			result.Warnings = append(result.Warnings, fmt.Sprintf(
+			result.BranchDeletionWarning = fmt.Sprintf(
 				"%s\nhint: delete manually with 'git branch -D %s'", branchDeleteErr, m.Branch,
-			))
+			)
 		} else {
 			result.BranchDeleted = true
 		}

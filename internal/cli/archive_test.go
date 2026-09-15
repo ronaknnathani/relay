@@ -51,6 +51,31 @@ func TestArchiveRejectsUnmergedBranchBeforeDirtyWorktree(t *testing.T) {
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
 
+func TestArchiveUnmergedBranchIncludesPullRequestLookupFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "unmerged-lookup-failure"
+	branch := "user/unmerged-lookup-failure"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "unique\n", "unique work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	recordArchiveManifestPR(t, slug, 410)
+	installArchivePRLookupError(t, errors.New("GitHub unavailable"))
+
+	_, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	})
+	if err == nil {
+		t.Fatal("runArchive succeeded for an unmerged branch")
+	}
+	for _, want := range []string{"unmerged work", "re-run with --force", "GitHub unavailable"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("runArchive error %q is missing %q", err, want)
+		}
+	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
+}
+
 func TestArchiveForceKeepsDirtyUnmergedBehavior(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
@@ -122,6 +147,37 @@ func TestArchiveDoesNotMarkEmptyReachableBranchMerged(t *testing.T) {
 	}
 	if archived := loadArchivedManifest(t, slug); archived.Merged {
 		t.Fatal("empty branch was recorded as merged work")
+	}
+}
+
+func TestArchiveWarnsWhenOptionalPullRequestLookupFailsForReachableBranch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "reachable-lookup-failure"
+	branch := "user/reachable-lookup-failure"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	recordArchiveManifestPR(t, slug, 409)
+	installArchivePRLookupError(t, errors.New("GitHub unavailable"))
+
+	stdout, stderr, err := captureGCOutput(t, func() error {
+		return runArchive(slug, false)
+	})
+	if err != nil {
+		t.Fatalf("runArchive reachable branch: %v", err)
+	}
+	if !strings.Contains(stderr, "GitHub unavailable") {
+		t.Fatalf("stderr %q is missing the optional lookup warning", stderr)
+	}
+	if strings.Contains(stdout, "Branch still present:") {
+		t.Fatalf("stdout %q falsely reports the deleted branch as present", stdout)
+	}
+	if gitx.BranchExists(repo, branch) {
+		t.Fatalf("reachable branch %q survived archive", branch)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(filepath.Join(project.ArchivedDir(), slug)) {
+		t.Fatal("optional pull request lookup failure prevented archive")
 	}
 }
 
@@ -302,11 +358,14 @@ func TestArchiveWarnsAndContinuesWhenDeletedBranchProofFails(t *testing.T) {
 	runArchiveGit(t, repo, "worktree", "remove", "--force", worktree)
 	runArchiveGit(t, repo, "branch", "-D", branch)
 
-	_, stderr, err := captureGCOutput(t, func() error {
+	stdout, stderr, err := captureGCOutput(t, func() error {
 		return runArchive(slug, false)
 	})
 	if err != nil {
 		t.Fatalf("runArchive with unavailable proof lookup: %v", err)
+	}
+	if strings.Contains(stdout, "Branch still present:") {
+		t.Fatalf("stdout %q falsely reports the already absent branch as present", stdout)
 	}
 	for _, secret := range []string{"ref-user", "ref-secret", "query-secret", "fragment-secret", "access_token"} {
 		if strings.Contains(stderr, secret) {
@@ -327,6 +386,33 @@ func TestArchiveWarnsAndContinuesWhenDeletedBranchProofFails(t *testing.T) {
 	archived := loadArchivedManifest(t, slug)
 	if archived.Merged {
 		t.Fatal("archive recorded unavailable pull request proof as merged")
+	}
+}
+
+func TestArchiveReportsBranchStillPresentOnlyAfterDeletionFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "branch-deletion-failure"
+	branch := "user/branch-deletion-failure"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	missingWorktree := worktree + "-missing"
+	writeArchiveManifest(t, slug, repo, branch, missingWorktree)
+
+	stdout, stderr, err := captureGCOutput(t, func() error {
+		return runArchive(slug, false)
+	})
+	if err != nil {
+		t.Fatalf("runArchive: %v", err)
+	}
+	if !strings.Contains(stdout, "Branch still present:") ||
+		!strings.Contains(stdout, branch) {
+		t.Fatalf("stdout %q is missing the branch deletion failure", stdout)
+	}
+	if !strings.Contains(stderr, "git branch -D "+branch) {
+		t.Fatalf("stderr %q is missing the manual branch deletion guidance", stderr)
+	}
+	if !gitx.BranchExists(repo, branch) {
+		t.Fatalf("branch %q was deleted despite being checked out", branch)
 	}
 }
 
