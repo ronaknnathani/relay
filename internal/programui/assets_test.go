@@ -96,8 +96,10 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		!strings.Contains(index, `<script src="/app.js"></script>`) {
 		t.Error("index.html must load the minified application before paint")
 	}
-	if strings.Count(index, "<link ") != 1 || !strings.Contains(index, `href="/app.css"`) {
-		t.Error("index.html must link exactly one local stylesheet, /app.css")
+	if strings.Count(index, "<link ") != 2 ||
+		!strings.Contains(index, `href="/app.css"`) ||
+		!strings.Contains(index, `<link rel="preload" href="/api/program" as="fetch" crossorigin="use-credentials">`) {
+		t.Error("index.html must load local styles and preload the initial program snapshot")
 	}
 }
 
