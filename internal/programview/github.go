@@ -50,6 +50,7 @@ type PRIndexLoader func(repo string, refs []string) PRIndex
 type PullRequestProof struct {
 	State      PRState
 	Repository string
+	BaseBranch string
 	HeadBranch string
 	HeadSHA    string
 }
@@ -267,7 +268,7 @@ func PullRequestNumber(ref string) (int, bool) {
 		return 0, false
 	}
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	if len(segments) != 4 || segments[0] == "" || segments[1] == "" || segments[2] != "pull" {
+	if len(segments) < 4 || segments[0] == "" || segments[1] == "" || segments[2] != "pull" {
 		return 0, false
 	}
 	return positiveNumber(segments[3])
@@ -307,7 +308,7 @@ func (l ghPullRequestLookup) Lookup(repo, ref string) (PullRequestProof, error) 
 	output, err := l.run(
 		timeoutContext, repo, "gh", "pr", "view", selector,
 		"--repo", repository,
-		"--json", "state,url,headRefName,headRefOid",
+		"--json", "state,url,baseRefName,headRefName,headRefOid",
 	)
 	if err != nil {
 		detail := gitx.SanitizeDiagnostic(string(output))
@@ -319,6 +320,7 @@ func (l ghPullRequestLookup) Lookup(repo, ref string) (PullRequestProof, error) 
 	var response struct {
 		State       string `json:"state"`
 		URL         string `json:"url"`
+		BaseRefName string `json:"baseRefName"`
 		HeadRefName string `json:"headRefName"`
 		HeadRefOID  string `json:"headRefOid"`
 	}
@@ -342,6 +344,7 @@ func (l ghPullRequestLookup) Lookup(repo, ref string) (PullRequestProof, error) 
 	return PullRequestProof{
 		State:      state,
 		Repository: responseRepository,
+		BaseBranch: strings.TrimSpace(response.BaseRefName),
 		HeadBranch: strings.TrimSpace(response.HeadRefName),
 		HeadSHA:    strings.TrimSpace(response.HeadRefOID),
 	}, nil
@@ -373,7 +376,7 @@ func pullRequestRepository(rawURL string) (string, error) {
 		return "", fmt.Errorf("parse URL %q: %w", gitx.SanitizeDiagnostic(rawURL), err)
 	}
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	if len(segments) != 4 || segments[0] == "" || segments[1] == "" || segments[2] != "pull" {
+	if len(segments) < 4 || segments[0] == "" || segments[1] == "" || segments[2] != "pull" {
 		return "", fmt.Errorf(
 			"URL %q does not identify a pull request repository",
 			gitx.SanitizeDiagnostic(rawURL),

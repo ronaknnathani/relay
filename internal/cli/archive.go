@@ -46,6 +46,22 @@ func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, err
 			safeRef, slug, proof.Repository, repository,
 		)
 	}
+	base := m.BaseBranch
+	if base == "" {
+		base, err = gitx.DetectDefaultBranchWithError(m.Repo)
+		if err != nil {
+			return false, fmt.Errorf(
+				"resolve base branch for recorded pull request %s for %s: %w",
+				safeRef, slug, err,
+			)
+		}
+	}
+	if proof.BaseBranch != base {
+		return false, fmt.Errorf(
+			"recorded pull request %s for %s base branch %q does not match manifest base branch %q",
+			safeRef, slug, proof.BaseBranch, base,
+		)
+	}
 	branchTip, found, err := gitx.LocalBranchTip(m.Repo, m.Branch)
 	if err != nil {
 		return false, fmt.Errorf("resolve branch %q tip for recorded pull request %s for %s: %w", m.Branch, safeRef, slug, err)

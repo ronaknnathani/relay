@@ -461,6 +461,7 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 		name            string
 		repository      string
 		localRepository string
+		baseBranch      string
 		headSHA         string
 		wantMerged      bool
 		wantError       string
@@ -469,6 +470,7 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 			name:            "matching github.com proof",
 			repository:      "github.com/acme/widgets",
 			localRepository: "github.com/acme/widgets",
+			baseBranch:      "main",
 			headSHA:         branchTip,
 			wantMerged:      true,
 		},
@@ -476,6 +478,7 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 			name:            "matching enterprise proof",
 			repository:      "github.example/acme/widgets",
 			localRepository: "github.example/acme/widgets",
+			baseBranch:      "main",
 			headSHA:         branchTip,
 			wantMerged:      true,
 		},
@@ -483,6 +486,7 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 			name:            "different host",
 			repository:      "github.example/acme/widgets",
 			localRepository: "github.com/acme/widgets",
+			baseBranch:      "main",
 			headSHA:         branchTip,
 			wantError:       "repository",
 		},
@@ -490,13 +494,23 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 			name:            "different repository",
 			repository:      "github.com/acme/other",
 			localRepository: "github.com/acme/widgets",
+			baseBranch:      "main",
 			headSHA:         branchTip,
 			wantError:       "repository",
+		},
+		{
+			name:            "different base branch",
+			repository:      "github.com/acme/widgets",
+			localRepository: "github.com/acme/widgets",
+			baseBranch:      "release",
+			headSHA:         branchTip,
+			wantError:       "base branch",
 		},
 		{
 			name:            "different head",
 			repository:      "github.com/acme/widgets",
 			localRepository: "github.com/acme/widgets",
+			baseBranch:      "main",
 			headSHA:         manifest.StartSHA,
 			wantError:       "head",
 		},
@@ -504,6 +518,7 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 			name:            "missing head",
 			repository:      "github.com/acme/widgets",
 			localRepository: "github.com/acme/widgets",
+			baseBranch:      "main",
 			wantError:       "head",
 		},
 	}
@@ -515,6 +530,7 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 				return programview.PullRequestProof{
 					State:      programview.PRStateMerged,
 					Repository: test.repository,
+					BaseBranch: test.baseBranch,
 					HeadSHA:    test.headSHA,
 				}, nil
 			}
@@ -629,6 +645,7 @@ func installArchivePRIndex(t *testing.T, states map[string]programview.PRState) 
 		proofs[ref] = programview.PullRequestProof{
 			State:      state,
 			Repository: "github.com/acme/widgets",
+			BaseBranch: manifest.BaseBranch,
 			HeadBranch: manifest.Branch,
 			HeadSHA:    gitx.RevParse(manifest.Repo, "refs/heads/"+manifest.Branch),
 		}

@@ -31,7 +31,7 @@ func TestPullRequestNumber(t *testing.T) {
 		{ref: "12"},
 		{ref: "https://github.com/acme/widgets/issues/123"},
 		{ref: "https://github.com/acme/widgets/pull/not-a-number"},
-		{ref: "https://github.example/acme/widgets/pull/789/files"},
+		{ref: "https://github.example/acme/widgets/pull/789/files", want: 789, ok: true},
 		{ref: "https://github.com/acme/widgets/pull/456?diff=split"},
 	}
 	for _, test := range tests {
@@ -294,19 +294,21 @@ func TestGHPullRequestLookupUsesOriginIdentityDespiteGHRepo(t *testing.T) {
 			return []byte(`{
 				"state":"MERGED",
 				"url":"https://github.example/acme/widgets/pull/42",
+				"baseRefName":"main",
 				"headRefName":"user/verified-pr",
 				"headRefOid":"abc123"
 			}`), nil
 		},
 	}
 
-	proof, err := lookup.Lookup("/repo", "#42")
+	proof, err := lookup.Lookup("/repo", "https://github.example/acme/widgets/pull/42/files")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if proof != (PullRequestProof{
 		State:      PRStateMerged,
 		Repository: "github.example/acme/widgets",
+		BaseBranch: "main",
 		HeadBranch: "user/verified-pr",
 		HeadSHA:    "abc123",
 	}) {
@@ -315,7 +317,7 @@ func TestGHPullRequestLookupUsesOriginIdentityDespiteGHRepo(t *testing.T) {
 	wantArgs := []string{
 		"pr", "view", "42",
 		"--repo", "github.example/acme/widgets",
-		"--json", "state,url,headRefName,headRefOid",
+		"--json", "state,url,baseRefName,headRefName,headRefOid",
 	}
 	if !reflect.DeepEqual(gotArgs, wantArgs) {
 		t.Fatalf("args = %v, want %v", gotArgs, wantArgs)
@@ -329,7 +331,6 @@ func TestGHPullRequestLookupRejectsMalformedReferenceBeforeRunningGH(t *testing.
 		"42",
 		"#0",
 		"#42x",
-		"https://github.example/acme/widgets/pull/42/files",
 		"https://github.example/acme/widgets/pull/42?diff=split",
 		"https://github.example/acme/other/pull/42",
 	} {

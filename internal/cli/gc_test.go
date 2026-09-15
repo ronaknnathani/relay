@@ -195,6 +195,28 @@ func TestGCKeepsUpstreamMergedBranchWhenDetachedWorktreeHeadDiverges(t *testing.
 	}
 }
 
+func TestGCArchivesMergedBranchWithUnregisteredLeftoverWorktreeDirectory(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "upstream-leftover-worktree"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	runArchiveGit(t, fixture.repo, "worktree", "remove", "--force", worktree)
+	if err := os.MkdirAll(worktree, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if err != nil {
+		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		pathExists(worktree) ||
+		gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC left merged project artifacts after ignoring an unregistered leftover directory")
+	}
+}
+
 func TestGCArchivesMergedPullRequestWithMatchingBranchTip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")
@@ -328,6 +350,7 @@ func TestGCKeepsMergedPullRequestWhenDeletedBranchNameDoesNotMatch(t *testing.T)
 		return programview.PullRequestProof{
 			State:      programview.PRStateMerged,
 			Repository: "github.com/acme/widgets",
+			BaseBranch: "main",
 			HeadBranch: "user/another-branch",
 		}, nil
 	}
@@ -402,6 +425,7 @@ func TestGCKeepsMergedPullRequestWithMismatchedProof(t *testing.T) {
 				return programview.PullRequestProof{
 					State:      programview.PRStateMerged,
 					Repository: test.repository,
+					BaseBranch: fixture.base,
 					HeadSHA:    test.headSHA(fixture, branch),
 				}, nil
 			}
@@ -673,7 +697,7 @@ func TestGCRefreshFailureAllowsMergedPullRequest(t *testing.T) {
 	}
 }
 
-func TestGCBaseDiscoveryFailureAllowsMergedPullRequest(t *testing.T) {
+func TestGCKeepsMergedPullRequestWhenBaseCannotBeVerified(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")
 	slug := "base-discovery-failure-pr"
@@ -688,19 +712,16 @@ func TestGCBaseDiscoveryFailureAllowsMergedPullRequest(t *testing.T) {
 	runArchiveGit(t, fixture.repo, "branch", "-D", "main")
 
 	_, stderr, err := captureGCOutput(t, runGC)
-	if err != nil {
-		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
 	}
-	for _, want := range []string{"cannot determine default branch", "symbolic-ref"} {
+	for _, want := range []string{"cannot determine default branch", "resolve base branch", "symbolic-ref"} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr %q is missing %q", stderr, want)
 		}
 	}
-	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
-		t.Fatal("GC left merged-PR project active after base discovery failed")
-	}
-	if archived := loadArchivedManifest(t, slug); !archived.Merged {
-		t.Fatal("GC did not record merged PR after base discovery failed")
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("GC removed merged-PR project without verifying its base branch")
 	}
 }
 
