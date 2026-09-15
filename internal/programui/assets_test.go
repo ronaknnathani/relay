@@ -112,10 +112,11 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		`<a class="skip-link"`,
 	})
 
-	if strings.Count(index, "<script") != 3 ||
+	if strings.Count(index, "<script") != 4 ||
+		!strings.Contains(index, `<script id="app-script" src="/app.js" defer></script>`) ||
 		!strings.Contains(index, `<script id="initial-program" type="application/json">__RELAY_INITIAL_ROADMAP__</script>`) ||
 		!strings.Contains(index, `<script>__RELAY_BOOTSTRAP__</script>`) {
-		t.Error("index.html must embed the initial roadmap before the inline bootstrap")
+		t.Error("index.html must preload the core app and embed the initial roadmap before the inline bootstrap")
 	}
 	if strings.Count(index, "<link ") != 1 ||
 		!strings.Contains(index, `<link rel="stylesheet" href="/app.css">`) {
@@ -186,8 +187,9 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	}
 	bootstrap := readAsset(t, "assets/bootstrap.js")
 	minifiedBootstrap := readAsset(t, "assets/bootstrap.min.js")
-	if len(minifiedBootstrap) >= len(bootstrap) || !strings.Contains(minifiedBootstrap, "/app.js") {
-		t.Error("the first-paint bootstrap must be minified and load the complete core bundle")
+	if len(minifiedBootstrap) >= len(bootstrap) ||
+		!strings.Contains(minifiedBootstrap, "__relayBootstrapCleanup") {
+		t.Error("the first-paint bootstrap must be minified and hand controls to the core bundle")
 	}
 	bootstrapDigest := sha256.Sum256([]byte(minifiedBootstrap))
 	bootstrapHash := "'sha256-" + base64.StdEncoding.EncodeToString(bootstrapDigest[:]) + "'"
@@ -228,11 +230,12 @@ func TestBootstrapUsesMergedProgress(t *testing.T) {
 func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
 	bootstrap := readAsset(t, "assets/bootstrap.js")
 	requireContains(t, "bootstrap.js", bootstrap, []string{
-		`script.src = "/app.js"`,
-		"document.body.append(script)",
+		`document.getElementById("app-script")`,
+		`window.__relayBootstrapCleanup`,
 	})
 	requireAbsent(t, "bootstrap.js", bootstrap, []string{
 		"window.setTimeout",
+		"document.createElement(\"script\")",
 	})
 }
 

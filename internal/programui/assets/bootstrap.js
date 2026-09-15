@@ -2,6 +2,7 @@
 
 (() => {
   const initial = document.getElementById("initial-program");
+  const appScript = document.getElementById("app-script");
   const reconnect = document.getElementById("reconnect");
   const graphNodes = document.getElementById("graph-nodes");
   const graph = document.getElementById("graph");
@@ -95,15 +96,12 @@
   graphNodes.addEventListener("click", onClick);
   graphNodes.addEventListener("keydown", onKeyDown);
 
-  const script = document.createElement("script");
-  script.src = "/app.js";
-  script.onload = () => {
+  window.__relayBootstrapCleanup = () => {
     graphNodes.removeEventListener("click", onClick);
     graphNodes.removeEventListener("keydown", onKeyDown);
   };
-  script.onerror = () => {
+  appScript.addEventListener("error", () => {
     reconnect.hidden = false;
     reconnect.textContent = "The Program UI bundle failed to load. Reload the page to retry.";
-  };
-  document.body.append(script);
+  });
 })();

@@ -893,12 +893,11 @@ function renderRoadmap() {
     return stageIndex === stages.length;
   };
 
-  if (renderBatch(INITIAL_ROADMAP_CARDS)) {
-    window.requestAnimationFrame(() => {
-      if (generation === state.roadmapRenderGeneration && state.tab === "roadmap") {
-        drawConnectorsForCurrentGraph();
-      }
-    });
+  const initialBatch = nodes.length <= ROADMAP_RENDER_BATCH
+    ? nodes.length
+    : INITIAL_ROADMAP_CARDS;
+  if (renderBatch(initialBatch)) {
+    drawConnectorsForCurrentGraph();
     return true;
   }
   const finish = () => {
@@ -907,11 +906,7 @@ function renderRoadmap() {
     }
     if (renderBatch(ROADMAP_RENDER_BATCH)) {
       state.dirtyTabs.delete("roadmap");
-      window.requestAnimationFrame(() => {
-        if (generation === state.roadmapRenderGeneration && state.tab === "roadmap") {
-          drawConnectorsForCurrentGraph();
-        }
-      });
+      drawConnectorsForCurrentGraph();
       return;
     }
     window.requestAnimationFrame(finish);
@@ -1598,6 +1593,10 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
 
 function start() {
   collectDom();
+  if (window.__relayBootstrapCleanup) {
+    window.__relayBootstrapCleanup();
+    delete window.__relayBootstrapCleanup;
+  }
   renderThemeToggle();
   bindControls();
   const parsed = readHash();

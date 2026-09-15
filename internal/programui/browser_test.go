@@ -299,12 +299,48 @@ func TestBrowserRoadmapResumesAfterTabSwitch(t *testing.T) {
 		chromedp.Poll(`typeof selectTab === "function" &&
 			typeof deferredUIReady !== "undefined" &&
 			deferredUIReady &&
-			document.querySelectorAll(".card").length === 2`, nil),
+			document.querySelectorAll(".card").length === 100`, nil),
+		chromedp.Evaluate(`
+			(() => {
+				const nodes = [];
+				const edges = [];
+				const layers = [];
+				const items = [];
+				for (let index = 1; index <= 160; index += 1) {
+					const id = "w" + index;
+					const dependencies = index === 1 ? [] : ["w" + (index - 1)];
+					nodes.push({id, title: "Synthetic task " + index, lane: "dispatched", layer: index - 1});
+					layers.push([id]);
+					items.push({
+						id,
+						title: "Synthetic task " + index,
+						status: "dispatched",
+						priority: "P1",
+						dependencies,
+						dependents: index === 160 ? [] : ["w" + (index + 1)]
+					});
+					if (index > 1) {
+						edges.push({from: "w" + (index - 1), to: id});
+					}
+				}
+				state.snapshot = {
+					...state.snapshot,
+					items,
+					graph: {nodes, edges, layers, cyclic: false},
+					progress: {...state.snapshot.progress, total: 160, dispatched: 160},
+					plan: {...state.snapshot.plan, in_flight: nodes.map((node) => node.id)}
+				};
+				state.itemsByID = new Map(items.map((item) => [item.id, item]));
+				state.dirtyTabs.add("roadmap");
+				renderActiveTab();
+			})()
+		`, nil),
+		chromedp.Poll(`document.querySelectorAll(".card").length === 2`, nil),
 		chromedp.Evaluate(`selectTab("tasks")`, nil),
 		chromedp.Poll(`document.querySelector("#panel-tasks").hidden === false`, nil),
 		chromedp.Evaluate(`selectTab("roadmap")`, nil),
-		chromedp.Poll(`document.querySelectorAll(".card").length === 100 &&
-			document.querySelectorAll("#graph-edges .edge").length === 200`, nil),
+		chromedp.Poll(`document.querySelectorAll(".card").length === 160 &&
+			document.querySelectorAll("#graph-edges .edge").length === 159`, nil),
 	); err != nil {
 		t.Fatalf("resume roadmap render: %v", err)
 	}
@@ -314,7 +350,7 @@ func TestBrowserRoadmapResumesAfterTabSwitch(t *testing.T) {
 	)); err != nil {
 		t.Fatal(err)
 	}
-	want := "Task w3: Reference task 003. Status Dispatched. Priority P1. Dependencies: w2, w1."
+	want := "Task w3: Synthetic task 3. Status Dispatched. Priority P1. Dependencies: w2."
 	if label != want {
 		t.Fatalf("task card accessible name = %q, want %q", label, want)
 	}
