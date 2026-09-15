@@ -99,8 +99,23 @@ const dom = {};
 const cardTemplate = document.createElement("button");
 cardTemplate.className = "card";
 cardTemplate.type = "button";
-cardTemplate.append(document.createElement("p"));
-cardTemplate.firstElementChild.className = "card__title";
+const cardTopTemplate = make("div", "card__top");
+const cardStatusTemplate = make("span", "status");
+const cardStatusGlyphTemplate = make("span", "status__glyph");
+cardStatusGlyphTemplate.setAttribute("aria-hidden", "true");
+cardStatusTemplate.append(cardStatusGlyphTemplate, make("span", "status__word"));
+cardTopTemplate.append(make("span", "card__id"), cardStatusTemplate);
+const cardFootTemplate = make("div", "card__foot");
+cardFootTemplate.append(
+  make("span"),
+  make("span"),
+  make("span", "card__pr"),
+  make("span", "flag"),
+);
+cardFootTemplate.children[1].hidden = true;
+cardFootTemplate.children[2].hidden = true;
+cardFootTemplate.children[3].hidden = true;
+cardTemplate.append(cardTopTemplate, make("p", "card__title"), cardFootTemplate);
 
 const state = {
   snapshot: null,
@@ -1023,37 +1038,47 @@ function taskCard(node, position, hasSelection) {
   card.setAttribute("tabindex", hasSelection
     ? (node.id === state.selected ? "0" : "-1")
     : (position === 0 ? "0" : "-1"));
-  card.firstElementChild.textContent = text(node.title, "Untitled task");
   decorateTaskCard(card, node, item, lane);
   return card;
 }
 
 function decorateTaskCard(card, node, item, lane) {
-  if (card.querySelector(".card__foot")) {
-    return;
-  }
-  const top = make("div", "card__top");
-  top.append(make("span", "card__id", node.id), statusNode(lane));
-  card.prepend(top);
+  const top = card.children[0];
+  const status = top.children[1];
+  const foot = card.children[2];
+  const priority = foot.children[0];
+  const dependencies = foot.children[1];
+  const pullRequest = foot.children[2];
+  const flag = foot.children[3];
+  const meta = statusMeta(lane);
+  top.children[0].textContent = node.id;
+  status.dataset.lane = lane;
+  status.children[0].textContent = meta.glyph;
+  status.children[1].textContent = meta.word;
+  card.children[1].textContent = text(node.title, "Untitled task");
   card.setAttribute("aria-label", cardLabel(node, item, lane));
-  const foot = make("div", "card__foot");
   if (item) {
-    foot.append(make("span", "", text(item.priority, "P?")));
-    const dependencies = list(item.dependencies).length;
-    if (dependencies > 0) {
-      foot.append(make("span", "", plural(dependencies, "dep")));
+    priority.textContent = text(item.priority, "P?");
+    const dependencyCount = list(item.dependencies).length;
+    if (dependencyCount > 0) {
+      dependencies.textContent = plural(dependencyCount, "dep");
+      dependencies.hidden = false;
     }
     const pr = item.live_pr || item.recorded_pr;
     if (pr && pr.number) {
-      foot.append(make("span", "card__pr", `PR #${pr.number}`));
+      pullRequest.textContent = `PR #${pr.number}`;
+      pullRequest.hidden = false;
     }
     if (item.orphaned) {
-      foot.append(make("span", "flag flag--orphan", "orphan"));
+      flag.className = "flag flag--orphan";
+      flag.textContent = "orphan";
+      flag.hidden = false;
     } else if (item.ready) {
-      foot.append(make("span", "flag flag--ready", "ready"));
+      flag.className = "flag flag--ready";
+      flag.textContent = "ready";
+      flag.hidden = false;
     }
   }
-  card.append(foot);
 }
 
 function cardLabel(node, item, lane) {
@@ -1149,6 +1174,7 @@ function drawConnectors(edges) {
   dom.graph.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
   const related = state.selected ? relatedSet(state.selected) : null;
+  const fragment = new DocumentFragment();
   edges.forEach((edge) => {
     const from = boxes.get(edge.from);
     const to = boxes.get(edge.to);
@@ -1170,8 +1196,9 @@ function drawConnectors(edges) {
       path.setAttribute("class", "edge edge--active");
     }
     path.setAttribute("marker-end", touched && downward ? "url(#flow-arrow-active)" : "url(#flow-arrow)");
-    dom.graphEdges.append(path);
+    fragment.append(path);
   });
+  dom.graphEdges.replaceChildren(fragment);
 }
 
 function round(value) {
@@ -2593,7 +2620,6 @@ function markSelection() {
 }
 
 function drawConnectorsForCurrentGraph() {
-  dom.graphEdges.replaceChildren();
   drawConnectors(list((snapshotOf().graph || {}).edges));
 }
 
