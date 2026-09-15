@@ -145,7 +145,12 @@ func createProject(opts projectCreateOpts) (projectCreateResult, error) {
 	if err := project.ValidateSlug(slug); err != nil {
 		return projectCreateResult{}, err
 	}
+	return withProjectLifecycleLock(slug, func() (projectCreateResult, error) {
+		return createProjectLocked(opts, slug)
+	})
+}
 
+func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResult, error) {
 	projDir := filepath.Join(project.ActiveDir(), slug)
 	manifestPath := project.ManifestPath(project.ActiveDir(), slug)
 	if _, err := os.Stat(manifestPath); err == nil {

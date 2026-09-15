@@ -597,6 +597,27 @@ func WorktreeRemove(repo, dir string, force bool) error {
 	return removeRegisteredWorktree(repo, dir, force)
 }
 
+// WorktreeRemoveAt removes a registered worktree only when its identity still
+// matches the caller's proof immediately before invoking Git.
+func WorktreeRemoveAt(repo, dir string, expected WorktreeState, force bool) error {
+	current, found, err := RegisteredWorktreeState(repo, dir)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("worktree path %s is no longer registered in %s", dir, repo)
+	}
+	if current != expected {
+		return fmt.Errorf(
+			"worktree path %s changed before removal: current HEAD %s branch %q detached %t, "+
+				"want HEAD %s branch %q detached %t",
+			dir, current.Head, current.Branch, current.Detached,
+			expected.Head, expected.Branch, expected.Detached,
+		)
+	}
+	return removeRegisteredWorktree(repo, dir, force)
+}
+
 // WorktreeReclaim removes a registered worktree or an unregistered direct
 // child of the repository's .worktrees directory. The latter is reserved for
 // Relay's interrupted-project setup recovery, where the caller has already

@@ -83,6 +83,74 @@ func TestRunNewCreatesExpectedProjectFilesWithoutLaunch(t *testing.T) {
 	}
 }
 
+func TestCreateProjectWaitsForConcurrentArchiveOfSameSlug(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "concurrent-recreate"
+	branch := "test/" + slug
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/",
+		DefaultAgent: "copilot",
+		PermissionModes: map[string]string{
+			"copilot": "allow-all",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	removalStarted := make(chan struct{})
+	continueRemoval := make(chan struct{})
+	previous := archiveWorktreeRemove
+	archiveWorktreeRemove = func(
+		repo, worktree string, expected gitx.WorktreeState, force bool,
+	) error {
+		close(removalStarted)
+		<-continueRemoval
+		return previous(repo, worktree, expected, force)
+	}
+	t.Cleanup(func() { archiveWorktreeRemove = previous })
+
+	archiveErr := make(chan error, 1)
+	go func() {
+		_, err := archiveProject(slug, true)
+		archiveErr <- err
+	}()
+	<-removalStarted
+
+	createResult := make(chan projectCreateResult, 1)
+	createErr := make(chan error, 1)
+	go func() {
+		result, err := createProject(projectCreateOpts{
+			task: "replacement project", name: slug, repo: repo,
+		})
+		createResult <- result
+		createErr <- err
+	}()
+
+	close(continueRemoval)
+	if err := <-archiveErr; err != nil {
+		t.Fatalf("archiveProject: %v", err)
+	}
+	if err := <-createErr; err != nil {
+		t.Fatalf("createProject: %v", err)
+	}
+	created := <-createResult
+	if created.manifest.Slug != slug {
+		t.Fatalf("created project = %+v, want replacement for %q", created, slug)
+	}
+	if _, err := project.Load(project.ManifestPath(project.ActiveDir(), slug)); err != nil {
+		t.Fatalf("load replacement manifest: %v", err)
+	}
+	if _, err := os.Stat(created.worktreeDir); err != nil {
+		t.Fatalf("replacement worktree missing: %v", err)
+	}
+	if _, err := project.Load(project.ManifestPath(project.ArchivedDir(), slug)); err != nil {
+		t.Fatalf("load archived predecessor manifest: %v", err)
+	}
+}
+
 func TestReclaimLeftoversRemovesBranchWorktreeAndDir(t *testing.T) {
 	repo := newTestRepo(t)
 	worktreeDir := filepath.Join(repo, ".worktrees", "wt")

@@ -18,7 +18,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const archiveCleanupLockTimeout = 30 * time.Second
+const projectLifecycleLockTimeout = 30 * time.Second
 
 var (
 	loadArchivePullRequestProof = programview.GitHubPullRequestProof
@@ -27,7 +27,7 @@ var (
 	archiveBranchExists         = gitx.LocalBranchExists
 	archiveForceDeleteBranchAt  = gitx.ForceDeleteBranchAt
 	archiveRemoveBranchConfig   = gitx.RemoveBranchConfig
-	archiveWorktreeRemove       = gitx.WorktreeRemove
+	archiveWorktreeRemove       = gitx.WorktreeRemoveAt
 	archiveRename               = os.Rename
 	archiveRemoveFile           = os.Remove
 )
@@ -607,7 +607,16 @@ func archiveProjectWithProofLocked(proof archiveProofSnapshot, force bool) (arch
 				result.ArchivedPath = ""
 				return result, fmt.Errorf("claim worktree %s cleanup: %w", proof.Worktree, err)
 			}
-			if err := archiveWorktreeRemove(proof.Repository, proof.Worktree, force); err != nil {
+			if err := archiveWorktreeRemove(
+				proof.Repository,
+				proof.Worktree,
+				gitx.WorktreeState{
+					Head:     proof.ExpectedWorktreeTip,
+					Branch:   proof.ExpectedWorktreeBranch,
+					Detached: proof.WorktreeDetached,
+				},
+				force,
+			); err != nil {
 				present, unchanged, inspectErr := archiveWorktreeStateAfterFailure(proof)
 				if inspectErr == nil && unchanged {
 					if rollbackErr := rollbackMetadata(); rollbackErr != nil {
@@ -779,26 +788,28 @@ func archiveWorktreePointer(proof archiveProofSnapshot) *string {
 	return &worktree
 }
 
-func archiveCleanupLockPath(slug string) string {
+func projectLifecycleLockPath(slug string) string {
+	// Keep the established filename so new-project creation coordinates with
+	// archive cleanup performed by older Relay processes.
 	return filepath.Join(project.RelayDir(), "run", "projects", slug, "archive-cleanup.lock")
 }
 
-func withArchiveCleanupLock(
-	slug string, operation func() (archiveResult, error),
-) (result archiveResult, retErr error) {
+func withProjectLifecycleLock[T any](
+	slug string, operation func() (T, error),
+) (result T, retErr error) {
 	if err := project.ValidateSlug(slug); err != nil {
-		return archiveResult{}, err
+		return result, err
 	}
-	path := archiveCleanupLockPath(slug)
-	lock, err := patrollock.AcquireWait(path, archiveCleanupLockTimeout)
+	path := projectLifecycleLockPath(slug)
+	lock, err := patrollock.AcquireWait(path, projectLifecycleLockTimeout)
 	if err != nil {
 		if errors.Is(err, patrollock.ErrLocked) {
-			return archiveResult{}, fmt.Errorf(
-				"another archive cleanup for project %q has held %s for longer than %s; retry after it finishes",
-				slug, path, archiveCleanupLockTimeout,
+			return result, fmt.Errorf(
+				"another lifecycle operation for project %q has held %s for longer than %s; retry after it finishes",
+				slug, path, projectLifecycleLockTimeout,
 			)
 		}
-		return archiveResult{}, err
+		return result, err
 	}
 	defer func() {
 		if err := lock.Release(); err != nil {
@@ -806,6 +817,12 @@ func withArchiveCleanupLock(
 		}
 	}()
 	return operation()
+}
+
+func withArchiveCleanupLock(
+	slug string, operation func() (archiveResult, error),
+) (archiveResult, error) {
+	return withProjectLifecycleLock(slug, operation)
 }
 
 func loadArchivedCleanupManifest(slug string) (project.Manifest, error) {
@@ -888,7 +905,16 @@ func retryArchivedProjectCleanupLocked(m project.Manifest) (archiveResult, error
 				"finish archived worktree cleanup for %s: claim removal: %w", m.Slug, err,
 			)
 		}
-		if err := archiveWorktreeRemove(m.Repo, *m.Worktree, true); err != nil {
+		if err := archiveWorktreeRemove(
+			m.Repo,
+			*m.Worktree,
+			gitx.WorktreeState{
+				Head:     proof.ExpectedWorktreeTip,
+				Branch:   proof.ExpectedWorktreeBranch,
+				Detached: proof.WorktreeDetached,
+			},
+			true,
+		); err != nil {
 			return result, fmt.Errorf(
 				"finish archived worktree cleanup for %s: removal was claimed and will not be "+
 					"retried automatically: %w; inspect %s and remove it manually if it still belongs "+

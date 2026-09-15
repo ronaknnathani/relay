@@ -201,7 +201,7 @@ func TestArchiveDoesNotInvokeWorktreeRemovalAfterAbsentProof(t *testing.T) {
 
 	previous := archiveWorktreeRemove
 	removeCalls := 0
-	archiveWorktreeRemove = func(string, string, bool) error {
+	archiveWorktreeRemove = func(string, string, gitx.WorktreeState, bool) error {
 		removeCalls++
 		return errors.New("destructive removal invoked for absent proof")
 	}
@@ -551,6 +551,38 @@ func TestArchiveForcePreservesWorktreeFromStaleManifest(t *testing.T) {
 	}
 	if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
 		t.Fatal("forced archive moved stale project metadata")
+	}
+}
+
+func TestArchiveRechecksWorktreeIdentityImmediatelyBeforeRemoval(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "worktree-replaced-before-removal"
+	branch := "user/worktree-replaced-before-removal"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	victimBranch := "user/replacement-worktree"
+
+	previous := archiveWorktreeRemove
+	archiveWorktreeRemove = func(
+		repo, worktree string, expected gitx.WorktreeState, force bool,
+	) error {
+		runArchiveGit(t, repo, "worktree", "remove", "--force", worktree)
+		runArchiveGit(t, repo, "worktree", "add", "-q", worktree, "-b", victimBranch, "main")
+		return gitx.WorktreeRemoveAt(repo, worktree, expected, force)
+	}
+	t.Cleanup(func() { archiveWorktreeRemove = previous })
+
+	_, err := archiveProject(slug, true)
+	if err == nil || !strings.Contains(err.Error(), "worktree") {
+		t.Fatalf("archiveProject error = %v, want replacement worktree rejection", err)
+	}
+	state, found, stateErr := gitx.RegisteredWorktreeState(repo, worktree)
+	if stateErr != nil {
+		t.Fatal(stateErr)
+	}
+	if !found || state.Branch != "refs/heads/"+victimBranch {
+		t.Fatalf("replacement worktree state = %+v, found = %t", state, found)
 	}
 }
 
@@ -1428,11 +1460,13 @@ func TestArchivedCleanupConcurrentRetryClaimsWorktreeOnce(t *testing.T) {
 	var removeCalls atomic.Int32
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{})
-	archiveWorktreeRemove = func(repo, worktree string, force bool) error {
+	archiveWorktreeRemove = func(
+		repo, worktree string, expected gitx.WorktreeState, force bool,
+	) error {
 		removeCalls.Add(1)
 		entered <- struct{}{}
 		<-release
-		return gitx.WorktreeRemove(repo, worktree, force)
+		return gitx.WorktreeRemoveAt(repo, worktree, expected, force)
 	}
 	t.Cleanup(func() { archiveWorktreeRemove = previous })
 
