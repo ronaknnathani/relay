@@ -15,14 +15,30 @@ func TestSnapshotFeedSingleFlightsAndRetainsLastSnapshot(t *testing.T) {
 	release := make(chan struct{})
 	var calls atomic.Int32
 	feed := newSnapshotFeed(
-		programview.Snapshot{GeneratedAt: "seed", Warnings: []string{}},
+		programview.Snapshot{
+			GeneratedAt: "seed",
+			Warnings:    []string{},
+			SourceHealth: programview.SourceHealthDTO{
+				GitHub: programview.SourceDTO{Status: "ok", Warnings: []string{"existing GitHub warning"}},
+				Herdr:  programview.SourceDTO{Status: "ok", Warnings: []string{}},
+			},
+		},
 		time.Second,
 		func() time.Time { return now },
 		func() (programview.Snapshot, error) {
 			call := calls.Add(1)
 			<-release
 			if call == 1 {
-				return programview.Snapshot{GeneratedAt: "fresh", Warnings: []string{}}, nil
+				return programview.Snapshot{
+					GeneratedAt: "fresh",
+					Warnings:    []string{},
+					SourceHealth: programview.SourceHealthDTO{
+						GitHub: programview.SourceDTO{
+							Status: "ok", Warnings: []string{"existing GitHub warning"},
+						},
+						Herdr: programview.SourceDTO{Status: "ok", Warnings: []string{}},
+					},
+				}, nil
 			}
 			return programview.Snapshot{}, errors.New("refresh failed")
 		},
@@ -34,8 +50,10 @@ func TestSnapshotFeedSingleFlightsAndRetainsLastSnapshot(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			if got := feed.Get(); got.GeneratedAt != "seed" {
-				t.Errorf("snapshot during refresh = %q, want seed", got.GeneratedAt)
+			got := feed.Get()
+			if got.GeneratedAt != "seed" ||
+				got.Refresh != (programview.RefreshDTO{Status: "refreshing"}) {
+				t.Errorf("snapshot during refresh = %+v", got)
 			}
 		}()
 	}
@@ -47,7 +65,11 @@ func TestSnapshotFeedSingleFlightsAndRetainsLastSnapshot(t *testing.T) {
 		t.Fatalf("refresh calls = %d, want 1", calls.Load())
 	}
 	close(release)
-	eventually(t, time.Second, func() bool { return feed.Get().GeneratedAt == "fresh" })
+	eventually(t, time.Second, func() bool {
+		got := feed.Get()
+		return got.GeneratedAt == "fresh" &&
+			got.Refresh == (programview.RefreshDTO{Status: "fresh"})
+	})
 
 	now = now.Add(2 * time.Second)
 	if got := feed.Get(); got.GeneratedAt != "fresh" {
@@ -56,7 +78,16 @@ func TestSnapshotFeedSingleFlightsAndRetainsLastSnapshot(t *testing.T) {
 	eventually(t, time.Second, func() bool {
 		got := feed.Get()
 		return calls.Load() == 2 && got.GeneratedAt == "fresh" &&
-			len(got.Warnings) == 1 && got.Warnings[0] == "refresh program snapshot: refresh failed"
+			len(got.Warnings) == 1 && got.Warnings[0] == "refresh program snapshot: refresh failed" &&
+			got.Refresh == (programview.RefreshDTO{
+				Status: "failed",
+				Error:  "refresh program snapshot: refresh failed",
+			}) &&
+			got.SourceHealth.GitHub.Status == "ok" &&
+			len(got.SourceHealth.GitHub.Warnings) == 1 &&
+			got.SourceHealth.GitHub.Warnings[0] == "existing GitHub warning" &&
+			got.SourceHealth.Herdr.Status == "ok" &&
+			len(got.SourceHealth.Herdr.Warnings) == 0
 	})
 }
 

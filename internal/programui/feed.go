@@ -1,7 +1,6 @@
 package programui
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
@@ -27,6 +26,7 @@ func newSnapshotFeed(
 	if now == nil {
 		now = time.Now
 	}
+	seed.Refresh = programview.RefreshDTO{Status: "fresh"}
 	return &snapshotFeed{
 		snapshot: seed, expiresAt: now().Add(ttl), ttl: ttl, now: now, refresh: refresh,
 	}
@@ -38,7 +38,11 @@ func (f *snapshotFeed) Get() programview.Snapshot {
 	if !f.refreshing && !f.now().Before(f.expiresAt) {
 		f.startRefreshLocked()
 	}
-	return f.snapshot
+	snapshot := f.snapshot
+	if f.refreshing {
+		snapshot.Refresh = programview.RefreshDTO{Status: "refreshing"}
+	}
+	return snapshot
 }
 
 func (f *snapshotFeed) Refresh() {
@@ -60,6 +64,7 @@ func (f *snapshotFeed) startRefreshLocked() {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		if err == nil {
+			snapshot.Refresh = programview.RefreshDTO{Status: "fresh"}
 			f.snapshot = snapshot
 		} else {
 			f.snapshot = snapshotWithRefreshError(f.snapshot, err)
@@ -70,12 +75,9 @@ func (f *snapshotFeed) startRefreshLocked() {
 }
 
 func snapshotWithRefreshError(snapshot programview.Snapshot, refreshErr error) programview.Snapshot {
-	message := fmt.Sprintf("refresh program snapshot: %v", refreshErr)
+	message := "refresh program snapshot: " + refreshErr.Error()
 	snapshot.Warnings = appendUniqueCopy(snapshot.Warnings, message)
-	snapshot.SourceHealth.GitHub.Warnings = appendUniqueCopy(snapshot.SourceHealth.GitHub.Warnings, message)
-	snapshot.SourceHealth.Herdr.Warnings = appendUniqueCopy(snapshot.SourceHealth.Herdr.Warnings, message)
-	snapshot.SourceHealth.GitHub.Status = "degraded"
-	snapshot.SourceHealth.Herdr.Status = "degraded"
+	snapshot.Refresh = programview.RefreshDTO{Status: "failed", Error: message}
 	return snapshot
 }
 

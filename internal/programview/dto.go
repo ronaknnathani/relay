@@ -7,6 +7,7 @@ const SchemaVersion = "relay.program.v1"
 type Snapshot struct {
 	Schema            string          `json:"schema"`
 	GeneratedAt       string          `json:"generated_at"`
+	Refresh           RefreshDTO      `json:"refresh"`
 	DetailItem        string          `json:"detail_item"`
 	Program           ProgramDTO      `json:"program"`
 	Patrol            PatrolDTO       `json:"patrol"`
@@ -20,6 +21,12 @@ type Snapshot struct {
 	ProgramArtifacts  []ArtifactDTO   `json:"program_artifacts"`
 	Warnings          []string        `json:"warnings"`
 	SourceHealth      SourceHealthDTO `json:"source_health"`
+}
+
+// RefreshDTO reports whether a snapshot is current or retained during a refresh.
+type RefreshDTO struct {
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
 }
 
 // PatrolDTO contains the read-only adaptive patrol runtime summary.

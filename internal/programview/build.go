@@ -85,6 +85,7 @@ func Build(slug string, options Options) (Snapshot, error) {
 	generatedAt := now().UTC()
 	snapshot.Schema = SchemaVersion
 	snapshot.GeneratedAt = generatedAt.Format(time.RFC3339)
+	snapshot.Refresh = RefreshDTO{Status: "fresh"}
 	snapshot.Program = programDTO(p, path)
 	snapshot.Patrol = patrolDTO(p.Slug, p.Agent, &snapshot)
 	if options.LocalOnly {

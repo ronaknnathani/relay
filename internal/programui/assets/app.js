@@ -703,6 +703,19 @@ function setFeed(live, message) {
   announce(dom.feedState, message);
 }
 
+function setSnapshotFeed(snapshot) {
+  const refresh = snapshot.refresh || {};
+  if (refresh.status === "refreshing") {
+    setFeed(true, `Refreshing · showing snapshot from ${formatRelative(snapshot.generated_at)}`);
+    return;
+  }
+  if (refresh.status === "failed") {
+    setFeed(false, `Stale · ${text(refresh.error, "program refresh failed")}`);
+    return;
+  }
+  setFeed(true, "Live · every 3s");
+}
+
 function showReconnect(message) {
   announce(dom.reconnect, message);
   dom.reconnect.hidden = false;
@@ -2717,9 +2730,9 @@ async function poll() {
     }
     state.failures = 0;
     hideReconnect();
-    setFeed(true, "Live · every 3s");
     const signature = signatureOf(body);
     state.snapshot = snapshot;
+    setSnapshotFeed(snapshot);
     if (signature === state.signature) {
       renderHeader();
     } else {
