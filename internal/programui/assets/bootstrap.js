@@ -61,7 +61,7 @@
   }
 
   const cards = () => Array.from(graphNodes.querySelectorAll(".card"));
-  const select = (card) => {
+  const select = (card, persist) => {
     if (!card) {
       return;
     }
@@ -71,9 +71,11 @@
       candidate.tabIndex = active ? 0 : -1;
     });
     card.focus({ preventScroll: true });
-    window.history.replaceState(null, "", `#task=${encodeURIComponent(card.dataset.item)}`);
+    if (persist) {
+      window.history.replaceState(null, "", `#task=${encodeURIComponent(card.dataset.item)}`);
+    }
   };
-  const onClick = (event) => select(event.target.closest(".card"));
+  const onClick = (event) => select(event.target.closest(".card"), true);
   const onKeyDown = (event) => {
     const card = event.target.closest(".card");
     if (!card || !["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) {
@@ -88,7 +90,7 @@
         ? current[current.length - 1]
         : current[Math.max(0, Math.min(current.length - 1,
           index + (event.key === "ArrowRight" ? 1 : -1)))];
-    select(target);
+    select(target, false);
   };
   graphNodes.addEventListener("click", onClick);
   graphNodes.addEventListener("keydown", onKeyDown);
