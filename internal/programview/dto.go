@@ -324,6 +324,24 @@ type ArtifactDTO struct {
 	Text      *string `json:"text,omitempty"`
 }
 
+// ArtifactState identifies the result of loading one allowlisted artifact.
+type ArtifactState string
+
+const (
+	ArtifactStateLoaded    ArtifactState = "loaded"
+	ArtifactStateEmpty     ArtifactState = "empty"
+	ArtifactStateMissing   ArtifactState = "missing"
+	ArtifactStateTruncated ArtifactState = "truncated"
+	ArtifactStateError     ArtifactState = "error"
+)
+
+// ArtifactResponse is the additive wire envelope for one requested artifact.
+type ArtifactResponse struct {
+	State    ArtifactState `json:"state"`
+	Artifact ArtifactDTO   `json:"artifact"`
+	Error    string        `json:"error,omitempty"`
+}
+
 // SourceHealthDTO reports whether optional local/external sources degraded.
 type SourceHealthDTO struct {
 	Projects SourceDTO `json:"projects"`
