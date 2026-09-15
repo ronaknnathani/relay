@@ -724,6 +724,8 @@ pre {
   background-color: var(--surface);
   color: inherit;
   font-family: inherit;
+  line-height: 1.45;
+  white-space: pre-line;
   text-align: left;
   cursor: pointer;
   transition:
@@ -731,6 +733,11 @@ pre {
     box-shadow var(--swap) ease,
     opacity var(--swap) ease,
     transform var(--press) var(--ease-out);
+}
+
+.card::first-line {
+  font-size: 16px;
+  font-weight: 550;
 }
 
 .card::before {

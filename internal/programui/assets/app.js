@@ -85,10 +85,6 @@ const dom = {};
 const cardTemplate = document.createElement("button");
 cardTemplate.className = "card";
 cardTemplate.type = "button";
-cardTemplate.append(
-  make("div", "card__top card__id"),
-  make("p", "card__title"),
-);
 const stageTemplate = make("div", "stage");
 stageTemplate.append(cardTemplate);
 
@@ -1028,10 +1024,11 @@ function taskCard(node, position, hasSelection, existingCard) {
 }
 
 function decorateTaskCard(card, node, item, lane) {
-  const top = card.children[0];
   const meta = statusMeta(lane);
-  top.textContent = `${node.id} · ${meta.glyph} ${meta.word}`;
-  card.children[1].textContent = text(node.title, "Untitled task");
+  const lines = [
+    text(node.title, "Untitled task"),
+    `${node.id} · ${meta.glyph} ${meta.word}`,
+  ];
   if (item) {
     const dependencyCount = list(item.dependencies).length;
     const pr = item.live_pr || item.recorded_pr;
@@ -1042,8 +1039,9 @@ function decorateTaskCard(card, node, item, lane) {
       item.orphaned ? "orphan" : item.ready ? "ready" : "",
     ].filter(Boolean).join(" · ");
     card.dataset.meta = facts;
-    card.setAttribute("aria-description", facts);
+    lines.push(facts);
   }
+  card.textContent = lines.join("\n");
 }
 
 function onCardKey(event, id) {
