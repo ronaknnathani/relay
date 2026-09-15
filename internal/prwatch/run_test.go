@@ -736,6 +736,46 @@ func TestRecoverableObservationErrorsRemainRunning(t *testing.T) {
 	}
 }
 
+func TestRecoverableObservationRecovers(t *testing.T) {
+	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
+	harness.out.awaitLine(t, "] CHECK ")
+	harness.setObservation(
+		Observation{},
+		classifyGitHubAccessError(errors.New("API rate limit exceeded")),
+	)
+
+	for count := 1; count <= maxConsecutiveErrors+1; count++ {
+		next, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
+		if err != nil {
+			t.Fatalf("parse next check before error %d: %v", count, err)
+		}
+		harness.setNow(next)
+		harness.tick()
+		harness.err.awaitLine(t, "API rate limit exceeded")
+	}
+
+	harness.setObservation(quietObservation(), nil)
+	recoveredAt, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
+	if err != nil {
+		t.Fatalf("parse recovery check: %v", err)
+	}
+	harness.setNow(recoveredAt)
+	harness.tick()
+	harness.out.awaitLine(t, "] CHECK ")
+
+	state := harness.state()
+	if state.Status != StatusRunning || state.ConsecutiveErrors != 0 || state.Error != "" {
+		t.Errorf("state after recovery = %+v, want the error state cleared", state)
+	}
+	wantDelay := CadenceFor(state.ScheduledChecks + 1)
+	if state.DelaySeconds != int64(wantDelay/time.Second) {
+		t.Errorf("delay after recovery = %ds, want %ds", state.DelaySeconds, int64(wantDelay/time.Second))
+	}
+	if wantNext := recoveredAt.Add(wantDelay).Format(time.RFC3339); state.NextCheckAt != wantNext {
+		t.Errorf("next check after recovery = %q, want %q", state.NextCheckAt, wantNext)
+	}
+}
+
 func TestWatcherEventsCarryNoPullRequestContent(t *testing.T) {
 	observation := actionableObservation()
 	observation.PR.Title = "Add the secret widget"
@@ -791,16 +831,23 @@ func TestTickObservesWithoutMutatingWatcherState(t *testing.T) {
 
 func TestTickReportsObservationFailures(t *testing.T) {
 	withRuntimeHome(t)
+	observeErr := classifyGitHubAccessError(errors.New("API rate limit exceeded"))
 	_, err := Tick(context.Background(), "demo", Options{
 		Locate: func(slug string) (Target, error) {
 			return Target{Slug: slug, Dir: t.TempDir(), PRNumber: 42}, nil
 		},
 		Observe: func(context.Context, Target) (Observation, error) {
-			return Observation{}, errors.New("gh: not authenticated")
+			return Observation{}, observeErr
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "not authenticated") {
+	if err == nil || !strings.Contains(err.Error(), "API rate limit exceeded") {
 		t.Fatalf("Tick = %v, want the observation failure", err)
+	}
+	if !isRecoverableGitHubAccessError(err) {
+		t.Fatalf("Tick = %v, want the typed GitHub failure preserved", err)
+	}
+	if _, stateErr := ReadState("demo"); stateErr == nil {
+		t.Fatal("Tick wrote watcher state after an observation failure")
 	}
 }
 
