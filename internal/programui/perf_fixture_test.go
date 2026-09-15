@@ -50,6 +50,16 @@ func TestReferenceProgramFixture(t *testing.T) {
 			t.Fatalf("%s size = %d, want %d", name, info.Size(), size)
 		}
 	}
+	fetcher := &controlledFetcher{
+		result: programview.PullRequestDTO{Number: 42, Ref: "#42", State: "open"},
+	}
+	pullRequest, err := fetcher.Fetch(context.Background(), fixture.program.Repo, "#42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pullRequest.Number != 42 {
+		t.Fatalf("stubbed pull request = %+v", pullRequest)
+	}
 }
 
 func TestReferenceProgramLocalBuildBudget(t *testing.T) {
