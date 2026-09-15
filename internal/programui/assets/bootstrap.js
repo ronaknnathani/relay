@@ -2,8 +2,6 @@
 
 (() => {
   const initial = document.getElementById("initial-program");
-  const appScript = document.getElementById("app-script");
-  const reconnect = document.getElementById("reconnect");
   const graphNodes = document.getElementById("graph-nodes");
   const graph = document.getElementById("graph");
   const snapshot = initial ? JSON.parse(initial.textContent) : null;
@@ -136,8 +134,4 @@
     graphNodes.removeEventListener("click", onClick);
     graphNodes.removeEventListener("keydown", onKeyDown);
   };
-  appScript.addEventListener("error", () => {
-    reconnect.hidden = false;
-    reconnect.textContent = "The Program UI bundle failed to load. Reload the page to retry.";
-  });
 })();

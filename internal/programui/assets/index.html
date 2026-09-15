@@ -7,7 +7,6 @@
   <title>Relay Program</title>
   <script>try{const t=localStorage.getItem("relay.program.theme");document.documentElement.dataset.theme=t==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
   <link rel="stylesheet" href="/app.css">
-  <script id="app-script" src="/roadmap.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#views">Skip to program views</a>
@@ -209,5 +208,6 @@
   <footer class="footer">
     <p class="muted">Read-only view · <span id="schema-version" class="mono">relay.program.v1</span> · nothing here changes program state.</p>
   </footer>
+  <script id="app-script">__RELAY_ROADMAP_CORE__</script>
 </body>
 </html>
