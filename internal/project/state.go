@@ -362,13 +362,11 @@ func (ws WorkflowState) validateRoute() error {
 		}
 	}
 	if ws.Evidence.Validation != nil {
-		var err error
-		if route.Facts.GatePolicy.Known() {
-			err = ValidateValidationEvidence(*ws.Evidence.Validation, route.Facts.GatePolicy)
-		} else {
-			err = ValidateEvidence(EvidenceKindValidation, *ws.Evidence.Validation, nil)
-		}
-		if err != nil {
+		if err := ValidateEvidence(
+			EvidenceKindValidation,
+			*ws.Evidence.Validation,
+			nil,
+		); err != nil {
 			return fmt.Errorf("invalid validation evidence: %w", err)
 		}
 	}
@@ -546,8 +544,6 @@ func (ws *WorkflowState) SetPhase(name, status, artifact, task string) error {
 	}
 	if status == PhasePending || status == PhaseInProgress {
 		ph.Reason = ""
-		ph.Artifact = ""
-		ph.Task = ""
 		ph.Outcome = ""
 		ph.StartedAt = ""
 		ph.EndedAt = ""

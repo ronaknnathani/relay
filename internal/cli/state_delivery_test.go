@@ -109,6 +109,35 @@ func TestAdaptiveFinishRequiresActiveCurrentSelectedPhase(t *testing.T) {
 	}
 }
 
+func TestAdaptiveAdvanceRequiresGuardedFinish(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route = testRouteDecision(project.RouteStandard)
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runState(t, "dispatch", "demo", "route", "--inline"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runState(t, "advance", "demo"); err == nil {
+		t.Fatal("adaptive advance completed a dispatched phase without outcome metadata")
+	}
+	after, err := os.ReadFile(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(before, after) {
+		t.Fatal("rejected adaptive advance mutated state")
+	}
+}
+
 func TestDeliveryEvidenceFreshnessTracksWorktree(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -800,6 +829,97 @@ func TestAdaptiveOpenPRTransitionsRequireFreshEvidenceAndActiveDispatch(t *testi
 	}
 }
 
+func TestAdaptiveOpenPRSuccessCommandsRejectPostDispatchMutation(t *testing.T) {
+	tests := map[string]struct {
+		prepare func(*project.WorkflowState)
+		args    []string
+	}{
+		"state pr": {
+			prepare: func(*project.WorkflowState) {},
+			args: []string{
+				"pr", "demo", "--number", "42", "--url", "https://example.test/pull/42",
+			},
+		},
+		"state final opened": {
+			prepare: func(state *project.WorkflowState) {
+				state.PR = project.PRRef{
+					Number: 42,
+					URL:    "https://example.test/pull/42",
+				}
+			},
+			args: []string{"final", "demo", "opened"},
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			repo := initCLIGitRepo(t)
+			saveDeliveryProject(t, "demo", repo)
+			state := openPRReadyState(t, "demo")
+			if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+				t.Fatal(err)
+			}
+			dispatchPhase(t, "demo", "open-pr")
+			state, err := project.LoadState(project.StatePath("demo"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.prepare(&state)
+			if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(repo, "changed-after-dispatch.txt"), []byte("changed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(project.StatePath("demo"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runState(t, test.args...); err == nil {
+				t.Fatal("successful open-pr transition accepted a post-dispatch repository mutation")
+			}
+			after, err := os.ReadFile(project.StatePath("demo"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(before, after) {
+				t.Fatal("rejected successful open-pr transition mutated state")
+			}
+		})
+	}
+}
+
+func openPRReadyState(t *testing.T, slug string) project.WorkflowState {
+	t.Helper()
+	state, err := project.NewState(slug, "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route = testRouteDecision(project.RouteEasy)
+	state.Route.Facts.GatePolicy = project.GatePolicy{Mode: project.GatePolicyNone}
+	snapshot, err := projectSnapshot(slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route.Snapshot = snapshot
+	prepareAdaptivePhase(&state, "open-pr")
+	refreshRouteDigest(t, state.Route)
+	state.Evidence.Review = &project.EvidenceRecord{
+		Snapshot: snapshot, RouteRevision: state.Route.Revision,
+		RouteDigest: state.Route.Digest, DispatchID: "implement-dispatch",
+		Result: project.EvidencePassed, Owner: project.EvidenceOwnerImplement,
+		CompletedAt: "2026-09-15T00:05:00Z",
+		Roles:       append([]string(nil), state.Route.ReviewRoles...),
+	}
+	state.Evidence.Validation = &project.EvidenceRecord{
+		Snapshot: snapshot, RouteRevision: state.Route.Revision,
+		RouteDigest: state.Route.Digest, DispatchID: "implement-dispatch",
+		Result: project.EvidencePassed, Owner: project.EvidenceOwnerImplement,
+		CompletedAt: "2026-09-15T00:06:00Z", NoGates: true,
+	}
+	return state
+}
+
 func TestStatePRAndFailureCommandsWriteFinalResult(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if _, err := runState(t, "init", "opened", "--workflow", "deliver-pr", "--phases", "open-pr"); err != nil {
@@ -856,7 +976,7 @@ func TestStatePRAndFailureCommandsWriteFinalResult(t *testing.T) {
 	}
 }
 
-func TestStateWorkerCountsEveryEasySubagentAndEnforcesCeiling(t *testing.T) {
+func TestStateWorkerRejectsOffRouteHelpersForEasyDelivery(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := initCLIGitRepo(t)
 	saveDeliveryProject(t, "demo", repo)
@@ -868,20 +988,41 @@ func TestStateWorkerCountsEveryEasySubagentAndEnforcesCeiling(t *testing.T) {
 	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
 		t.Fatal(err)
 	}
-	for index := 0; index < easySubagentLimit; index++ {
-		if _, err := runState(t, "worker", "demo", "--task", fmt.Sprintf("helper-%d", index)); err != nil {
-			t.Fatal(err)
-		}
+	before, err := os.ReadFile(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := runState(t, "worker", "demo", "--task", "one-too-many"); err == nil {
-		t.Fatal("easy route accepted more than three total subagents")
+	if _, err := runState(t, "worker", "demo", "--task", "extra-review"); err == nil {
+		t.Fatal("easy route accepted an off-route helper")
+	}
+	after, err := os.ReadFile(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(before, after) {
+		t.Fatal("rejected easy-route helper mutated state")
 	}
 	got, err := project.LoadState(project.StatePath("demo"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.SubagentCount != easySubagentLimit {
-		t.Fatalf("subagent count = %d, want %d", got.SubagentCount, easySubagentLimit)
+	if got.SubagentCount != 0 {
+		t.Fatalf("subagent count = %d, want 0", got.SubagentCount)
+	}
+
+	got.Route = testRouteDecision(project.RouteStandard)
+	if err := project.SaveState(project.StatePath("demo"), got); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runState(t, "worker", "demo", "--task", "extra-review"); err != nil {
+		t.Fatalf("standard route rejected helper: %v", err)
+	}
+	got, err = project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SubagentCount != 1 {
+		t.Fatalf("standard subagent count = %d, want 1", got.SubagentCount)
 	}
 }
 

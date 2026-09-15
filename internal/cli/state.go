@@ -191,14 +191,10 @@ func newCmdStateAdvance() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			current := ws.Current()
-			if err := ws.ValidateAdaptiveFinish(current, project.PhaseDone); err != nil {
-				return err
-			}
-			if current == "open-pr" {
-				if err := validateAdaptiveOpenPRCompletion(slug, ws); err != nil {
-					return err
-				}
+			if ws.UsesAdaptiveDelivery() {
+				return fmt.Errorf(
+					"adaptive delivery cannot use state advance; use state finish with an outcome",
+				)
 			}
 			next, err := ws.Advance()
 			if err != nil {

@@ -424,6 +424,41 @@ func TestExpandedRouteRolesDoNotInvalidateHistoricalReviewEvidence(t *testing.T)
 	}
 }
 
+func TestChangedGatePolicyDoesNotInvalidateHistoricalValidationState(t *testing.T) {
+	state := validAdaptiveState(t)
+	state.Evidence.Validation = &EvidenceRecord{
+		Snapshot: state.Route.Snapshot, Result: EvidencePassed,
+		RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
+		DispatchID: "dispatch-1", Owner: EvidenceOwnerValidate,
+		CompletedAt: "2026-09-15T00:05:00Z",
+		Commands:    []CommandEvidence{testCommandEvidence("go test ./...", 0)},
+	}
+	state.Route.Facts.GatePolicy.Gates = append(
+		state.Route.Facts.GatePolicy.Gates,
+		RequiredGate{
+			ID: "lint", CommandDigest: commandDigest("make lint"),
+			RedactedDisplay: "make <redacted-args>",
+		},
+	)
+	state.Route.Revision++
+	digest, err := RouteDigest(*state.Route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route.Digest = digest
+
+	if err := state.validate(); err != nil {
+		t.Fatalf("historical validation evidence made state unloadable: %v", err)
+	}
+	if state.Evidence.Validation.FreshForValidationRoute(
+		state.Route.Snapshot,
+		*state.Route,
+		state.Route.ValidationOwner,
+	) {
+		t.Fatal("historical validation evidence incorrectly covers the changed gate policy")
+	}
+}
+
 func TestSkippedIsTerminalButBlockedAndEscalatedAreCurrent(t *testing.T) {
 	state, err := NewState("demo", "deliver-pr", []string{"route", "clarify", "implement"})
 	if err != nil {
@@ -481,7 +516,7 @@ func TestSetPhaseReopenClearsTerminalMetadata(t *testing.T) {
 	reopened := state.Phases["implement"]
 	if reopened.Reason != "" || reopened.Outcome != "" ||
 		reopened.StartedAt != "" || reopened.EndedAt != "" ||
-		reopened.Artifact != "" || reopened.Task != "" {
+		reopened.Artifact != "implementation.md" || reopened.Task != "4/7" {
 		t.Fatalf("reopened phase retained terminal metadata: %+v", reopened)
 	}
 }

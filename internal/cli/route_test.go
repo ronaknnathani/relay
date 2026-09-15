@@ -209,6 +209,61 @@ func TestRouteClassifyIsIdempotentForUnchangedFacts(t *testing.T) {
 	}
 }
 
+func TestRouteClassifyPersistsChangedGatePolicyAndStalesValidation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	classify := func(gate string) error {
+		_, err := runRoute(t, "classify", "demo",
+			"--requested-behavior-explicit",
+			"--gate", gate,
+			"--risk-assessment-complete",
+			"--predicted-size-known",
+			"--predicted-files", "1",
+			"--predicted-lines", "20",
+		)
+		return err
+	}
+	if err := classify("test=go test ./..."); err != nil {
+		t.Fatal(err)
+	}
+	dispatchPhase(t, "demo", "route")
+	if _, err := runState(t, "finish", "demo", "route", "done", "--outcome", "material"); err != nil {
+		t.Fatal(err)
+	}
+	token := dispatchPhase(t, "demo", "implement")
+	if _, err := runState(t, "evidence", "record", "demo", "validation",
+		"--result", "passed", "--gate", "test=go test ./...", "--exit-status", "0",
+		"--dispatch-token", token); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := classify("lint=make lint"); err != nil {
+		t.Fatalf("gate-policy reclassification failed: %v", err)
+	}
+	got, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatalf("load reclassified state: %v", err)
+	}
+	if got.Evidence.Validation == nil {
+		t.Fatal("gate-policy change discarded durable validation history")
+	}
+	if got.Evidence.Validation.FreshForValidationRoute(
+		got.Route.Snapshot,
+		*got.Route,
+		got.Route.ValidationOwner,
+	) {
+		t.Fatal("prior validation remained fresh after the gate policy changed")
+	}
+}
+
 func TestRouteClassifyPersistsChangeSurfaceRoles(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := initCLIGitRepo(t)

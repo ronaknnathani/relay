@@ -179,8 +179,22 @@ func readUntracked(root, relative string) (untrackedFile, error) {
 		if err != nil {
 			head = "unborn"
 		}
+		status, err := gitBytes(
+			path,
+			"status",
+			"--porcelain=v1",
+			"-z",
+			"--untracked-files=all",
+		)
+		if err != nil {
+			return untrackedFile{}, fmt.Errorf("read nested Git status %s: %w", path, err)
+		}
+		identity := sha256.New()
+		identity.Write([]byte(strings.TrimSpace(head)))
+		identity.Write([]byte{0})
+		identity.Write(status)
 		return untrackedFile{
-			kind: "nested-git-repository", content: []byte(strings.TrimSpace(head)),
+			kind: "nested-git-repository", content: []byte(hex.EncodeToString(identity.Sum(nil))),
 		}, nil
 	}
 	if !info.Mode().IsRegular() {

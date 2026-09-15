@@ -1,6 +1,7 @@
 package gitx
 
 import (
+	"crypto/sha256"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -110,17 +111,31 @@ func TestSnapshotTreatsUntrackedNestedRepositoryAsOpaqueIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	if file.kind != "nested-git-repository" ||
-		strings.Contains(string(file.content), "private content") {
+		len(file.content) != sha256.Size*2 ||
+		strings.Contains(string(file.content), "private content") ||
+		strings.Contains(string(file.content), "secret.txt") {
 		t.Fatalf("nested repository fingerprint input = kind %q content %q", file.kind, file.content)
 	}
 
 	if err := os.WriteFile(filepath.Join(nested, "secret.txt"), []byte("different private content\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	unstaged := mustSnapshot(t, repo, base)
+	assertFingerprintChanged(t, first, unstaged)
+
 	runGit(t, nested, "add", "secret.txt")
+	staged := mustSnapshot(t, repo, base)
+	assertFingerprintChanged(t, unstaged, staged)
+
+	if err := os.WriteFile(filepath.Join(nested, "local.txt"), []byte("untracked private content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	untracked := mustSnapshot(t, repo, base)
+	assertFingerprintChanged(t, staged, untracked)
+
 	runGit(t, nested, "commit", "-q", "-m", "nested change")
-	second := mustSnapshot(t, repo, base)
-	assertFingerprintChanged(t, first, second)
+	committed := mustSnapshot(t, repo, base)
+	assertFingerprintChanged(t, untracked, committed)
 }
 
 func TestSnapshotRejectsInvalidRepository(t *testing.T) {

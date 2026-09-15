@@ -20,8 +20,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const easySubagentLimit = 3
-
 type dispatchOutput struct {
 	Phase         string `json:"phase"`
 	DispatchID    string `json:"dispatch_id"`
@@ -61,9 +59,7 @@ func newCmdStateDispatch() *cobra.Command {
 				return err
 			}
 			if !inline {
-				if err := incrementSubagent(&state); err != nil {
-					return err
-				}
+				incrementSubagent(&state)
 			}
 			dispatch, output, err := newPhaseDispatch(args[1], state.Route)
 			if err != nil {
@@ -99,9 +95,11 @@ func newCmdStateWorker() *cobra.Command {
 			if strings.TrimSpace(task) == "" {
 				return fmt.Errorf("worker count requires --task")
 			}
-			if err := incrementSubagent(&state); err != nil {
-				return err
+			if state.Route != nil && state.Route.Class == project.RouteEasy &&
+				!state.Route.ForcedFull {
+				return fmt.Errorf("easy route cannot dispatch off-route helpers")
 			}
+			incrementSubagent(&state)
 			return project.SaveState(statePath, state)
 		},
 	}
@@ -109,13 +107,8 @@ func newCmdStateWorker() *cobra.Command {
 	return command
 }
 
-func incrementSubagent(state *project.WorkflowState) error {
-	if state.Route != nil && state.Route.Class == project.RouteEasy &&
-		!state.Route.ForcedFull && state.SubagentCount >= easySubagentLimit {
-		return fmt.Errorf("easy route cannot exceed %d subagents", easySubagentLimit)
-	}
+func incrementSubagent(state *project.WorkflowState) {
 	state.SubagentCount++
-	return nil
 }
 
 func newPhaseDispatch(phase string, route *project.RouteDecision) (*project.PhaseDispatch, dispatchOutput, error) {
