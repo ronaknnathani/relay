@@ -368,8 +368,8 @@ func roadmapStatus(lane string) (string, string) {
 		return "✕", "Blocked"
 	case "merged":
 		return "●", "Merged"
-	case "cancelled":
-		return "⊘", "Cancelled"
+	case "cancelled": //nolint:misspell // Persisted V1 schema spelling.
+		return "⊘", "Cancelled" //nolint:misspell // Match the existing UI vocabulary.
 	default:
 		return "·", "Unknown"
 	}
