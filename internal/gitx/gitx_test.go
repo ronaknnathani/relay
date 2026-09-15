@@ -137,6 +137,24 @@ func TestSanitizeGitDiagnosticRedactsHTTPUserinfo(t *testing.T) {
 	}
 }
 
+func TestSanitizeGitDiagnosticRedactsHTTPQuery(t *testing.T) {
+	input := "fatal: unable to access 'https://example.com/repo.git?access_token=secret&mode=read': denied"
+	want := "fatal: unable to access 'https://example.com/repo.git': denied"
+
+	if got := sanitizeGitDiagnostic(input); got != want {
+		t.Fatalf("sanitizeGitDiagnostic(%q) = %q, want %q", input, got, want)
+	}
+}
+
+func TestSanitizeGitDiagnosticRedactsHTTPFragment(t *testing.T) {
+	input := "remote: repository https://example.org/team/repo.git#credential=secret was rejected"
+	want := "remote: repository https://example.org/team/repo.git was rejected"
+
+	if got := sanitizeGitDiagnostic(input); got != want {
+		t.Fatalf("sanitizeGitDiagnostic(%q) = %q, want %q", input, got, want)
+	}
+}
+
 func TestWorkMerged(t *testing.T) {
 	repo := initRepo(t)
 	start := gitOutput(t, repo, "rev-parse", "HEAD")

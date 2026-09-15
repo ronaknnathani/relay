@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-var httpUserinfoPattern = regexp.MustCompile(`(?i)(https?://)[^\s/]+@`)
+var httpURLPattern = regexp.MustCompile(`(?i)https?://[^\s'"<>]+`)
 
 // RepoRoot returns the absolute path to the top-level directory of the
 // current git repository, or an empty string and an error if cwd is not
@@ -188,7 +188,27 @@ func Fetch(repo, branch string) (string, error) {
 
 func sanitizeGitDiagnostic(output string) string {
 	output = strings.TrimSpace(output)
-	return httpUserinfoPattern.ReplaceAllString(output, `${1}[redacted]@`)
+	return httpURLPattern.ReplaceAllStringFunc(output, sanitizeGitDiagnosticURL)
+}
+
+func sanitizeGitDiagnosticURL(rawURL string) string {
+	if secretStart := strings.IndexAny(rawURL, "?#"); secretStart >= 0 {
+		rawURL = rawURL[:secretStart]
+	}
+	schemeEnd := strings.Index(rawURL, "://")
+	if schemeEnd < 0 {
+		return rawURL
+	}
+	authorityStart := schemeEnd + len("://")
+	authorityEnd := len(rawURL)
+	if pathStart := strings.IndexByte(rawURL[authorityStart:], '/'); pathStart >= 0 {
+		authorityEnd = authorityStart + pathStart
+	}
+	authority := rawURL[authorityStart:authorityEnd]
+	if userinfoEnd := strings.LastIndexByte(authority, '@'); userinfoEnd >= 0 {
+		rawURL = rawURL[:authorityStart] + "[redacted]@" + authority[userinfoEnd+1:] + rawURL[authorityEnd:]
+	}
+	return rawURL
 }
 
 // WorktreeAdd creates a new worktree at dir on a new branch, started from startPoint.
