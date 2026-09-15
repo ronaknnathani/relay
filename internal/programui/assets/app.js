@@ -946,7 +946,7 @@ function renderRoadmap() {
   stages.forEach((ids, index) => {
     const stage = make("div", "stage");
     stage.dataset.stage = String(index);
-    stage.append(make("p", "stage__label", `Stage ${index + 1} · ${plural(ids.length, "task")}`));
+    stage.dataset.label = `Stage ${index + 1} · ${plural(ids.length, "task")}`;
     const row = make("div", "stage__row");
     ids.forEach((id) => {
       const node = nodesByID.get(id) || { id, title: "", lane: "" };
