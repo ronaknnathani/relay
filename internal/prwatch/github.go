@@ -57,8 +57,18 @@ func (e *recoverableGitHubAccessError) Unwrap() error {
 	return e.cause
 }
 
-var githubRateLimitDiagnosticPattern = regexp.MustCompile(
-	`^(?:(?:gh|graphql):\s*)?(?:api rate limit (?:already )?exceeded|you have exceeded a secondary rate limit)(?:$|[ \t\r\n.,:;])`,
+var (
+	githubAllowListDiagnosticPattern = regexp.MustCompile(
+		`(?i)^(?:(?:gh|graphql):\s*)?although you appear to have the correct authorization credentials, ` +
+			"the `[^`\r\n]+` organization has an ip allow[ -]?list enabled, and your ip address is " +
+			`not permitted to access this resource\. \(repository\)$`,
+	)
+	githubRateLimitDiagnosticPattern = regexp.MustCompile(
+		`(?i)^(?:(?:gh|graphql):\s*)?(?:` +
+			`api rate limit (?:already )?exceeded(?: for (?:user id [0-9]+|[0-9a-f:.]+))?` +
+			`|you have exceeded a secondary rate limit` +
+			`)\.?$`,
+	)
 )
 
 func classifyGitHubAccessError(err error) error {
@@ -75,20 +85,22 @@ func classifyGitHubAccessError(err error) error {
 	if errors.As(err, &commandErr) {
 		detail = commandErr.detail
 	}
-	message := strings.ToLower(strings.TrimSpace(detail))
-	allowListMessage := strings.ReplaceAll(message, "allow-list", "allow list")
-	switch {
-	case (strings.Contains(allowListMessage, "ip allow list") ||
-		strings.Contains(allowListMessage, "ip allowlist")) &&
-		(strings.Contains(allowListMessage, "not permitted") ||
-			strings.Contains(allowListMessage, "not allowed") ||
-			strings.Contains(allowListMessage, "denied")):
-		return &recoverableGitHubAccessError{cause: err}
-	case githubRateLimitDiagnosticPattern.MatchString(message):
-		return &recoverableGitHubAccessError{cause: err}
-	default:
-		return err
+	foundDiagnostic := false
+	for _, line := range strings.Split(detail, "\n") {
+		diagnostic := strings.TrimSpace(line)
+		if diagnostic == "" {
+			continue
+		}
+		foundDiagnostic = true
+		if !githubAllowListDiagnosticPattern.MatchString(diagnostic) &&
+			!githubRateLimitDiagnosticPattern.MatchString(diagnostic) {
+			return err
+		}
 	}
+	if foundDiagnostic {
+		return &recoverableGitHubAccessError{cause: err}
+	}
+	return err
 }
 
 func isRecoverableGitHubAccessError(err error) bool {

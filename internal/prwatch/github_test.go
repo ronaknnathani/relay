@@ -280,10 +280,34 @@ func TestObserveClassifiesRecoverableGitHubAccessFailures(t *testing.T) {
 			failure:     errors.New("You have exceeded a secondary rate limit"),
 			recoverable: true,
 		},
+		"multiple recognized diagnostics": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "GraphQL: API rate limit already exceeded for user ID 134885571.\n\n" +
+					"GraphQL: Although you appear to have the correct authorization credentials, " +
+					"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+					"IP address is not permitted to access this resource. (repository)",
+			},
+			recoverable: true,
+		},
 		"repository name containing secondary-rate-limit": {
 			failure: errors.New(
 				"GraphQL: Could not resolve to a Repository with the name 'owner/secondary-rate-limit'",
 			),
+		},
+		"repository name reflecting allow-list denial": {
+			failure: errors.New(
+				"GraphQL: Could not resolve to a Repository with the name 'owner/ip-allow-list-denied'",
+			),
+		},
+		"rate limit followed by unrelated failure": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "GraphQL: API rate limit already exceeded for user ID 134885571.\n" +
+					"GraphQL: Could not resolve to a Repository with the name 'owner/missing'",
+			},
 		},
 		"unrelated failure": {
 			failure: errors.New("HTTP 502"),

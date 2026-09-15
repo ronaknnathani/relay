@@ -452,6 +452,100 @@ func TestRestartResetsTheScheduleAndWakesAgain(t *testing.T) {
 	}
 }
 
+func TestRestartResetsNonRecoverableObservationErrorBudget(t *testing.T) {
+	harness := newWatchHarness(t, ModeStandalone, "", quietObservation())
+	harness.out.awaitLine(t, "] CHECK ")
+	failure := errors.New("gh: HTTP 500")
+	harness.setObservation(Observation{}, failure)
+	for count := 1; count <= 2; count++ {
+		next, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
+		if err != nil {
+			t.Fatalf("parse next check before error %d: %v", count, err)
+		}
+		harness.setNow(next)
+		harness.tick()
+		harness.err.awaitLine(t, failure.Error())
+	}
+	before := harness.state()
+	if before.Status != StatusRunning ||
+		before.ConsecutiveErrors != 2 ||
+		before.NonRecoverableErrorsSinceSuccess != 2 {
+		t.Fatalf("state before restart = %+v, want two non-recoverable observation errors", before)
+	}
+	harness.stop()
+
+	restartedAt := harness.clock().Add(time.Hour)
+	observeStarted := make(chan struct{}, 1)
+	releaseObservation := make(chan struct{})
+	ticks := make(chan time.Time)
+	out := newSignalWriter()
+	errOut := newSignalWriter()
+	done := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		done <- Run(ctx, harness.slug, Options{
+			Mode:   ModeStandalone,
+			Now:    func() time.Time { return restartedAt },
+			Ticker: func(time.Duration) Ticker { return manualTicker{ticks: ticks} },
+			Locate: func(slug string) (Target, error) {
+				return Target{Slug: slug, Dir: t.TempDir(), PRNumber: 42}, nil
+			},
+			Observe: func(ctx context.Context, _ Target) (Observation, error) {
+				observeStarted <- struct{}{}
+				select {
+				case <-releaseObservation:
+					return Observation{}, failure
+				case <-ctx.Done():
+					return Observation{}, ctx.Err()
+				}
+			},
+			Client: &fakeOwnerClient{},
+			Out:    out,
+			Err:    errOut,
+			PID:    4243,
+		})
+	}()
+
+	select {
+	case <-observeStarted:
+	case err := <-done:
+		t.Fatalf("restarted watcher stopped before observing: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("restarted watcher did not begin its immediate observation")
+	}
+	reset := harness.state()
+	if reset.Status != StatusRunning ||
+		reset.ScheduledChecks != 0 ||
+		reset.ConsecutiveErrors != 0 ||
+		reset.NonRecoverableErrorsSinceSuccess != 0 ||
+		reset.Error != "" {
+		t.Fatalf("state at restart = %+v, want the observation error budget reset before observing", reset)
+	}
+
+	close(releaseObservation)
+	errOut.awaitLine(t, failure.Error())
+	afterFailure := harness.state()
+	if afterFailure.Status != StatusRunning ||
+		afterFailure.ConsecutiveErrors != 1 ||
+		afterFailure.NonRecoverableErrorsSinceSuccess != 1 {
+		t.Errorf("state after the first post-restart failure = %+v, want a fresh error budget", afterFailure)
+	}
+	if want := restartedAt.Add(FastCadence).Format(time.RFC3339); afterFailure.NextCheckAt != want {
+		t.Errorf("next check after the first post-restart failure = %q, want %q", afterFailure.NextCheckAt, want)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run after cancellation: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("restarted watcher did not stop")
+	}
+}
+
 // newWatchHarnessReusingHome restarts a watcher against the runtime state an
 // earlier harness left behind, without re-pointing HOME.
 func newWatchHarnessReusingHome(t *testing.T, previous *watchHarness) *watchHarness {
@@ -698,8 +792,10 @@ func TestRecoverableObservationErrorsRemainRunning(t *testing.T) {
 	}{
 		{name: "rate limit", message: "API rate limit exceeded"},
 		{
-			name:    "organization IP allow list",
-			message: "The IP address is not permitted by the organization IP allow list",
+			name: "organization IP allow list",
+			message: "GraphQL: Although you appear to have the correct authorization credentials, " +
+				"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+				"IP address is not permitted to access this resource. (repository)",
 		},
 	}
 	for _, mode := range modes {
@@ -829,7 +925,9 @@ func TestRecoverableObservationErrorsDoNotResetTheTerminalBudget(t *testing.T) {
 		classifyGitHubAccessError(errors.New("API rate limit exceeded")),
 		errors.New("gh: malformed response"),
 		classifyGitHubAccessError(errors.New(
-			"The IP address is not permitted by the organization IP allow list",
+			"GraphQL: Although you appear to have the correct authorization credentials, " +
+				"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+				"IP address is not permitted to access this resource. (repository)",
 		)),
 		errors.New("gh: truncated response"),
 	}
@@ -906,7 +1004,7 @@ func TestRecoverableObservationRecovers(t *testing.T) {
 		harness.err.awaitLine(t, "API rate limit exceeded")
 	}
 
-	harness.setObservation(quietObservation(), nil)
+	harness.setObservation(actionableObservation(), nil)
 	recoveredAt, err := time.Parse(time.RFC3339, harness.state().NextCheckAt)
 	if err != nil {
 		t.Fatalf("parse recovery check: %v", err)
@@ -914,20 +1012,38 @@ func TestRecoverableObservationRecovers(t *testing.T) {
 	harness.setNow(recoveredAt)
 	harness.tick()
 	harness.out.awaitLine(t, "] CHECK ")
+	harness.out.awaitLine(t, "] WAKE  delivered")
 
 	state := harness.state()
 	if state.Status != StatusRunning ||
+		state.ScheduledChecks != 0 ||
 		state.ConsecutiveErrors != 0 ||
 		state.NonRecoverableErrorsSinceSuccess != 0 ||
 		state.Error != "" {
-		t.Errorf("state after recovery = %+v, want the error state cleared", state)
+		t.Errorf("state after recovery = %+v, want a fresh running schedule with the error state cleared", state)
 	}
-	wantDelay := CadenceFor(state.ScheduledChecks + 1)
-	if state.DelaySeconds != int64(wantDelay/time.Second) {
-		t.Errorf("delay after recovery = %ds, want %ds", state.DelaySeconds, int64(wantDelay/time.Second))
+	if state.DelaySeconds != int64(FastCadence/time.Second) {
+		t.Errorf(
+			"delay after recovery = %ds, want %ds",
+			state.DelaySeconds,
+			int64(FastCadence/time.Second),
+		)
 	}
-	if wantNext := recoveredAt.Add(wantDelay).Format(time.RFC3339); state.NextCheckAt != wantNext {
+	if wantNext := recoveredAt.Add(FastCadence).Format(time.RFC3339); state.NextCheckAt != wantNext {
 		t.Errorf("next check after recovery = %q, want %q", state.NextCheckAt, wantNext)
+	}
+	prompts := harness.client.promptTexts()
+	if len(prompts) != 1 {
+		t.Fatalf("prompts after recovery = %v, want exactly one owner wake", prompts)
+	}
+	if state.ActionableCount != 1 ||
+		state.LastWakeStatus != string(WakeDelivered) ||
+		state.AttentionPending {
+		t.Errorf("state after recovery = %+v, prompts = %v; want one attention item delivered to the owner",
+			state, prompts)
+	}
+	if !strings.Contains(prompts[0], state.CurrentFingerprint) {
+		t.Errorf("prompt = %q, want the recovered attention fingerprint", prompts[0])
 	}
 }
 
