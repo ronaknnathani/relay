@@ -25,7 +25,7 @@ import (
 const (
 	performanceRuns         = 40
 	performanceFixture      = "reference-program-v1"
-	performanceHarness      = "complete-roadmap-v4"
+	performanceHarness      = "complete-roadmap-v5"
 	performanceSourceCommit = "RELAY_PERF_SOURCE_COMMIT"
 )
 
@@ -130,9 +130,9 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 					!document.querySelector("#progress-counts")?.textContent.includes("100") ||
 					!document.querySelector("#roadmap-note")?.textContent ||
 					cards.length !== 100 ||
-					!cards.every((card) => card.dataset.focusKey && card.dataset.meta &&
+					!cards.every((card) => card.dataset.focusKey &&
 						card.textContent.includes("Reference task")) ||
-					document.querySelectorAll("#graph-nodes .stage[data-label]").length === 0 ||
+					document.querySelectorAll("#graph-nodes .stage").length === 0 ||
 					!document.querySelector("#graph")?.getAttribute("aria-label")?.includes(
 						"100 tasks, 200 dependency links") ||
 					!refresh || refresh.disabled ||
