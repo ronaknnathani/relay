@@ -13,7 +13,6 @@ import (
 var assetNames = []string{
 	"assets/index.html",
 	"assets/app.css",
-	"assets/theme.js",
 	"assets/app.js",
 	"assets/app.min.js",
 }
@@ -93,10 +92,9 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		`<a class="skip-link"`,
 	})
 
-	if strings.Count(index, "<script") != 2 ||
-		!strings.Contains(index, `<script src="/theme.js"></script>`) ||
-		!strings.Contains(index, `<script src="/app.js" defer></script>`) {
-		t.Error("index.html must load the pre-paint theme script before the deferred application")
+	if strings.Count(index, "<script") != 1 ||
+		!strings.Contains(index, `<script src="/app.js"></script>`) {
+		t.Error("index.html must load the minified application before paint")
 	}
 	if strings.Count(index, "<link ") != 1 || !strings.Contains(index, `href="/app.css"`) {
 		t.Error("index.html must link exactly one local stylesheet, /app.css")
@@ -130,18 +128,15 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	})
 
 	head := index[strings.Index(index, "<head>"):strings.Index(index, "</head>")]
-	theme := readAsset(t, "assets/theme.js")
-	requireContains(t, "theme.js", theme, []string{
-		"window.localStorage.getItem(key)",
-		"document.documentElement.dataset.theme = theme",
-	})
-	if strings.Contains(strings.Split(head, `<script src="/app.js"`)[0], "defer") {
-		t.Error("the theme bootstrap script must not be deferred")
+	if !strings.Contains(head, `<script src="/app.js">`) ||
+		strings.Contains(head, "defer") || strings.Contains(head, "async") {
+		t.Error("the application must load synchronously so its theme applies before paint")
 	}
 
 	script := readAsset(t, "assets/app.js")
 	requireContains(t, "app.js", script, []string{
 		`const THEME_KEY = "relay.program.theme"`,
+		"window.localStorage.getItem(THEME_KEY)",
 		"window.localStorage.setItem(THEME_KEY, next)",
 		"document.documentElement.dataset.theme",
 		"function toggleTheme()",

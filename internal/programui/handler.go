@@ -83,8 +83,6 @@ func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		h.serveAsset(response, request, "assets/app.css", "text/css; charset=utf-8")
 	case "/app.js":
 		h.serveAsset(response, request, "assets/app.min.js", "text/javascript; charset=utf-8")
-	case "/theme.js":
-		h.serveAsset(response, request, "assets/theme.js", "text/javascript; charset=utf-8")
 	case "/api/program":
 		h.serveProgram(response, request)
 	case "/api/artifact":

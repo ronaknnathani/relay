@@ -11,6 +11,12 @@ function applyTheme(theme) {
   document.documentElement.dataset.theme = THEMES.indexOf(theme) === -1 ? "light" : theme;
 }
 
+try {
+  applyTheme(window.localStorage.getItem(THEME_KEY) || "light");
+} catch (error) {
+  applyTheme("light");
+}
+
 const POLL_INTERVAL = 3000;
 const BACKOFF = [3000, 6000, 12000];
 const LANES = ["pending", "dispatched", "in-review", "blocked", "merged", "cancelled"];
