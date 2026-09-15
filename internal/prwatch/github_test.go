@@ -255,7 +255,13 @@ func TestObserveClassifiesRecoverableGitHubAccessFailures(t *testing.T) {
 		recoverable bool
 	}{
 		"IP allow list denial": {
-			failure:     errors.New("The IP address is not permitted by the organization IP allow list"),
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "GraphQL: Although you appear to have the correct authorization credentials, " +
+					"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+					"IP address is not permitted to access this resource. (repository)",
+			},
 			recoverable: true,
 		},
 		"primary rate limit": {
@@ -263,7 +269,11 @@ func TestObserveClassifiesRecoverableGitHubAccessFailures(t *testing.T) {
 			recoverable: true,
 		},
 		"primary rate limit already exceeded": {
-			failure:     errors.New("API rate limit already exceeded"),
+			failure: &ghCommandError{
+				args:   "api repos/acme/widgets/pulls/42/reviews",
+				cause:  errors.New("exit status 1"),
+				detail: "GraphQL: API rate limit already exceeded for user ID 134885571.",
+			},
 			recoverable: true,
 		},
 		"secondary rate limit": {
@@ -543,9 +553,8 @@ func TestObserveAcceptsAnEmptyReviewThreadPage(t *testing.T) {
 	}
 }
 
-// GitHub answers a partially failed GraphQL query with an `errors` list and a
-// zero exit code, so a thread or a check it declined to return would otherwise
-// look like one that does not exist.
+// GraphQL response parsing remains defensive even though current gh versions
+// report responses with an errors list as command failures.
 func TestObserveClassifiesTypedGraphQLRateLimit(t *testing.T) {
 	gh := fullFixtureGH()
 	gh.responses["graphql reviewThreads"] = `{"data":{"repository":{"pullRequest":{"reviewThreads":` +

@@ -383,10 +383,9 @@ const checkQuery = `query($owner:String!,$repo:String!,$number:Int!,$endCursor:S
 }`
 
 // graphQLErrors is the error list a GraphQL response carries when GitHub
-// answers only part of a query. `gh` exits zero for those, so nothing else
-// notices them: a review thread or a check GitHub declined to return would
-// simply be absent, and an absent one is indistinguishable from a quiet pull
-// request. Every response is inspected for them.
+// answers only part of a query. Although current gh versions report these as
+// command failures, every response is still inspected defensively so partial
+// data cannot look like a quiet pull request.
 type graphQLErrors struct {
 	Errors []struct {
 		Type    string `json:"type"`
