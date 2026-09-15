@@ -77,6 +77,22 @@ func TestWorktreeRemoveMissingWorktree(t *testing.T) {
 	}
 }
 
+func TestWorktreeHeadTreatsUnregisteredDirectoryAsAbsent(t *testing.T) {
+	repo := initRepo(t)
+	dir := filepath.Join(repo, ".worktrees", "leftover")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sha, found, err := WorktreeHead(repo, dir)
+	if err != nil {
+		t.Fatalf("WorktreeHead: %v", err)
+	}
+	if found || sha != "" {
+		t.Fatalf("WorktreeHead = (%q, %t), want empty, false", sha, found)
+	}
+}
+
 func TestFetchUpdatesRemoteTrackingBase(t *testing.T) {
 	for _, base := range []string{"main", "master"} {
 		t.Run(base, func(t *testing.T) {
@@ -237,6 +253,22 @@ func TestWorkMerged(t *testing.T) {
 	}
 }
 
+func TestWorkMergedIgnoresSuccessfulGitStderrWhenComparingStartSHA(t *testing.T) {
+	repo := initRepo(t)
+	base := currentBranchInRepo(t, repo)
+	start := gitOutput(t, repo, "rev-parse", base)
+	runGit(t, repo, "branch", "unchanged-work", start)
+	t.Setenv("GIT_TRACE", "1")
+
+	merged, err := WorkMerged(repo, "unchanged-work", base, start)
+	if err != nil {
+		t.Fatalf("WorkMerged: %v", err)
+	}
+	if merged {
+		t.Fatal("WorkMerged = true for a branch with no commits beyond start SHA")
+	}
+}
+
 func TestWorkMergedReturnsFalseForNormalUnmergedStates(t *testing.T) {
 	repo := initRepo(t)
 	base := currentBranchInRepo(t, repo)
@@ -281,11 +313,24 @@ func TestWorkMergedReturnsEvaluationError(t *testing.T) {
 	if merged {
 		t.Fatal("WorkMerged = true after evaluation error")
 	}
-	if !strings.Contains(err.Error(), "git merge-base --is-ancestor work missing-base") {
+	if !strings.Contains(err.Error(), "git merge-base --is-ancestor refs/heads/work missing-base") {
 		t.Fatalf("WorkMerged error = %q", err)
 	}
 	if IsWorkMerged(repo, "work", "missing-base", start) {
 		t.Fatal("IsWorkMerged should remain conservative on evaluation error")
+	}
+}
+
+func TestDetectDefaultBranchFallsBackWhenOriginHEADIsMalformed(t *testing.T) {
+	repo := initRepo(t)
+	runGit(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/main")
+
+	branch, err := DetectDefaultBranchWithError(repo)
+	if err != nil {
+		t.Fatalf("DetectDefaultBranchWithError: %v", err)
+	}
+	if branch != "main" {
+		t.Fatalf("default branch = %q, want main", branch)
 	}
 }
 

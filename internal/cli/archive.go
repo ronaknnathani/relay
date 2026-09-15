@@ -59,7 +59,7 @@ func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, err
 	worktreeHead := ""
 	worktreeFound := false
 	if m.Worktree != nil && *m.Worktree != "" {
-		worktreeHead, worktreeFound, err = gitx.WorktreeHead(*m.Worktree)
+		worktreeHead, worktreeFound, err = gitx.WorktreeHead(m.Repo, *m.Worktree)
 		if err != nil {
 			return false, fmt.Errorf(
 				"resolve worktree HEAD for recorded pull request %s for %s: %w",
@@ -209,14 +209,15 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 		reachable := false
 		if base != "" {
 			if gitx.HasOrigin(m.Repo) && gitx.RevParse(m.Repo, "origin/"+base) != "" {
-				reachable = gitx.IsBranchReachable(m.Repo, m.Branch, "origin/"+base)
-				workMerged = workMerged || gitx.IsWorkMerged(m.Repo, m.Branch, "origin/"+base, m.StartSHA)
+				remoteBaseRef := "refs/remotes/origin/" + base
+				reachable = gitx.IsBranchReachable(m.Repo, "refs/heads/"+m.Branch, remoteBaseRef)
+				workMerged = workMerged || gitx.IsWorkMerged(m.Repo, m.Branch, remoteBaseRef, m.StartSHA)
 			}
 			if !reachable {
-				reachable = gitx.IsBranchReachable(m.Repo, m.Branch, base)
+				reachable = gitx.IsBranchReachable(m.Repo, "refs/heads/"+m.Branch, "refs/heads/"+base)
 			}
 			if !workMerged {
-				workMerged = gitx.IsWorkMerged(m.Repo, m.Branch, base, m.StartSHA)
+				workMerged = gitx.IsWorkMerged(m.Repo, m.Branch, "refs/heads/"+base, m.StartSHA)
 			}
 		}
 		switch {

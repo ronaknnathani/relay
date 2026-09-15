@@ -65,14 +65,21 @@ func LocalBranchTip(repo, branch string) (sha string, found bool, err error) {
 	return strings.TrimSpace(string(out)), true, nil
 }
 
-// WorktreeHead resolves the current commit of a worktree directory. A missing
-// directory is returned as found=false; an existing invalid worktree is an error.
-func WorktreeHead(dir string) (sha string, found bool, err error) {
+// WorktreeHead resolves the current commit of a registered worktree directory.
+// Missing and unregistered directories are returned as found=false.
+func WorktreeHead(repo, dir string) (sha string, found bool, err error) {
 	if _, err := os.Stat(dir); err != nil {
 		if os.IsNotExist(err) {
 			return "", false, nil
 		}
 		return "", false, fmt.Errorf("stat worktree %s: %w", dir, err)
+	}
+	registered, err := IsWorktree(repo, dir)
+	if err != nil {
+		return "", false, err
+	}
+	if !registered {
+		return "", false, nil
 	}
 	out, err := exec.Command("git", "-C", dir, "rev-parse", "--verify", "HEAD^{commit}").CombinedOutput()
 	if err != nil {
@@ -141,14 +148,14 @@ func WorkMerged(repo, branch, base, startSHA string) (bool, error) {
 		return false, nil
 	}
 	ref := "refs/heads/" + branch
-	out, err := exec.Command("git", "-C", repo, "rev-parse", "--verify", ref+"^{commit}").CombinedOutput()
+	out, err := exec.Command("git", "-C", repo, "rev-parse", "--verify", ref+"^{commit}").Output()
 	if err != nil {
-		return false, gitCommandError("git rev-parse --verify "+ref+"^{commit}", err, out)
+		return false, gitOutputError("git rev-parse --verify "+ref+"^{commit}", err)
 	}
 	if strings.TrimSpace(string(out)) == startSHA {
 		return false, nil
 	}
-	out, err = exec.Command("git", "-C", repo, "merge-base", "--is-ancestor", branch, base).CombinedOutput()
+	_, err = exec.Command("git", "-C", repo, "merge-base", "--is-ancestor", ref, base).Output()
 	if err == nil {
 		return true, nil
 	}
@@ -156,7 +163,7 @@ func WorkMerged(repo, branch, base, startSHA string) (bool, error) {
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 		return false, nil
 	}
-	return false, gitCommandError("git merge-base --is-ancestor "+branch+" "+base, err, out)
+	return false, gitOutputError("git merge-base --is-ancestor "+ref+" "+base, err)
 }
 
 // IsWorkMerged preserves the conservative boolean interface for existing callers.
@@ -186,6 +193,14 @@ func gitCommandError(command string, err error, output []byte) error {
 	return fmt.Errorf("%s: %w\n%s", command, err, diagnostic)
 }
 
+func gitOutputError(command string, err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return gitCommandError(command, err, exitErr.Stderr)
+	}
+	return fmt.Errorf("%s: %w", command, err)
+}
+
 // DetectDefaultBranch returns the repo's default branch. Prefers
 // origin/HEAD; falls back to probing "main" then "master". Returns "" if
 // none is found.
@@ -200,16 +215,18 @@ func DetectDefaultBranchWithError(repo string) (string, error) {
 	out, err := exec.Command(
 		"git", "-C", repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD",
 	).CombinedOutput()
+	var symbolicRefErr error
 	if err == nil {
 		ref := strings.TrimSpace(string(out))
 		if i := strings.Index(ref, "/"); i >= 0 && i+1 < len(ref) {
 			return ref[i+1:], nil
 		}
-		return "", fmt.Errorf("cannot determine default branch: symbolic ref %q is invalid", ref)
+		symbolicRefErr = fmt.Errorf("symbolic ref %q is invalid", ref)
+	} else {
+		symbolicRefErr = gitCommandError(
+			"git symbolic-ref --short refs/remotes/origin/HEAD", err, out,
+		)
 	}
-	symbolicRefErr := gitCommandError(
-		"git symbolic-ref --short refs/remotes/origin/HEAD", err, out,
-	)
 	for _, candidate := range []string{"main", "master"} {
 		exists, branchErr := localBranchExists(repo, candidate)
 		if branchErr != nil {

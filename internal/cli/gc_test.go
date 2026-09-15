@@ -154,6 +154,47 @@ func TestGCArchivesUpstreamMergedMainAndMaster(t *testing.T) {
 	}
 }
 
+func TestGCKeepsUnmergedBranchWhenTagShadowsRemoteBase(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "shadowed-base"
+	branch, worktree := addGCProject(t, fixture, slug)
+	runArchiveGit(t, fixture.repo, "tag", "origin/main", "refs/heads/"+branch)
+
+	_, _, err := captureGCOutput(t, runGC)
+	if err != nil && !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC: %v", err)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC removed an unmerged project after a tag shadowed origin/main")
+	}
+}
+
+func TestGCKeepsUpstreamMergedBranchWhenDetachedWorktreeHeadDiverges(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "upstream-divergent-worktree"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	runArchiveGit(t, worktree, "checkout", "-q", "--detach")
+	commitArchiveFile(t, worktree, "later.txt", "later\n", "later detached work")
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "worktree HEAD") || !strings.Contains(stderr, "does not match branch") {
+		t.Fatalf("stderr %q is missing the divergent worktree diagnostic", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC changed an upstream-merged project whose detached worktree diverged")
+	}
+}
+
 func TestGCArchivesMergedPullRequestWithMatchingBranchTip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")

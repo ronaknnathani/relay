@@ -101,8 +101,12 @@ func runGC() error {
 				evaluationErr = fmt.Errorf("project %s has no start_sha", m.Slug)
 			} else {
 				merged, evaluationErr = gitx.WorkMerged(
-					m.Repo, m.Branch, "origin/"+base, m.StartSHA,
+					m.Repo, m.Branch, "refs/remotes/origin/"+base, m.StartSHA,
 				)
+				if merged {
+					evaluationErr = validateGCWorktreeHead(m)
+					merged = evaluationErr == nil
+				}
 			}
 		}
 		var prErr error
@@ -136,6 +140,33 @@ func runGC() error {
 	}
 	if hadErrors {
 		return errGCCompletedWithErrors
+	}
+	return nil
+}
+
+func validateGCWorktreeHead(m project.Manifest) error {
+	if m.Worktree == nil || *m.Worktree == "" {
+		return nil
+	}
+	worktreeHead, found, err := gitx.WorktreeHead(m.Repo, *m.Worktree)
+	if err != nil {
+		return fmt.Errorf("resolve worktree HEAD for project %s: %w", m.Slug, err)
+	}
+	if !found {
+		return nil
+	}
+	branchTip, branchFound, err := gitx.LocalBranchTip(m.Repo, m.Branch)
+	if err != nil {
+		return fmt.Errorf("resolve branch %q tip for project %s: %w", m.Branch, m.Slug, err)
+	}
+	if !branchFound {
+		return fmt.Errorf("resolve branch %q tip for project %s: branch disappeared", m.Branch, m.Slug)
+	}
+	if worktreeHead != branchTip {
+		return fmt.Errorf(
+			"worktree HEAD %s for project %s does not match branch %q tip %s",
+			worktreeHead, m.Slug, m.Branch, branchTip,
+		)
 	}
 	return nil
 }
