@@ -498,29 +498,28 @@ func sanitizeGitDiagnosticURL(rawURL string) string {
 }
 
 func sanitizeSCPStyleURL(rawURL string) string {
-	userinfoEnd := strings.LastIndexByte(rawURL, '@')
+	pathStart := strings.IndexByte(rawURL, ':')
+	if bracketStart := strings.IndexByte(rawURL, '['); bracketStart >= 0 {
+		pathStart = strings.Index(rawURL[bracketStart:], "]:")
+		if pathStart >= 0 {
+			pathStart += bracketStart + 1
+		}
+	}
+	if pathStart <= 0 || pathStart == len(rawURL)-1 {
+		return rawURL
+	}
+	userinfoEnd := strings.LastIndexByte(rawURL[:pathStart], '@')
 	if userinfoEnd < 0 {
 		return rawURL
 	}
-	hostPath := rawURL[userinfoEnd+1:]
-	pathStart := strings.IndexByte(hostPath, ':')
-	if strings.HasPrefix(hostPath, "[") {
-		pathStart = strings.Index(hostPath, "]:")
-		if pathStart >= 0 {
-			pathStart++
-		}
-	}
-	if pathStart <= 0 || pathStart == len(hostPath)-1 {
-		return rawURL
-	}
-	path := hostPath[pathStart+1:]
+	path := rawURL[pathStart+1:]
 	if secretStart := strings.IndexAny(path, "?#"); secretStart >= 0 {
 		path = path[:secretStart]
 	}
 	if path == "" {
 		return rawURL
 	}
-	return "[redacted]@" + hostPath[:pathStart+1] + path
+	return "[redacted]@" + rawURL[userinfoEnd+1:pathStart+1] + path
 }
 
 // WorktreeAdd creates a new worktree at dir on a new branch, started from startPoint.

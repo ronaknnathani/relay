@@ -534,6 +534,11 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			input: "status ops@example.com:ready",
 			want:  "status [redacted]@example.com:ready",
 		},
+		{
+			name:  "scp path contains at sign",
+			input: "remote: token@host:repo@mirror",
+			want:  "remote: [redacted]@host:repo@mirror",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
