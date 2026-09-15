@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v22"
+	performanceHarness = "complete-roadmap-v23"
 )
 
 type performanceReport struct {
@@ -185,10 +185,12 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 				}
 				window.__relayGraphPaintPending = true;
 				requestAnimationFrame(() => {
-					window.__relayCompleteGraphAt = performance.now();
-					window.__relayGraphPaintPending = false;
-					relayGraphObserver.disconnect();
-					relayUsable();
+					setTimeout(() => {
+						window.__relayCompleteGraphAt = performance.now();
+						window.__relayGraphPaintPending = false;
+						relayGraphObserver.disconnect();
+						relayUsable();
+					}, 0);
 				});
 			};
 			const relayGraphObserver = new MutationObserver(relayGraphComplete);
@@ -238,7 +240,6 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 						}))
 					};
 					document.querySelector("#theme-toggle").click();
-					return;
 				}
 				const probe = window.__relayUsabilityProbe;
 				if (!probe.prevented) {

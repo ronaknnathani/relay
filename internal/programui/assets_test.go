@@ -231,7 +231,7 @@ func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
 		`script.src = "/app.js"`,
 		`window.__relayRoadmapCoreCleanup`,
 		`window.__relayRoadmapConnectorPaths = paths`,
-		`requestAnimationFrame(() => {`,
+		`drawConnectors();`,
 	})
 	requireContains(t, "app.js", readAsset(t, "assets/app.js"), []string{
 		`window.__relayRoadmapCoreCleanup`,

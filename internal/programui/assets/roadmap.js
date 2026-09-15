@@ -126,9 +126,8 @@
     window.__relayRoadmapConnectorPaths = paths;
   };
 
-  requestAnimationFrame(() => {
-    drawConnectors();
-    setTimeout(() => {
+  drawConnectors();
+  setTimeout(() => {
     const script = document.createElement("script");
     script.src = "/app.js";
     script.onerror = () => {
@@ -136,6 +135,5 @@
       reconnect.textContent = "The complete Program UI bundle failed to load. Reload the page to retry.";
     };
     document.body.append(script);
-    }, 0);
-  });
+  }, 0);
 })();
