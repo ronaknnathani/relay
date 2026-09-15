@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v21"
+	performanceHarness = "complete-roadmap-v22"
 )
 
 type performanceReport struct {
@@ -86,6 +86,45 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 	}
 	commandDir := performanceCommandDir(t)
 	chrome := chromeExecutable(t)
+	report := performanceReport{
+		Mode: mode, GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		BinarySHA256:   fileSHA256(t, binary),
+		FixtureVersion: performanceFixture, HarnessVersion: performanceHarness,
+		ChromiumVersion: chromeVersion(t, chrome),
+		Environment:     currentPerformanceEnvironment(t),
+		Samples:         map[string][]float64{},
+		P50:             map[string]float64{},
+		P95:             map[string]float64{},
+		Max:             map[string]float64{},
+	}
+	report.BinaryRevision, report.BinaryModified = binaryVCS(t, binary)
+	report.SourceCommit = report.BinaryRevision
+	for run := 0; run <= performanceRuns; run++ {
+		sample := measureIsolatedBrowserRun(
+			t, chrome, binary, commandDir, fixture.program.Slug, mode,
+		)
+		if run == 0 {
+			continue
+		}
+		appendPerformanceSample(report.Samples, sample)
+	}
+	for name, samples := range report.Samples {
+		report.P50[name] = percentile(samples, 0.50)
+		report.P95[name] = percentile(samples, 0.95)
+		report.Max[name] = maximum(samples)
+	}
+	return report
+}
+
+func measureIsolatedBrowserRun(
+	t *testing.T,
+	chrome string,
+	binary string,
+	commandDir string,
+	slug string,
+	mode string,
+) browserSample {
+	t.Helper()
 	allocator, cancelAllocator := chromedp.NewExecAllocator(
 		context.Background(),
 		append(chromedp.DefaultExecAllocatorOptions[:],
@@ -102,35 +141,8 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 	if err := chromedp.Run(browser); err != nil {
 		t.Fatalf("start Chromium: %v", err)
 	}
-	report := performanceReport{
-		Mode: mode, GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		BinarySHA256:   fileSHA256(t, binary),
-		FixtureVersion: performanceFixture, HarnessVersion: performanceHarness,
-		ChromiumVersion: chromeVersion(t, chrome),
-		Environment:     currentPerformanceEnvironment(t),
-		Samples:         map[string][]float64{},
-		P50:             map[string]float64{},
-		P95:             map[string]float64{},
-		Max:             map[string]float64{},
-	}
-	report.BinaryRevision, report.BinaryModified = binaryVCS(t, binary)
-	report.SourceCommit = report.BinaryRevision
-	for run := 0; run <= performanceRuns; run++ {
-		tab, cancelTab := chromedp.NewContext(browser)
-		installPerformanceObserver(t, tab)
-		sample := measureBrowserRun(t, tab, binary, commandDir, fixture.program.Slug, mode)
-		cancelTab()
-		if run == 0 {
-			continue
-		}
-		appendPerformanceSample(report.Samples, sample)
-	}
-	for name, samples := range report.Samples {
-		report.P50[name] = percentile(samples, 0.50)
-		report.P95[name] = percentile(samples, 0.95)
-		report.Max[name] = maximum(samples)
-	}
-	return report
+	installPerformanceObserver(t, browser)
+	return measureBrowserRun(t, browser, binary, commandDir, slug, mode)
 }
 
 func installPerformanceObserver(t *testing.T, tab context.Context) {
