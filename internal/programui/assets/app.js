@@ -57,6 +57,24 @@ const WORKER_META = {
 const VERDICT_GOOD = ["passing", "success", "approved", "mergeable", "clean"];
 const VERDICT_BAD = ["failing", "failure", "error", "changes_requested", "conflicting", "dirty", "blocked"];
 
+const TASK_ARTIFACT_NAMES = [
+  "assignment.md",
+  "task.md",
+  "requirements.md",
+  "clarify.md",
+  "plan.md",
+  "notes.md",
+  "todos.md",
+  "progress.md",
+  "tradeoffs.md",
+  "questions.md",
+  "follow-ups.md",
+  "review.md",
+  "validation.md",
+  "pr-body.md",
+  "context.md",
+];
+
 const ARTIFACT_HINTS = {
   "assignment.md": "Relay writes the assignment when the task is dispatched.",
   "task.md": "The worker copies the assignment into task.md when it starts.",
@@ -2120,7 +2138,7 @@ function artifactSection(item) {
   const metadataAvailable = list(item.artifacts).length > 0;
   const artifacts = metadataAvailable
     ? list(item.artifacts)
-    : (item.child_available ? Object.keys(ARTIFACT_HINTS).map((name) => ({ name })) : []);
+    : (item.child_available ? TASK_ARTIFACT_NAMES.map((name) => ({ name })) : []);
   if (artifacts.length === 0) {
     section.append(emptyNote("No worker files yet. They appear once the task has a child project."));
     return section;
@@ -2131,7 +2149,11 @@ function artifactSection(item) {
     selected = present.length > 0 ? present[0].name : artifacts[0].name;
     state.artifactByItem.set(item.id, selected);
   }
-  if (!state.artifactSelection.has(item.id)) {
+  const activeSelection = state.artifactSelection.get(item.id);
+  if (!activeSelection ||
+      (activeSelection.kind === "task" &&
+       (activeSelection.name !== selected ||
+        !artifacts.some((artifact) => artifact.name === activeSelection.name)))) {
     state.artifactSelection.set(item.id, { kind: "task", item: item.id, name: selected });
   }
 

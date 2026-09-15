@@ -1000,6 +1000,14 @@ func TestScriptKeepsPollingSelectionAndLinkSafety(t *testing.T) {
 	if !strings.Contains(script, `card.scrollIntoView({ block: "nearest", inline: "nearest" })`) {
 		t.Error("revealing a roadmap card must be an instant jump, not a smooth scroll")
 	}
+	requireContains(t, "app.js", script, []string{
+		"const TASK_ARTIFACT_NAMES = [",
+		"TASK_ARTIFACT_NAMES.map((name) => ({ name }))",
+		`activeSelection.kind === "task"`,
+	})
+	if strings.Contains(script, "Object.keys(ARTIFACT_HINTS).map((name) => ({ name }))") {
+		t.Error("pending task metadata must not expose program-only artifact names")
+	}
 }
 
 func TestScriptDerivesTheDisplayTitleAndDeduplicatesWarnings(t *testing.T) {
