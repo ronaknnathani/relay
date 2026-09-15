@@ -4,6 +4,7 @@
 package gitx
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +20,8 @@ var (
 
 	removeBranchConfig = removeLocalBranchConfig
 )
+
+const maxGitDiagnosticOutput = 8 * 1024
 
 // RepoRoot returns the absolute path to the top-level directory of the
 // current git repository, or an empty string and an error if cwd is not
@@ -166,7 +169,7 @@ func LocalBranchExists(repo, branch string) (bool, error) {
 
 // DeleteBranch removes a branch with `git branch -d` (refuses if unmerged).
 func DeleteBranch(repo, branch string) error {
-	out, err := exec.Command("git", "-C", repo, "branch", "-d", branch).CombinedOutput()
+	out, err := boundedCombinedOutput(exec.Command("git", "-C", repo, "branch", "-d", branch))
 	if err != nil {
 		return gitCommandError("git branch -d "+branch, err, out)
 	}
@@ -175,7 +178,7 @@ func DeleteBranch(repo, branch string) error {
 
 // ForceDeleteBranch removes a branch with `git branch -D` (deletes unmerged).
 func ForceDeleteBranch(repo, branch string) error {
-	out, err := exec.Command("git", "-C", repo, "branch", "-D", branch).CombinedOutput()
+	out, err := boundedCombinedOutput(exec.Command("git", "-C", repo, "branch", "-D", branch))
 	if err != nil {
 		return gitCommandError("git branch -D "+branch, err, out)
 	}
@@ -199,9 +202,9 @@ func ForceDeleteBranchAt(repo, branch, expectedSHA string) error {
 		)
 	}
 	command := "git update-ref -d " + ref + " " + expectedSHA
-	out, err := exec.Command(
+	out, err := boundedCombinedOutput(exec.Command(
 		"git", "-C", repo, "update-ref", "-d", ref, expectedSHA,
-	).CombinedOutput()
+	))
 	if err == nil {
 		if err := removeBranchConfig(repo, branch); err != nil {
 			return fmt.Errorf(
@@ -238,9 +241,9 @@ func RemoveBranchConfig(repo, branch string) error {
 }
 
 func validateBranchName(repo, branch string) error {
-	out, err := exec.Command(
+	out, err := boundedCombinedOutput(exec.Command(
 		"git", "-C", repo, "check-ref-format", "--branch", branch,
-	).CombinedOutput()
+	))
 	if err != nil {
 		return gitCommandError("git check-ref-format --branch "+branch, err, out)
 	}
@@ -249,9 +252,9 @@ func validateBranchName(repo, branch string) error {
 
 func removeLocalBranchConfig(repo, branch string) error {
 	section := "branch." + branch
-	out, err := exec.Command(
+	out, err := boundedCombinedOutput(exec.Command(
 		"git", "-C", repo, "config", "--local", "--remove-section", section,
-	).CombinedOutput()
+	))
 	if err == nil {
 		return nil
 	}
@@ -400,6 +403,49 @@ func gitCommandError(command string, err error, output []byte) error {
 	return fmt.Errorf("%s: %w\n%s", command, err, diagnostic)
 }
 
+type diagnosticBuffer struct {
+	buffer    bytes.Buffer
+	truncated bool
+}
+
+func (b *diagnosticBuffer) Write(data []byte) (int, error) {
+	originalLength := len(data)
+	if len(data) >= maxGitDiagnosticOutput {
+		b.buffer.Reset()
+		_, _ = b.buffer.Write(data[len(data)-maxGitDiagnosticOutput:])
+		b.truncated = true
+		return originalLength, nil
+	}
+	overflow := b.buffer.Len() + len(data) - maxGitDiagnosticOutput
+	if overflow > 0 {
+		current := append([]byte(nil), b.buffer.Bytes()[overflow:]...)
+		b.buffer.Reset()
+		_, _ = b.buffer.Write(current)
+		b.truncated = true
+	}
+	_, _ = b.buffer.Write(data)
+	return originalLength, nil
+}
+
+func (b *diagnosticBuffer) Bytes() []byte {
+	if !b.truncated {
+		return append([]byte(nil), b.buffer.Bytes()...)
+	}
+	notice := fmt.Sprintf(
+		"[... git diagnostic truncated; showing last %d bytes ...]\n",
+		maxGitDiagnosticOutput,
+	)
+	return append([]byte(notice), b.buffer.Bytes()...)
+}
+
+func boundedCombinedOutput(command *exec.Cmd) ([]byte, error) {
+	var output diagnosticBuffer
+	command.Stdout = &output
+	command.Stderr = &output
+	err := command.Run()
+	return output.Bytes(), err
+}
+
 func gitOutputError(command string, err error) error {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
@@ -450,7 +496,7 @@ func DetectDefaultBranchWithError(repo string) (string, error) {
 // combined output alongside any error so callers can emit useful diagnostics.
 func Fetch(repo, branch string) (string, error) {
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branch, branch)
-	out, err := exec.Command("git", "-C", repo, "fetch", "origin", refspec).CombinedOutput()
+	out, err := boundedCombinedOutput(exec.Command("git", "-C", repo, "fetch", "origin", refspec))
 	diagnostic := SanitizeDiagnostic(string(out))
 	if err != nil {
 		return diagnostic, fmt.Errorf("git fetch origin %s: %w", branch, err)
@@ -462,19 +508,20 @@ func Fetch(repo, branch string) (string, error) {
 // output while preserving the host, path, and surrounding diagnostic.
 func SanitizeDiagnostic(output string) string {
 	output = strings.TrimSpace(output)
+	scanner := newDiagnosticURLScanner(output)
 	var sanitized strings.Builder
 	for index := 0; index < len(output); {
-		if end, ok := remoteHelperURLTokenEnd(output, index); ok {
+		if end, ok := scanner.remoteHelperURLTokenEnd(index); ok {
 			sanitized.WriteString(sanitizeRemoteHelperURL(output[index:end]))
 			index = end
 			continue
 		}
-		if end, ok := schemeURLTokenEnd(output, index); ok {
+		if end, ok := scanner.schemeURLTokenEnd(index); ok {
 			sanitized.WriteString(sanitizeGitDiagnosticURL(output[index:end]))
 			index = end
 			continue
 		}
-		if end, ok := scpStyleURLTokenEnd(output, index); ok {
+		if end, ok := scanner.scpStyleURLTokenEnd(index); ok {
 			sanitized.WriteString(sanitizeSCPStyleURL(output[index:end]))
 			index = end
 			continue
@@ -488,28 +535,92 @@ func SanitizeDiagnostic(output string) string {
 const maxRemoteHelperDepth = 8
 
 func remoteHelperURLTokenEnd(output string, start int) (int, bool) {
-	if !urlTokenBoundary(output, start) {
+	return newDiagnosticURLScanner(output).remoteHelperURLTokenEnd(start)
+}
+
+type diagnosticURLScanner struct {
+	output           string
+	nextAt           []int
+	nextColon        []int
+	nextHardBoundary []int
+	nextHostInvalid  []int
+	nextHostMarker   []int
+	nextPathSlash    []int
+	nextBracketColon []int
+}
+
+func newDiagnosticURLScanner(output string) diagnosticURLScanner {
+	size := len(output) + 1
+	scanner := diagnosticURLScanner{
+		output:           output,
+		nextAt:           make([]int, size),
+		nextColon:        make([]int, size),
+		nextHardBoundary: make([]int, size),
+		nextHostInvalid:  make([]int, size),
+		nextHostMarker:   make([]int, size),
+		nextPathSlash:    make([]int, size),
+		nextBracketColon: make([]int, size),
+	}
+	nextAt, nextColon := -1, -1
+	nextHardBoundary, nextHostInvalid := len(output), -1
+	nextHostMarker, nextPathSlash, nextBracketColon := -1, -1, -1
+	for index := len(output) - 1; index >= 0; index-- {
+		character := output[index]
+		if character == '@' {
+			nextAt = index
+		}
+		if character == ':' {
+			nextColon = index
+		}
+		if character <= ' ' || strings.ContainsRune("\"<>`", rune(character)) {
+			nextHardBoundary = index
+		}
+		if character == '/' || character == '@' {
+			nextHostInvalid = index
+		}
+		if strings.ContainsRune("._-", rune(character)) {
+			nextHostMarker = index
+		}
+		if character == '/' {
+			nextPathSlash = index
+		}
+		if character == ']' && index+1 < len(output) && output[index+1] == ':' {
+			nextBracketColon = index + 1
+		}
+		scanner.nextAt[index] = nextAt
+		scanner.nextColon[index] = nextColon
+		scanner.nextHardBoundary[index] = nextHardBoundary
+		scanner.nextHostInvalid[index] = nextHostInvalid
+		scanner.nextHostMarker[index] = nextHostMarker
+		scanner.nextPathSlash[index] = nextPathSlash
+		scanner.nextBracketColon[index] = nextBracketColon
+	}
+	return scanner
+}
+
+func (s diagnosticURLScanner) remoteHelperURLTokenEnd(start int) (int, bool) {
+	if !urlTokenBoundary(s.output, start) {
 		return 0, false
 	}
-	addressStart, ok := remoteHelperAddressStart(output, start)
+	addressStart, ok := remoteHelperAddressStart(s.output, start)
 	if !ok {
 		return 0, false
 	}
 	for depth := 1; ; depth++ {
-		nextAddressStart, nested := remoteHelperAddressStart(output, addressStart)
+		nextAddressStart, nested := remoteHelperAddressStart(s.output, addressStart)
 		if !nested {
 			break
 		}
 		if depth == maxRemoteHelperDepth {
-			end := scanURLTokenEnd(output, start, nextAddressStart)
+			end := scanURLTokenEnd(s.output, start, nextAddressStart)
 			return end, end > nextAddressStart
 		}
 		addressStart = nextAddressStart
 	}
-	if end, ok := schemeURLTokenEnd(output, addressStart); ok {
+	if end, ok := s.schemeURLTokenEnd(addressStart); ok {
 		return end, true
 	}
-	return scpStyleURLTokenEnd(output, addressStart)
+	return s.scpStyleURLTokenEnd(addressStart)
 }
 
 func remoteHelperAddressStart(output string, start int) (int, bool) {
@@ -529,6 +640,11 @@ func remoteHelperAddressStart(output string, start int) (int, bool) {
 }
 
 func schemeURLTokenEnd(output string, start int) (int, bool) {
+	return newDiagnosticURLScanner(output).schemeURLTokenEnd(start)
+}
+
+func (s diagnosticURLScanner) schemeURLTokenEnd(start int) (int, bool) {
+	output := s.output
 	if !urlTokenBoundary(output, start) || start >= len(output) ||
 		!isASCIILetter(output[start]) {
 		return 0, false
@@ -548,42 +664,60 @@ func schemeURLTokenEnd(output string, start int) (int, bool) {
 }
 
 func scpStyleURLTokenEnd(output string, start int) (int, bool) {
+	return newDiagnosticURLScanner(output).scpStyleURLTokenEnd(start)
+}
+
+func (s diagnosticURLScanner) scpStyleURLTokenEnd(start int) (int, bool) {
+	output := s.output
 	if !urlTokenBoundary(output, start) || start >= len(output) ||
 		!isSCPStyleURLStart(output[start]) {
 		return 0, false
 	}
-	end := scanURLTokenEnd(output, start, start)
-	if end <= start {
+	tokenLimit := s.nextHardBoundary[start]
+	pathStart := s.nextColon[start]
+	if pathStart < 0 || pathStart >= tokenLimit {
 		return 0, false
 	}
-	token := output[start:end]
-	pathStart := strings.IndexByte(token, ':')
-	if bracketStart := strings.IndexByte(token, '['); bracketStart >= 0 {
-		pathStart = strings.Index(token[bracketStart:], "]:")
-		if pathStart >= 0 {
-			pathStart += bracketStart + 1
-		}
+	userinfoEnd := s.nextAt[start]
+	if userinfoEnd < 0 || userinfoEnd >= pathStart {
+		userinfoEnd = -1
 	}
-	if pathStart <= 0 || pathStart == len(token)-1 {
-		return 0, false
-	}
-	if strings.HasPrefix(token[pathStart:], "::") {
-		return 0, false
-	}
-	userinfoEnd := strings.LastIndexByte(token[:pathStart], '@')
-	hostStart := 0
+	hostStart := start
 	if userinfoEnd >= 0 {
-		if userinfoEnd == 0 || userinfoEnd == pathStart-1 {
-			return 0, false
-		}
 		hostStart = userinfoEnd + 1
 	}
-	host := token[hostStart:pathStart]
-	if strings.ContainsAny(host, "/@") {
+	if hostStart < tokenLimit && output[hostStart] == '[' {
+		pathStart = s.nextBracketColon[hostStart]
+		if pathStart < 0 || pathStart >= tokenLimit {
+			return 0, false
+		}
+	}
+	if pathStart <= start || pathStart+1 >= tokenLimit {
 		return 0, false
 	}
-	if userinfoEnd < 0 && !strings.Contains(token[pathStart+1:], "/") &&
-		!strings.ContainsAny(host, "._-") && !strings.HasPrefix(host, "[") {
+	if pathStart+1 < len(output) && output[pathStart+1] == ':' {
+		return 0, false
+	}
+	if userinfoEnd >= 0 {
+		if userinfoEnd == start || userinfoEnd == pathStart-1 {
+			return 0, false
+		}
+		if anotherAt := s.nextAt[userinfoEnd+1]; anotherAt >= 0 && anotherAt < pathStart {
+			return 0, false
+		}
+	}
+	if invalid := s.nextHostInvalid[hostStart]; invalid >= 0 && invalid < pathStart {
+		return 0, false
+	}
+	pathHasSlash := s.nextPathSlash[pathStart+1] >= 0 &&
+		s.nextPathSlash[pathStart+1] < tokenLimit
+	hostHasMarker := s.nextHostMarker[hostStart] >= 0 &&
+		s.nextHostMarker[hostStart] < pathStart
+	if userinfoEnd < 0 && !pathHasSlash && !hostHasMarker && output[hostStart] != '[' {
+		return 0, false
+	}
+	end := scanURLTokenEnd(output, start, pathStart+1)
+	if end <= pathStart+1 {
 		return 0, false
 	}
 	return end, true
@@ -691,13 +825,7 @@ func sanitizeRemoteHelperURL(rawURL string) string {
 }
 
 func sanitizeSCPStyleURL(rawURL string) string {
-	pathStart := strings.IndexByte(rawURL, ':')
-	if bracketStart := strings.IndexByte(rawURL, '['); bracketStart >= 0 {
-		pathStart = strings.Index(rawURL[bracketStart:], "]:")
-		if pathStart >= 0 {
-			pathStart += bracketStart + 1
-		}
-	}
+	pathStart := scpPathStart(rawURL)
 	if pathStart <= 0 || pathStart == len(rawURL)-1 {
 		return rawURL
 	}
@@ -716,9 +844,29 @@ func sanitizeSCPStyleURL(rawURL string) string {
 	return "[redacted]@" + rawURL[userinfoEnd+1:pathStart+1] + path
 }
 
+func scpPathStart(value string) int {
+	hostStart := 0
+	if userinfoEnd := strings.IndexByte(value, '@'); userinfoEnd >= 0 {
+		hostStart = userinfoEnd + 1
+	}
+	if hostStart < len(value) && value[hostStart] == '[' {
+		if bracketEnd := strings.Index(value[hostStart:], "]:"); bracketEnd >= 0 {
+			return hostStart + bracketEnd + 1
+		}
+		return -1
+	}
+	pathStart := strings.IndexByte(value[hostStart:], ':')
+	if pathStart < 0 {
+		return -1
+	}
+	return hostStart + pathStart
+}
+
 // WorktreeAdd creates a new worktree at dir on a new branch, started from startPoint.
 func WorktreeAdd(repo, dir, branch, startPoint string) error {
-	out, err := exec.Command("git", "-C", repo, "worktree", "add", dir, "-b", branch, startPoint).CombinedOutput()
+	out, err := boundedCombinedOutput(
+		exec.Command("git", "-C", repo, "worktree", "add", dir, "-b", branch, startPoint),
+	)
 	if err != nil {
 		return gitCommandError("git worktree add "+dir, err, out)
 	}
@@ -790,7 +938,9 @@ func WorktreeRemove(repo, dir string, force bool) error {
 		if statErr == nil {
 			return fmt.Errorf("worktree path %s exists but is not registered in %s", dir, repo)
 		}
-		if out, pruneErr := exec.Command("git", "-C", repo, "worktree", "prune").CombinedOutput(); pruneErr != nil {
+		if out, pruneErr := boundedCombinedOutput(
+			exec.Command("git", "-C", repo, "worktree", "prune"),
+		); pruneErr != nil {
 			return gitCommandError("git worktree prune", pruneErr, out)
 		}
 		return nil
@@ -852,7 +1002,9 @@ func WorktreeReclaim(repo, dir string, force bool) (returnErr error) {
 			return fmt.Errorf("remove Relay worktree path %s: %w", dir, err)
 		}
 	}
-	if out, err := exec.Command("git", "-C", repo, "worktree", "prune").CombinedOutput(); err != nil {
+	if out, err := boundedCombinedOutput(
+		exec.Command("git", "-C", repo, "worktree", "prune"),
+	); err != nil {
 		return gitCommandError("git worktree prune", err, out)
 	}
 	return nil
@@ -930,7 +1082,7 @@ func removeRegisteredWorktree(repo, dir string, force bool) error {
 		args = append(args, "--force")
 	}
 	args = append(args, dir)
-	out, err := exec.Command("git", args...).CombinedOutput()
+	out, err := boundedCombinedOutput(exec.Command("git", args...))
 	if err != nil {
 		return gitCommandError("git worktree remove "+dir, err, out)
 	}

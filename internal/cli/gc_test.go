@@ -1021,6 +1021,9 @@ func TestGCDeepRemoteHelperDiagnosticDoesNotBlockAnotherRepository(t *testing.T)
 	if !strings.Contains(stderr, "[redacted]") {
 		t.Fatalf("stderr %q is missing the bounded helper redaction", stderr)
 	}
+	if !strings.Contains(stderr, "git diagnostic truncated") {
+		t.Fatalf("stderr %q is missing the subprocess diagnostic truncation marker", stderr)
+	}
 	if !pathExists(filepath.Join(project.ActiveDir(), "a-deep-helper-failure")) ||
 		!pathExists(failingWorktree) ||
 		!gitx.BranchExists(failingRepo.repo, failingBranch) {

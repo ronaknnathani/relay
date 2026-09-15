@@ -1,6 +1,7 @@
 package gitx
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -596,6 +597,11 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			want:  "remote: [redacted]@git.example.com:team/repo.git",
 		},
 		{
+			name:  "scp-like bracketed path",
+			input: "remote: _deploy-token@git.example.com:team/[private].git?secret=x#scope",
+			want:  "remote: [redacted]@git.example.com:team/[private].git",
+		},
+		{
 			name:  "scp-like without userinfo",
 			input: "remote: git.example.io:team/repo.git?token=secret#scope",
 			want:  "remote: git.example.io:team/repo.git",
@@ -635,6 +641,11 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			input: "remote: trace::cache::https://token@git.example.com/team/repo.git?secret=x#fragment",
 			want:  "remote: trace::cache::https://[redacted]@git.example.com/team/repo.git",
 		},
+		{
+			name:  "nested remote helper bracketed SCP path",
+			input: "remote: trace::cache::_deploy-token@git.example.com:team/[private].git?secret=x#fragment",
+			want:  "remote: trace::cache::[redacted]@git.example.com:team/[private].git",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -661,6 +672,40 @@ func TestSanitizeDiagnosticBoundsRemoteHelperNesting(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "[redacted]") {
 		t.Fatalf("SanitizeDiagnostic deep nesting result = %q, want fully redacted remainder", got)
+	}
+}
+
+func TestSanitizeDiagnosticHandlesLargePunctuationAndContinues(t *testing.T) {
+	punctuation := strings.Repeat("!", 256*1024)
+	input := punctuation +
+		" https://token@git.example.com/team/repo.git?secret=x#fragment continuation"
+	want := punctuation + " https://[redacted]@git.example.com/team/repo.git continuation"
+
+	if got := SanitizeDiagnostic(input); got != want {
+		t.Fatalf("SanitizeDiagnostic large input did not preserve and sanitize the full diagnostic")
+	}
+}
+
+func TestDiagnosticBufferKeepsActionableTailAndMarksTruncation(t *testing.T) {
+	var output diagnosticBuffer
+	prefix := bytes.Repeat([]byte("x"), maxGitDiagnosticOutput)
+	tail := []byte("fatal: final actionable diagnostic\n")
+	if _, err := output.Write(prefix); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := output.Write(tail); err != nil {
+		t.Fatal(err)
+	}
+
+	got := string(output.Bytes())
+	if !strings.Contains(got, "git diagnostic truncated") {
+		t.Fatalf("bounded output %q is missing the truncation marker", got)
+	}
+	if !strings.HasSuffix(got, string(tail)) {
+		t.Fatalf("bounded output does not preserve the actionable tail: %q", got)
+	}
+	if len(output.buffer.Bytes()) != maxGitDiagnosticOutput {
+		t.Fatalf("captured bytes = %d, want %d", len(output.buffer.Bytes()), maxGitDiagnosticOutput)
 	}
 }
 
