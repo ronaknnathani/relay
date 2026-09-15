@@ -247,6 +247,53 @@ func TestObserveRetriesThenFails(t *testing.T) {
 	}
 }
 
+func TestObserveClassifiesRecoverableGitHubAccessFailures(t *testing.T) {
+	for name, test := range map[string]struct {
+		failure     error
+		recoverable bool
+	}{
+		"IP allow list denial": {
+			failure:     errors.New("The IP address is not permitted by the organization IP allow list"),
+			recoverable: true,
+		},
+		"primary rate limit": {
+			failure:     errors.New("API rate limit exceeded for 192.0.2.1"),
+			recoverable: true,
+		},
+		"secondary rate limit": {
+			failure:     errors.New("You have exceeded a secondary rate limit"),
+			recoverable: true,
+		},
+		"unrelated failure": {
+			failure: errors.New("HTTP 502"),
+		},
+		"authentication failure": {
+			failure: errors.New("HTTP 401: Bad credentials"),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gh := fullFixtureGH()
+			key := "api repos/acme/widgets/pulls/42/reviews"
+			delete(gh.responses, key)
+			gh.failures[key] = test.failure
+
+			_, err := fixtureClient(t, gh).Observe(context.Background(), 42)
+			if err == nil {
+				t.Fatal("Observe = nil error, want the GitHub failure surfaced")
+			}
+			if !strings.Contains(err.Error(), test.failure.Error()) {
+				t.Errorf("error %q does not carry the gh failure %q", err, test.failure)
+			}
+			if got := isRecoverableGitHubAccessError(err); got != test.recoverable {
+				t.Errorf("isRecoverableGitHubAccessError() = %t, want %t for %v", got, test.recoverable, err)
+			}
+			if got := gh.attempts[key]; got != defaultAttempts {
+				t.Errorf("attempts = %d, want %d", got, defaultAttempts)
+			}
+		})
+	}
+}
+
 func TestObserveRecoversFromATransientFailure(t *testing.T) {
 	gh := fullFixtureGH()
 	failing := "api repos/acme/widgets/issues/42/comments"
@@ -276,6 +323,9 @@ func TestObserveStopsOnCanceledContext(t *testing.T) {
 	_, err := fixtureClient(t, fullFixtureGH()).Observe(ctx, 42)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Observe = %v, want context.Canceled", err)
+	}
+	if isRecoverableGitHubAccessError(err) {
+		t.Fatalf("Observe = %v, want cancellation to remain terminal", err)
 	}
 }
 
@@ -481,6 +531,9 @@ func TestObserveRejectsAPartialGraphQLAnswer(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "error(s)") {
 				t.Errorf("error %q does not name the GraphQL errors", err)
+			}
+			if got := isRecoverableGitHubAccessError(err); got != (name == "review threads") {
+				t.Errorf("isRecoverableGitHubAccessError() = %t, want %t for %v", got, name == "review threads", err)
 			}
 		})
 	}

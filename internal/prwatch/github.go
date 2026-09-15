@@ -28,6 +28,55 @@ func (f RunnerFunc) Run(ctx context.Context, dir string, args ...string) ([]byte
 	return f(ctx, dir, args...)
 }
 
+type githubAccessErrorKind string
+
+const (
+	githubAccessErrorIPAllowList githubAccessErrorKind = "ip_allow_list"
+	githubAccessErrorRateLimit   githubAccessErrorKind = "rate_limit"
+)
+
+type githubAccessError struct {
+	kind  githubAccessErrorKind
+	cause error
+}
+
+func (e *githubAccessError) Error() string {
+	return e.cause.Error()
+}
+
+func (e *githubAccessError) Unwrap() error {
+	return e.cause
+}
+
+func classifyGitHubAccessError(err error) error {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var accessErr *githubAccessError
+	if errors.As(err, &accessErr) {
+		return err
+	}
+
+	message := strings.ToLower(strings.ReplaceAll(err.Error(), "-", " "))
+	switch {
+	case (strings.Contains(message, "ip allow list") || strings.Contains(message, "ip allowlist")) &&
+		(strings.Contains(message, "not permitted") ||
+			strings.Contains(message, "not allowed") ||
+			strings.Contains(message, "denied")):
+		return &githubAccessError{kind: githubAccessErrorIPAllowList, cause: err}
+	case strings.Contains(message, "api rate limit exceeded"),
+		strings.Contains(message, "secondary rate limit"):
+		return &githubAccessError{kind: githubAccessErrorRateLimit, cause: err}
+	default:
+		return err
+	}
+}
+
+func isRecoverableGitHubAccessError(err error) bool {
+	var accessErr *githubAccessError
+	return errors.As(err, &accessErr)
+}
+
 // GitHub observation bounds. Every call is retried a small number of times
 // because `gh` fails transiently on network and rate-limit errors, and a failed
 // observation is an error rather than a quiet "nothing to do".
@@ -330,13 +379,19 @@ func (e graphQLErrors) err(query string) error {
 		return nil
 	}
 	messages := make([]string, 0, len(e.Errors))
+	rateLimited := false
 	for _, entry := range e.Errors {
 		messages = append(messages, firstNonEmpty(strings.TrimSpace(entry.Message), entry.Type, "unknown error"))
+		rateLimited = rateLimited || strings.EqualFold(strings.TrimSpace(entry.Type), "RATE_LIMITED")
 	}
-	return fmt.Errorf(
+	err := fmt.Errorf(
 		"gh api graphql answered the %s query with %d error(s): %s",
 		query, len(e.Errors), strings.Join(messages, "; "),
 	)
+	if rateLimited {
+		return &githubAccessError{kind: githubAccessErrorRateLimit, cause: err}
+	}
+	return classifyGitHubAccessError(err)
 }
 
 // checkPageResponse is one page of the check-context GraphQL query.
@@ -667,7 +722,10 @@ func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
 			c.sleep(c.backoff)
 		}
 	}
-	return nil, fmt.Errorf("gh %s failed after %d attempts: %w", strings.Join(args, " "), attempts, lastErr)
+	return nil, fmt.Errorf(
+		"gh %s failed after %d attempts: %w",
+		strings.Join(args, " "), attempts, classifyGitHubAccessError(lastErr),
+	)
 }
 
 func firstNonEmpty(values ...string) string {
