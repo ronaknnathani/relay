@@ -871,7 +871,7 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 }
 
 func claimedCleanupError(m project.Manifest, resource, identity string) error {
-	manual := identity
+	var manual string
 	if resource == "branch" {
 		manual = manualBranchDeleteCommand(m.Repo, identity)
 	} else {
