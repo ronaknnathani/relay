@@ -216,7 +216,7 @@ func runProgramWorkerStart(out io.Writer, programSlug, itemID string, jsonOutput
 func startProgramWorker(
 	programSlug, itemID, command string,
 ) (result programWorkerOutput, retErr error) {
-	initialTarget, _, err := loadProgramWorkerStartTarget(programSlug, itemID)
+	initialTarget, initialProgram, err := loadProgramWorkerStartTarget(programSlug, itemID)
 	if err != nil {
 		return programWorkerOutput{}, err
 	}
@@ -251,12 +251,77 @@ func startProgramWorker(
 					itemID, initialTarget.item.ProjectSlug, target.item.ProjectSlug,
 				)
 			}
+			if err := validateReloadedProgramWorkerTarget(
+				initialProgram, initialTarget, p, target,
+			); err != nil {
+				return programWorkerOutput{}, fmt.Errorf(
+					"program worker %q changed while waiting for its lifecycle lock: %w; "+
+						"no worker was started, retry with current program state",
+					itemID, err,
+				)
+			}
+			if err := validateProgramWorkerStartIdentity(p, target.item, target.manifest); err != nil {
+				return programWorkerOutput{}, fmt.Errorf(
+					"program worker %q resource identity is not safe to start: %w; "+
+						"no Herdr state was changed",
+					itemID, err,
+				)
+			}
 			if err := requireManagedAgent(p.Agent, fmt.Sprintf("program %q", p.Slug)); err != nil {
 				return programWorkerOutput{}, err
 			}
 			return startProgramWorkerLocked(target, programSlug, itemID, command)
 		},
 	)
+}
+
+func validateReloadedProgramWorkerTarget(
+	initialProgram program.Program,
+	initialTarget programWorkerTarget,
+	currentProgram program.Program,
+	currentTarget programWorkerTarget,
+) error {
+	initialWorktree := worktreeValue(initialTarget.manifest)
+	currentWorktree := worktreeValue(currentTarget.manifest)
+	if currentProgram.Repo != initialProgram.Repo ||
+		currentTarget.item.Repo != initialTarget.item.Repo ||
+		currentTarget.item.ProjectBranch != initialTarget.item.ProjectBranch ||
+		currentTarget.item.ProjectWorktree != initialTarget.item.ProjectWorktree ||
+		currentTarget.manifest.Repo != initialTarget.manifest.Repo ||
+		currentTarget.manifest.Branch != initialTarget.manifest.Branch ||
+		currentWorktree != initialWorktree {
+		return fmt.Errorf(
+			"repository/branch/worktree changed from program %q item %q/%q manifest %q/%q/%q "+
+				"to program %q item %q/%q manifest %q/%q/%q",
+			initialProgram.Repo,
+			initialTarget.item.Repo, initialTarget.item.ProjectBranch,
+			initialTarget.manifest.Repo, initialTarget.manifest.Branch, initialWorktree,
+			currentProgram.Repo,
+			currentTarget.item.Repo, currentTarget.item.ProjectBranch,
+			currentTarget.manifest.Repo, currentTarget.manifest.Branch, currentWorktree,
+		)
+	}
+	return nil
+}
+
+func validateProgramWorkerStartIdentity(
+	p program.Program, item program.WorkItem, manifest project.Manifest,
+) error {
+	worktree := worktreeValue(manifest)
+	if item.ProjectBranch == "" || item.ProjectWorktree == "" {
+		return fmt.Errorf(
+			"child project %q has no durable dispatch branch/worktree identity",
+			manifest.Slug,
+		)
+	}
+	if manifest.Branch != item.ProjectBranch || worktree != item.ProjectWorktree {
+		return fmt.Errorf(
+			"child project %q manifest branch/worktree %q/%q does not match dispatched %q/%q",
+			manifest.Slug, manifest.Branch, worktree,
+			item.ProjectBranch, item.ProjectWorktree,
+		)
+	}
+	return validateManagedChildResourceIdentity(p, item, manifest)
 }
 
 func startProgramWorkerLocked(
