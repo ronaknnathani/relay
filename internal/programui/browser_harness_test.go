@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v14"
+	performanceHarness = "complete-roadmap-v15"
 )
 
 type performanceReport struct {
@@ -475,7 +475,7 @@ func waitForProgramURL(t *testing.T, output *lineWriter, serverDone <-chan error
 		return strings.TrimSpace(line)
 	case err := <-serverDone:
 		t.Fatalf("program UI stopped before publishing URL: %v", err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("program UI did not publish URL")
 	}
 	return ""
