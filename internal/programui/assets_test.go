@@ -269,14 +269,14 @@ func TestRoadmapRunsTopToBottom(t *testing.T) {
 	}
 
 	// Tasks in one stage share a responsive row so parallelism is visible.
-	_, row, found := strings.Cut(styles, ".stage__row {")
+	_, row, found := strings.Cut(styles, ".stage {")
 	if !found {
-		t.Fatal("app.css has no .stage__row for tasks inside a stage")
+		t.Fatal("app.css has no .stage layout for tasks inside a stage")
 	}
 	rowRule, _, _ := strings.Cut(row, "}")
 	for _, want := range []string{"display: grid", "repeat(auto-fill", "minmax(min(260px, 100%), 1fr)"} {
 		if !strings.Contains(rowRule, want) {
-			t.Errorf(".stage__row is missing %q, got:\n%s", want, rowRule)
+			t.Errorf(".stage is missing %q, got:\n%s", want, rowRule)
 		}
 	}
 
@@ -288,7 +288,7 @@ func TestRoadmapRunsTopToBottom(t *testing.T) {
 
 	script := readAsset(t, "assets/app.js")
 	requireContains(t, "app.js", script, []string{
-		`make("div", "stage__row")`,
+		"stage.append(card)",
 		`card.dataset.stage = String(index)`,
 		"function downwardPath(from, to)",
 		"function cardInStage(order, current, step)",

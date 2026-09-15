@@ -947,16 +947,14 @@ function renderRoadmap() {
     const stage = make("div", "stage");
     stage.dataset.stage = String(index);
     stage.dataset.label = `Stage ${index + 1} · ${plural(ids.length, "task")}`;
-    const row = make("div", "stage__row");
     ids.forEach((id) => {
       const node = nodesByID.get(id) || { id, title: "", lane: "" };
       const card = taskCard(node, position, hasSelection);
       card.dataset.stage = String(index);
       position += 1;
       state.cards.set(id, card);
-      row.append(card);
+      stage.append(card);
     });
-    stage.append(row);
     fragment.append(stage);
   });
   dom.graphNodes.append(fragment);

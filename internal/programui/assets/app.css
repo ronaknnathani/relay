@@ -699,21 +699,17 @@ pre {
 
 .stage {
   display: grid;
-  gap: 26px;
+  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
+  gap: 16px 18px;
+  align-items: stretch;
 }
 
 .stage::before {
   content: attr(data-label);
+  grid-column: 1 / -1;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--muted);
-}
-
-.stage__row {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
-  gap: 16px 18px;
-  align-items: stretch;
 }
 
 .card {
