@@ -37,6 +37,7 @@ func TestHandlerCachesRenderedIndex(t *testing.T) {
 		t.Fatalf("Content-Length = %q, want %d", got, response.Body.Len())
 	}
 	if bytes.Contains(response.Body.Bytes(), []byte(bootstrapTemplateToken)) ||
+		bytes.Contains(response.Body.Bytes(), []byte(roadmapMarkupToken)) ||
 		!bytes.Contains(response.Body.Bytes(), []byte("/app.js")) {
 		t.Fatal("rendered index must contain the first-paint bootstrap and no template token")
 	}

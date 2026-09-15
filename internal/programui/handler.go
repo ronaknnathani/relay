@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io/fs"
 	"net"
 	"net/http"
@@ -20,9 +21,10 @@ import (
 )
 
 const (
-	contentSecurityPolicy  = "default-src 'self'; script-src 'self' 'sha256-QmXPyeTpJcOfWgxmo2ABrL1FRCarHmUFgqtkY4lVo50=' 'sha256-Cy0dF384MVj5mJXglyuU52QcwZfPTEhBbJYnKz6vddo='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy  = "default-src 'self'; script-src 'self' 'sha256-QmXPyeTpJcOfWgxmo2ABrL1FRCarHmUFgqtkY4lVo50=' 'sha256-Y5GK7te5xxuRRrq3ve8lXPB1jAE5VlPD7HL7evenj3U='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	bootstrapTemplateToken = "__RELAY_BOOTSTRAP__"
 	roadmapTemplateToken   = "__RELAY_INITIAL_ROADMAP__"
+	roadmapMarkupToken     = "__RELAY_ROADMAP_MARKUP__"
 )
 
 //go:embed assets/*
@@ -60,10 +62,10 @@ func newHandler(
 	feed *snapshotFeed,
 	artifactLoader ArtifactLoader,
 ) *handler {
-	index, indexErr := prepareIndex([]byte("null"))
+	index, indexErr := prepareIndexTemplate()
 	return &handler{
 		slug: slug, port: port, cache: cache, feed: feed, artifactLoader: artifactLoader,
-		index: index, indexErr: indexErr,
+		indexTemplate: index, indexErr: indexErr,
 	}
 }
 
@@ -73,7 +75,7 @@ type handler struct {
 	cache          *snapshotCache
 	feed           *snapshotFeed
 	artifactLoader ArtifactLoader
-	index          []byte
+	indexTemplate  []byte
 	indexErr       error
 }
 
@@ -154,18 +156,28 @@ func (h *handler) serveIndex(response http.ResponseWriter, request *http.Request
 		http.Error(response, h.indexErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	response.Header().Set("Content-Length", strconv.Itoa(len(h.index)))
+	markup := []byte{}
+	if h.feed != nil {
+		var err error
+		markup, err = renderRoadmapMarkup(h.feed.roadmapResponse())
+		if err != nil {
+			http.Error(response, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	index := bytes.Replace(h.indexTemplate, []byte(roadmapMarkupToken), markup, 1)
+	response.Header().Set("Content-Length", strconv.Itoa(len(index)))
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
 	response.WriteHeader(http.StatusOK)
 	if request.Method == http.MethodHead {
 		return
 	}
-	if _, err := response.Write(h.index); err != nil {
+	if _, err := response.Write(index); err != nil {
 		return
 	}
 }
 
-func prepareIndex(roadmap []byte) ([]byte, error) {
+func prepareIndexTemplate() ([]byte, error) {
 	index, err := fs.ReadFile(embeddedAssets, "assets/index.min.html")
 	if err != nil {
 		return nil, fmt.Errorf("read embedded asset assets/index.min.html: %w", err)
@@ -175,8 +187,93 @@ func prepareIndex(roadmap []byte) ([]byte, error) {
 		return nil, fmt.Errorf("read embedded asset assets/bootstrap.min.js: %w", err)
 	}
 	index = bytes.Replace(index, []byte(bootstrapTemplateToken), bootstrap, 1)
-	index = bytes.Replace(index, []byte(roadmapTemplateToken), roadmap, 1)
+	index = bytes.Replace(index, []byte(roadmapTemplateToken), []byte("null"), 1)
 	return index, nil
+}
+
+func renderRoadmapMarkup(encoded []byte) ([]byte, error) {
+	var snapshot roadmapSnapshot
+	if err := json.Unmarshal(encoded, &snapshot); err != nil {
+		return nil, fmt.Errorf("decode roadmap markup snapshot: %w", err)
+	}
+	nodes := make(map[string]roadmapNode, len(snapshot.Graph.Nodes))
+	for _, node := range snapshot.Graph.Nodes {
+		nodes[node.ID] = node
+	}
+	layers := make([][]string, 0, len(snapshot.Graph.Layers)+1)
+	placed := make(map[string]bool, len(snapshot.Graph.Nodes))
+	for _, layer := range snapshot.Graph.Layers {
+		current := make([]string, 0, len(layer))
+		for _, id := range layer {
+			if _, ok := nodes[id]; ok {
+				current = append(current, id)
+				placed[id] = true
+			}
+		}
+		if len(current) > 0 {
+			layers = append(layers, current)
+		}
+	}
+	loose := make([]string, 0)
+	for _, node := range snapshot.Graph.Nodes {
+		if !placed[node.ID] {
+			loose = append(loose, node.ID)
+		}
+	}
+	if len(loose) > 0 {
+		if len(layers) == 0 {
+			layers = append(layers, loose)
+		} else {
+			layers[0] = append(layers[0], loose...)
+		}
+	}
+
+	var markup strings.Builder
+	position := 0
+	for stageIndex, layer := range layers {
+		markup.WriteString(`<div class="stage" data-stage="`)
+		markup.WriteString(strconv.Itoa(stageIndex))
+		markup.WriteString(`" data-label="Stage `)
+		markup.WriteString(strconv.Itoa(stageIndex + 1))
+		markup.WriteString(` · `)
+		markup.WriteString(strconv.Itoa(len(layer)))
+		markup.WriteString(` task`)
+		markup.WriteString(pluralSuffix(len(layer)))
+		markup.WriteString(`">`)
+		for _, id := range layer {
+			node := nodes[id]
+			tabIndex := -1
+			if position == 0 {
+				tabIndex = 0
+			}
+			escapedID := html.EscapeString(node.ID)
+			markup.WriteString(`<button class="card" type="button" data-item="`)
+			markup.WriteString(escapedID)
+			markup.WriteString(`" data-focus-key="card:`)
+			markup.WriteString(escapedID)
+			markup.WriteString(`" data-stage="`)
+			markup.WriteString(strconv.Itoa(stageIndex))
+			markup.WriteString(`" data-lane="`)
+			markup.WriteString(html.EscapeString(node.Lane))
+			markup.WriteString(`" tabindex="`)
+			markup.WriteString(strconv.Itoa(tabIndex))
+			markup.WriteString(`">`)
+			markup.WriteString(html.EscapeString(node.Title))
+			markup.WriteString("&#10;")
+			markup.WriteString(escapedID)
+			markup.WriteString("</button>")
+			position++
+		}
+		markup.WriteString("</div>")
+	}
+	return []byte(markup.String()), nil
+}
+
+func pluralSuffix(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func (h *handler) allowedHost(hostport string) bool {

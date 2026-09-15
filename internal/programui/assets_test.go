@@ -97,6 +97,7 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		`<svg id="graph"`,
 		`role="img"`,
 		`id="graph-nodes"`,
+		roadmapMarkupToken,
 		`id="graph-edges"`,
 		`id="ledger-rows"`,
 		`id="detail-body"`,
@@ -235,7 +236,7 @@ func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
 	requireContains(t, "bootstrap.js", bootstrap, []string{
 		`document.getElementById("app-script")`,
 		`window.__relayBootstrapCleanup`,
-		`const visibleNodes = nodes.slice(0, 2)`,
+		`nodes.slice(0, 2)`,
 		`stage.dataset.label =`,
 		`window.__relayRoadmapRequest`,
 	})

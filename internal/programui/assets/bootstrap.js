@@ -47,7 +47,9 @@
       `Dependency flow: ${plural(nodes.length, "task")}, ${plural(edges.length, "dependency link")}.`,
     );
 
-    const visibleNodes = nodes.slice(0, 2);
+    const visibleNodes = graphNodes.querySelectorAll(".card").length > 0
+      ? []
+      : nodes.slice(0, 2);
     const visibleIDs = new Set(visibleNodes.map((node) => node.id));
     const byID = new Map(visibleNodes.map((node) => [node.id, node]));
     let stages = values(graphData.layers)
@@ -87,7 +89,9 @@
       });
       fragment.append(stage);
     });
-    graphNodes.replaceChildren(fragment);
+    if (visibleNodes.length > 0) {
+      graphNodes.replaceChildren(fragment);
+    }
   };
   if (snapshot) {
     renderSnapshot(snapshot);
