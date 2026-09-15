@@ -179,17 +179,59 @@ func ForceDeleteBranch(repo, branch string) error {
 
 // ForceDeleteBranchAt removes a branch only when it still points at expectedSHA.
 func ForceDeleteBranchAt(repo, branch, expectedSHA string) error {
-	tip, found, err := LocalBranchTip(repo, branch)
+	ref := "refs/heads/" + branch
+	worktree, checkedOut, err := branchCheckout(repo, ref)
 	if err != nil {
 		return err
 	}
+	if checkedOut {
+		return fmt.Errorf(
+			"branch %q is checked out in worktree %s; remove or detach that worktree before deleting it",
+			branch, worktree,
+		)
+	}
+	command := "git update-ref -d " + ref + " " + expectedSHA
+	out, err := exec.Command(
+		"git", "-C", repo, "update-ref", "-d", ref, expectedSHA,
+	).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	deleteErr := gitCommandError(command, err, out)
+	tip, found, tipErr := LocalBranchTip(repo, branch)
+	if tipErr != nil {
+		return fmt.Errorf("%w; inspect branch %q after failed deletion: %v", deleteErr, branch, tipErr)
+	}
 	if !found {
-		return fmt.Errorf("branch %q disappeared before deletion", branch)
+		return fmt.Errorf("branch %q disappeared before deletion: %w", branch, deleteErr)
 	}
 	if tip != expectedSHA {
-		return fmt.Errorf("branch %q changed from %s to %s before deletion", branch, expectedSHA, tip)
+		return fmt.Errorf(
+			"branch %q changed from %s to %s before deletion: %w",
+			branch, expectedSHA, tip, deleteErr,
+		)
 	}
-	return ForceDeleteBranch(repo, branch)
+	return deleteErr
+}
+
+func branchCheckout(repo, ref string) (string, bool, error) {
+	out, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return "", false, gitOutputError("git worktree list", err)
+	}
+	var worktree string
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			worktree = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+		case strings.HasPrefix(line, "branch ") &&
+			strings.TrimSpace(strings.TrimPrefix(line, "branch ")) == ref:
+			return worktree, true, nil
+		case line == "":
+			worktree = ""
+		}
+	}
+	return "", false, nil
 }
 
 // CommitReachable reports whether commit is an ancestor of base.

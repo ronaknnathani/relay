@@ -366,12 +366,30 @@ func TestForceDeleteBranchAtRejectsAdvancedBranch(t *testing.T) {
 	runGit(t, repo, "branch", "-f", "feature", newTip)
 
 	err := ForceDeleteBranchAt(repo, "feature", oldTip)
-	if err == nil || !strings.Contains(err.Error(), "changed from") {
-		t.Fatalf("ForceDeleteBranchAt error = %v, want changed-tip rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "changed from") ||
+		!strings.Contains(err.Error(), "git update-ref -d refs/heads/feature") {
+		t.Fatalf("ForceDeleteBranchAt error = %v, want atomic changed-tip rejection", err)
 	}
 	tip, found, tipErr := LocalBranchTip(repo, "feature")
 	if tipErr != nil || !found || tip != newTip {
 		t.Fatalf("feature tip = (%q, %t, %v), want (%q, true, nil)", tip, found, tipErr, newTip)
+	}
+}
+
+func TestForceDeleteBranchAtRejectsBranchCheckedOutInLinkedWorktree(t *testing.T) {
+	repo := initRepo(t)
+	tip := gitOutput(t, repo, "rev-parse", "HEAD")
+	worktree := filepath.Join(t.TempDir(), "feature-worktree")
+	runGit(t, repo, "worktree", "add", "-q", "-b", "feature", worktree, tip)
+
+	err := ForceDeleteBranchAt(repo, "feature", tip)
+	if err == nil || !strings.Contains(err.Error(), "checked out") ||
+		!strings.Contains(err.Error(), filepath.Base(worktree)) {
+		t.Fatalf("ForceDeleteBranchAt error = %v, want checked-out worktree rejection", err)
+	}
+	got, found, tipErr := LocalBranchTip(repo, "feature")
+	if tipErr != nil || !found || got != tip {
+		t.Fatalf("feature tip = (%q, %t, %v), want (%q, true, nil)", got, found, tipErr, tip)
 	}
 }
 
