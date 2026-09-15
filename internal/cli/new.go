@@ -304,12 +304,14 @@ func branchMerged(repo, branch, base string) bool {
 	if base == "" {
 		return false
 	}
-	if gitx.HasOrigin(repo) && gitx.RevParse(repo, "origin/"+base) != "" {
-		if gitx.IsBranchReachable(repo, branch, "origin/"+base) {
+	branchRef := "refs/heads/" + branch
+	remoteBaseRef := "refs/remotes/origin/" + base
+	if gitx.HasOrigin(repo) && gitx.RevParse(repo, remoteBaseRef) != "" {
+		if gitx.IsBranchReachable(repo, branchRef, remoteBaseRef) {
 			return true
 		}
 	}
-	return gitx.IsBranchReachable(repo, branch, base)
+	return gitx.IsBranchReachable(repo, branchRef, "refs/heads/"+base)
 }
 
 // leftoverDesc summarizes which leftover artifacts exist for a slug.

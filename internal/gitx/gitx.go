@@ -218,8 +218,8 @@ func DetectDefaultBranchWithError(repo string) (string, error) {
 	var symbolicRefErr error
 	if err == nil {
 		ref := strings.TrimSpace(string(out))
-		if i := strings.Index(ref, "/"); i >= 0 && i+1 < len(ref) {
-			return ref[i+1:], nil
+		if branch, ok := strings.CutPrefix(ref, "origin/"); ok && branch != "" {
+			return branch, nil
 		}
 		symbolicRefErr = fmt.Errorf("symbolic ref %q is invalid", ref)
 	} else {

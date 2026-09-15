@@ -224,7 +224,7 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 		}
 		reachable := false
 		if base != "" {
-			if gitx.HasOrigin(m.Repo) && gitx.RevParse(m.Repo, "origin/"+base) != "" {
+			if gitx.HasOrigin(m.Repo) && gitx.RevParse(m.Repo, "refs/remotes/origin/"+base) != "" {
 				remoteBaseRef := "refs/remotes/origin/" + base
 				reachable = gitx.IsBranchReachable(m.Repo, "refs/heads/"+m.Branch, remoteBaseRef)
 				workMerged = workMerged || gitx.IsWorkMerged(m.Repo, m.Branch, remoteBaseRef, m.StartSHA)
