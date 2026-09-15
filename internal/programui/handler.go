@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-Mn4bxo9tzkD5bpzro8up+ox0uq36P01csr2pwJhJTGc=' 'sha256-nCnP0l3vNllGYTgmepdFwevc5ZUtlIuUnbPCNKzfpvY='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-Mn4bxo9tzkD5bpzro8up+ox0uq36P01csr2pwJhJTGc=' 'sha256-nCnP0l3vNllGYTgmepdFwevc5ZUtlIuUnbPCNKzfpvY='; style-src 'self' 'sha256-3n7xJ5R9dlqJ0VeUIhBJfhXw7/pu51DAm1PGmDRgqHY='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	appTemplateToken      = "__RELAY_APP__"
+	cssTemplateToken      = "__RELAY_CSS__"
 )
 
 //go:embed assets/*
@@ -107,6 +108,12 @@ func (h *handler) serveIndex(response http.ResponseWriter, request *http.Request
 		http.Error(response, "read embedded asset assets/app.min.js", http.StatusInternalServerError)
 		return
 	}
+	styles, err := fs.ReadFile(embeddedAssets, "assets/app.css")
+	if err != nil {
+		http.Error(response, "read embedded asset assets/app.css", http.StatusInternalServerError)
+		return
+	}
+	index = bytes.Replace(index, []byte(cssTemplateToken), styles, 1)
 	index = bytes.Replace(index, []byte(appTemplateToken), script, 1)
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
 	response.WriteHeader(http.StatusOK)
