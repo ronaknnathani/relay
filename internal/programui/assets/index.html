@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>Relay Program</title>
+  <style>__RELAY_CSS__</style>
   <script>try{const t=localStorage.getItem("relay.program.theme");document.documentElement.dataset.theme=t==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
-  <link rel="stylesheet" href="/app.css">
 </head>
 <body>
   <a class="skip-link" href="#views">Skip to program views</a>
@@ -207,6 +207,6 @@
     <p class="muted">Read-only view · <span id="schema-version" class="mono">relay.program.v1</span> · nothing here changes program state.</p>
   </footer>
   <script id="initial-program" type="application/json">__RELAY_INITIAL_ROADMAP__</script>
-  <script src="/app.js"></script>
+  <script>__RELAY_APP__</script>
 </body>
 </html>
