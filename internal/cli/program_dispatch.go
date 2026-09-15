@@ -24,6 +24,11 @@ type programDispatchOpts struct {
 	launch bool
 }
 
+type dispatchChildPreparation struct {
+	created projectCreateResult
+	reused  bool
+}
+
 func newCmdProgramDispatch() *cobra.Command {
 	var opts programDispatchOpts
 	cmd := &cobra.Command{
@@ -163,59 +168,88 @@ func prepareDispatchChild(
 		created, err := createDispatchChild(p, item, childSlug, agentName)
 		return created, false, err
 	}
-	manifestPath := project.ManifestPath(project.ActiveDir(), childSlug)
-	manifest, err := project.Load(manifestPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return projectCreateResult{}, false, err
+	prepared, err := withProjectLifecycleLock(childSlug, func() (dispatchChildPreparation, error) {
+		manifestPath := project.ManifestPath(project.ActiveDir(), childSlug)
+		manifest, err := project.Load(manifestPath)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return dispatchChildPreparation{}, err
+			}
+			created, createErr := createProjectLocked(projectCreateOpts{
+				task:        item.Title,
+				name:        childSlug,
+				agent:       agentName,
+				workflow:    defaultWorkflow,
+				repo:        p.Repo,
+				program:     p.Slug,
+				programItem: item.ID,
+			}, childSlug)
+			return dispatchChildPreparation{created: created}, createErr
 		}
-		created, createErr := createDispatchChild(p, item, childSlug, agentName)
-		return created, false, createErr
+		created, adoptErr := adoptDispatchChild(p, item, manifestPath, manifest, agentName)
+		return dispatchChildPreparation{created: created, reused: true}, adoptErr
+	})
+	return prepared.created, prepared.reused, err
+}
+
+func adoptDispatchChild(
+	p program.Program,
+	item program.WorkItem,
+	manifestPath string,
+	manifest project.Manifest,
+	agentName string,
+) (projectCreateResult, error) {
+	childSlug := manifest.Slug
+	expectedSlug := item.ProjectSlug
+	if expectedSlug == "" {
+		expectedSlug = filepath.Base(filepath.Dir(manifestPath))
 	}
-	if manifest.Slug != childSlug {
-		return projectCreateResult{}, false, fmt.Errorf(
-			"active child manifest %s has slug %q, want %q", manifestPath, manifest.Slug, childSlug,
+	if childSlug != expectedSlug {
+		return projectCreateResult{}, fmt.Errorf(
+			"active child manifest %s has slug %q, want %q", manifestPath, childSlug, expectedSlug,
 		)
 	}
 	if manifest.Repo != p.Repo {
-		return projectCreateResult{}, false, fmt.Errorf(
-			"active child %q repo %q does not match program repo %q", childSlug, manifest.Repo, p.Repo,
+		return projectCreateResult{}, fmt.Errorf(
+			"active child %q repo %q does not match program repo %q", expectedSlug, manifest.Repo, p.Repo,
 		)
 	}
 	if manifest.Program != "" && manifest.Program != p.Slug {
-		return projectCreateResult{}, false, fmt.Errorf(
-			"active child %q belongs to program %q, not %q", childSlug, manifest.Program, p.Slug,
+		return projectCreateResult{}, fmt.Errorf(
+			"active child %q belongs to program %q, not %q", expectedSlug, manifest.Program, p.Slug,
 		)
 	}
 	if manifest.ProgramItem != "" && manifest.ProgramItem != item.ID {
-		return projectCreateResult{}, false, fmt.Errorf(
-			"active child %q belongs to item %q, not %q", childSlug, manifest.ProgramItem, item.ID,
+		return projectCreateResult{}, fmt.Errorf(
+			"active child %q belongs to item %q, not %q", expectedSlug, manifest.ProgramItem, item.ID,
+		)
+	}
+	if manifest.Branch == "" || manifest.Worktree == nil ||
+		strings.TrimSpace(*manifest.Worktree) == "" {
+		return projectCreateResult{}, fmt.Errorf(
+			"active child %q has no complete branch/worktree identity", expectedSlug,
 		)
 	}
 	cfg, err := config.EnsureForAgent(agentName)
 	if err != nil {
-		return projectCreateResult{}, false, err
+		return projectCreateResult{}, err
 	}
 	a, err := agent.Get(agent.ResolveName(agentName, "", cfg.DefaultAgent))
 	if err != nil {
-		return projectCreateResult{}, false, err
+		return projectCreateResult{}, err
 	}
 	manifest.Program = p.Slug
 	manifest.ProgramItem = item.ID
 	if err := project.Save(manifestPath, manifest); err != nil {
-		return projectCreateResult{}, false, err
-	}
-	worktreeDir := ""
-	if manifest.Worktree != nil {
-		worktreeDir = *manifest.Worktree
+		return projectCreateResult{}, err
 	}
 	return projectCreateResult{
 		manifest:    manifest,
 		projectDir:  filepath.Dir(manifestPath),
-		worktreeDir: worktreeDir,
+		worktreeDir: *manifest.Worktree,
 		agent:       a,
 		config:      cfg,
-	}, true, nil
+	}, nil
 }
 
 func createDispatchChild(

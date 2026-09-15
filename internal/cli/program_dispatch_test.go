@@ -2,14 +2,17 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ronaknnathani/relay/internal/agent"
+	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/program"
 	"github.com/ronaknnathani/relay/internal/project"
 )
@@ -336,6 +339,124 @@ func TestProgramDispatchReusesPreLinkedExistingChild(t *testing.T) {
 	}
 	if !bytes.Equal(copied, source) {
 		t.Fatalf("verified contract snapshot changed: %q", copied)
+	}
+}
+
+func TestProgramDispatchAdoptionPreventsGCFromArchivingChild(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	fixture := newGCRepoFixture(t, "main")
+	childSlug := "adoption-wins"
+	branch, worktree := addGCProject(t, fixture, childSlug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	p := program.Program{Slug: "delivery", Repo: fixture.repo}
+	item := program.WorkItem{ID: "worker-1"}
+
+	archiveReady := make(chan struct{})
+	continueArchive := make(chan struct{})
+	previousArchive := gcArchiveProject
+	gcArchiveProject = func(proof archiveProofSnapshot, force bool) (archiveResult, error) {
+		close(archiveReady)
+		<-continueArchive
+		return archiveProjectWithProof(proof, force)
+	}
+	t.Cleanup(func() { gcArchiveProject = previousArchive })
+
+	gcDone := make(chan error, 1)
+	go func() {
+		gcDone <- runGC()
+	}()
+	<-archiveReady
+
+	created, reused, err := prepareDispatchChild(p, item, childSlug, "copilot", true)
+	if err != nil {
+		t.Fatalf("adopt existing child: %v", err)
+	}
+	if !reused || created.manifest.Program != p.Slug ||
+		created.manifest.ProgramItem != item.ID {
+		t.Fatalf("adoption result = %+v, reused=%t", created.manifest, reused)
+	}
+	close(continueArchive)
+	if err := <-gcDone; !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), childSlug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Program != p.Slug || manifest.ProgramItem != item.ID {
+		t.Fatalf("persisted ownership = %q/%q", manifest.Program, manifest.ProgramItem)
+	}
+	if pathExists(filepath.Join(project.ArchivedDir(), childSlug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC staged or removed a child after adoption won")
+	}
+}
+
+func TestProgramDispatchAdoptionCannotOverwriteArchivedChild(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	fixture := newGCRepoFixture(t, "main")
+	childSlug := "archive-wins"
+	branch, worktree := addGCProject(t, fixture, childSlug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	p := program.Program{Slug: "delivery", Repo: fixture.repo}
+	item := program.WorkItem{ID: "worker-1"}
+
+	archiveStaged := make(chan struct{})
+	continueArchive := make(chan struct{})
+	previousRemove := archiveWorktreeRemove
+	archiveWorktreeRemove = func(
+		repo, worktree string, expected gitx.WorktreeState, force bool,
+	) error {
+		close(archiveStaged)
+		<-continueArchive
+		return previousRemove(repo, worktree, expected, force)
+	}
+	t.Cleanup(func() { archiveWorktreeRemove = previousRemove })
+
+	gcDone := make(chan error, 1)
+	go func() {
+		gcDone <- runGC()
+	}()
+	<-archiveStaged
+
+	adoptionStarted := make(chan struct{})
+	adoptionDone := make(chan error, 1)
+	go func() {
+		close(adoptionStarted)
+		_, _, err := prepareDispatchChild(p, item, childSlug, "copilot", true)
+		adoptionDone <- err
+	}()
+	<-adoptionStarted
+	select {
+	case err := <-adoptionDone:
+		t.Fatalf("adoption completed while archive held the lifecycle lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(continueArchive)
+	if err := <-gcDone; err != nil {
+		t.Fatalf("runGC: %v", err)
+	}
+	if err := <-adoptionDone; err == nil ||
+		!strings.Contains(err.Error(), "archived metadata still exists") {
+		t.Fatalf("adoption error = %v, want archived child rejection", err)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), childSlug)) ||
+		!pathExists(filepath.Join(project.ArchivedDir(), childSlug)) ||
+		pathExists(worktree) ||
+		gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("adoption overwrote or restored an archived child")
+	}
+	archived, err := project.Load(project.ManifestPath(project.ArchivedDir(), childSlug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived.Program != "" || archived.ProgramItem != "" {
+		t.Fatalf("archived ownership was overwritten: %q/%q", archived.Program, archived.ProgramItem)
 	}
 }
 
