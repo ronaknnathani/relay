@@ -157,8 +157,9 @@ func (h *handler) serveProgram(response http.ResponseWriter, request *http.Reque
 	}
 	var snapshot programview.Snapshot
 	var encoded []byte
+	var compressed []byte
 	if detailItem == "" && h.feed != nil {
-		snapshot, encoded = h.feed.response()
+		snapshot, encoded, compressed = h.feed.response()
 	} else {
 		var err error
 		snapshot, err = h.cache.Get(h.slug, detailItem)
@@ -168,8 +169,19 @@ func (h *handler) serveProgram(response http.ResponseWriter, request *http.Reque
 		}
 	}
 	response.Header().Set("Content-Type", "application/json; charset=utf-8")
+	useGzip := compressed != nil && strings.Contains(request.Header.Get("Accept-Encoding"), "gzip")
+	if useGzip {
+		response.Header().Set("Content-Encoding", "gzip")
+		response.Header().Set("Vary", "Accept-Encoding")
+	}
 	response.WriteHeader(http.StatusOK)
 	if request.Method == http.MethodHead {
+		return
+	}
+	if useGzip {
+		if _, err := response.Write(compressed); err != nil {
+			return
+		}
 		return
 	}
 	if encoded != nil {

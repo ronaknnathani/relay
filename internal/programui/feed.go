@@ -1,6 +1,8 @@
 package programui
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"sync"
 	"time"
@@ -17,6 +19,7 @@ type snapshotFeed struct {
 	refresh    func() (programview.Snapshot, error)
 	refreshing bool
 	encoded    []byte
+	compressed []byte
 }
 
 func newSnapshotFeed(
@@ -33,15 +36,16 @@ func newSnapshotFeed(
 		snapshot: seed, expiresAt: now().Add(ttl), ttl: ttl, now: now, refresh: refresh,
 	}
 	feed.encoded = encodeSnapshot(seed)
+	feed.compressed = compressSnapshot(feed.encoded)
 	return feed
 }
 
 func (f *snapshotFeed) Get() programview.Snapshot {
-	snapshot, _ := f.response()
+	snapshot, _, _ := f.response()
 	return snapshot
 }
 
-func (f *snapshotFeed) response() (programview.Snapshot, []byte) {
+func (f *snapshotFeed) response() (programview.Snapshot, []byte, []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !f.refreshing && !f.now().Before(f.expiresAt) {
@@ -50,9 +54,9 @@ func (f *snapshotFeed) response() (programview.Snapshot, []byte) {
 	snapshot := f.snapshot
 	if f.refreshing {
 		snapshot.Refresh = programview.RefreshDTO{Status: "refreshing"}
-		return snapshot, nil
+		return snapshot, nil, nil
 	}
-	return snapshot, f.encoded
+	return snapshot, f.encoded, f.compressed
 }
 
 func (f *snapshotFeed) Refresh() {
@@ -80,9 +84,28 @@ func (f *snapshotFeed) startRefreshLocked() {
 			f.snapshot = snapshotWithRefreshError(f.snapshot, err)
 		}
 		f.encoded = encodeSnapshot(f.snapshot)
+		f.compressed = compressSnapshot(f.encoded)
 		f.expiresAt = f.now().Add(f.ttl)
 		f.refreshing = false
 	}()
+}
+
+func compressSnapshot(encoded []byte) []byte {
+	if encoded == nil {
+		return nil
+	}
+	var compressed bytes.Buffer
+	writer, err := gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
+	if err != nil {
+		return nil
+	}
+	if _, err := writer.Write(encoded); err != nil {
+		return nil
+	}
+	if err := writer.Close(); err != nil {
+		return nil
+	}
+	return compressed.Bytes()
 }
 
 func encodeSnapshot(snapshot programview.Snapshot) []byte {

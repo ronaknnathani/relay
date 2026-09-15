@@ -1,7 +1,10 @@
 package programui
 
 import (
+	"bytes"
+	"compress/gzip"
 	"errors"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -45,6 +48,7 @@ func TestSnapshotFeedSingleFlightsAndRetainsLastSnapshot(t *testing.T) {
 					},
 				}, nil
 			}
+
 			return programview.Snapshot{}, errors.New("refresh failed")
 		},
 	)
@@ -100,6 +104,36 @@ func TestSnapshotFeedSingleFlightsAndRetainsLastSnapshot(t *testing.T) {
 			got.Items[0].LivePR.Number == 42 && got.Items[0].Worker != nil &&
 			got.Items[0].Worker.PaneID == "pane-42"
 	})
+}
+
+func TestSnapshotFeedPrecompressesStableResponses(t *testing.T) {
+	feed := newSnapshotFeed(
+		programview.Snapshot{
+			Schema: programview.SchemaVersion,
+			Items:  []programview.ItemDTO{},
+		},
+		time.Second,
+		time.Now,
+		nil,
+	)
+	_, encoded, compressed := feed.response()
+	if len(encoded) == 0 || len(compressed) == 0 {
+		t.Fatalf("encoded lengths = %d and %d", len(encoded), len(compressed))
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decoded, encoded) {
+		t.Fatal("compressed snapshot does not decode to the cached JSON")
+	}
 }
 
 func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
