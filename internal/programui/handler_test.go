@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/programview"
 )
 
@@ -269,10 +270,10 @@ func TestGitHubCacheTTLAndStaleFallback(t *testing.T) {
 	var calls int
 	fetcher := fetcherFunc(func(context.Context, string, string) (programview.PullRequestDTO, error) {
 		calls++
-		if calls > 1 {
+		if calls == 2 || calls == 4 {
 			return programview.PullRequestDTO{}, errors.New("refresh failed")
 		}
-		return programview.PullRequestDTO{Number: 42, State: "open"}, nil
+		return programview.PullRequestDTO{Number: 41 + calls, State: "open"}, nil
 	})
 	cache := newGitHubCache(fetcher, 12*time.Second, func() time.Time { return now })
 
@@ -296,14 +297,62 @@ func TestGitHubCacheTTLAndStaleFallback(t *testing.T) {
 		stale.FetchedAt != first.FetchedAt || stale.Number != first.Number {
 		t.Fatalf("stale refresh = calls %d, first %+v, stale %+v", calls, first, stale)
 	}
+	recovered, err := cache.Fetch(context.Background(), "/repo", "#42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 || recovered.Stale || recovered.Number != 44 ||
+		recovered.FetchedAt == first.FetchedAt {
+		t.Fatalf("recovered refresh = calls %d, first %+v, recovered %+v", calls, first, recovered)
+	}
 
-	now = time.Date(2026, 8, 25, 16, 0, 0, 0, time.UTC).Add(5*time.Minute + time.Second)
+	now = now.Add(5*time.Minute + time.Second)
 	expired, err := cache.Fetch(context.Background(), "/repo", "#42")
 	if err == nil || !strings.Contains(err.Error(), "refresh failed") {
 		t.Fatalf("expired stale refresh error = %v", err)
 	}
-	if calls != 3 || expired != (programview.PullRequestDTO{}) {
+	if calls != 4 || expired != (programview.PullRequestDTO{}) {
 		t.Fatalf("expired stale refresh = calls %d, PR %+v", calls, expired)
+	}
+}
+
+func TestAgentCacheTTLStaleFallbackAndRecovery(t *testing.T) {
+	now := time.Date(2026, 8, 25, 16, 0, 0, 0, time.UTC)
+	var calls int
+	lister := agentListerFunc(func() ([]herdr.Agent, error) {
+		calls++
+		if calls == 2 {
+			return nil, errors.New("refresh failed")
+		}
+		return []herdr.Agent{{PaneID: fmt.Sprintf("pane-%d", calls)}}, nil
+	})
+	cache := newAgentCache(lister, 12*time.Second, func() time.Time { return now })
+
+	first, err := cache.Agents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(10 * time.Second)
+	if _, err := cache.Agents(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("fresh cache calls = %d", calls)
+	}
+	now = now.Add(3 * time.Second)
+	stale, err := cache.Agents()
+	if err == nil || !strings.Contains(err.Error(), "refresh failed") {
+		t.Fatalf("stale refresh error = %v", err)
+	}
+	if calls != 2 || len(stale) != 1 || stale[0].PaneID != first[0].PaneID {
+		t.Fatalf("stale refresh = calls %d, first %+v, stale %+v", calls, first, stale)
+	}
+	recovered, err := cache.Agents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 || len(recovered) != 1 || recovered[0].PaneID != "pane-3" {
+		t.Fatalf("recovered refresh = calls %d, agents %+v", calls, recovered)
 	}
 }
 
@@ -311,6 +360,12 @@ type fetcherFunc func(context.Context, string, string) (programview.PullRequestD
 
 func (f fetcherFunc) Fetch(ctx context.Context, repo, ref string) (programview.PullRequestDTO, error) {
 	return f(ctx, repo, ref)
+}
+
+type agentListerFunc func() ([]herdr.Agent, error)
+
+func (f agentListerFunc) Agents() ([]herdr.Agent, error) {
+	return f()
 }
 
 func snapshotCacheEntryCount(cache *snapshotCache) int {

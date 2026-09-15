@@ -743,10 +743,8 @@ func buildItem(
 		if manifest.Worktree != nil {
 			worktree = *manifest.Worktree
 		}
-		if agentsErr == nil {
-			if agent, ok := herdr.FindLiveWorker(agents, manifest.Slug, manifest.Repo, worktree); ok {
-				dto.Worker = workerDTO(agent)
-			}
+		if agent, ok := herdr.FindLiveWorker(agents, manifest.Slug, manifest.Repo, worktree); ok {
+			dto.Worker = workerDTO(agent)
 		}
 	} else if item.PRRef != "" {
 		dto.RecordedPR = pullRequestFromRef(item.PRRef)

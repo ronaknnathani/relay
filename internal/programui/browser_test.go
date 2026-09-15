@@ -25,77 +25,233 @@ func TestBrowserShowsSixSecondExternalRefreshProvenance(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
 	}
-	fixture := newReferenceProgramFixture(t)
-	worktree := filepath.Join(
-		fixture.program.Repo, ".worktrees", fixture.program.Items[0].ProjectSlug,
-	)
-	output := newLineWriter()
-	serverContext, cancelServer := context.WithCancel(context.Background())
-	serverDone := make(chan error, 1)
-	go func() {
-		serverDone <- Serve(serverContext, Options{
-			Slug: fixture.program.Slug, Port: 0, Open: false, Out: output,
-			GitHub: &controlledFetcher{
-				delay: 6 * time.Second,
-				result: programview.PullRequestDTO{
-					Number: 42, Ref: "#42", State: "open", Title: "Delayed PR",
-				},
-			},
-			Agents: &controlledAgentLister{
-				delay: 6 * time.Second,
-				agents: []herdr.Agent{{
-					Status: herdr.StatusWorking, PaneID: "pane-42", CWD: worktree,
-				}},
-			},
-		})
-	}()
-	t.Cleanup(func() {
-		cancelServer()
-		select {
-		case err := <-serverDone:
-			if err != nil {
-				t.Errorf("Serve: %v", err)
+	for _, delayedSource := range []string{"GitHub", "Herdr"} {
+		t.Run(delayedSource, func(t *testing.T) {
+			fixture := newReferenceProgramFixture(t)
+			worktree := filepath.Join(
+				fixture.program.Repo, ".worktrees", fixture.program.Items[0].ProjectSlug,
+			)
+			githubDelay := time.Duration(0)
+			herdrDelay := time.Duration(0)
+			if delayedSource == "GitHub" {
+				githubDelay = 6 * time.Second
+			} else {
+				herdrDelay = 6 * time.Second
 			}
-		case <-time.After(3 * time.Second):
-			t.Error("program UI did not stop")
-		}
-	})
-	url := waitForProgramURL(t, output, serverDone)
+			output := newLineWriter()
+			serverContext, cancelServer := context.WithCancel(context.Background())
+			serverDone := make(chan error, 1)
+			go func() {
+				serverDone <- Serve(serverContext, Options{
+					Slug: fixture.program.Slug, Port: 0, Open: false, Out: output,
+					GitHub: &controlledFetcher{
+						delay: githubDelay,
+						result: programview.PullRequestDTO{
+							Number: 42, Ref: "#42", State: "open", Title: "Delayed PR",
+						},
+					},
+					Agents: &controlledAgentLister{
+						delay: herdrDelay,
+						agents: []herdr.Agent{{
+							Status: herdr.StatusWorking, PaneID: "pane-42", CWD: worktree,
+						}},
+					},
+				})
+			}()
+			t.Cleanup(func() {
+				cancelServer()
+				select {
+				case err := <-serverDone:
+					if err != nil {
+						t.Errorf("Serve: %v", err)
+					}
+				case <-time.After(3 * time.Second):
+					t.Error("program UI did not stop")
+				}
+			})
+			url := waitForProgramURL(t, output, serverDone)
 
-	allocator, cancelAllocator := chromedp.NewExecAllocator(
-		context.Background(),
-		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.ExecPath(chromeExecutable(t)),
-			chromedp.Flag("headless", true),
-			chromedp.Flag("disable-gpu", true),
-		)...,
-	)
-	defer cancelAllocator()
-	browser, cancelBrowser := chromedp.NewContext(allocator)
-	defer cancelBrowser()
-	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
-	defer cancelTimeout()
-	if err := chromedp.Run(browser); err != nil {
-		t.Fatal(err)
-	}
+			allocator, cancelAllocator := chromedp.NewExecAllocator(
+				context.Background(),
+				append(chromedp.DefaultExecAllocatorOptions[:],
+					chromedp.ExecPath(chromeExecutable(t)),
+					chromedp.Flag("headless", true),
+					chromedp.Flag("disable-gpu", true),
+				)...,
+			)
+			defer cancelAllocator()
+			browser, cancelBrowser := chromedp.NewContext(allocator)
+			defer cancelBrowser()
+			browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+			defer cancelTimeout()
+			if err := chromedp.Run(browser); err != nil {
+				t.Fatal(err)
+			}
 
-	started := time.Now()
-	if err := chromedp.Run(browser,
-		chromedp.Navigate(url),
-		chromedp.Poll(`document.querySelectorAll(".card").length === 100`, nil),
-	); err != nil {
-		t.Fatal(err)
+			started := time.Now()
+			if err := chromedp.Run(browser,
+				chromedp.Navigate(url),
+				chromedp.Poll(`document.querySelectorAll(".card").length === 100`, nil),
+			); err != nil {
+				t.Fatal(err)
+			}
+			if elapsed := time.Since(started); elapsed >= time.Second {
+				t.Fatalf("local UI usability = %s, want < 1s", elapsed)
+			}
+			if err := chromedp.Run(browser,
+				chromedp.Poll(`document.querySelector("#feed-state").dataset.live === "false"`, nil),
+				chromedp.Poll(`document.querySelector("#feed-state").textContent === "Live · every 3s" &&
+					document.querySelector(".card[data-item='w1'] .card__pr").textContent === "PR #42" &&
+					document.querySelector("#worker-count").textContent === "1"`, nil),
+			); err != nil {
+				t.Fatalf("%s refresh: %v", delayedSource, err)
+			}
+		})
 	}
-	if elapsed := time.Since(started); elapsed >= time.Second {
-		t.Fatalf("local UI usability = %s, want < 1s", elapsed)
+}
+
+func TestBrowserRetainsAndRecoversEachExternalSource(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
 	}
-	if err := chromedp.Run(browser,
-		chromedp.Poll(`document.querySelector("#feed-state").textContent.startsWith("Refreshing")`, nil),
-		chromedp.Poll(`document.querySelector("#feed-state").textContent === "Live · every 3s" &&
-			document.querySelector(".card[data-item='w1'] .card__pr").textContent === "PR #42" &&
-			document.querySelector("#worker-count").textContent === "1"`, nil),
-	); err != nil {
-		t.Fatalf("external source refresh: %v", err)
+	for _, source := range []string{"GitHub", "Herdr"} {
+		t.Run(source, func(t *testing.T) {
+			fixture := newReferenceProgramFixture(t)
+			worktree := filepath.Join(
+				fixture.program.Repo, ".worktrees", fixture.program.Items[0].ProjectSlug,
+			)
+			initialNow := time.Date(2026, 9, 14, 20, 0, 0, 0, time.UTC)
+			var nowNanos atomic.Int64
+			nowNanos.Store(initialNow.UnixNano())
+			now := func() time.Time { return time.Unix(0, nowNanos.Load()).UTC() }
+			var phase atomic.Int32
+			github := fetcherFunc(func(
+				context.Context,
+				string,
+				string,
+			) (programview.PullRequestDTO, error) {
+				if source == "GitHub" && phase.Load() == 1 {
+					return programview.PullRequestDTO{}, errors.New("GitHub unavailable")
+				}
+				title := "Initial PR"
+				if phase.Load() == 2 {
+					title = "Recovered PR"
+				}
+				return programview.PullRequestDTO{
+					Number: 42, Ref: "#42", State: "open", Title: title,
+				}, nil
+			})
+			agents := agentListerFunc(func() ([]herdr.Agent, error) {
+				if source == "Herdr" && phase.Load() == 1 {
+					return nil, errors.New("Herdr unavailable")
+				}
+				paneID := "pane-initial"
+				if phase.Load() == 2 {
+					paneID = "pane-recovered"
+				}
+				return []herdr.Agent{{
+					Status: herdr.StatusWorking, PaneID: paneID, CWD: worktree,
+				}}, nil
+			})
+
+			output := newLineWriter()
+			serverContext, cancelServer := context.WithCancel(context.Background())
+			serverDone := make(chan error, 1)
+			go func() {
+				serverDone <- Serve(serverContext, Options{
+					Slug: fixture.program.Slug, Port: 0, Open: false, Out: output,
+					Now: now, GitHub: github, Agents: agents,
+				})
+			}()
+			t.Cleanup(func() {
+				cancelServer()
+				select {
+				case err := <-serverDone:
+					if err != nil {
+						t.Errorf("Serve: %v", err)
+					}
+				case <-time.After(3 * time.Second):
+					t.Error("program UI did not stop")
+				}
+			})
+			url := waitForProgramURL(t, output, serverDone)
+
+			allocator, cancelAllocator := chromedp.NewExecAllocator(
+				context.Background(),
+				append(chromedp.DefaultExecAllocatorOptions[:],
+					chromedp.ExecPath(chromeExecutable(t)),
+					chromedp.Flag("headless", true),
+					chromedp.Flag("disable-gpu", true),
+				)...,
+			)
+			defer cancelAllocator()
+			browser, cancelBrowser := chromedp.NewContext(allocator)
+			defer cancelBrowser()
+			browser, cancelTimeout := context.WithTimeout(browser, 20*time.Second)
+			defer cancelTimeout()
+			if err := chromedp.Run(browser,
+				chromedp.Navigate(url),
+				chromedp.Poll(`document.querySelector("#feed-state").textContent === "Live · every 3s" &&
+					document.querySelector(".card[data-item='w1'] .card__pr").textContent === "PR #42" &&
+					document.querySelector("#worker-count").textContent === "1"`, nil),
+				chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+				chromedp.Poll(`document.querySelector("#detail-body").textContent.includes("Initial PR") &&
+					document.querySelector("#detail-body").textContent.includes("pane-initial")`, nil),
+			); err != nil {
+				t.Fatalf("initial %s snapshot: %v", source, err)
+			}
+
+			phase.Store(1)
+			nowNanos.Store(initialNow.Add(13 * time.Second).UnixNano())
+			if err := chromedp.Run(browser,
+				chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+			); err != nil {
+				t.Fatal(err)
+			}
+			if source == "GitHub" {
+				if err := chromedp.Run(browser,
+					chromedp.Poll(`document.querySelector("#detail-body").textContent.includes(
+						"Pull request · stale GitHub cache") &&
+						document.querySelector("#detail-body").textContent.includes("Initial PR") &&
+						document.querySelector("#detail-body").textContent.includes("GitHub unavailable")`, nil),
+				); err != nil {
+					t.Fatalf("retained GitHub snapshot: %v", err)
+				}
+			} else {
+				if err := chromedp.Run(browser,
+					chromedp.Poll(`document.querySelector("#detail-body").textContent.includes("pane-initial") &&
+						!document.querySelector("#warning-count").hidden`, nil),
+					chromedp.Evaluate(`document.querySelector('[data-tab="goal"]').click()`, nil),
+					chromedp.Evaluate(`document.querySelector("#diagnostics").open = true`, nil),
+					chromedp.Poll(`document.querySelector("#warnings").textContent.includes("Herdr unavailable")`, nil),
+				); err != nil {
+					t.Fatalf("retained Herdr snapshot: %v", err)
+				}
+			}
+
+			phase.Store(2)
+			nowNanos.Store(initialNow.Add(16 * time.Second).UnixNano())
+			if err := chromedp.Run(browser,
+				chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+				chromedp.Poll(`document.querySelector("#feed-state").textContent === "Live · every 3s" &&
+					document.querySelector("#warning-count").hidden`, nil),
+				chromedp.Evaluate(`document.querySelector('[data-tab="roadmap"]').click()`, nil),
+				chromedp.Poll(`document.querySelectorAll(".card").length === 100`, nil),
+				chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+			); err != nil {
+				t.Fatal(err)
+			}
+			recoveryText := "Recovered PR"
+			if source == "Herdr" {
+				recoveryText = "pane-recovered"
+			}
+			if err := chromedp.Run(browser,
+				chromedp.Poll(`document.querySelector("#detail-body").textContent.includes(`+
+					strconv.Quote(recoveryText)+`)`, nil),
+			); err != nil {
+				t.Fatalf("%s recovery: %v", source, err)
+			}
+		})
 	}
 }
 

@@ -533,7 +533,9 @@ func TestBuildUsesStalePRAndReportsDegradedSources(t *testing.T) {
 			}, errors.New("gh unavailable")
 		}),
 		Agents: agentListerFunc(func() ([]herdr.Agent, error) {
-			return nil, errors.New("herdr unavailable")
+			return []herdr.Agent{{
+				Status: herdr.StatusWorking, PaneID: "pane-stale", CWD: worktree,
+			}}, errors.New("herdr unavailable")
 		}),
 	})
 	if err != nil {
@@ -543,6 +545,9 @@ func TestBuildUsesStalePRAndReportsDegradedSources(t *testing.T) {
 	if item.RecordedPR == nil || item.RecordedPR.Number != 7 ||
 		item.LivePR == nil || !item.LivePR.Stale || item.LivePR.FetchedAt != at {
 		t.Fatalf("PR provenance = recorded %+v live %+v", item.RecordedPR, item.LivePR)
+	}
+	if item.Worker == nil || item.Worker.PaneID != "pane-stale" {
+		t.Fatalf("stale Herdr worker = %+v", item.Worker)
 	}
 	if artifactText(item.Artifacts[0]) != "12345" || !item.Artifacts[0].Truncated {
 		t.Fatalf("truncated artifact = %+v", item.Artifacts[0])

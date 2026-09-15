@@ -59,6 +59,7 @@ func Serve(ctx context.Context, options Options) error {
 				ctx, programUIHerdrCommandTimeout,
 			)
 		}
+		agents = newAgentCache(agents, githubTTL, now)
 		builder = func(slug, detailItem string) (programview.Snapshot, error) {
 			return programview.Build(slug, programview.Options{
 				Now: now, GitHub: cachedGitHub, Agents: agents, DetailItem: detailItem,

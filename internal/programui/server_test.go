@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/program"
 	"github.com/ronaknnathani/relay/internal/programview"
 )
@@ -323,6 +325,126 @@ func TestServeAttributesExternalFailuresToTheirSources(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("server did not stop after cancellation")
 	}
+}
+
+func TestServeRetainsAndRecoversEachExternalSource(t *testing.T) {
+	for _, source := range []string{"GitHub", "Herdr"} {
+		t.Run(source, func(t *testing.T) {
+			fixture := newReferenceProgramFixture(t)
+			worktree := filepath.Join(
+				fixture.program.Repo, ".worktrees", fixture.program.Items[0].ProjectSlug,
+			)
+			initialNow := time.Date(2026, 9, 14, 20, 0, 0, 0, time.UTC)
+			var nowNanos atomic.Int64
+			nowNanos.Store(initialNow.UnixNano())
+			now := func() time.Time { return time.Unix(0, nowNanos.Load()).UTC() }
+			var phase atomic.Int32
+			github := fetcherFunc(func(
+				context.Context,
+				string,
+				string,
+			) (programview.PullRequestDTO, error) {
+				if source == "GitHub" && phase.Load() == 1 {
+					return programview.PullRequestDTO{}, errors.New("GitHub unavailable")
+				}
+				title := "Initial PR"
+				if phase.Load() == 2 {
+					title = "Recovered PR"
+				}
+				return programview.PullRequestDTO{
+					Number: 42, Ref: "#42", State: "open", Title: title,
+				}, nil
+			})
+			agents := agentListerFunc(func() ([]herdr.Agent, error) {
+				if source == "Herdr" && phase.Load() == 1 {
+					return nil, errors.New("Herdr unavailable")
+				}
+				paneID := "pane-initial"
+				if phase.Load() == 2 {
+					paneID = "pane-recovered"
+				}
+				return []herdr.Agent{{
+					Status: herdr.StatusWorking, PaneID: paneID, CWD: worktree,
+				}}, nil
+			})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			output := newLineWriter()
+			done := make(chan error, 1)
+			go func() {
+				done <- Serve(ctx, Options{
+					Slug: fixture.program.Slug, Port: 0, Open: false, Out: output,
+					Now: now, GitHub: github, Agents: agents,
+				})
+			}()
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Errorf("Serve: %v", err)
+					}
+				case <-time.After(3 * time.Second):
+					t.Error("program UI did not stop")
+				}
+			})
+			url := waitForProgramURL(t, output, done)
+
+			var initial programview.Snapshot
+			eventually(t, 2*time.Second, func() bool {
+				initial = getProgramSnapshot(t, url)
+				item := initial.Items[0]
+				return initial.Refresh.Status == "fresh" && item.LivePR != nil &&
+					item.LivePR.Title == "Initial PR" && item.Worker != nil &&
+					item.Worker.PaneID == "pane-initial"
+			})
+
+			phase.Store(1)
+			nowNanos.Store(initialNow.Add(13 * time.Second).UnixNano())
+			_ = getProgramSnapshot(t, url)
+			var stale programview.Snapshot
+			eventually(t, 2*time.Second, func() bool {
+				stale = getProgramSnapshot(t, url)
+				item := stale.Items[0]
+				if source == "GitHub" {
+					return stale.SourceHealth.GitHub.Status == "degraded" &&
+						item.LivePR != nil && item.LivePR.Stale &&
+						item.LivePR.Title == "Initial PR"
+				}
+				return stale.SourceHealth.Herdr.Status == "degraded" &&
+					item.Worker != nil && item.Worker.PaneID == "pane-initial"
+			})
+
+			phase.Store(2)
+			nowNanos.Store(initialNow.Add(16 * time.Second).UnixNano())
+			_ = getProgramSnapshot(t, url)
+			eventually(t, 2*time.Second, func() bool {
+				recovered := getProgramSnapshot(t, url)
+				item := recovered.Items[0]
+				if source == "GitHub" {
+					return recovered.SourceHealth.GitHub.Status == "ok" &&
+						item.LivePR != nil && !item.LivePR.Stale &&
+						item.LivePR.Title == "Recovered PR"
+				}
+				return recovered.SourceHealth.Herdr.Status == "ok" &&
+					item.Worker != nil && item.Worker.PaneID == "pane-recovered"
+			})
+		})
+	}
+}
+
+func getProgramSnapshot(t *testing.T, url string) programview.Snapshot {
+	t.Helper()
+	response, err := http.Get(url + "/api/program")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var snapshot programview.Snapshot
+	if err := json.NewDecoder(response.Body).Decode(&snapshot); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
 }
 
 type lineWriter struct {

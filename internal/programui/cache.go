@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/programview"
 )
 
@@ -13,6 +14,7 @@ const (
 	maxSnapshotEntries  = 64
 	maxDetailItemLength = 32
 	maxGitHubStaleAge   = 5 * time.Minute
+	maxHerdrStaleAge    = 5 * time.Minute
 )
 
 type Builder func(slug, detailItem string) (programview.Snapshot, error)
@@ -154,6 +156,84 @@ type githubFlight struct {
 	done        chan struct{}
 	pullRequest programview.PullRequestDTO
 	err         error
+}
+
+type agentCache struct {
+	mu        sync.Mutex
+	lister    programview.AgentLister
+	ttl       time.Duration
+	now       func() time.Time
+	agents    []herdr.Agent
+	hasEntry  bool
+	expiresAt time.Time
+	fetchedAt time.Time
+	flight    *agentFlight
+}
+
+type agentFlight struct {
+	done   chan struct{}
+	agents []herdr.Agent
+	err    error
+}
+
+func newAgentCache(
+	lister programview.AgentLister,
+	ttl time.Duration,
+	now func() time.Time,
+) *agentCache {
+	if now == nil {
+		now = time.Now
+	}
+	return &agentCache{lister: lister, ttl: ttl, now: now}
+}
+
+func (c *agentCache) Agents() ([]herdr.Agent, error) {
+	c.mu.Lock()
+	now := c.now()
+	if c.hasEntry && now.Before(c.expiresAt) {
+		agents := append([]herdr.Agent(nil), c.agents...)
+		c.mu.Unlock()
+		return agents, nil
+	}
+	if c.flight != nil {
+		flight := c.flight
+		c.mu.Unlock()
+		<-flight.done
+		return append([]herdr.Agent(nil), flight.agents...), flight.err
+	}
+	flight := &agentFlight{done: make(chan struct{})}
+	c.flight = flight
+	stale := append([]herdr.Agent(nil), c.agents...)
+	hasStale := c.hasEntry
+	fetchedAt := c.fetchedAt
+	c.mu.Unlock()
+
+	if c.lister == nil {
+		flight.err = fmt.Errorf("Herdr agent lister is not configured")
+	} else {
+		flight.agents, flight.err = c.lister.Agents()
+	}
+	completedAt := c.now()
+	if flight.err != nil && hasStale && completedAt.Sub(fetchedAt) <= maxHerdrStaleAge {
+		flight.agents = stale
+	}
+
+	c.mu.Lock()
+	if flight.err == nil {
+		c.agents = append([]herdr.Agent(nil), flight.agents...)
+		c.hasEntry = true
+		c.fetchedAt = completedAt
+		c.expiresAt = c.now().Add(c.ttl)
+	} else if hasStale && completedAt.Sub(fetchedAt) > maxHerdrStaleAge {
+		c.agents = nil
+		c.hasEntry = false
+		c.fetchedAt = time.Time{}
+		c.expiresAt = time.Time{}
+	}
+	c.flight = nil
+	close(flight.done)
+	c.mu.Unlock()
+	return append([]herdr.Agent(nil), flight.agents...), flight.err
 }
 
 func newGitHubCache(fetcher programview.Fetcher, ttl time.Duration, now func() time.Time) *githubCache {
