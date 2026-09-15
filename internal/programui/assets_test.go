@@ -17,8 +17,6 @@ var assetNames = []string{
 	"assets/index.min.html",
 	"assets/app.css",
 	"assets/app.min.css",
-	"assets/bootstrap.js",
-	"assets/bootstrap.min.js",
 	"assets/roadmap.js",
 	"assets/roadmap.min.js",
 	"assets/app-deferred.css",
@@ -115,10 +113,9 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		`<a class="skip-link"`,
 	})
 
-	if strings.Count(index, "<script") != 4 ||
+	if strings.Count(index, "<script") != 2 ||
 		!strings.Contains(index, `<script id="app-script">__RELAY_ROADMAP_CORE__</script>`) ||
-		!strings.Contains(index, `<script id="initial-program" type="application/json">__RELAY_INITIAL_ROADMAP__</script>`) ||
-		!strings.Contains(index, `<script>__RELAY_BOOTSTRAP__</script>`) {
+		strings.Contains(index, "initial-program") {
 		t.Error("index.html must embed the roadmap controller after the complete document")
 	}
 	if strings.Count(index, "<link ") != 1 ||
@@ -154,9 +151,8 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	})
 
 	head := index[strings.Index(index, "<head>"):strings.Index(index, "</head>")]
-	if !strings.Contains(head, `document.documentElement.dataset.theme=t==="dark"?"dark":"light"`) ||
-		!strings.Contains(index, `id="initial-program" type="application/json"`) {
-		t.Error("the bootstrap must apply the stored theme and embed the initial roadmap snapshot")
+	if !strings.Contains(head, `document.documentElement.dataset.theme=t==="dark"?"dark":"light"`) {
+		t.Error("the bootstrap must apply the stored theme before paint")
 	}
 
 	script := readScriptAssets(t)
@@ -188,17 +184,6 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 		len(readAsset(t, "assets/app-deferred.css")) {
 		t.Error("the deferred stylesheet must be minified")
 	}
-	bootstrap := readAsset(t, "assets/bootstrap.js")
-	minifiedBootstrap := readAsset(t, "assets/bootstrap.min.js")
-	if len(minifiedBootstrap) >= len(bootstrap) ||
-		!strings.Contains(minifiedBootstrap, "__relayBootstrapCleanup") {
-		t.Error("the first-paint bootstrap must be minified and hand controls to the core bundle")
-	}
-	bootstrapDigest := sha256.Sum256([]byte(minifiedBootstrap))
-	bootstrapHash := "'sha256-" + base64.StdEncoding.EncodeToString(bootstrapDigest[:]) + "'"
-	if !strings.Contains(contentSecurityPolicy, bootstrapHash) {
-		t.Errorf("content security policy is missing the bootstrap hash %s", bootstrapHash)
-	}
 	roadmapDigest := sha256.Sum256([]byte(readAsset(t, "assets/roadmap.min.js")))
 	roadmapHash := "'sha256-" + base64.StdEncoding.EncodeToString(roadmapDigest[:]) + "'"
 	if !strings.Contains(contentSecurityPolicy, roadmapHash) {
@@ -226,39 +211,24 @@ func TestRoadmapCardsKeepOneVisibleMetadataLineAndExplicitNames(t *testing.T) {
 }
 
 func TestBootstrapUsesMergedProgress(t *testing.T) {
-	bootstrap := readAsset(t, "assets/bootstrap.js")
-	requireContains(t, "bootstrap.js", bootstrap, []string{
-		"count(progress.merged)",
-		"merged",
-	})
-	requireAbsent(t, "bootstrap.js", bootstrap, []string{
-		"count(progress.completed)",
-		" complete`",
-	})
+	index := readAsset(t, "assets/index.html")
+	requireContains(t, "index.html", index, []string{progressCountsToken})
 }
 
 func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
-	bootstrap := readAsset(t, "assets/bootstrap.js")
-	requireContains(t, "bootstrap.js", bootstrap, []string{
-		`window.__relayBootstrapCleanup`,
-		`nodes.slice(0, 2)`,
-		`stage.dataset.label =`,
-	})
 	requireContains(t, "index.html", readAsset(t, "assets/index.html"), []string{
 		`<script id="app-script">__RELAY_ROADMAP_CORE__</script>`,
 	})
-	requireAbsent(t, "bootstrap.js", bootstrap, []string{
-		"window.setTimeout",
-		"document.createElement(\"script\")",
+	roadmap := readAsset(t, "assets/roadmap.js")
+	requireContains(t, "roadmap.js", roadmap, []string{
+		`window.__relayCoreReady = true`,
+		`script.src = "/app.js"`,
+		`window.__relayRoadmapCoreCleanup`,
+		`requestAnimationFrame(() => setTimeout(() => {`,
 	})
 	requireContains(t, "app.js", readAsset(t, "assets/app.js"), []string{
 		`window.__relayRoadmapCoreCleanup`,
 		`requestProgram(initialProgramController, "roadmap")`,
-	})
-	requireContains(t, "roadmap.js", readAsset(t, "assets/roadmap.js"), []string{
-		`window.__relayCoreReady = true`,
-		`script.src = "/app.js"`,
-		`window.__relayRoadmapCoreCleanup`,
 	})
 	if len(readAsset(t, "assets/roadmap.min.js")) >= len(readAsset(t, "assets/roadmap.js")) {
 		t.Error("the roadmap controller must be minified")

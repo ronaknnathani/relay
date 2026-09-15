@@ -1612,10 +1612,6 @@ function start() {
     window.__relayRoadmapCoreCleanup();
     delete window.__relayRoadmapCoreCleanup;
   }
-  if (window.__relayBootstrapCleanup) {
-    window.__relayBootstrapCleanup();
-    delete window.__relayBootstrapCleanup;
-  }
   Array.from(dom.graphNodes.querySelectorAll(".card")).forEach((card) => {
     state.cards.set(card.dataset.item, card);
   });

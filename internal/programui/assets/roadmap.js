@@ -36,10 +36,6 @@
     select(target, false);
   };
 
-  if (window.__relayBootstrapCleanup) {
-    window.__relayBootstrapCleanup();
-    delete window.__relayBootstrapCleanup;
-  }
   graphNodes.addEventListener("click", onClick);
   graphNodes.addEventListener("keydown", onKeyDown);
   window.__relayRoadmapCoreCleanup = () => {
@@ -49,11 +45,13 @@
   window.__relayCoreReady = true;
   document.documentElement.dataset.relayCoreReady = "true";
 
-  const script = document.createElement("script");
-  script.src = "/app.js";
-  script.onerror = () => {
-    reconnect.hidden = false;
-    reconnect.textContent = "The complete Program UI bundle failed to load. Reload the page to retry.";
-  };
-  document.body.append(script);
+  requestAnimationFrame(() => setTimeout(() => {
+    const script = document.createElement("script");
+    script.src = "/app.js";
+    script.onerror = () => {
+      reconnect.hidden = false;
+      reconnect.textContent = "The complete Program UI bundle failed to load. Reload the page to retry.";
+    };
+    document.body.append(script);
+  }, 0));
 })();

@@ -21,18 +21,16 @@ import (
 )
 
 const (
-	contentSecurityPolicy  = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-2gSKJgszvd+RJpr63XRarfjnEShGAv+hcS03qgl/ZKs=' 'sha256-V5lC8UtTauv1jij/lgB7N4yG4wg7rq3KvNSToKc3W/s='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-	bootstrapTemplateToken = "__RELAY_BOOTSTRAP__"
-	roadmapCoreToken       = "__RELAY_ROADMAP_CORE__"
-	roadmapTemplateToken   = "__RELAY_INITIAL_ROADMAP__"
-	roadmapMarkupToken     = "__RELAY_ROADMAP_MARKUP__"
-	programSlugToken       = "__RELAY_PROGRAM_SLUG__"
-	programTitleToken      = "__RELAY_PROGRAM_TITLE__"
-	programSummaryToken    = "__RELAY_PROGRAM_SUMMARY__"
-	progressCountsToken    = "__RELAY_PROGRESS_COUNTS__"
-	taskTotalToken         = "__RELAY_TASK_TOTAL__"
-	roadmapNoteToken       = "__RELAY_ROADMAP_NOTE__"
-	roadmapLabelToken      = "__RELAY_ROADMAP_LABEL__"
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-llHS69LA8z65U2AUE5fQgFCDCqi6crU9WmOdVRc9Zew='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	roadmapCoreToken      = "__RELAY_ROADMAP_CORE__"
+	roadmapMarkupToken    = "__RELAY_ROADMAP_MARKUP__"
+	programSlugToken      = "__RELAY_PROGRAM_SLUG__"
+	programTitleToken     = "__RELAY_PROGRAM_TITLE__"
+	programSummaryToken   = "__RELAY_PROGRAM_SUMMARY__"
+	progressCountsToken   = "__RELAY_PROGRESS_COUNTS__"
+	taskTotalToken        = "__RELAY_TASK_TOTAL__"
+	roadmapNoteToken      = "__RELAY_ROADMAP_NOTE__"
+	roadmapLabelToken     = "__RELAY_ROADMAP_LABEL__"
 )
 
 //go:embed assets/*
@@ -191,17 +189,11 @@ func prepareIndexTemplate() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read embedded asset assets/index.min.html: %w", err)
 	}
-	bootstrap, err := fs.ReadFile(embeddedAssets, "assets/bootstrap.min.js")
-	if err != nil {
-		return nil, fmt.Errorf("read embedded asset assets/bootstrap.min.js: %w", err)
-	}
-	index = bytes.Replace(index, []byte(bootstrapTemplateToken), bootstrap, 1)
 	roadmapCore, err := fs.ReadFile(embeddedAssets, "assets/roadmap.min.js")
 	if err != nil {
 		return nil, fmt.Errorf("read embedded asset assets/roadmap.min.js: %w", err)
 	}
 	index = bytes.Replace(index, []byte(roadmapCoreToken), roadmapCore, 1)
-	index = bytes.Replace(index, []byte(roadmapTemplateToken), []byte("null"), 1)
 	return index, nil
 }
 
