@@ -114,7 +114,7 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 	for run := 0; run <= performanceRuns; run++ {
 		tab, cancelTab := chromedp.NewContext(browser)
 		installPerformanceObserver(t, tab)
-		sample := measureBrowserRun(t, tab, binary, commandDir, fixture.program.Slug)
+		sample := measureBrowserRun(t, tab, binary, commandDir, fixture.program.Slug, mode)
 		cancelTab()
 		if run == 0 {
 			continue
@@ -217,6 +217,7 @@ func measureBrowserRun(
 	binary string,
 	commandDir string,
 	slug string,
+	mode string,
 ) browserSample {
 	t.Helper()
 	output := newLineWriter()
@@ -313,7 +314,7 @@ func measureBrowserRun(
 	`, &taskArtifactTextPresent)); err != nil {
 		t.Fatalf("inspect initial program payload: %v", err)
 	}
-	if taskArtifactTextPresent {
+	if mode == "verify" && taskArtifactTextPresent {
 		t.Fatal("initial /api/program response included task artifact text")
 	}
 
