@@ -248,13 +248,6 @@ func validateBranchName(repo, branch string) error {
 }
 
 func removeLocalBranchConfig(repo, branch string) error {
-	present, err := localBranchConfigExists(repo, branch)
-	if err != nil {
-		return err
-	}
-	if !present {
-		return nil
-	}
 	section := "branch." + branch
 	out, err := exec.Command(
 		"git", "-C", repo, "config", "--local", "--remove-section", section,
@@ -262,27 +255,16 @@ func removeLocalBranchConfig(repo, branch string) error {
 	if err == nil {
 		return nil
 	}
+	if configSectionAbsent(err, out, section) {
+		return nil
+	}
 	return gitCommandError("git config --local --remove-section "+section, err, out)
 }
 
-func localBranchConfigExists(repo, branch string) (bool, error) {
-	out, err := exec.Command(
-		"git", "-C", repo, "config", "--local", "--name-only", "--get-regexp", `^branch\.`,
-	).CombinedOutput()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return false, nil
-		}
-		return false, gitCommandError("git config --local --name-only --get-regexp ^branch\\.", err, out)
-	}
-	prefix := "branch." + branch + "."
-	for _, key := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if strings.HasPrefix(key, prefix) {
-			return true, nil
-		}
-	}
-	return false, nil
+func configSectionAbsent(err error, output []byte, section string) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) &&
+		strings.TrimSpace(string(output)) == "fatal: no such section: "+section
 }
 
 func branchCheckout(repo, ref string) (string, bool, error) {

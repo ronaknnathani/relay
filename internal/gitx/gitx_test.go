@@ -458,6 +458,36 @@ func TestForceDeleteBranchAtDoesNotRecreateRefWhenConfigCleanupFails(t *testing.
 	}
 }
 
+func TestRemoveBranchConfigTreatsDottedSiblingAsDistinctSection(t *testing.T) {
+	repo := initRepo(t)
+	runGit(t, repo, "config", "--local", "branch.api.v2.remote", "origin")
+
+	if err := RemoveBranchConfig(repo, "api"); err != nil {
+		t.Fatalf("RemoveBranchConfig(api): %v", err)
+	}
+	if got := gitOutput(t, repo, "config", "--local", "--get", "branch.api.v2.remote"); got != "origin" {
+		t.Fatalf("branch.api.v2.remote = %q, want preserved sibling value", got)
+	}
+}
+
+func TestRemoveBranchConfigRemovesExactSectionAndPreservesDottedSibling(t *testing.T) {
+	repo := initRepo(t)
+	runGit(t, repo, "config", "--local", "branch.api.remote", "origin")
+	runGit(t, repo, "config", "--local", "branch.api.merge", "refs/heads/api")
+	runGit(t, repo, "config", "--local", "branch.api.v2.remote", "upstream")
+
+	if err := RemoveBranchConfig(repo, "api"); err != nil {
+		t.Fatalf("RemoveBranchConfig(api): %v", err)
+	}
+	cmd := exec.Command("git", "-C", repo, "config", "--local", "--get", "branch.api.remote")
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("branch.api.remote survived cleanup: %s", out)
+	}
+	if got := gitOutput(t, repo, "config", "--local", "--get", "branch.api.v2.remote"); got != "upstream" {
+		t.Fatalf("branch.api.v2.remote = %q, want preserved sibling value", got)
+	}
+}
+
 func TestIsWorktreePreservesGitDiagnostic(t *testing.T) {
 	repo := t.TempDir()
 
