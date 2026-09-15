@@ -306,13 +306,18 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 		}
 		if branchDeleteErr != nil {
 			result.BranchDeletionWarning = fmt.Sprintf(
-				"%s\nhint: delete manually with 'git branch -D %s'", branchDeleteErr, m.Branch,
+				"%s\nhint: delete manually with: %s",
+				branchDeleteErr, manualBranchDeleteCommand(m.Repo, m.Branch),
 			)
 		} else {
 			result.BranchDeleted = true
 		}
 	}
 	return result, nil
+}
+
+func manualBranchDeleteCommand(repo, branch string) string {
+	return "git -C " + shellQuote(repo) + " branch -D " + shellQuote(branch)
 }
 
 func stageArchivedProject(srcDir, dstDir string, m project.Manifest) (func() error, error) {

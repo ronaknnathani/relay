@@ -487,7 +487,7 @@ func TestArchiveReportsBranchStillPresentOnlyAfterDeletionFailure(t *testing.T) 
 		!strings.Contains(stdout, branch) {
 		t.Fatalf("stdout %q is missing the branch deletion failure", stdout)
 	}
-	if !strings.Contains(stderr, "git branch -D "+branch) {
+	if !strings.Contains(stderr, manualBranchDeleteCommand(repo, branch)) {
 		t.Fatalf("stderr %q is missing the manual branch deletion guidance", stderr)
 	}
 	if !gitx.BranchExists(repo, branch) {
