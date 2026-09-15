@@ -843,6 +843,9 @@ func TestGCArchiveWarningReturnsFailureAfterArchiving(t *testing.T) {
 		!pathExists(filepath.Join(project.ArchivedDir(), slug)) {
 		t.Fatal("archive warning prevented metadata archival")
 	}
+	if archived := loadArchivedManifest(t, slug); archived.Status != "archived" || !archived.Merged {
+		t.Fatalf("archived manifest = %+v, want archived merged metadata", archived)
+	}
 }
 
 func TestGCRecordedStateFailureIsActionable(t *testing.T) {
