@@ -131,6 +131,11 @@ func canonicalActiveProjectIdentity(
 			result.Path,
 		)
 	}
+	if strings.TrimSpace(m.Branch) == "" {
+		return projectResourceIdentity{}, fmt.Errorf(
+			"canonicalize active project ownership %s: branch is empty", result.Path,
+		)
+	}
 	return canonicalProjectResourceIdentity(
 		m.Repo, m.Branch, worktreeValue(m), m.Worktree != nil, result.Path,
 	)
@@ -141,7 +146,7 @@ func canonicalArchivedProjectIdentity(
 ) (projectResourceIdentity, bool, error) {
 	m := result.Manifest
 	if m.ArchiveCleanup == nil {
-		return projectResourceIdentity{}, false, nil
+		return canonicalLegacyArchivedProjectIdentity(result)
 	}
 	proof, err := validateArchivedCleanupProof(m)
 	if err != nil {
@@ -172,6 +177,64 @@ func canonicalArchivedProjectIdentity(
 	return identity, true, nil
 }
 
+func canonicalLegacyArchivedProjectIdentity(
+	result project.ManifestLoadResult,
+) (projectResourceIdentity, bool, error) {
+	m := result.Manifest
+	if err := project.ValidateSlug(m.Slug); err != nil {
+		return projectResourceIdentity{}, false, fmt.Errorf(
+			"canonicalize legacy archived project ownership %s: %w", result.Path, err,
+		)
+	}
+	if m.Slug != result.Name {
+		return projectResourceIdentity{}, false, fmt.Errorf(
+			"canonicalize legacy archived project ownership %s: slug %q does not match directory %q",
+			result.Path, m.Slug, result.Name,
+		)
+	}
+	var issues []error
+	branchPresent := false
+	if strings.TrimSpace(m.Branch) != "" {
+		var err error
+		branchPresent, err = archiveBranchExists(m.Repo, m.Branch)
+		if err != nil {
+			issues = append(issues, fmt.Errorf(
+				"inspect legacy archived branch %q for %s: %w", m.Branch, result.Path, err,
+			))
+		}
+	}
+	worktreePresent := false
+	worktree := worktreeValue(m)
+	if worktree != "" {
+		_, found, err := gitx.RegisteredWorktreeState(m.Repo, worktree)
+		worktreePresent = found
+		if err != nil {
+			issues = append(issues, fmt.Errorf(
+				"inspect legacy archived worktree %s for %s: %w", worktree, result.Path, err,
+			))
+		}
+	}
+	if len(issues) > 0 {
+		return projectResourceIdentity{}, false, errors.Join(issues...)
+	}
+	if !branchPresent && !worktreePresent {
+		return projectResourceIdentity{}, false, nil
+	}
+	identity, err := canonicalProjectResourceIdentity(
+		m.Repo, m.Branch, worktree, worktreePresent, result.Path,
+	)
+	if err != nil {
+		return projectResourceIdentity{}, false, err
+	}
+	if !branchPresent {
+		identity.branch = ""
+	}
+	if !worktreePresent {
+		identity.worktree = ""
+	}
+	return identity, true, nil
+}
+
 func canonicalProjectResourceIdentity(
 	repo, branch, worktree string,
 	requireWorktree bool,
@@ -194,16 +257,18 @@ func canonicalProjectResourceIdentity(
 			"canonicalize project ownership %s git common directory: %w", manifestPath, err,
 		)
 	}
-	branchRef, err := gitx.CanonicalBranchRef(canonicalRepo, branch)
-	if err != nil {
-		return projectResourceIdentity{}, fmt.Errorf(
-			"canonicalize project ownership %s branch %q: %w", manifestPath, branch, err,
-		)
-	}
 	identity := projectResourceIdentity{
 		repository: canonicalRepo,
 		commonDir:  commonDir,
-		branch:     commonDir + "\x00" + branchRef,
+	}
+	if strings.TrimSpace(branch) != "" {
+		branchRef, err := gitx.CanonicalBranchRef(canonicalRepo, branch)
+		if err != nil {
+			return projectResourceIdentity{}, fmt.Errorf(
+				"canonicalize project ownership %s branch %q: %w", manifestPath, branch, err,
+			)
+		}
+		identity.branch = commonDir + "\x00" + branchRef
 	}
 	if strings.TrimSpace(worktree) == "" {
 		if requireWorktree {

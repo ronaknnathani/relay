@@ -1737,6 +1737,99 @@ func TestGCPreservesResourcesClaimedByArchivedPendingCleanup(t *testing.T) {
 	}
 }
 
+func TestGCPreservesResourcesClaimedByLegacyArchivedManifest(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "legacy-active-owner"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+
+	archivedSlug := "legacy-archived-owner"
+	archived := project.Manifest{
+		Slug: archivedSlug, Repo: fixture.repo, Branch: branch, Worktree: &worktree,
+		Status: "archived", Merged: true,
+	}
+	archivedPath := project.ManifestPath(project.ArchivedDir(), archivedSlug)
+	if err := os.MkdirAll(filepath.Dir(archivedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(archivedPath, archived); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{slug, archivedSlug, "also claimed"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC changed resources claimed by a legacy archived manifest")
+	}
+}
+
+func TestGCLegacyArchivedProbeFailureBlocksOnlyConflictingRepository(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	blockedRepo := newGCRepoFixture(t, "main")
+	blockedSlug := "legacy-probe-active"
+	blockedBranch, blockedWorktree := addGCProject(t, blockedRepo, blockedSlug)
+	mergeGCProjectUpstream(t, blockedRepo, blockedBranch)
+
+	archivedSlug := "legacy-probe-archived"
+	archived := project.Manifest{
+		Slug: archivedSlug, Repo: blockedRepo.repo, Branch: blockedBranch,
+		Worktree: &blockedWorktree, Status: "archived", Merged: true,
+	}
+	archivedPath := project.ManifestPath(project.ArchivedDir(), archivedSlug)
+	if err := os.MkdirAll(filepath.Dir(archivedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(archivedPath, archived); err != nil {
+		t.Fatal(err)
+	}
+
+	eligibleRepo := newGCRepoFixture(t, "main")
+	eligibleSlug := "legacy-probe-independent"
+	eligibleBranch, eligibleWorktree := addGCProject(t, eligibleRepo, eligibleSlug)
+	mergeGCProjectUpstream(t, eligibleRepo, eligibleBranch)
+
+	previous := archiveBranchExists
+	archiveBranchExists = func(repo, branch string) (bool, error) {
+		if repo == blockedRepo.repo && branch == blockedBranch {
+			return false, errors.New("injected legacy branch probe failure")
+		}
+		return previous(repo, branch)
+	}
+	t.Cleanup(func() { archiveBranchExists = previous })
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{
+		archivedPath, blockedSlug, "injected legacy branch probe failure",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), blockedSlug)) ||
+		!pathExists(blockedWorktree) ||
+		!gitx.BranchExists(blockedRepo.repo, blockedBranch) {
+		t.Fatal("GC changed resources after a legacy archived ownership probe failure")
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), eligibleSlug)) ||
+		pathExists(eligibleWorktree) ||
+		gitx.BranchExists(eligibleRepo.repo, eligibleBranch) {
+		t.Fatal("GC did not clean a repository independent of a legacy ownership probe failure")
+	}
+}
+
 func TestGCPreservesAndReportsPartialProgramOwnership(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	before := make(map[string][]byte)
