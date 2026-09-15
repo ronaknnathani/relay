@@ -288,7 +288,7 @@ func measureBrowserRun(
 		t.Fatalf("wait for selected artifact: %v", err)
 	}
 	clickToFileContent := durationMilliseconds(time.Since(drawerStarted))
-	if want := strings.Repeat("\n", 128*1024); artifactText != want {
+	if want := strings.Repeat(`"`, 128*1024); artifactText != want {
 		t.Fatalf("selected artifact content differs from deterministic fixture")
 	}
 	var artifactResource resourceTiming
