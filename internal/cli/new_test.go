@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ronaknnathani/relay/internal/config"
 	"github.com/ronaknnathani/relay/internal/gitx"
@@ -84,7 +83,7 @@ func TestRunNewCreatesExpectedProjectFilesWithoutLaunch(t *testing.T) {
 	}
 }
 
-func TestCreateProjectWaitsForConcurrentArchiveOfSameSlug(t *testing.T) {
+func TestCreateProjectRejectsSlugAfterConcurrentArchive(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
 	slug := "concurrent-recreate"
@@ -120,115 +119,69 @@ func TestCreateProjectWaitsForConcurrentArchiveOfSameSlug(t *testing.T) {
 	}()
 	<-removalStarted
 
-	createResult := make(chan projectCreateResult, 1)
 	createErr := make(chan error, 1)
-	createStarted := make(chan struct{})
 	go func() {
-		close(createStarted)
-		result, err := createProject(projectCreateOpts{
+		_, err := createProject(projectCreateOpts{
 			task: "replacement project", name: slug, repo: repo,
 		})
-		createResult <- result
 		createErr <- err
 	}()
-	<-createStarted
-
-	select {
-	case err := <-createErr:
-		t.Fatalf("createProject completed while archive held the lifecycle lock: %v", err)
-	case <-time.After(100 * time.Millisecond):
-		close(continueRemoval)
-	}
+	close(continueRemoval)
 	if err := <-archiveErr; err != nil {
 		t.Fatalf("archiveProject: %v", err)
 	}
-	if err := <-createErr; err != nil {
-		t.Fatalf("createProject: %v", err)
-	}
-	created := <-createResult
-	if created.manifest.Slug != slug {
-		t.Fatalf("created project = %+v, want replacement for %q", created, slug)
-	}
-	if _, err := project.Load(project.ManifestPath(project.ActiveDir(), slug)); err != nil {
-		t.Fatalf("load replacement manifest: %v", err)
-	}
-	if _, err := os.Stat(created.worktreeDir); err != nil {
-		t.Fatalf("replacement worktree missing: %v", err)
+	if err := <-createErr; err == nil || !strings.Contains(err.Error(), "archived metadata still exists") {
+		t.Fatalf("createProject error = %v, want archived slug rejection", err)
 	}
 	if _, err := project.Load(project.ManifestPath(project.ArchivedDir(), slug)); err != nil {
 		t.Fatalf("load archived predecessor manifest: %v", err)
 	}
 }
 
-func TestCreateProjectBlocksArchivedCleanupBeforeReusingSlug(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	repo := newTestRepo(t)
-	slug := "interrupted-archive"
-	branch := "test/" + slug
-	worktree := addArchiveWorktree(t, repo, slug, branch)
-	writeArchiveManifest(t, slug, repo, branch, worktree)
-	if err := config.Save(config.Config{
-		BranchPrefix: "test/",
-		DefaultAgent: "copilot",
-		PermissionModes: map[string]string{
-			"copilot": "allow-all",
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
-	if err != nil {
-		t.Fatal(err)
-	}
-	decision, err := decideArchive(manifest, slug, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifest.Status = "archived"
-	manifest.ArchiveCleanup = archiveCleanupProof(decision.proof)
-	if _, err := stageArchivedProject(
-		filepath.Join(project.ActiveDir(), slug),
-		filepath.Join(project.ArchivedDir(), slug),
-		manifest,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = createProject(projectCreateOpts{
-		task: "replacement project", name: slug, repo: repo,
-	})
-	if err == nil {
-		t.Fatal("createProject succeeded with pending archived cleanup")
-	}
-	for _, want := range []string{
-		"incomplete archived cleanup",
-		project.ManifestPath(project.ArchivedDir(), slug),
-		"finish the archived cleanup before recreating",
+func TestCreateProjectRejectsAnyArchivedMetadataDirectory(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		content string
+	}{
+		{name: "directory only"},
+		{name: "malformed manifest", content: "{"},
+		{name: "legacy manifest", content: `{"slug":"archived-slug"}`},
+		{name: "completed cleanup", content: `{"slug":"archived-slug","archive_cleanup":{"branch_state":"done","worktree_state":"done"}}`},
 	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("createProject error %q is missing %q", err, want)
-		}
-	}
-	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
-		t.Fatal("blocked creation installed a replacement active project")
-	}
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			slug := "archived-slug"
+			archivedDir := filepath.Join(project.ArchivedDir(), slug)
+			if err := os.MkdirAll(archivedDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if test.content != "" {
+				if err := os.WriteFile(
+					filepath.Join(archivedDir, "manifest.json"), []byte(test.content), 0o644,
+				); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	if _, err := retryArchivedProjectCleanup(loadArchivedManifest(t, slug)); err != nil {
-		t.Fatalf("retry original archived cleanup: %v", err)
-	}
-	if pathExists(worktree) || gitx.BranchExists(repo, branch) {
-		t.Fatal("original archived cleanup left resources behind")
-	}
-
-	created, err := createProject(projectCreateOpts{
-		task: "replacement project", name: slug, repo: repo,
-	})
-	if err != nil {
-		t.Fatalf("createProject after cleanup completion: %v", err)
-	}
-	if created.manifest.Slug != slug || !pathExists(created.worktreeDir) {
-		t.Fatalf("created project = %+v, want replacement for %q", created, slug)
+			_, err := createProject(projectCreateOpts{
+				task: "replacement project", name: slug, repo: t.TempDir(),
+			})
+			if err == nil {
+				t.Fatal("createProject succeeded with archived metadata")
+			}
+			for _, want := range []string{
+				"archived metadata still exists",
+				archivedDir,
+				"choose a different project name",
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("createProject error %q is missing %q", err, want)
+				}
+			}
+			if pathExists(filepath.Join(project.ActiveDir(), slug)) {
+				t.Fatal("blocked creation installed an active project")
+			}
+		})
 	}
 }
 

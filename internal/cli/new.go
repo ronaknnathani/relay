@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -157,7 +156,7 @@ func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResu
 	if _, err := os.Stat(manifestPath); err == nil {
 		return projectCreateResult{}, fmt.Errorf("project %q already exists. Use: relay resume %s", slug, slug)
 	}
-	if err := requireCompletedArchivedCleanup(slug); err != nil {
+	if err := requireArchivedSlugAvailable(slug); err != nil {
 		return projectCreateResult{}, err
 	}
 
@@ -284,53 +283,18 @@ func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResu
 	}, nil
 }
 
-func requireCompletedArchivedCleanup(slug string) error {
-	manifestPath := project.ManifestPath(project.ArchivedDir(), slug)
-	m, err := project.Load(manifestPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+func requireArchivedSlugAvailable(slug string) error {
+	archivedDir := filepath.Join(project.ArchivedDir(), slug)
+	if _, err := os.Lstat(archivedDir); err != nil {
+		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf(
-			"cannot verify archived cleanup for project %q at %s: %w; repair the archived manifest "+
-				"or choose a different project name",
-			slug, manifestPath, err,
-		)
-	}
-	if m.Slug != slug {
-		return fmt.Errorf(
-			"cannot verify archived cleanup for project %q at %s: manifest records slug %q; "+
-				"repair the archived manifest or choose a different project name",
-			slug, manifestPath, m.Slug,
-		)
-	}
-	if m.ArchiveCleanup == nil {
-		return nil
-	}
-	proof := *m.ArchiveCleanup
-	if err := normalizeArchivedCleanupStates(&proof); err != nil {
-		return fmt.Errorf(
-			"project %q has incomplete archived cleanup at %s: %w; repair the cleanup state "+
-				"or choose a different project name",
-			slug, manifestPath, err,
-		)
-	}
-	if proof.WorktreeState == project.ArchiveCleanupDone &&
-		proof.BranchState == project.ArchiveCleanupDone {
-		return nil
-	}
-	guidance := fmt.Sprintf(
-		"inspect %s and finish the archived cleanup before recreating %q, or choose a different project name",
-		manifestPath, slug,
-	)
-	if m.Program != "" && m.ProgramItem != "" {
-		guidance = fmt.Sprintf(
-			"retry with: relay program worker cleanup %s %s", m.Program, m.ProgramItem,
-		)
+		return fmt.Errorf("inspect archived project metadata %s: %w", archivedDir, err)
 	}
 	return fmt.Errorf(
-		"project %q has incomplete archived cleanup at %s (worktree: %s, branch: %s); %s",
-		slug, manifestPath, proof.WorktreeState, proof.BranchState, guidance,
+		"project %q cannot be created because archived metadata still exists at %s; "+
+			"choose a different project name, or move/remove that archived directory after preserving any history you need",
+		slug, archivedDir,
 	)
 }
 

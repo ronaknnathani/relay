@@ -88,6 +88,9 @@ func runProgramDispatch(out io.Writer, programSlug, itemID string, opts programD
 	if err != nil {
 		return fmt.Errorf("dispatch item %q: prepare child project: %w", itemID, err)
 	}
+	if err := bindDispatchIdentity(&dispatched, item.ID, created.manifest); err != nil {
+		return fmt.Errorf("dispatch item %q: bind child project identity: %w", itemID, err)
+	}
 	if err := mailbox.Ensure(created.projectDir); err != nil {
 		return fmt.Errorf("dispatch item %q: ensure child mailbox: %w", itemID, err)
 	}
@@ -131,6 +134,23 @@ func runProgramDispatch(out io.Writer, programSlug, itemID string, opts programD
 		created.config.PermissionModeFor(created.agent.Name()),
 	)
 	return launchAgent(created.agent, launchOpts)
+}
+
+func bindDispatchIdentity(
+	p *program.Program, itemID string, manifest project.Manifest,
+) error {
+	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {
+		return fmt.Errorf("child project %q has no worktree identity", manifest.Slug)
+	}
+	for i := range p.Items {
+		if p.Items[i].ID != itemID {
+			continue
+		}
+		p.Items[i].ProjectBranch = manifest.Branch
+		p.Items[i].ProjectWorktree = *manifest.Worktree
+		return p.Validate()
+	}
+	return fmt.Errorf("item not found")
 }
 
 func prepareDispatchChild(

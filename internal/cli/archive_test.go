@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronaknnathani/relay/internal/config"
 	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/programview"
 	"github.com/ronaknnathani/relay/internal/project"
@@ -1052,6 +1051,60 @@ func TestArchiveForceKeepsDirtyUnmergedBehavior(t *testing.T) {
 	}
 }
 
+func TestArchiveForceKeepsAuthorityWhenOptionalPullRequestValidationFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "force-invalid-optional-pr"
+	branch := "user/force-invalid-optional-pr"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "original\n", "original work")
+	writeArchiveManifest(t, slug, repo, branch, "")
+	recordArchiveManifestPR(t, slug, 412)
+	originalTip := gitx.RevParse(repo, "refs/heads/"+branch)
+
+	previousProof := loadArchivePullRequestProof
+	previousRepository := loadArchiveRepository
+	loadArchivePullRequestProof = func(string, string) (programview.PullRequestProof, error) {
+		runArchiveGit(t, worktree, "checkout", "-q", "--detach")
+		commitArchiveFile(t, worktree, "later.txt", "later\n", "later work")
+		laterTip := gitx.RevParse(repo, "HEAD")
+		runArchiveGit(t, repo, "branch", "-f", branch, laterTip)
+		return programview.PullRequestProof{
+			State:      programview.PRStateMerged,
+			Repository: "github.com/acme/widgets",
+			BaseBranch: "main",
+			HeadBranch: branch,
+			HeadSHA:    laterTip,
+		}, nil
+	}
+	loadArchiveRepository = func(string) (string, error) {
+		return "github.com/acme/widgets", nil
+	}
+	t.Cleanup(func() {
+		loadArchivePullRequestProof = previousProof
+		loadArchiveRepository = previousRepository
+	})
+
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatalf("decideArchive --force: %v", err)
+	}
+	if decision.proof.AuthoritativeCommit != originalTip {
+		t.Fatalf(
+			"authoritative commit = %q, want original forced authority %q",
+			decision.proof.AuthoritativeCommit, originalTip,
+		)
+	}
+	if len(decision.warnings) == 0 ||
+		!strings.Contains(decision.warnings[0], "does not match branch") {
+		t.Fatalf("warnings = %v, want optional PR validation failure", decision.warnings)
+	}
+}
+
 func TestArchiveRecordsVerifiedMergedBranch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
@@ -1893,23 +1946,11 @@ func TestArchivedCleanupRetryRemovesMissingRegisteredWorktree(t *testing.T) {
 		t.Fatalf("cleanup proof = %+v, want completed worktree cleanup", archived.ArchiveCleanup)
 	}
 
-	if err := config.Save(config.Config{
-		BranchPrefix: "test/",
-		DefaultAgent: "copilot",
-		PermissionModes: map[string]string{
-			"copilot": "allow-all",
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	created, err := createProject(projectCreateOpts{
+	_, err = createProject(projectCreateOpts{
 		task: "replacement project", name: slug, repo: repo,
 	})
-	if err != nil {
-		t.Fatalf("createProject after stale registration cleanup: %v", err)
-	}
-	if !pathExists(created.worktreeDir) {
-		t.Fatal("replacement worktree was not created")
+	if err == nil || !strings.Contains(err.Error(), "archived metadata still exists") {
+		t.Fatalf("createProject error = %v, want archived slug rejection", err)
 	}
 }
 
@@ -2357,7 +2398,7 @@ func TestArchiveProjectReturnsAResultWithoutWritingToStdout(t *testing.T) {
 	}
 }
 
-func TestRunArchiveRetriesStandaloneArchivedCleanupAndAllowsSlugReuse(t *testing.T) {
+func TestRunArchiveRetriesStandaloneArchivedCleanupAndKeepsSlugReserved(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
 	slug := "standalone-archived-retry"
@@ -2421,23 +2462,11 @@ func TestRunArchiveRetriesStandaloneArchivedCleanupAndAllowsSlugReuse(t *testing
 		t.Fatalf("cleanup proof = %+v, want fully consumed", archived.ArchiveCleanup)
 	}
 
-	if err := config.Save(config.Config{
-		BranchPrefix: "test/",
-		DefaultAgent: "copilot",
-		PermissionModes: map[string]string{
-			"copilot": "allow-all",
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	created, err := createProject(projectCreateOpts{
+	_, err = createProject(projectCreateOpts{
 		task: "replacement project", name: slug, repo: repo,
 	})
-	if err != nil {
-		t.Fatalf("createProject after standalone archived retry: %v", err)
-	}
-	if created.manifest.Slug != slug || !pathExists(created.worktreeDir) {
-		t.Fatalf("created project = %+v, want reusable slug %q", created, slug)
+	if err == nil || !strings.Contains(err.Error(), "archived metadata still exists") {
+		t.Fatalf("createProject error = %v, want archived slug rejection", err)
 	}
 }
 

@@ -33,7 +33,7 @@ const (
 	cleanupWorkerRunning = "running"
 )
 
-var programWorkerArchiveProject = archiveProject
+var programWorkerArchiveProject = archiveProjectWithProof
 
 type programWorkerCleanupOutput struct {
 	Program          string         `json:"program"`
@@ -96,7 +96,7 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 	if err != nil {
 		return err
 	}
-	item, manifest, archived, err := loadProgramCleanupTarget(p, itemID)
+	item, manifest, proof, archived, err := loadProgramCleanupTarget(p, itemID)
 	if err != nil {
 		return err
 	}
@@ -155,7 +155,7 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 		result.Status = cleanupFinalStatus(result)
 		return renderProgramWorkerCleanup(out, result, jsonOutput)
 	}
-	archiveOutcome, err := programWorkerArchiveProject(manifest.Slug, true)
+	archiveOutcome, err := programWorkerArchiveProject(proof, false)
 	result.Archive = &archiveOutcome
 	result.Archived = archiveOutcome.ProjectLocation == archiveLocationArchived
 	result.Warnings = append(result.Warnings, archiveOutcome.Warnings...)
@@ -217,53 +217,98 @@ func failProgramWorkerCleanup(
 // either unfinished or was never delivered.
 func loadProgramCleanupTarget(
 	p program.Program, itemID string,
-) (program.WorkItem, project.Manifest, bool, error) {
+) (program.WorkItem, project.Manifest, archiveProofSnapshot, bool, error) {
 	item, ok := p.Item(itemID)
 	if !ok {
-		return program.WorkItem{}, project.Manifest{}, false, fmt.Errorf(
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
 			"cleanup %s/%s: item not found", p.Slug, itemID,
 		)
 	}
 	if item.Status != program.ItemMerged {
-		return program.WorkItem{}, project.Manifest{}, false, fmt.Errorf(
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
 			"cleanup %s/%s: item status is %q, want merged; cleanup discards the child worktree, so it "+
 				"only ever runs on delivered work",
 			p.Slug, itemID, item.Status,
 		)
 	}
 	if item.ProjectSlug == "" {
-		return program.WorkItem{}, project.Manifest{}, false, fmt.Errorf(
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
 			"cleanup %s/%s: item is not linked to a child project", p.Slug, itemID,
 		)
 	}
 	if err := project.ValidateSlug(item.ProjectSlug); err != nil {
-		return program.WorkItem{}, project.Manifest{}, false, fmt.Errorf(
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
 			"cleanup %s/%s: invalid child project slug: %w", p.Slug, itemID, err,
 		)
 	}
 	manifestPath, err := project.Find(item.ProjectSlug)
 	if err != nil {
-		return program.WorkItem{}, project.Manifest{}, false, fmt.Errorf(
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
 			"cleanup %s/%s: child project %q: %w", p.Slug, itemID, item.ProjectSlug, err,
 		)
 	}
 	manifest, err := project.Load(manifestPath)
 	if err != nil {
-		return program.WorkItem{}, project.Manifest{}, false, err
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, err
 	}
 	if manifest.Slug != item.ProjectSlug {
-		return program.WorkItem{}, project.Manifest{}, false, fmt.Errorf(
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
 			"cleanup %s/%s: child project manifest slug %q does not match requested child project %q",
 			p.Slug, itemID, manifest.Slug, item.ProjectSlug,
 		)
 	}
 	if manifest.Program != p.Slug || manifest.ProgramItem != item.ID {
-		return program.WorkItem{}, project.Manifest{}, false, fmt.Errorf(
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
 			"cleanup %s/%s: child project %q is linked to %q/%q",
 			p.Slug, itemID, manifest.Slug, manifest.Program, manifest.ProgramItem,
 		)
 	}
-	return item, manifest, pathWithinDir(manifestPath, project.ArchivedDir()), nil
+	if manifest.Repo != item.Repo || item.Repo != p.Repo {
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+			"cleanup %s/%s: child project repository identity does not match dispatch "+
+				"(manifest %q, item %q, program %q)",
+			p.Slug, itemID, manifest.Repo, item.Repo, p.Repo,
+		)
+	}
+	if item.ProjectBranch == "" || item.ProjectWorktree == "" {
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+			"cleanup %s/%s: child project %q has no durable dispatch branch/worktree identity; "+
+				"refusing automatic forced cleanup",
+			p.Slug, itemID, manifest.Slug,
+		)
+	}
+	worktree := ""
+	if manifest.Worktree != nil {
+		worktree = *manifest.Worktree
+	}
+	if manifest.Branch != item.ProjectBranch || worktree != item.ProjectWorktree {
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+			"cleanup %s/%s: child project %q resource identity does not match dispatch "+
+				"(manifest branch/worktree %q/%q, dispatched %q/%q); refusing automatic forced cleanup",
+			p.Slug, itemID, manifest.Slug, manifest.Branch, worktree,
+			item.ProjectBranch, item.ProjectWorktree,
+		)
+	}
+	archived := pathWithinDir(manifestPath, project.ArchivedDir())
+	if archived {
+		return item, manifest, archiveProofSnapshot{}, true, nil
+	}
+	proof, err := newArchiveProofSnapshot(manifest, archiveProofForced, true)
+	if err != nil {
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+			"cleanup %s/%s: snapshot child project resources: %w", p.Slug, itemID, err,
+		)
+	}
+	proof.ForceAuthorized = true
+	if proof.BranchPresent {
+		proof.AuthoritativeCommit = proof.ExpectedBranchTip
+	}
+	if err := validateArchiveWorktreeBinding(proof); err != nil {
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+			"cleanup %s/%s: validate child project resources: %w", p.Slug, itemID, err,
+		)
+	}
+	return item, manifest, proof, false, nil
 }
 
 // stopCleanupWatcher stops the child's pull request watcher and closes its

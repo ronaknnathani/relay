@@ -500,7 +500,10 @@ func schemeURLTokenEnd(output string, start int) (int, bool) {
 }
 
 func scpStyleURLTokenEnd(output string, start int) (int, bool) {
-	if !urlTokenBoundary(output, start) {
+	if !urlTokenBoundary(output, start) || start >= len(output) ||
+		(!isASCIILetter(output[start]) &&
+			(output[start] < '0' || output[start] > '9') &&
+			output[start] != '[') {
 		return 0, false
 	}
 	end := scanURLTokenEnd(output, start, start)
@@ -519,11 +522,19 @@ func scpStyleURLTokenEnd(output string, start int) (int, bool) {
 		return 0, false
 	}
 	userinfoEnd := strings.LastIndexByte(token[:pathStart], '@')
-	if userinfoEnd <= 0 || userinfoEnd == pathStart-1 {
+	hostStart := 0
+	if userinfoEnd >= 0 {
+		if userinfoEnd == 0 || userinfoEnd == pathStart-1 {
+			return 0, false
+		}
+		hostStart = userinfoEnd + 1
+	}
+	host := token[hostStart:pathStart]
+	if strings.ContainsAny(host, "/@") {
 		return 0, false
 	}
-	host := token[userinfoEnd+1 : pathStart]
-	if strings.ContainsAny(host, "/@") {
+	if userinfoEnd < 0 && !strings.Contains(token[pathStart+1:], "/") &&
+		!strings.ContainsAny(host, "._-") && !strings.HasPrefix(host, "[") {
 		return 0, false
 	}
 	return end, true
@@ -613,15 +624,16 @@ func sanitizeSCPStyleURL(rawURL string) string {
 		return rawURL
 	}
 	userinfoEnd := strings.LastIndexByte(rawURL[:pathStart], '@')
-	if userinfoEnd < 0 {
-		return rawURL
-	}
 	path := rawURL[pathStart+1:]
 	if secretStart := strings.IndexAny(path, "?#"); secretStart >= 0 {
 		path = path[:secretStart]
 	}
 	if path == "" {
 		return rawURL
+	}
+	cleaned := rawURL[:pathStart+1] + path
+	if userinfoEnd < 0 {
+		return cleaned
 	}
 	return "[redacted]@" + rawURL[userinfoEnd+1:pathStart+1] + path
 }

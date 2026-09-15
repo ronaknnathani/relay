@@ -586,6 +586,16 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			want:  "remote: [redacted]@git_alias_1:team/repo.git",
 		},
 		{
+			name:  "scp-like without userinfo",
+			input: "remote: git.example.io:team/repo.git?token=secret#scope",
+			want:  "remote: git.example.io:team/repo.git",
+		},
+		{
+			name:  "scp-like fragment without userinfo",
+			input: "remote: git_alias_1:team/repo.git#secret",
+			want:  "remote: git_alias_1:team/repo.git",
+		},
+		{
 			name:  "single-component scp path",
 			input: "status ops@example.com:ready",
 			want:  "status [redacted]@example.com:ready",

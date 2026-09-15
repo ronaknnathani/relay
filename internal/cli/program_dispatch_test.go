@@ -119,6 +119,15 @@ func TestProgramDispatchCreatesManagedChildWithoutLaunch(t *testing.T) {
 	if !strings.HasSuffix(manifest.Branch, childSlug) {
 		t.Fatalf("child branch = %q", manifest.Branch)
 	}
+	persisted, err := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedItem, ok := persisted.Item(item.ID)
+	if !ok || persistedItem.ProjectBranch != manifest.Branch ||
+		persistedItem.ProjectWorktree != *manifest.Worktree {
+		t.Fatalf("dispatched item = %+v, want child branch/worktree identity", persistedItem)
+	}
 
 	source, err := os.ReadFile(filepath.Join(program.ProgramDir(program.ActiveDir(), p.Slug), filepath.FromSlash(contract.Path)))
 	if err != nil {

@@ -455,10 +455,12 @@ func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision
 		if evidenceErr != nil {
 			warnings = append(warnings, evidenceErr.Error())
 		} else if evidence.Merged {
-			proof.AuthoritativeCommit = evidence.HeadSHA
-			if err := validatePullRequestProofTips(proof, evidence.HeadSHA); err != nil {
+			candidate := proof
+			candidate.AuthoritativeCommit = evidence.HeadSHA
+			if err := validatePullRequestProofTips(candidate, evidence.HeadSHA); err != nil {
 				warnings = append(warnings, err.Error())
 			} else {
+				proof = candidate
 				workMerged = true
 				proof.Kind = archiveProofPullRequest
 			}
@@ -630,7 +632,8 @@ func archiveProjectWithProof(proof archiveProofSnapshot, force bool) (archiveRes
 }
 
 func archiveProjectWithProofLocked(proof archiveProofSnapshot, force bool) (archiveResult, error) {
-	proof.ForceAuthorized = proof.ForceAuthorized || force
+	force = force || proof.ForceAuthorized
+	proof.ForceAuthorized = force
 	result := archiveResult{
 		Slug:               proof.Slug,
 		Branch:             proof.Branch,

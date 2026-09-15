@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -89,9 +90,16 @@ func writeGCManifest(t *testing.T, slug string, fixture gcRepoFixture, branch, w
 
 func mergeGCProjectUpstream(t *testing.T, fixture gcRepoFixture, branch string) {
 	t.Helper()
-	runArchiveGit(t, fixture.repo, "push", "-q", "origin", branch)
-	runArchiveGit(t, fixture.upstream, "fetch", "-q", "origin", branch)
-	runArchiveGit(t, fixture.upstream, "merge", "-q", "--no-edit", "origin/"+branch)
+	mergeGCProjectsUpstream(t, fixture, branch)
+}
+
+func mergeGCProjectsUpstream(t *testing.T, fixture gcRepoFixture, branches ...string) {
+	t.Helper()
+	for _, branch := range branches {
+		runArchiveGit(t, fixture.repo, "push", "-q", "origin", branch)
+		runArchiveGit(t, fixture.upstream, "fetch", "-q", "origin", branch)
+		runArchiveGit(t, fixture.upstream, "merge", "-q", "--no-edit", "origin/"+branch)
+	}
 	runArchiveGit(t, fixture.upstream, "push", "-q", "origin", fixture.base)
 }
 
@@ -901,6 +909,13 @@ func TestGCFetchWarningRedactsApostrophesInURLTokens(t *testing.T) {
 			},
 			wantProse: "is unavailable",
 		},
+		{
+			name:       "SCP URL without userinfo",
+			diagnostic: "fatal: repository 'git_alias_1:team/repo.git?token=query-secret#fragment-secret' is unavailable",
+			wantURL:    "git_alias_1:team/repo.git",
+			secrets:    []string{"token=", "query-secret", "fragment-secret"},
+			wantProse:  "is unavailable",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1202,19 +1217,31 @@ func TestGCBranchProbeFailureReturnsIncomplete(t *testing.T) {
 	}
 }
 
-func TestGCRejectsManifestIdentityChangeAfterMergeProof(t *testing.T) {
+func TestGCRejectsIdentityChangesAfterMergeProof(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")
-	slug := "manifest-race"
-	branch, worktree := addGCProject(t, fixture, slug)
-	mergeGCProjectUpstream(t, fixture, branch)
+	manifestSlug := "manifest-race"
+	manifestBranch, manifestWorktree := addGCProject(t, fixture, manifestSlug)
 	replacement := "user/replacement"
-	runArchiveGit(t, fixture.repo, "branch", replacement, "refs/heads/"+branch)
+	runArchiveGit(t, fixture.repo, "branch", replacement, "refs/heads/"+manifestBranch)
+	branchSlug := "branch-race"
+	branch, branchWorktree := addGCProject(t, fixture, branchSlug)
+	worktreeSlug := "worktree-race"
+	worktreeBranch, worktree := addGCProject(t, fixture, worktreeSlug)
+	mergeGCProjectsUpstream(t, fixture, manifestBranch, branch, worktreeBranch)
 	previous := gcArchiveProject
 	gcArchiveProject = func(proof archiveProofSnapshot, force bool) (archiveResult, error) {
-		updateGCManifest(t, proof.Slug, func(manifest *project.Manifest) {
-			manifest.Branch = replacement
-		})
+		switch proof.Slug {
+		case manifestSlug:
+			updateGCManifest(t, proof.Slug, func(manifest *project.Manifest) {
+				manifest.Branch = replacement
+			})
+		case branchSlug:
+			commitArchiveFile(t, branchWorktree, "later.txt", "later\n", "advance after proof")
+		case worktreeSlug:
+			runArchiveGit(t, worktree, "checkout", "-q", "--detach")
+			commitArchiveFile(t, worktree, "later.txt", "later\n", "advance detached after proof")
+		}
 		return archiveProjectWithProof(proof, force)
 	}
 	t.Cleanup(func() { gcArchiveProject = previous })
@@ -1223,68 +1250,25 @@ func TestGCRejectsManifestIdentityChangeAfterMergeProof(t *testing.T) {
 	if !errors.Is(err, errGCCompletedWithErrors) {
 		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
 	}
-	if !strings.Contains(stderr, "manifest changed") {
-		t.Fatalf("stderr %q is missing stale manifest proof diagnostic", stderr)
+	for _, want := range []string{"manifest changed", "branch tip changed", "worktree tip changed"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
 	}
-	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
-		!pathExists(worktree) ||
-		!gitx.BranchExists(fixture.repo, branch) ||
+	if !pathExists(filepath.Join(project.ActiveDir(), manifestSlug)) ||
+		!pathExists(manifestWorktree) ||
+		!gitx.BranchExists(fixture.repo, manifestBranch) ||
 		!gitx.BranchExists(fixture.repo, replacement) {
 		t.Fatal("GC cleaned up after the manifest identity changed")
 	}
-}
-
-func TestGCRejectsBranchAdvanceAfterMergeProof(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	fixture := newGCRepoFixture(t, "main")
-	slug := "branch-race"
-	branch, worktree := addGCProject(t, fixture, slug)
-	mergeGCProjectUpstream(t, fixture, branch)
-	previous := gcArchiveProject
-	gcArchiveProject = func(proof archiveProofSnapshot, force bool) (archiveResult, error) {
-		commitArchiveFile(t, worktree, "later.txt", "later\n", "advance after proof")
-		return archiveProjectWithProof(proof, force)
-	}
-	t.Cleanup(func() { gcArchiveProject = previous })
-
-	_, stderr, err := captureGCOutput(t, runGC)
-	if !errors.Is(err, errGCCompletedWithErrors) {
-		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
-	}
-	if !strings.Contains(stderr, "branch tip changed") {
-		t.Fatalf("stderr %q is missing stale branch proof diagnostic", stderr)
-	}
-	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
-		!pathExists(worktree) ||
+	if !pathExists(filepath.Join(project.ActiveDir(), branchSlug)) ||
+		!pathExists(branchWorktree) ||
 		!gitx.BranchExists(fixture.repo, branch) {
 		t.Fatal("GC cleaned up after the branch advanced")
 	}
-}
-
-func TestGCRejectsDetachedWorktreeAdvanceAfterMergeProof(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	fixture := newGCRepoFixture(t, "main")
-	slug := "worktree-race"
-	branch, worktree := addGCProject(t, fixture, slug)
-	mergeGCProjectUpstream(t, fixture, branch)
-	previous := gcArchiveProject
-	gcArchiveProject = func(proof archiveProofSnapshot, force bool) (archiveResult, error) {
-		runArchiveGit(t, worktree, "checkout", "-q", "--detach")
-		commitArchiveFile(t, worktree, "later.txt", "later\n", "advance detached after proof")
-		return archiveProjectWithProof(proof, force)
-	}
-	t.Cleanup(func() { gcArchiveProject = previous })
-
-	_, stderr, err := captureGCOutput(t, runGC)
-	if !errors.Is(err, errGCCompletedWithErrors) {
-		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
-	}
-	if !strings.Contains(stderr, "worktree tip changed") {
-		t.Fatalf("stderr %q is missing stale worktree proof diagnostic", stderr)
-	}
-	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+	if !pathExists(filepath.Join(project.ActiveDir(), worktreeSlug)) ||
 		!pathExists(worktree) ||
-		!gitx.BranchExists(fixture.repo, branch) {
+		!gitx.BranchExists(fixture.repo, worktreeBranch) {
 		t.Fatal("GC cleaned up after the worktree advanced")
 	}
 }
@@ -1344,14 +1328,48 @@ func TestGCRecordedStateFailureIsActionable(t *testing.T) {
 
 func TestGCSkipsProgramManagedProjects(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	fixture := newGCRepoFixture(t, "main")
-	type managedProject struct {
-		slug     string
-		branch   string
-		worktree string
-		before   []byte
+	slug := "program-managed"
+	dir := filepath.Join(project.ActiveDir(), slug)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	var managed []managedProject
+	manifest := project.Manifest{
+		Slug: slug, Repo: "/unused/repo", Branch: "unused/branch",
+		Program: "delivery", ProgramItem: "worker-1",
+	}
+	path := project.ManifestPath(project.ActiveDir(), slug)
+	if err := project.Save(path, manifest); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, err := captureGCOutput(t, runGC)
+	if err != nil {
+		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		slug,
+		"relay program worker cleanup delivery worker-1",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout %q is missing %q", stdout, want)
+		}
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatal("GC changed complete program ownership metadata")
+	}
+}
+
+func TestGCPreservesAndReportsPartialProgramOwnership(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	before := make(map[string][]byte)
 	for _, ownership := range []struct {
 		slug    string
 		program string
@@ -1360,45 +1378,52 @@ func TestGCSkipsProgramManagedProjects(t *testing.T) {
 		{slug: "program-only", program: "delivery"},
 		{slug: "item-only", item: "worker-1"},
 	} {
-		branch, worktree := addGCProject(t, fixture, ownership.slug)
-		mergeGCProjectUpstream(t, fixture, branch)
-		updateGCManifest(t, ownership.slug, func(manifest *project.Manifest) {
-			manifest.Program = ownership.program
-			manifest.ProgramItem = ownership.item
-		})
+		dir := filepath.Join(project.ActiveDir(), ownership.slug)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		manifest := project.Manifest{
+			Slug: ownership.slug, Repo: "/unused/repo", Branch: "unused/branch",
+			Program: ownership.program, ProgramItem: ownership.item,
+		}
 		manifestPath := project.ManifestPath(project.ActiveDir(), ownership.slug)
-		before, err := os.ReadFile(manifestPath)
+		if err := project.Save(manifestPath, manifest); err != nil {
+			t.Fatal(err)
+		}
+		content, err := os.ReadFile(manifestPath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		managed = append(managed, managedProject{
-			slug: ownership.slug, branch: branch, worktree: worktree, before: before,
-		})
+		before[ownership.slug] = content
 	}
 
 	stdout, stderr, err := captureGCOutput(t, runGC)
-	if err != nil {
-		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
 	}
 	for _, want := range []string{
 		"program-only",
-		"relay program worker cleanup delivery <item>",
 		"item-only",
-		"relay program worker cleanup <program> worker-1",
+		"program ownership requires both program and program_item",
+		"preserving project",
 	} {
-		if !strings.Contains(stdout, want) {
-			t.Fatalf("stdout %q is missing %q", stdout, want)
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
 		}
 	}
-	for _, item := range managed {
-		assertGCProjectUnchanged(
-			t,
-			project.ManifestPath(project.ActiveDir(), item.slug),
-			item.before,
-			fixture.repo,
-			item.branch,
-			item.worktree,
-		)
+	if strings.Contains(stdout, "relay program worker cleanup") {
+		t.Fatalf("stdout %q gives worker guidance for malformed ownership", stdout)
+	}
+	for slug, expected := range before {
+		path := project.ManifestPath(project.ActiveDir(), slug)
+		after, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if !reflect.DeepEqual(after, expected) ||
+			pathExists(filepath.Join(project.ArchivedDir(), slug)) {
+			t.Fatalf("GC changed partially-owned project %s", slug)
+		}
 	}
 }
 

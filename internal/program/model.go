@@ -127,20 +127,22 @@ type Program struct {
 
 // WorkItem is one governed change within a program.
 type WorkItem struct {
-	ID            string     `json:"id"`
-	Kind          ItemKind   `json:"kind"`
-	Title         string     `json:"title"`
-	Priority      Priority   `json:"priority"`
-	Status        ItemStatus `json:"status"`
-	Dependencies  []string   `json:"dependencies"`
-	ContractRefs  []string   `json:"contract_refs"`
-	Repo          string     `json:"repo"`
-	ProjectSlug   string     `json:"project_slug,omitempty"`
-	PRRef         string     `json:"pr_ref,omitempty"`
-	PRGrantedAt   string     `json:"pr_granted_at,omitempty"`
-	PRGrantedBy   string     `json:"pr_granted_by,omitempty"`
-	Notes         []string   `json:"notes"`
-	BlockedReason string     `json:"blocked_reason,omitempty"`
+	ID              string     `json:"id"`
+	Kind            ItemKind   `json:"kind"`
+	Title           string     `json:"title"`
+	Priority        Priority   `json:"priority"`
+	Status          ItemStatus `json:"status"`
+	Dependencies    []string   `json:"dependencies"`
+	ContractRefs    []string   `json:"contract_refs"`
+	Repo            string     `json:"repo"`
+	ProjectSlug     string     `json:"project_slug,omitempty"`
+	ProjectBranch   string     `json:"project_branch,omitempty"`
+	ProjectWorktree string     `json:"project_worktree,omitempty"`
+	PRRef           string     `json:"pr_ref,omitempty"`
+	PRGrantedAt     string     `json:"pr_granted_at,omitempty"`
+	PRGrantedBy     string     `json:"pr_granted_by,omitempty"`
+	Notes           []string   `json:"notes"`
+	BlockedReason   string     `json:"blocked_reason,omitempty"`
 	// FollowUpOf names the item whose merged, approved, or queued pull request
 	// this item was created to change. RequestHash is the SHA-256 of the
 	// normalized request that created it, so an identical retry reuses this
@@ -336,6 +338,17 @@ func (p Program) Validate() error {
 					projectSlugs[item.ProjectSlug] = item.ID
 				}
 			}
+		}
+		if (item.ProjectBranch == "") != (item.ProjectWorktree == "") {
+			errs = append(errs, fmt.Errorf(
+				"item %q dispatch identity requires both project_branch and project_worktree",
+				item.ID,
+			))
+		}
+		if item.ProjectBranch != "" && item.ProjectSlug == "" {
+			errs = append(errs, fmt.Errorf(
+				"item %q dispatch identity requires project_slug", item.ID,
+			))
 		}
 		if item.PRRef != "" && item.ProjectSlug == "" {
 			errs = append(errs, fmt.Errorf("item %q has pr_ref without project_slug", item.ID))

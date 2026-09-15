@@ -46,17 +46,19 @@ func runGC() error {
 			continue
 		}
 		m := loadResult.Manifest
-		if m.Program != "" || m.ProgramItem != "" {
-			programSlug, itemID := m.Program, m.ProgramItem
-			if programSlug == "" {
-				programSlug = "<program>"
-			}
-			if itemID == "" {
-				itemID = "<item>"
-			}
+		if (m.Program == "") != (m.ProgramItem == "") {
+			ui.Warn(
+				"invalid project metadata %s: program ownership requires both program and program_item; "+
+					"preserving project %s for manual repair",
+				loadResult.Path, loadResult.Name,
+			)
+			hadErrors = true
+			continue
+		}
+		if m.Program != "" {
 			fmt.Printf(
 				"[relay] Skipping %s: managed by a program; use 'relay program worker cleanup %s %s'.\n",
-				loadResult.Name, programSlug, itemID,
+				loadResult.Name, m.Program, m.ProgramItem,
 			)
 			continue
 		}

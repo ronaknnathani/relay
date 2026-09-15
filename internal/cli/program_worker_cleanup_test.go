@@ -44,11 +44,17 @@ func createCleanupFixture(t *testing.T) (program.Program, program.WorkItem, proj
 	if err := p.DispatchItem(item.ID, childSlug); err != nil {
 		t.Fatal(err)
 	}
+	branch := "user/" + childSlug
+	worktree := addArchiveWorktree(t, repo, childSlug, branch)
+	for i := range p.Items {
+		if p.Items[i].ID == item.ID {
+			p.Items[i].ProjectBranch = branch
+			p.Items[i].ProjectWorktree = worktree
+		}
+	}
 	if err := program.Create(p); err != nil {
 		t.Fatal(err)
 	}
-	branch := "user/" + childSlug
-	worktree := addArchiveWorktree(t, repo, childSlug, branch)
 	manifest := project.Manifest{
 		Slug: childSlug, Title: item.Title, Repo: repo, Agent: "copilot",
 		Branch: branch, BaseBranch: "main", Worktree: &worktree,
@@ -600,7 +606,7 @@ func TestWorkerCleanupRejectsInvalidRequestedProjectSlugWithoutChangingVictim(t 
 		}
 	}
 
-	_, _, _, err := loadProgramCleanupTarget(p, item.ID)
+	_, _, _, _, err := loadProgramCleanupTarget(p, item.ID)
 	if err == nil || !strings.Contains(err.Error(), "invalid slug") {
 		t.Fatalf("loadProgramCleanupTarget error = %v, want invalid slug rejection", err)
 	}
@@ -926,18 +932,15 @@ func TestWorkerCleanupExplainsHowToCloseALegacyWatcherTab(t *testing.T) {
 
 func TestWorkerCleanupReturnsIncompleteWhenBranchDeletionFails(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
-	actualWorktree := *manifest.Worktree
-	missingWorktree := actualWorktree + "-missing"
-	manifest.Worktree = &missingWorktree
-	if err := project.Save(
-		project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest,
-	); err != nil {
-		t.Fatal(err)
-	}
 	client := &fakeHerdrClient{}
 	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
 	installManagedHerdrFakes(t, client)
 	installStubWatcherState(t, manifest.Slug, false)
+	previous := archiveForceDeleteBranchAt
+	archiveForceDeleteBranchAt = func(string, string, string) error {
+		return errors.New("injected branch deletion failure")
+	}
+	t.Cleanup(func() { archiveForceDeleteBranchAt = previous })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
 	if err != nil {
@@ -952,8 +955,8 @@ func TestWorkerCleanupReturnsIncompleteWhenBranchDeletionFails(t *testing.T) {
 	if result.NextCommand != wantCommand {
 		t.Fatalf("next command = %q, want %q", result.NextCommand, wantCommand)
 	}
-	if !gitx.BranchExists(manifest.Repo, manifest.Branch) || !pathExists(actualWorktree) {
-		t.Fatal("branch deletion failure did not preserve the registered worktree and branch")
+	if !gitx.BranchExists(manifest.Repo, manifest.Branch) || pathExists(*manifest.Worktree) {
+		t.Fatal("branch deletion failure did not preserve the branch after removing the worktree")
 	}
 }
 
@@ -1014,19 +1017,15 @@ func TestWorkerCleanupPreservesWorktreeAttachedToWrongBranch(t *testing.T) {
 	client := &fakeHerdrClient{}
 	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
 	installManagedHerdrFakes(t, client)
-	installStubWatcherState(t, manifest.Slug, false)
+	stopped := installStubWatcherState(t, manifest.Slug, false)
 
-	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("worker cleanup: %v", err)
+	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), "attached to") ||
+		!strings.Contains(err.Error(), "refs/heads/"+manifest.Branch) {
+		t.Fatalf("worker cleanup error = %v, want worktree branch mismatch", err)
 	}
-	result := decodeCleanupOutput(t, out)
-	if result.Status != cleanupIncomplete || result.Archived {
-		t.Fatalf("result = %+v, want active incomplete cleanup", result)
-	}
-	if !strings.Contains(result.Error, "attached to") ||
-		!strings.Contains(result.Error, "refs/heads/"+manifest.Branch) {
-		t.Fatalf("cleanup error = %q, want manifest branch mismatch", result.Error)
+	if len(*stopped) != 0 {
+		t.Fatalf("cleanup stopped the watcher before validating resources: %v", *stopped)
 	}
 	if !pathExists(*manifest.Worktree) || !gitx.BranchExists(manifest.Repo, victimBranch) {
 		t.Fatal("worker cleanup removed the worktree or branch belonging to another project")
@@ -1082,19 +1081,11 @@ func TestWorkerCleanupReportsArchivedAfterConcurrentArchive(t *testing.T) {
 	installStubWatcherState(t, manifest.Slug, false)
 
 	previous := programWorkerArchiveProject
-	programWorkerArchiveProject = func(slug string, force bool) (archiveResult, error) {
-		active, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
-		if err != nil {
+	programWorkerArchiveProject = func(proof archiveProofSnapshot, force bool) (archiveResult, error) {
+		if _, err := archiveProjectWithProof(proof, force); err != nil {
 			return archiveResult{}, err
 		}
-		decision, err := decideArchive(active, slug, force)
-		if err != nil {
-			return archiveResult{}, err
-		}
-		if _, err := archiveProject(slug, force); err != nil {
-			return archiveResult{}, err
-		}
-		return archiveProjectWithProof(decision.proof, force)
+		return archiveProjectWithProof(proof, force)
 	}
 	t.Cleanup(func() { programWorkerArchiveProject = previous })
 
@@ -1202,18 +1193,15 @@ func TestWorkerCleanupReportsArchivedAfterManifestInstallRollbackFailure(t *test
 
 func TestWorkerCleanupPreservesWatcherRetryWhenBranchDeletionAlsoFails(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
-	actualWorktree := *manifest.Worktree
-	missingWorktree := actualWorktree + "-missing"
-	manifest.Worktree = &missingWorktree
-	if err := project.Save(
-		project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest,
-	); err != nil {
-		t.Fatal(err)
-	}
 	client := &fakeHerdrClient{closeErr: errors.New("herdr refused to close the watcher tab")}
 	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
 	installManagedHerdrFakes(t, client)
 	installCompletedWatcherState(t, manifest.Slug)
+	previous := archiveForceDeleteBranchAt
+	archiveForceDeleteBranchAt = func(string, string, string) error {
+		return errors.New("injected branch deletion failure")
+	}
+	t.Cleanup(func() { archiveForceDeleteBranchAt = previous })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
 	if err != nil {
@@ -1233,26 +1221,98 @@ func TestWorkerCleanupPreservesWatcherRetryWhenBranchDeletionAlsoFails(t *testin
 	if !strings.Contains(warnings, branchDelete) {
 		t.Fatalf("warnings = %q, want branch deletion guidance %q", warnings, branchDelete)
 	}
-	if !gitx.BranchExists(manifest.Repo, manifest.Branch) || !pathExists(actualWorktree) {
-		t.Fatal("combined cleanup failure did not preserve the registered worktree and branch")
+	if !gitx.BranchExists(manifest.Repo, manifest.Branch) || pathExists(*manifest.Worktree) {
+		t.Fatal("combined cleanup failure did not preserve the branch after removing the worktree")
 	}
+}
 
-	client.closeErr = nil
-	out, err = runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+func TestWorkerCleanupRejectsRewrittenChildManifestBeforeSideEffects(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	victimBranch := "user/victim"
+	victimWorktree := addArchiveWorktree(t, manifest.Repo, "victim", victimBranch)
+	commitArchiveFile(t, victimWorktree, "victim.txt", "keep\n", "victim work")
+	manifest.Branch = victimBranch
+	manifest.Worktree = &victimWorktree
+	if err := project.Save(
+		project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) {
+		return []herdr.Agent{liveWorkerAgent(manifest, herdr.StatusIdle)}, nil
+	}
+	installManagedHerdrFakes(t, client)
+	stopped := installStubWatcherState(t, manifest.Slug, true)
+
+	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), "resource identity does not match dispatch") {
+		t.Fatalf("worker cleanup error = %v, want rewritten resource rejection", err)
+	}
+	if len(*stopped) != 0 || len(client.exited) != 0 ||
+		len(client.closedTabs) != 0 || len(client.closedPanes) != 0 {
+		t.Fatalf(
+			"cleanup performed side effects: stopped=%v exited=%v tabs=%v panes=%v",
+			*stopped, client.exited, client.closedTabs, client.closedPanes,
+		)
+	}
+	if !pathExists(victimWorktree) || !gitx.BranchExists(manifest.Repo, victimBranch) {
+		t.Fatal("cleanup removed victim resources from the rewritten manifest")
+	}
+}
+
+func TestWorkerCleanupRejectsRewrittenChildRepositoryBeforeSideEffects(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	manifest.Repo = newTestRepo(t)
+	if err := project.Save(
+		project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{}
+	installManagedHerdrFakes(t, client)
+	stopped := installStubWatcherState(t, manifest.Slug, true)
+
+	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), "repository identity does not match dispatch") {
+		t.Fatalf("worker cleanup error = %v, want rewritten repository rejection", err)
+	}
+	if len(*stopped) != 0 || len(client.exited) != 0 ||
+		len(client.closedTabs) != 0 || len(client.closedPanes) != 0 {
+		t.Fatalf(
+			"cleanup performed side effects: stopped=%v exited=%v tabs=%v panes=%v",
+			*stopped, client.exited, client.closedTabs, client.closedPanes,
+		)
+	}
+}
+
+func TestWorkerCleanupRefusesLegacyItemWithoutDispatchIdentity(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	path := program.ManifestPath(program.ActiveDir(), p.Slug)
+	loaded, err := program.Load(path)
 	if err != nil {
-		t.Fatalf("retry cleanup: %v", err)
+		t.Fatal(err)
 	}
-	retried := decodeCleanupOutput(t, out)
-	if retried.Status != cleanupIncomplete || !retried.AlreadyArchived ||
-		retried.NextCommand != branchDelete {
-		t.Fatalf("retry result = %+v, want manual branch cleanup %q", retried, branchDelete)
+	for i := range loaded.Items {
+		if loaded.Items[i].ID == item.ID {
+			loaded.Items[i].ProjectBranch = ""
+			loaded.Items[i].ProjectWorktree = ""
+		}
 	}
-	if !strings.Contains(retried.Error, branchDelete) ||
-		!strings.Contains(retried.Error, "will not retry removal") {
-		t.Fatalf("retry error = %q, want claimed branch guidance", retried.Error)
+	if err := program.Save(path, loaded); err != nil {
+		t.Fatal(err)
 	}
-	if !gitx.BranchExists(manifest.Repo, manifest.Branch) || !pathExists(actualWorktree) {
-		t.Fatal("retry reported clean while branch/worktree cleanup remained")
+	client := &fakeHerdrClient{}
+	installManagedHerdrFakes(t, client)
+	stopped := installStubWatcherState(t, manifest.Slug, true)
+
+	_, err = runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), "no durable dispatch branch/worktree identity") {
+		t.Fatalf("worker cleanup error = %v, want missing dispatch identity rejection", err)
+	}
+	if len(*stopped) != 0 || !pathExists(*manifest.Worktree) ||
+		!gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("cleanup changed resources without durable dispatch identity")
 	}
 }
 
