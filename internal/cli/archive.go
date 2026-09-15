@@ -580,37 +580,37 @@ func archiveProjectWithProof(proof archiveProofSnapshot, force bool) (archiveRes
 				result.ArchivedPath = ""
 				return result, fmt.Errorf("claim worktree %s cleanup: %w", proof.Worktree, err)
 			}
-		}
-		if err := archiveWorktreeRemove(proof.Repository, proof.Worktree, force); err != nil {
-			present, unchanged, inspectErr := archiveWorktreeStateAfterFailure(proof)
-			if inspectErr == nil && unchanged {
-				if rollbackErr := rollbackMetadata(); rollbackErr != nil {
-					err = fmt.Errorf("%w; rollback archive metadata: %v", err, rollbackErr)
+			if err := archiveWorktreeRemove(proof.Repository, proof.Worktree, force); err != nil {
+				present, unchanged, inspectErr := archiveWorktreeStateAfterFailure(proof)
+				if inspectErr == nil && unchanged {
+					if rollbackErr := rollbackMetadata(); rollbackErr != nil {
+						err = fmt.Errorf("%w; rollback archive metadata: %v", err, rollbackErr)
+						return result, err
+					}
+					result.ArchivedPath = ""
+					if !force {
+						return result, fmt.Errorf(
+							"%w\nhint: use --force to remove worktrees with untracked/modified files", err,
+						)
+					}
 					return result, err
 				}
-				result.ArchivedPath = ""
-				if !force {
-					return result, fmt.Errorf(
-						"%w\nhint: use --force to remove worktrees with untracked/modified files", err,
-					)
+				if inspectErr == nil {
+					result.WorktreeRemoved = !present
 				}
-				return result, err
+				return result, fmt.Errorf(
+					"remove worktree %s after claiming cleanup: %w; cleanup outcome is ambiguous and "+
+						"will not be retried automatically; inspect the archived project and worktree manually",
+					proof.Worktree, errors.Join(err, inspectErr),
+				)
 			}
-			if inspectErr == nil {
-				result.WorktreeRemoved = !present
+			result.WorktreeRemoved = true
+			if err := consumeArchivedWorktreeProof(&m); err != nil {
+				return result, fmt.Errorf(
+					"worktree %s was removed, but its archived cleanup proof could not be consumed: %w",
+					proof.Worktree, err,
+				)
 			}
-			return result, fmt.Errorf(
-				"remove worktree %s after claiming cleanup: %w; cleanup outcome is ambiguous and "+
-					"will not be retried automatically; inspect the archived project and worktree manually",
-				proof.Worktree, errors.Join(err, inspectErr),
-			)
-		}
-		result.WorktreeRemoved = true
-		if err := consumeArchivedWorktreeProof(&m); err != nil {
-			return result, fmt.Errorf(
-				"worktree %s was removed, but its archived cleanup proof could not be consumed: %w",
-				proof.Worktree, err,
-			)
 		}
 	}
 

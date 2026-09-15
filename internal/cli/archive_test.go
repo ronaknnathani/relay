@@ -189,6 +189,32 @@ func TestArchiveDoesNotRemoveWorktreeWhenCleanupClaimCannotBeSaved(t *testing.T)
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
 
+func TestArchiveDoesNotInvokeWorktreeRemovalAfterAbsentProof(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "worktree-appeared-after-proof"
+	branch := "user/worktree-appeared-after-proof"
+	worktree := filepath.Join(repo, ".worktrees", slug)
+	runArchiveGit(t, repo, "branch", branch, "HEAD")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+
+	previous := archiveWorktreeRemove
+	removeCalls := 0
+	archiveWorktreeRemove = func(string, string, bool) error {
+		removeCalls++
+		return errors.New("destructive removal invoked for absent proof")
+	}
+	t.Cleanup(func() { archiveWorktreeRemove = previous })
+
+	result, err := archiveProject(slug, true)
+	if err != nil {
+		t.Fatalf("archiveProject: %v", err)
+	}
+	if removeCalls != 0 || result.WorktreeRemoved {
+		t.Fatalf("archive result = %+v, want absent-proof worktree preserved", result)
+	}
+}
+
 func TestArchiveReturnsPartialResultWhenWorktreeCompletionCannotBeSaved(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
