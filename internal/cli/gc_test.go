@@ -195,7 +195,7 @@ func TestGCKeepsUpstreamMergedBranchWhenDetachedWorktreeHeadDiverges(t *testing.
 	}
 }
 
-func TestGCArchivesMergedBranchWithUnregisteredLeftoverWorktreeDirectory(t *testing.T) {
+func TestGCPreservesMergedBranchWithExistingUnregisteredWorktreeDirectory(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")
 	slug := "upstream-leftover-worktree"
@@ -205,15 +205,26 @@ func TestGCArchivesMergedBranchWithUnregisteredLeftoverWorktreeDirectory(t *test
 	if err := os.MkdirAll(worktree, 0755); err != nil {
 		t.Fatal(err)
 	}
+	marker := filepath.Join(worktree, "keep.txt")
+	if err := os.WriteFile(marker, []byte("do not delete\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := project.ManifestPath(project.ActiveDir(), slug)
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, stderr, err := captureGCOutput(t, runGC)
-	if err != nil {
-		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
 	}
-	if pathExists(filepath.Join(project.ActiveDir(), slug)) ||
-		pathExists(worktree) ||
-		gitx.BranchExists(fixture.repo, branch) {
-		t.Fatal("GC left merged project artifacts after ignoring an unregistered leftover directory")
+	if !strings.Contains(stderr, "exists but is not registered") {
+		t.Fatalf("stderr %q is missing the unregistered worktree diagnostic", stderr)
+	}
+	assertGCProjectUnchanged(t, manifestPath, before, fixture.repo, branch, worktree)
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "do not delete\n" {
+		t.Fatalf("unregistered worktree contents changed: data=%q err=%v", data, err)
 	}
 }
 

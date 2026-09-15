@@ -79,7 +79,7 @@ func WorktreeHead(repo, dir string) (sha string, found bool, err error) {
 		return "", false, err
 	}
 	if !registered {
-		return "", false, nil
+		return "", false, fmt.Errorf("worktree path %s exists but is not registered in %s", dir, repo)
 	}
 	out, err := exec.Command("git", "-C", dir, "rev-parse", "--verify", "HEAD^{commit}").CombinedOutput()
 	if err != nil {
@@ -339,18 +339,18 @@ func WorktreeClean(dir string) (bool, error) {
 }
 
 // WorktreeRemove removes the worktree at dir. If force is true, includes --force.
-// When dir is not a registered worktree (e.g. setup was interrupted before the
-// worktree finished, or it was removed manually), it cleans up any leftover
-// directory and prunes stale metadata instead of failing, so callers such as
-// `relay archive` can still make progress.
+// An absent unregistered path is safe to prune, but an existing unregistered
+// path is preserved because Relay cannot prove that it owns its contents.
 func WorktreeRemove(repo, dir string, force bool) error {
 	registered, err := IsWorktree(repo, dir)
 	if err != nil {
 		return err
 	}
 	if !registered {
-		if rmErr := os.RemoveAll(dir); rmErr != nil {
-			return fmt.Errorf("remove leftover worktree dir %s: %w", dir, rmErr)
+		if _, statErr := os.Stat(dir); statErr == nil {
+			return fmt.Errorf("worktree path %s exists but is not registered in %s", dir, repo)
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("stat worktree %s: %w", dir, statErr)
 		}
 		if out, pruneErr := exec.Command("git", "-C", repo, "worktree", "prune").CombinedOutput(); pruneErr != nil {
 			return gitCommandError("git worktree prune", pruneErr, out)

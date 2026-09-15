@@ -51,33 +51,36 @@ func TestWorktreeRemoveRegistered(t *testing.T) {
 }
 
 // TestWorktreeRemoveMissingWorktree reproduces the interrupted-setup case: the
-// manifest points at a path that git does not consider a working tree. Removal
-// must succeed rather than failing with "is not a working tree".
+// manifest points at a path that git does not consider a working tree.
 func TestWorktreeRemoveMissingWorktree(t *testing.T) {
 	repo := initRepo(t)
 	dir := filepath.Join(repo, ".worktrees", "never-registered")
 
-	// Case 1: the directory does not exist at all.
 	if err := WorktreeRemove(repo, dir, false); err != nil {
 		t.Fatalf("WorktreeRemove (absent dir): %v", err)
 	}
+}
 
-	// Case 2: a leftover directory exists but was never registered as a worktree.
+func TestWorktreeRemovePreservesExistingUnregisteredDirectory(t *testing.T) {
+	repo := initRepo(t)
+	dir := filepath.Join(repo, ".worktrees", "never-registered")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatalf("mkdir leftover: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "stale"), []byte("x"), 0644); err != nil {
+	marker := filepath.Join(dir, "stale")
+	if err := os.WriteFile(marker, []byte("x"), 0644); err != nil {
 		t.Fatalf("write leftover: %v", err)
 	}
-	if err := WorktreeRemove(repo, dir, false); err != nil {
-		t.Fatalf("WorktreeRemove (leftover dir): %v", err)
+	err := WorktreeRemove(repo, dir, false)
+	if err == nil || !strings.Contains(err.Error(), "exists but is not registered") {
+		t.Fatalf("WorktreeRemove error = %v, want unregistered path diagnostic", err)
 	}
-	if _, err := os.Stat(dir); !os.IsNotExist(err) {
-		t.Errorf("leftover dir still present: %v", err)
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "x" {
+		t.Fatalf("unregistered directory changed: data=%q err=%v", data, err)
 	}
 }
 
-func TestWorktreeHeadTreatsUnregisteredDirectoryAsAbsent(t *testing.T) {
+func TestWorktreeHeadRejectsExistingUnregisteredDirectory(t *testing.T) {
 	repo := initRepo(t)
 	dir := filepath.Join(repo, ".worktrees", "leftover")
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -85,8 +88,8 @@ func TestWorktreeHeadTreatsUnregisteredDirectoryAsAbsent(t *testing.T) {
 	}
 
 	sha, found, err := WorktreeHead(repo, dir)
-	if err != nil {
-		t.Fatalf("WorktreeHead: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "exists but is not registered") {
+		t.Fatalf("WorktreeHead error = %v, want unregistered path diagnostic", err)
 	}
 	if found || sha != "" {
 		t.Fatalf("WorktreeHead = (%q, %t), want empty, false", sha, found)
