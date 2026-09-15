@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -105,6 +107,103 @@ func TestHandlerRejectsMalformedDetailItemWithoutBuildingSnapshot(t *testing.T) 
 	}
 	if got := builds.Load(); got != 0 {
 		t.Fatalf("snapshot builds = %d, want 0", got)
+	}
+}
+
+func TestHandlerServesOneArtifactWithETagAndStatusMapping(t *testing.T) {
+	fixture := newReferenceProgramFixture(t)
+	errorPath := filepath.Join(fixture.projectsDir, fixture.program.Items[0].ProjectSlug, "context.md")
+	if err := os.Remove(errorPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(errorPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	missingPath := filepath.Join(fixture.projectsDir, fixture.program.Items[0].ProjectSlug, "follow-ups.md")
+	if err := os.Remove(missingPath); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(HandlerOptions{
+		Slug: fixture.program.Slug,
+		Port: 4321,
+		Builder: func(slug, detail string) (programview.Snapshot, error) {
+			return programview.Build(slug, programview.Options{DetailItem: detail})
+		},
+	})
+
+	request := httptest.NewRequest(http.MethodGet,
+		"http://localhost:4321/api/artifact?kind=task&item=w1&name=assignment.md", nil)
+	request.Host = "localhost:4321"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("artifact status = %d: %s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Content-Security-Policy") == "" ||
+		response.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+		t.Fatalf("artifact headers = %v", response.Header())
+	}
+	etag := response.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("artifact ETag is empty")
+	}
+	var envelope programview.ArtifactResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.State != programview.ArtifactStateLoaded ||
+		envelope.Artifact.Text == nil || len(*envelope.Artifact.Text) != 128*1024 {
+		t.Fatalf("artifact response = %+v", envelope)
+	}
+	if response.Body.Len() > 192*1024 {
+		t.Fatalf("artifact response bytes = %d, want <= %d", response.Body.Len(), 192*1024)
+	}
+	if strings.Contains(response.Body.String(), strings.Repeat("p", 1024)) {
+		t.Fatal("artifact response included an unrequested file body")
+	}
+
+	request = httptest.NewRequest(http.MethodGet,
+		"http://localhost:4321/api/artifact?kind=task&item=w1&name=assignment.md", nil)
+	request.Host = "localhost:4321"
+	request.Header.Set("If-None-Match", etag)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotModified || response.Body.Len() != 0 {
+		t.Fatalf("conditional response = %d %q", response.Code, response.Body.String())
+	}
+
+	for _, test := range []struct {
+		name   string
+		path   string
+		status int
+		state  programview.ArtifactState
+	}{
+		{name: "invalid kind", path: "/api/artifact?kind=other", status: http.StatusBadRequest},
+		{name: "invalid task name", path: "/api/artifact?kind=task&item=w1&name=../goal.md", status: http.StatusBadRequest},
+		{name: "unknown task", path: "/api/artifact?kind=task&item=w999&name=task.md", status: http.StatusNotFound},
+		{name: "unknown contract", path: "/api/artifact?kind=contract&ref=missing@v1", status: http.StatusNotFound},
+		{name: "missing", path: "/api/artifact?kind=task&item=w1&name=follow-ups.md", status: http.StatusOK, state: programview.ArtifactStateMissing},
+		{name: "read error", path: "/api/artifact?kind=task&item=w1&name=context.md", status: http.StatusInternalServerError, state: programview.ArtifactStateError},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://localhost:4321"+test.path, nil)
+			request.Host = "localhost:4321"
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body.String())
+			}
+			if test.state == "" {
+				return
+			}
+			var got programview.ArtifactResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.State != test.state {
+				t.Fatalf("state = %q, want %q", got.State, test.state)
+			}
+		})
 	}
 }
 

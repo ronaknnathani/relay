@@ -2,8 +2,10 @@
 package programui
 
 import (
+	"crypto/sha256"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
@@ -11,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ronaknnathani/relay/internal/programview"
 )
 
 const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
@@ -20,26 +24,37 @@ var embeddedAssets embed.FS
 
 // HandlerOptions configures the read-only Program UI handler.
 type HandlerOptions struct {
-	Slug    string
-	Port    int
-	Builder Builder
-	Now     func() time.Time
+	Slug           string
+	Port           int
+	Builder        Builder
+	ArtifactLoader ArtifactLoader
+	Now            func() time.Time
 }
+
+// ArtifactLoader reads one allowlisted program artifact.
+type ArtifactLoader func(string, programview.ArtifactSelector) (programview.ArtifactResponse, error)
 
 // NewHandler creates the Program UI HTTP handler.
 func NewHandler(options HandlerOptions) http.Handler {
 	cache := newSnapshotCache(2*time.Second, options.Now, options.Builder)
-	return newHandler(options.Slug, strconv.Itoa(options.Port), cache)
+	loader := options.ArtifactLoader
+	if loader == nil {
+		loader = func(slug string, selector programview.ArtifactSelector) (programview.ArtifactResponse, error) {
+			return programview.LoadArtifact(slug, selector, 0)
+		}
+	}
+	return newHandler(options.Slug, strconv.Itoa(options.Port), cache, loader)
 }
 
-func newHandler(slug, port string, cache *snapshotCache) *handler {
-	return &handler{slug: slug, port: port, cache: cache}
+func newHandler(slug, port string, cache *snapshotCache, artifactLoader ArtifactLoader) *handler {
+	return &handler{slug: slug, port: port, cache: cache, artifactLoader: artifactLoader}
 }
 
 type handler struct {
-	slug  string
-	port  string
-	cache *snapshotCache
+	slug           string
+	port           string
+	cache          *snapshotCache
+	artifactLoader ArtifactLoader
 }
 
 func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -62,6 +77,8 @@ func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		h.serveAsset(response, request, "assets/app.js", "text/javascript; charset=utf-8")
 	case "/api/program":
 		h.serveProgram(response, request)
+	case "/api/artifact":
+		h.serveArtifact(response, request)
 	default:
 		http.NotFound(response, request)
 	}
@@ -108,6 +125,102 @@ func (h *handler) serveProgram(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	if err := json.NewEncoder(response).Encode(snapshot); err != nil {
+		return
+	}
+}
+
+func (h *handler) serveArtifact(response http.ResponseWriter, request *http.Request) {
+	selector, err := artifactSelector(request)
+	if err != nil {
+		h.writeArtifactError(response, request, http.StatusBadRequest, err)
+		return
+	}
+	if h.artifactLoader == nil {
+		h.writeArtifactError(response, request, http.StatusInternalServerError,
+			errors.New("artifact loader is not configured"))
+		return
+	}
+	envelope, err := h.artifactLoader(h.slug, selector)
+	if err != nil {
+		switch {
+		case errors.Is(err, programview.ErrInvalidArtifactSelector):
+			h.writeArtifactError(response, request, http.StatusBadRequest, err)
+		case errors.Is(err, programview.ErrArtifactSelectorNotFound):
+			h.writeArtifactError(response, request, http.StatusNotFound, err)
+		default:
+			if envelope.State != programview.ArtifactStateError {
+				envelope.State = programview.ArtifactStateError
+				envelope.Error = err.Error()
+			}
+			h.writeArtifactJSON(response, request, http.StatusInternalServerError, envelope)
+		}
+		return
+	}
+	h.writeArtifactJSON(response, request, http.StatusOK, envelope)
+}
+
+func artifactSelector(request *http.Request) (programview.ArtifactSelector, error) {
+	query := request.URL.Query()
+	kind := programview.ArtifactKind(query.Get("kind"))
+	switch kind {
+	case programview.ArtifactKindTask:
+		item, ok := normalizeDetailItem(query.Get("item"))
+		if !ok || item == "" || query.Get("name") == "" || query.Get("ref") != "" {
+			return programview.ArtifactSelector{}, fmt.Errorf(
+				"%w: task requests require item and name only", programview.ErrInvalidArtifactSelector,
+			)
+		}
+		return programview.ArtifactSelector{Kind: kind, Item: item, Name: query.Get("name")}, nil
+	case programview.ArtifactKindContract:
+		if query.Get("ref") == "" || query.Get("item") != "" || query.Get("name") != "" {
+			return programview.ArtifactSelector{}, fmt.Errorf(
+				"%w: contract requests require ref only", programview.ErrInvalidArtifactSelector,
+			)
+		}
+		return programview.ArtifactSelector{Kind: kind, Ref: query.Get("ref")}, nil
+	default:
+		return programview.ArtifactSelector{}, fmt.Errorf(
+			"%w: kind must be task or contract", programview.ErrInvalidArtifactSelector,
+		)
+	}
+}
+
+func (h *handler) writeArtifactError(
+	response http.ResponseWriter,
+	request *http.Request,
+	status int,
+	err error,
+) {
+	h.writeArtifactJSON(response, request, status, programview.ArtifactResponse{
+		State: programview.ArtifactStateError, Error: err.Error(),
+	})
+}
+
+func (h *handler) writeArtifactJSON(
+	response http.ResponseWriter,
+	request *http.Request,
+	status int,
+	envelope programview.ArtifactResponse,
+) {
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		http.Error(response, fmt.Sprintf("encode artifact response: %v", err), http.StatusInternalServerError)
+		return
+	}
+	response.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if status == http.StatusOK {
+		etag := fmt.Sprintf(`"%x"`, sha256.Sum256(data))
+		response.Header().Set("ETag", etag)
+		if request.Header.Get("If-None-Match") == etag {
+			response.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+	response.WriteHeader(status)
+	if request.Method == http.MethodHead {
+		return
+	}
+	if _, err := response.Write(data); err != nil {
 		return
 	}
 }
