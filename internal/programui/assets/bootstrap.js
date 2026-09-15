@@ -43,22 +43,47 @@
       `Dependency flow: ${plural(nodes.length, "task")}, ${plural(edges.length, "dependency link")}.`,
     );
 
-    const stage = document.createElement("div");
-    stage.className = "stage";
-    stage.dataset.stage = "0";
-    nodes.slice(0, 2).forEach((node, index) => {
-      const card = document.createElement("button");
-      card.className = "card";
-      card.type = "button";
-      card.dataset.item = node.id;
-      card.dataset.focusKey = `card:${node.id}`;
-      card.dataset.stage = "0";
-      card.dataset.lane = node.lane || "pending";
-      card.tabIndex = index === 0 ? 0 : -1;
-      card.textContent = `${node.title || "Untitled task"}\n${node.id}`;
-      stage.append(card);
+    const visibleNodes = nodes.length <= 128 ? nodes : nodes.slice(0, 2);
+    const visibleIDs = new Set(visibleNodes.map((node) => node.id));
+    const byID = new Map(visibleNodes.map((node) => [node.id, node]));
+    let stages = values(graphData.layers)
+      .map((layer) => values(layer).filter((id) => visibleIDs.has(id)))
+      .filter((layer) => layer.length > 0);
+    if (stages.length === 0) {
+      const grouped = [];
+      visibleNodes.forEach((node) => {
+        const layer = Math.max(0, count(node.layer));
+        while (grouped.length <= layer) {
+          grouped.push([]);
+        }
+        grouped[layer].push(node.id);
+      });
+      stages = grouped.filter((layer) => layer.length > 0);
+    }
+    const fragment = new DocumentFragment();
+    let position = 0;
+    stages.forEach((ids, stageIndex) => {
+      const stage = document.createElement("div");
+      stage.className = "stage";
+      stage.dataset.stage = String(stageIndex);
+      stage.dataset.label = `Stage ${stageIndex + 1} · ${plural(ids.length, "task")}`;
+      ids.forEach((id) => {
+        const node = byID.get(id);
+        const card = document.createElement("button");
+        card.className = "card";
+        card.type = "button";
+        card.dataset.item = node.id;
+        card.dataset.focusKey = `card:${node.id}`;
+        card.dataset.stage = String(stageIndex);
+        card.dataset.lane = node.lane || "pending";
+        card.tabIndex = position === 0 ? 0 : -1;
+        card.textContent = `${node.title || "Untitled task"}\n${node.id}`;
+        stage.append(card);
+        position += 1;
+      });
+      fragment.append(stage);
     });
-    graphNodes.replaceChildren(stage);
+    graphNodes.replaceChildren(fragment);
   }
 
   const cards = () => Array.from(graphNodes.querySelectorAll(".card"));

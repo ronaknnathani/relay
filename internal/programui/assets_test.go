@@ -234,6 +234,8 @@ func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
 	requireContains(t, "bootstrap.js", bootstrap, []string{
 		`document.getElementById("app-script")`,
 		`window.__relayBootstrapCleanup`,
+		`const visibleNodes = nodes.length <= 128 ? nodes : nodes.slice(0, 2)`,
+		`stage.dataset.label =`,
 	})
 	requireAbsent(t, "bootstrap.js", bootstrap, []string{
 		"window.setTimeout",

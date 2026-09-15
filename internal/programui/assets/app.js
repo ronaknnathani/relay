@@ -852,6 +852,19 @@ function renderRoadmap() {
     ? new Map(nodes.map((node) => [node.id, node]))
     : null;
   const hasSelection = Boolean(selectedItem());
+  const existingCards = Array.from(dom.graphNodes.querySelectorAll(".card"));
+  if (existingCards.length === nodes.length &&
+      existingCards.every((card) => nodes.some((node) => node.id === card.dataset.item))) {
+    existingCards.forEach((card, index) => {
+      const id = card.dataset.item;
+      const item = itemByID(id);
+      const node = item || (nodesByID ? nodesByID.get(id) : nodes.find((entry) => entry.id === id));
+      taskCard(node, item, index, hasSelection, card);
+      state.cards.set(id, card);
+    });
+    drawConnectorsForCurrentGraph();
+    return true;
+  }
   let position = 0;
   let stageIndex = 0;
   let itemIndex = 0;
