@@ -90,6 +90,8 @@ cardTemplate.append(
   make("p", "card__title"),
   make("div", "card__foot"),
 );
+const stageTemplate = make("div", "stage");
+stageTemplate.append(cardTemplate);
 
 const state = {
   snapshot: null,
@@ -938,16 +940,23 @@ function renderRoadmap() {
   let position = 0;
   const fragment = new DocumentFragment();
   stages.forEach((ids, index) => {
-    const stage = make("div", "stage");
+    const stage = stageTemplate.cloneNode(true);
     stage.dataset.stage = String(index);
     stage.dataset.label = `Stage ${index + 1} · ${plural(ids.length, "task")}`;
-    ids.forEach((id) => {
+    ids.forEach((id, itemIndex) => {
       const node = nodesByID.get(id) || { id, title: "", lane: "" };
-      const card = taskCard(node, position, hasSelection);
+      const card = taskCard(
+        node,
+        position,
+        hasSelection,
+        itemIndex === 0 ? stage.firstElementChild : null,
+      );
       card.dataset.stage = String(index);
       position += 1;
       state.cards.set(id, card);
-      stage.append(card);
+      if (itemIndex > 0) {
+        stage.append(card);
+      }
     });
     fragment.append(stage);
   });
@@ -1003,10 +1012,10 @@ function roadmapLabel(nodes, edges) {
     `${breakdown}. The Tasks tab carries the same information as a table.`;
 }
 
-function taskCard(node, position, hasSelection) {
+function taskCard(node, position, hasSelection, existingCard) {
   const item = itemByID(node.id);
   const lane = text(node.lane, item ? text(item.status) : "pending");
-  const card = cardTemplate.cloneNode(true);
+  const card = existingCard || cardTemplate.cloneNode(true);
   card.dataset.lane = lane;
   card.dataset.item = node.id;
   card.dataset.focusKey = `card:${node.id}`;
