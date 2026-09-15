@@ -634,6 +634,9 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 		ArchivedPath: filepath.Join(project.ArchivedDir(), m.Slug),
 		Warnings:     []string{},
 	}
+	if m.Worktree != nil {
+		result.Worktree = *m.Worktree
+	}
 	proof, err := validateArchivedCleanupProof(m)
 	if err != nil {
 		return result, err
@@ -643,7 +646,6 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 		return result, err
 	}
 	if current.worktreePresent {
-		result.Worktree = *m.Worktree
 		if err := gitx.WorktreeRemove(m.Repo, *m.Worktree, true); err != nil {
 			return result, fmt.Errorf("finish archived worktree cleanup for %s: %w", m.Slug, err)
 		}
