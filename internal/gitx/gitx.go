@@ -27,11 +27,20 @@ const maxGitDiagnosticOutput = 8 * 1024
 // current git repository, or an empty string and an error if cwd is not
 // in a git repo.
 func RepoRoot() (string, error) {
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	return RepositoryRoot(".")
+}
+
+// RepositoryRoot returns the canonical top-level worktree containing path.
+func RepositoryRoot(path string) (string, error) {
+	out, err := exec.Command("git", "-C", path, "rev-parse", "--show-toplevel").Output()
 	if err != nil {
 		return "", gitOutputError("git rev-parse --show-toplevel", err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	root := strings.TrimSpace(string(out))
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		return resolved, nil
+	}
+	return filepath.Clean(root), nil
 }
 
 // CurrentBranch returns the abbreviated current branch name, or "unknown"

@@ -12,6 +12,7 @@ import (
 
 	"github.com/ronaknnathani/relay/internal/agent"
 	"github.com/ronaknnathani/relay/internal/config"
+	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/mailbox"
 	"github.com/ronaknnathani/relay/internal/program"
 	"github.com/ronaknnathani/relay/internal/project"
@@ -230,6 +231,13 @@ func adoptDispatchChild(
 			"active child %q has no complete branch/worktree identity", expectedSlug,
 		)
 	}
+	if err := validateManagedChildResourceIdentity(p, item, manifest); err != nil {
+		return projectCreateResult{}, fmt.Errorf(
+			"active child %q cannot be safely reused: %w; inspect the child manifest and registered "+
+				"worktree, then repair or remove the stale child metadata before retrying",
+			expectedSlug, err,
+		)
+	}
 	cfg, err := config.EnsureForAgent(agentName)
 	if err != nil {
 		return projectCreateResult{}, err
@@ -250,6 +258,97 @@ func adoptDispatchChild(
 		agent:       a,
 		config:      cfg,
 	}, nil
+}
+
+func validateManagedChildResourceIdentity(
+	p program.Program, item program.WorkItem, manifest project.Manifest,
+) error {
+	if manifest.Repo != p.Repo || item.Repo != p.Repo {
+		return fmt.Errorf(
+			"repository identity does not match dispatch (manifest %q, item %q, program %q)",
+			manifest.Repo, item.Repo, p.Repo,
+		)
+	}
+	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" ||
+		strings.TrimSpace(manifest.Branch) == "" {
+		return fmt.Errorf("manifest has no complete branch/worktree identity")
+	}
+	repoRoot, err := gitx.RepositoryRoot(manifest.Repo)
+	if err != nil {
+		return fmt.Errorf("resolve repository root %s: %w", manifest.Repo, err)
+	}
+	recordedRepo, err := filepath.EvalSymlinks(manifest.Repo)
+	if err != nil {
+		return fmt.Errorf("resolve recorded repository %s: %w", manifest.Repo, err)
+	}
+	if recordedRepo != repoRoot {
+		return fmt.Errorf(
+			"recorded repository %q resolves inside repository root %q instead of naming the root",
+			manifest.Repo, repoRoot,
+		)
+	}
+	worktree, err := filepath.EvalSymlinks(strings.TrimSpace(*manifest.Worktree))
+	if err != nil {
+		return fmt.Errorf("resolve worktree %s: %w", *manifest.Worktree, err)
+	}
+	worktreeRoot := filepath.Join(repoRoot, ".worktrees")
+	if resolved, resolveErr := filepath.EvalSymlinks(worktreeRoot); resolveErr == nil {
+		worktreeRoot = resolved
+	}
+	if filepath.Dir(worktree) != worktreeRoot {
+		return fmt.Errorf(
+			"worktree %s is not an exclusive direct child of %s",
+			worktree, worktreeRoot,
+		)
+	}
+	state, found, err := gitx.RegisteredWorktreeState(repoRoot, worktree)
+	if err != nil {
+		return fmt.Errorf("inspect registered worktree %s: %w", worktree, err)
+	}
+	if !found {
+		return fmt.Errorf("worktree %s is not registered in repository %s", worktree, repoRoot)
+	}
+	expectedBranch := "refs/heads/" + manifest.Branch
+	if state.Detached || state.Branch != expectedBranch {
+		return fmt.Errorf(
+			"worktree %s is attached to %q, want %q",
+			worktree, state.Branch, expectedBranch,
+		)
+	}
+	branchTip, found, err := gitx.LocalBranchTip(repoRoot, manifest.Branch)
+	if err != nil {
+		return fmt.Errorf("resolve branch %q tip: %w", manifest.Branch, err)
+	}
+	if !found {
+		return fmt.Errorf("branch %q is not present", manifest.Branch)
+	}
+	if state.Head != branchTip {
+		return fmt.Errorf(
+			"worktree %s HEAD %s does not match branch %q tip %s",
+			worktree, state.Head, manifest.Branch, branchTip,
+		)
+	}
+	for _, dir := range []string{project.ActiveDir(), project.ArchivedDir()} {
+		results, err := project.LoadAllResults(dir)
+		if err != nil {
+			return fmt.Errorf("inspect project identities in %s: %w", dir, err)
+		}
+		for _, result := range results {
+			if result.Err != nil || result.Manifest.Slug == manifest.Slug ||
+				result.Manifest.Worktree == nil ||
+				strings.TrimSpace(*result.Manifest.Worktree) == "" {
+				continue
+			}
+			claimed, err := filepath.EvalSymlinks(strings.TrimSpace(*result.Manifest.Worktree))
+			if err == nil && claimed == worktree {
+				return fmt.Errorf(
+					"worktree %s is also claimed by project %q in %s",
+					worktree, result.Manifest.Slug, result.Path,
+				)
+			}
+		}
+	}
+	return nil
 }
 
 func createDispatchChild(

@@ -385,6 +385,15 @@ func loadProgramCleanupTarget(
 			item.ProjectBranch, item.ProjectWorktree,
 		)
 	}
+	if !archived {
+		if err := validateManagedChildResourceIdentity(p, item, manifest); err != nil {
+			return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+				"cleanup %s/%s: child project %q current resources do not match its durable dispatch "+
+					"identity: %w; refusing automatic forced cleanup",
+				p.Slug, item.ID, manifest.Slug, err,
+			)
+		}
+	}
 	if archived {
 		return item, manifest, archiveProofSnapshot{}, true, nil
 	}
@@ -455,6 +464,16 @@ func upgradeLegacyProgramCleanupTarget(
 			"cleanup %s/%s: legacy child project %q manifest has no complete branch/worktree identity; "+
 				"resources were preserved. Restore manifest branch and worktree metadata, then retry",
 			p.Slug, item.ID, manifest.Slug,
+		)
+	}
+	if err := validateManagedChildResourceIdentity(p, item, manifest); err != nil {
+		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
+			"cleanup %s/%s: legacy child project %q has no historical dispatch identity and its "+
+				"current resources could not be verified without ambiguity: %w; resources were "+
+				"preserved and no forced cleanup was authorized. Verify the registered worktree, "+
+				"branch, and repository manually, then restore project_branch and project_worktree "+
+				"in the program manifest before retrying",
+			p.Slug, item.ID, manifest.Slug, err,
 		)
 	}
 	for i := range p.Items {

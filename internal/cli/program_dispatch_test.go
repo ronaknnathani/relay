@@ -284,7 +284,7 @@ func TestProgramDispatchReusesPreLinkedExistingChild(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	worktree := filepath.Join(p.Repo, ".worktrees", "existing-child")
+	worktree := addArchiveWorktree(t, p.Repo, "existing-child", "test/existing-child")
 	if err := project.Save(project.ManifestPath(project.ActiveDir(), childSlug), project.Manifest{
 		Slug: childSlug, Title: item.Title, Repo: p.Repo, Branch: "test/existing-child",
 		Agent: "copilot", Workflow: "deliver-pr", Worktree: &worktree,
@@ -342,6 +342,90 @@ func TestProgramDispatchReusesPreLinkedExistingChild(t *testing.T) {
 	}
 }
 
+func TestProgramDispatchRejectsReusedChildWhoseWorktreeBelongsToAnotherBranch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	p, item, _ := createDispatchProgram(t, "governance", 3)
+	childSlug := "stale-child"
+	if err := p.LinkItem(item.ID, childSlug); err != nil {
+		t.Fatal(err)
+	}
+	programPath := program.ManifestPath(program.ActiveDir(), p.Slug)
+	if err := program.Save(programPath, p); err != nil {
+		t.Fatal(err)
+	}
+	victimBranch := "test/victim"
+	victimWorktree := addArchiveWorktree(t, p.Repo, "victim", victimBranch)
+	manifestPath := project.ManifestPath(project.ActiveDir(), childSlug)
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(manifestPath, project.Manifest{
+		Slug: childSlug, Title: item.Title, Repo: p.Repo, Branch: "test/stale-child",
+		Agent: "copilot", Workflow: "deliver-pr", Worktree: &victimWorktree,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runProgramCommand(t, "dispatch", p.Slug, item.ID); err == nil ||
+		!strings.Contains(err.Error(), "cannot be safely reused") ||
+		!strings.Contains(err.Error(), "attached to") {
+		t.Fatalf("dispatch stale child error = %v, want registered branch mismatch", err)
+	}
+	stored, err := project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Program != "" || stored.ProgramItem != "" {
+		t.Fatalf("stale child ownership was persisted: %q/%q", stored.Program, stored.ProgramItem)
+	}
+	loaded, err := program.Load(programPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadedItem, _ := loaded.Item(item.ID)
+	if loadedItem.ProjectBranch != "" || loadedItem.ProjectWorktree != "" {
+		t.Fatalf("stale child dispatch identity was persisted: %+v", loadedItem)
+	}
+	if !pathExists(victimWorktree) || !gitx.BranchExists(p.Repo, victimBranch) {
+		t.Fatal("reused-child validation changed victim resources")
+	}
+}
+
+func TestProgramDispatchRejectsReusedChildOutsideExpectedWorktreeRoot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	p, item, _ := createDispatchProgram(t, "governance", 3)
+	childSlug := "outside-child"
+	if err := p.LinkItem(item.ID, childSlug); err != nil {
+		t.Fatal(err)
+	}
+	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
+		t.Fatal(err)
+	}
+	branch := "test/outside-child"
+	worktree := filepath.Join(t.TempDir(), "outside-child")
+	runArchiveGit(t, p.Repo, "worktree", "add", "-q", worktree, "-b", branch, "HEAD")
+	manifestPath := project.ManifestPath(project.ActiveDir(), childSlug)
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(manifestPath, project.Manifest{
+		Slug: childSlug, Title: item.Title, Repo: p.Repo, Branch: branch,
+		Agent: "copilot", Workflow: "deliver-pr", Worktree: &worktree,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runProgramCommand(t, "dispatch", p.Slug, item.ID); err == nil ||
+		!strings.Contains(err.Error(), "exclusive direct child") {
+		t.Fatalf("dispatch outside worktree error = %v, want expected-path rejection", err)
+	}
+	if !pathExists(worktree) || !gitx.BranchExists(p.Repo, branch) {
+		t.Fatal("expected-path validation changed outside worktree resources")
+	}
+}
+
 func TestProgramDispatchAdoptionPreventsGCFromArchivingChild(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	saveProgramTestConfig(t)
@@ -350,7 +434,7 @@ func TestProgramDispatchAdoptionPreventsGCFromArchivingChild(t *testing.T) {
 	branch, worktree := addGCProject(t, fixture, childSlug)
 	mergeGCProjectUpstream(t, fixture, branch)
 	p := program.Program{Slug: "delivery", Repo: fixture.repo}
-	item := program.WorkItem{ID: "worker-1"}
+	item := program.WorkItem{ID: "worker-1", Repo: fixture.repo}
 
 	archiveReady := make(chan struct{})
 	continueArchive := make(chan struct{})
@@ -403,7 +487,7 @@ func TestProgramDispatchAdoptionCannotOverwriteArchivedChild(t *testing.T) {
 	branch, worktree := addGCProject(t, fixture, childSlug)
 	mergeGCProjectUpstream(t, fixture, branch)
 	p := program.Program{Slug: "delivery", Repo: fixture.repo}
-	item := program.WorkItem{ID: "worker-1"}
+	item := program.WorkItem{ID: "worker-1", Repo: fixture.repo}
 
 	archiveStaged := make(chan struct{})
 	continueArchive := make(chan struct{})

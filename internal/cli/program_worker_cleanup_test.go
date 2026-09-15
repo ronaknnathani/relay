@@ -1423,6 +1423,50 @@ func TestWorkerCleanupLegacyUpgradeRejectsRepositoryMismatchWithoutChangingVicti
 	}
 }
 
+func TestWorkerCleanupLegacyUpgradeRejectsReusedVictimWorktree(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	path := program.ManifestPath(program.ActiveDir(), p.Slug)
+	clearProgramItemDispatchIdentity(t, path, item.ID)
+	victimBranch := "user/legacy-reused-victim"
+	victimWorktree := addArchiveWorktree(t, manifest.Repo, "legacy-reused-victim", victimBranch)
+	manifest.Branch = "user/stale-recorded-branch"
+	manifest.Worktree = &victimWorktree
+	if err := project.Save(
+		project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{}
+	installManagedHerdrFakes(t, client)
+	stopped := installStubWatcherState(t, manifest.Slug, true)
+
+	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err == nil ||
+		!strings.Contains(err.Error(), "could not be verified without ambiguity") ||
+		!strings.Contains(err.Error(), "attached to") ||
+		!strings.Contains(err.Error(), "no forced cleanup was authorized") {
+		t.Fatalf("worker cleanup error = %v, want fail-closed legacy migration guidance", err)
+	}
+	if len(*stopped) != 0 || len(client.exited) != 0 ||
+		len(client.closedTabs) != 0 || len(client.closedPanes) != 0 {
+		t.Fatalf(
+			"cleanup performed side effects: stopped=%v exited=%v tabs=%v panes=%v",
+			*stopped, client.exited, client.closedTabs, client.closedPanes,
+		)
+	}
+	if !pathExists(victimWorktree) || !gitx.BranchExists(manifest.Repo, victimBranch) {
+		t.Fatal("legacy identity migration changed reused victim resources")
+	}
+	reloaded, loadErr := program.Load(path)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	unchanged, _ := reloaded.Item(item.ID)
+	if unchanged.ProjectBranch != "" || unchanged.ProjectWorktree != "" {
+		t.Fatalf("ambiguous legacy identity was persisted: %+v", unchanged)
+	}
+}
+
 func TestWorkerCleanupLegacyUpgradeRejectsMissingManifestIdentityWithoutChangingVictim(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
 	path := program.ManifestPath(program.ActiveDir(), p.Slug)
