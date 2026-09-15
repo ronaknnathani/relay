@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-cksdwEPAV9lajVKhZ70vrEAKZO/JeUNno7W9HbVfvlM=' 'sha256-klmFzqOF/dxeBWT0Te90MjlG8MUyZT2WeLN0yYf00Ys='; style-src 'self' 'sha256-Xw7wxTOiYy+b6PIFWGKVbmnC36csxkOzdj0re5zdObc='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-UXIL+j6UmJdVusQ2iRt/3tKDJxuh42y6D1HM1W2MC54=' 'sha256-J1omuzOIlvYcBmnBVe+vHGy0MFgtJtj8sm59Y/WLWlk='; style-src 'self' 'sha256-LZsfRK6oQ7rdqoRqAydX8hz9pr9+LkYZGbCNUL9y7VI='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	appTemplateToken      = "__RELAY_APP__"
 	cssTemplateToken      = "__RELAY_CSS__"
+	roadmapTemplateToken  = "__RELAY_INITIAL_ROADMAP__"
 )
 
 //go:embed assets/*
@@ -59,7 +60,15 @@ func newHandler(
 	feed *snapshotFeed,
 	artifactLoader ArtifactLoader,
 ) *handler {
-	return &handler{slug: slug, port: port, cache: cache, feed: feed, artifactLoader: artifactLoader}
+	roadmap := []byte("null")
+	if feed != nil {
+		roadmap = feed.roadmapResponse()
+	}
+	index, indexErr := prepareIndex(roadmap)
+	return &handler{
+		slug: slug, port: port, cache: cache, feed: feed, artifactLoader: artifactLoader,
+		index: index, indexErr: indexErr,
+	}
 }
 
 type handler struct {
@@ -68,6 +77,48 @@ type handler struct {
 	cache          *snapshotCache
 	feed           *snapshotFeed
 	artifactLoader ArtifactLoader
+	index          []byte
+	indexErr       error
+}
+
+type roadmapSnapshot struct {
+	Schema       string                      `json:"schema"`
+	GeneratedAt  string                      `json:"generated_at"`
+	Refresh      programview.RefreshDTO      `json:"refresh"`
+	Program      programview.ProgramDTO      `json:"program"`
+	Patrol       programview.PatrolDTO       `json:"patrol"`
+	Progress     programview.ProgressDTO     `json:"progress"`
+	Plan         programview.PlanDTO         `json:"plan"`
+	Graph        roadmapGraph                `json:"graph"`
+	Overview     roadmapOverview             `json:"overview"`
+	Warnings     []string                    `json:"warnings"`
+	SourceHealth programview.SourceHealthDTO `json:"source_health"`
+}
+
+type roadmapGraph struct {
+	Nodes  []roadmapNode              `json:"nodes"`
+	Edges  []programview.GraphEdgeDTO `json:"edges"`
+	Layers [][]string                 `json:"layers,omitempty"`
+	Cyclic bool                       `json:"cyclic"`
+}
+
+type roadmapNode struct {
+	ID              string `json:"id"`
+	Title           string `json:"title"`
+	Lane            string `json:"lane"`
+	Layer           int    `json:"layer"`
+	Priority        string `json:"priority"`
+	DependencyCount int    `json:"dependency_count"`
+	PRNumber        int    `json:"pr_number,omitempty"`
+	Ready           bool   `json:"ready"`
+	Orphaned        bool   `json:"orphaned"`
+}
+
+type roadmapOverview struct {
+	OpenDecisions  int `json:"open_decisions"`
+	Workers        int `json:"workers"`
+	ActiveWorkers  int `json:"active_workers"`
+	UnreadMessages int `json:"unread_messages"`
 }
 
 func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -86,8 +137,12 @@ func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		h.serveIndex(response, request)
 	case "/app.css":
 		h.serveAsset(response, request, "assets/app.css", "text/css; charset=utf-8")
+	case "/app-deferred.css":
+		h.serveAsset(response, request, "assets/app-deferred.min.css", "text/css; charset=utf-8")
 	case "/app.js":
 		h.serveAsset(response, request, "assets/app.min.js", "text/javascript; charset=utf-8")
+	case "/app-deferred.js":
+		h.serveAsset(response, request, "assets/app-deferred.min.js", "text/javascript; charset=utf-8")
 	case "/api/program":
 		h.serveProgram(response, request)
 	case "/api/artifact":
@@ -98,31 +153,38 @@ func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 }
 
 func (h *handler) serveIndex(response http.ResponseWriter, request *http.Request) {
-	index, err := fs.ReadFile(embeddedAssets, "assets/index.html")
-	if err != nil {
-		http.Error(response, "read embedded asset assets/index.html", http.StatusInternalServerError)
+	if h.indexErr != nil {
+		http.Error(response, h.indexErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	script, err := fs.ReadFile(embeddedAssets, "assets/app.min.js")
-	if err != nil {
-		http.Error(response, "read embedded asset assets/app.min.js", http.StatusInternalServerError)
-		return
-	}
-	styles, err := fs.ReadFile(embeddedAssets, "assets/app.min.css")
-	if err != nil {
-		http.Error(response, "read embedded asset assets/app.min.css", http.StatusInternalServerError)
-		return
-	}
-	index = bytes.Replace(index, []byte(cssTemplateToken), styles, 1)
-	index = bytes.Replace(index, []byte(appTemplateToken), script, 1)
+	response.Header().Set("Content-Length", strconv.Itoa(len(h.index)))
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
 	response.WriteHeader(http.StatusOK)
 	if request.Method == http.MethodHead {
 		return
 	}
-	if _, err := response.Write(index); err != nil {
+	if _, err := response.Write(h.index); err != nil {
 		return
 	}
+}
+
+func prepareIndex(roadmap []byte) ([]byte, error) {
+	index, err := fs.ReadFile(embeddedAssets, "assets/index.min.html")
+	if err != nil {
+		return nil, fmt.Errorf("read embedded asset assets/index.min.html: %w", err)
+	}
+	script, err := fs.ReadFile(embeddedAssets, "assets/app.min.js")
+	if err != nil {
+		return nil, fmt.Errorf("read embedded asset assets/app.min.js: %w", err)
+	}
+	index = bytes.Replace(index, []byte(appTemplateToken), script, 1)
+	styles, err := fs.ReadFile(embeddedAssets, "assets/app.min.css")
+	if err != nil {
+		return nil, fmt.Errorf("read embedded asset assets/app.min.css: %w", err)
+	}
+	index = bytes.Replace(index, []byte(cssTemplateToken), styles, 1)
+	index = bytes.Replace(index, []byte(roadmapTemplateToken), roadmap, 1)
+	return index, nil
 }
 
 func (h *handler) allowedHost(hostport string) bool {
@@ -150,17 +212,29 @@ func (h *handler) serveAsset(response http.ResponseWriter, request *http.Request
 }
 
 func (h *handler) serveProgram(response http.ResponseWriter, request *http.Request) {
+	view := request.URL.Query().Get("view")
+	if view != "" && view != "roadmap" {
+		http.Error(response, "invalid view: expected roadmap", http.StatusBadRequest)
+		return
+	}
 	detailItem, ok := normalizeDetailItem(request.URL.Query().Get("item"))
 	if !ok {
 		http.Error(response, "invalid item: expected w followed by a positive integer", http.StatusBadRequest)
 		return
 	}
+	if view != "" && detailItem != "" {
+		http.Error(response, "item and view cannot be combined", http.StatusBadRequest)
+		return
+	}
 	var snapshot programview.Snapshot
 	var encoded []byte
 	var compressed []byte
-	if detailItem == "" && h.feed != nil {
+	switch {
+	case view == "roadmap" && h.feed != nil:
+		encoded = h.feed.roadmapResponse()
+	case detailItem == "" && h.feed != nil:
 		snapshot, encoded, compressed = h.feed.response()
-	} else {
+	default:
 		var err error
 		snapshot, err = h.cache.Get(h.slug, detailItem)
 		if err != nil {
@@ -168,12 +242,22 @@ func (h *handler) serveProgram(response http.ResponseWriter, request *http.Reque
 			return
 		}
 	}
+	if view == "roadmap" && encoded == nil {
+		var err error
+		encoded, err = json.Marshal(newRoadmapSnapshot(snapshot))
+		if err != nil {
+			http.Error(response, fmt.Sprintf("encode roadmap snapshot: %v", err), http.StatusInternalServerError)
+			return
+		}
+		compressed = nil
+	}
 	response.Header().Set("Content-Type", "application/json; charset=utf-8")
 	useGzip := compressed != nil && strings.Contains(request.Header.Get("Accept-Encoding"), "gzip")
 	if useGzip {
 		response.Header().Set("Content-Encoding", "gzip")
 		response.Header().Set("Vary", "Accept-Encoding")
 	}
+
 	response.WriteHeader(http.StatusOK)
 	if request.Method == http.MethodHead {
 		return
@@ -193,6 +277,49 @@ func (h *handler) serveProgram(response http.ResponseWriter, request *http.Reque
 	if err := json.NewEncoder(response).Encode(snapshot); err != nil {
 		return
 	}
+}
+
+func newRoadmapSnapshot(snapshot programview.Snapshot) roadmapSnapshot {
+	result := roadmapSnapshot{
+		Schema: "relay.program.roadmap.v1", GeneratedAt: snapshot.GeneratedAt,
+		Refresh: snapshot.Refresh, Program: snapshot.Program, Patrol: snapshot.Patrol,
+		Progress: snapshot.Progress, Plan: snapshot.Plan,
+		Graph: roadmapGraph{
+			Nodes:  make([]roadmapNode, 0, len(snapshot.Graph.Nodes)),
+			Edges:  snapshot.Graph.Edges,
+			Cyclic: snapshot.Graph.Cyclic,
+		},
+		Overview: roadmapOverview{OpenDecisions: len(snapshot.OpenDecisions)},
+		Warnings: snapshot.Warnings, SourceHealth: snapshot.SourceHealth,
+	}
+	items := make(map[string]programview.ItemDTO, len(snapshot.Items))
+	for _, item := range snapshot.Items {
+		items[item.ID] = item
+		if item.Worker != nil {
+			result.Overview.Workers++
+			if item.Worker.Status == "working" {
+				result.Overview.ActiveWorkers++
+			}
+		}
+		if item.Mailbox.Available {
+			result.Overview.UnreadMessages += item.Mailbox.Inbox + item.Mailbox.Outbox
+		}
+	}
+	for _, node := range snapshot.Graph.Nodes {
+		item := items[node.ID]
+		prNumber := 0
+		if item.LivePR != nil {
+			prNumber = item.LivePR.Number
+		} else if item.RecordedPR != nil {
+			prNumber = item.RecordedPR.Number
+		}
+		result.Graph.Nodes = append(result.Graph.Nodes, roadmapNode{
+			ID: node.ID, Title: node.Title, Lane: node.Lane, Layer: node.Layer,
+			Priority: item.Priority, DependencyCount: len(item.Dependencies),
+			PRNumber: prNumber, Ready: item.Ready, Orphaned: item.Orphaned,
+		})
+	}
+	return result
 }
 
 func (h *handler) serveArtifact(response http.ResponseWriter, request *http.Request) {

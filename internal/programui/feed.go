@@ -20,6 +20,7 @@ type snapshotFeed struct {
 	refreshing bool
 	encoded    []byte
 	compressed []byte
+	roadmap    []byte
 }
 
 func newSnapshotFeed(
@@ -37,7 +38,22 @@ func newSnapshotFeed(
 	}
 	feed.encoded = encodeSnapshot(seed)
 	feed.compressed = compressSnapshot(feed.encoded)
+	feed.roadmap = encodeRoadmapSnapshot(seed)
 	return feed
+}
+
+func (f *snapshotFeed) roadmapResponse() []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.refreshing && !f.now().Before(f.expiresAt) {
+		f.startRefreshLocked()
+	}
+	if f.refreshing {
+		snapshot := f.snapshot
+		snapshot.Refresh = programview.RefreshDTO{Status: "refreshing"}
+		return encodeRoadmapSnapshot(snapshot)
+	}
+	return f.roadmap
 }
 
 func (f *snapshotFeed) Get() programview.Snapshot {
@@ -85,6 +101,7 @@ func (f *snapshotFeed) startRefreshLocked() {
 		}
 		f.encoded = encodeSnapshot(f.snapshot)
 		f.compressed = compressSnapshot(f.encoded)
+		f.roadmap = encodeRoadmapSnapshot(f.snapshot)
 		f.expiresAt = f.now().Add(f.ttl)
 		f.refreshing = false
 	}()
@@ -110,6 +127,14 @@ func compressSnapshot(encoded []byte) []byte {
 
 func encodeSnapshot(snapshot programview.Snapshot) []byte {
 	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil
+	}
+	return encoded
+}
+
+func encodeRoadmapSnapshot(snapshot programview.Snapshot) []byte {
+	encoded, err := json.Marshal(newRoadmapSnapshot(snapshot))
 	if err != nil {
 		return nil
 	}

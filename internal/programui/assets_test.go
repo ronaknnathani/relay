@@ -14,10 +14,15 @@ import (
 // assetNames lists every file the browser is allowed to load.
 var assetNames = []string{
 	"assets/index.html",
+	"assets/index.min.html",
 	"assets/app.css",
 	"assets/app.min.css",
+	"assets/app-deferred.css",
+	"assets/app-deferred.min.css",
 	"assets/app.js",
 	"assets/app.min.js",
+	"assets/app-deferred.js",
+	"assets/app-deferred.min.js",
 }
 
 // forbiddenAssetSubstrings keeps the embedded UI local-only and free of any
@@ -42,6 +47,16 @@ func readAsset(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func readScriptAssets(t *testing.T) string {
+	t.Helper()
+	return readAsset(t, "assets/app.js") + readAsset(t, "assets/app-deferred.js")
+}
+
+func readStyleAssets(t *testing.T) string {
+	t.Helper()
+	return readAsset(t, "assets/app.css") + readAsset(t, "assets/app-deferred.css")
 }
 
 func requireContains(t *testing.T, name, content string, wanted []string) {
@@ -95,9 +110,10 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		`<a class="skip-link"`,
 	})
 
-	if strings.Count(index, "<script") != 2 ||
+	if strings.Count(index, "<script") != 3 ||
+		!strings.Contains(index, `<script id="initial-program" type="application/json">__RELAY_INITIAL_ROADMAP__</script>`) ||
 		!strings.Contains(index, `<script>__RELAY_APP__</script>`) {
-		t.Error("index.html must apply the inline theme before the inline application bundle")
+		t.Error("index.html must embed the initial roadmap before the inline application bundle")
 	}
 	if strings.Count(index, "<link ") != 0 || !strings.Contains(index, `<style>__RELAY_CSS__</style>`) {
 		t.Error("index.html must inline the embedded stylesheet")
@@ -132,11 +148,11 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 
 	head := index[strings.Index(index, "<head>"):strings.Index(index, "</head>")]
 	if !strings.Contains(head, `document.documentElement.dataset.theme=t==="dark"?"dark":"light"`) ||
-		!strings.Contains(head, `window.__relayInitialProgramRequest=fetch("/api/program")`) {
-		t.Error("the bootstrap must apply the stored theme and start the initial snapshot before app parsing")
+		!strings.Contains(index, `id="initial-program" type="application/json"`) {
+		t.Error("the bootstrap must apply the stored theme and embed the initial roadmap snapshot")
 	}
 
-	script := readAsset(t, "assets/app.js")
+	script := readScriptAssets(t)
 	requireContains(t, "app.js", script, []string{
 		`const THEME_KEY = "relay.program.theme"`,
 		"window.localStorage.setItem(THEME_KEY, next)",
@@ -145,9 +161,14 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 		`dom.themeToggle.setAttribute("aria-label"`,
 	})
 	if !strings.Contains(script, "function start()") ||
-		!strings.Contains(script, `document.addEventListener("DOMContentLoaded", start)`) {
-		t.Error("app.js must defer its own boot to DOMContentLoaded while the theme applies immediately")
+		!strings.HasSuffix(strings.TrimSpace(readAsset(t, "assets/app.js")), "start();") {
+		t.Error("app.js must start immediately because the inline bundle follows the complete document body")
 	}
+	requireContains(t, "app.js", script, []string{
+		"document.getElementById(id)",
+		"if (!state.snapshot) {",
+		"if (dom.statusFilters.childElementCount === 0) {",
+	})
 	minified := readAsset(t, "assets/app.min.js")
 	if len(minified) >= len(script) || !strings.Contains(minified, "relay-usable") {
 		t.Error("the served application bundle must be minified and retain the usable marker")
@@ -158,8 +179,12 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 		t.Errorf("content security policy is missing the application hash %s", hash)
 	}
 	minifiedStyles := readAsset(t, "assets/app.min.css")
-	if len(minifiedStyles) >= len(readAsset(t, "assets/app.css")) {
+	if len(minifiedStyles) >= len(readStyleAssets(t)) {
 		t.Error("the served stylesheet must be minified")
+	}
+	if len(readAsset(t, "assets/app-deferred.min.css")) >=
+		len(readAsset(t, "assets/app-deferred.css")) {
+		t.Error("the deferred stylesheet must be minified")
 	}
 	styleDigest := sha256.Sum256([]byte(minifiedStyles))
 	styleHash := "'sha256-" + base64.StdEncoding.EncodeToString(styleDigest[:]) + "'"
@@ -204,7 +229,7 @@ func TestIndexExposesFourTabsAndDefaultsToRoadmap(t *testing.T) {
 		}
 	}
 
-	script := readAsset(t, "assets/app.js")
+	script := readScriptAssets(t)
 	requireContains(t, "app.js", script, []string{
 		`const TABS = ["roadmap", "tasks", "decisions", "goal"]`,
 		"function selectTab(",
@@ -235,7 +260,7 @@ func TestIndexReplacesTheDetailRailWithAnOnDemandDrawer(t *testing.T) {
 		t.Error("the detail panel must live inside the drawer, not as a permanent column")
 	}
 
-	script := readAsset(t, "assets/app.js")
+	script := readScriptAssets(t)
 	requireContains(t, "app.js", script, []string{
 		"function openDrawer(instant)",
 		"function closeDrawer()",
@@ -262,7 +287,7 @@ func TestRoadmapRunsTopToBottom(t *testing.T) {
 		"left to right",
 	})
 
-	styles := readAsset(t, "assets/app.css")
+	styles := readStyleAssets(t)
 	_, stages, found := strings.Cut(styles, ".roadmap__stages {")
 	if !found {
 		t.Fatal("app.css no longer lays out roadmap stages")
@@ -302,7 +327,7 @@ func TestRoadmapRunsTopToBottom(t *testing.T) {
 		t.Error("cards must size to their grid track instead of a fixed column width")
 	}
 
-	script := readAsset(t, "assets/app.js")
+	script := readScriptAssets(t)
 	requireContains(t, "app.js", script, []string{
 		"stage.append(card)",
 		`card.dataset.stage = String(index)`,
@@ -316,7 +341,7 @@ func TestRoadmapRunsTopToBottom(t *testing.T) {
 }
 
 func TestDrawerFillsMostOfTheScreen(t *testing.T) {
-	styles := readAsset(t, "assets/app.css")
+	styles := readStyleAssets(t)
 	_, panel, found := strings.Cut(styles, ".drawer__panel {")
 	if !found {
 		t.Fatal("app.css no longer styles the drawer panel")
@@ -334,13 +359,14 @@ func TestDrawerFillsMostOfTheScreen(t *testing.T) {
 		t.Error("the drawer must not be capped at the old narrow width")
 	}
 
-	_, medium, _ := strings.Cut(styles, "@media (max-width: 960px)")
+	deferredStyles := readAsset(t, "assets/app-deferred.css")
+	_, medium, _ := strings.Cut(deferredStyles, "@media (max-width: 960px)")
 	mediumBlock, _, _ := strings.Cut(medium, "@media (max-width: 560px)")
 	if !strings.Contains(mediumBlock, "width: 92vw;") {
 		t.Errorf("at 960px the drawer should take about 92vw, got:\n%s", mediumBlock)
 	}
 
-	_, small, _ := strings.Cut(styles, "@media (max-width: 560px)")
+	_, small, _ := strings.Cut(deferredStyles, "@media (max-width: 560px)")
 	smallBlock, _, _ := strings.Cut(small, "@media (prefers-reduced-motion")
 	if !strings.Contains(smallBlock, "width: 100vw;") {
 		t.Errorf("on phones the drawer should be full screen, got:\n%s", smallBlock)
@@ -358,7 +384,7 @@ func TestDrawerHasAStickySectionBar(t *testing.T) {
 		t.Error("the section bar must sit above the detail body")
 	}
 
-	styles := readAsset(t, "assets/app.css")
+	styles := readStyleAssets(t)
 	_, nav, found := strings.Cut(styles, ".drawer__nav {")
 	if !found {
 		t.Fatal("app.css has no drawer section bar")
@@ -385,7 +411,7 @@ func TestDrawerHasAStickySectionBar(t *testing.T) {
 		t.Error("section tabs need pressed feedback")
 	}
 
-	script := readAsset(t, "assets/app.js")
+	script := readScriptAssets(t)
 	requireContains(t, "app.js", script, []string{
 		"const DETAIL_SECTIONS = [",
 		`["overview", "Overview"]`,
@@ -430,10 +456,10 @@ func TestDrawerHasAStickySectionBar(t *testing.T) {
 }
 
 func TestSectionNavigationNeverAnimates(t *testing.T) {
-	styles := readAsset(t, "assets/app.css")
+	styles := readStyleAssets(t)
 	requireAbsent(t, "app.css", styles, []string{"scroll-behavior"})
 
-	script := readAsset(t, "assets/app.js")
+	script := readScriptAssets(t)
 	requireAbsent(t, "app.js", script, []string{
 		`behavior: "smooth"`,
 		"scrollIntoView({ behavior",
@@ -445,7 +471,7 @@ func TestSectionNavigationNeverAnimates(t *testing.T) {
 }
 
 func TestStylesUseTheLightFirstTokenSetAndADarkCounterpart(t *testing.T) {
-	styles := strings.ToLower(readAsset(t, "assets/app.css"))
+	styles := strings.ToLower(readStyleAssets(t))
 	const cancelledLaneToken = "--lane-cancelled:" //nolint:misspell // Matches Relay's persisted status spelling.
 	requireContains(t, "app.css", styles, []string{
 		"color-scheme: light;",
@@ -540,7 +566,7 @@ func lightToken(t *testing.T, styles, name string) string {
 }
 
 func TestLightStatusTokensMeetAAForNormalText(t *testing.T) {
-	styles := strings.ToLower(readAsset(t, "assets/app.css"))
+	styles := strings.ToLower(readStyleAssets(t))
 	surface := lightToken(t, styles, "--surface")
 
 	// Every one of these renders as normal-size text on --surface: status
@@ -565,7 +591,7 @@ func TestLightStatusTokensMeetAAForNormalText(t *testing.T) {
 }
 
 func TestHiddenAttributeBeatsComponentDisplayRules(t *testing.T) {
-	styles := readAsset(t, "assets/app.css")
+	styles := readStyleAssets(t)
 	if !strings.Contains(styles, "[hidden] {\n  display: none !important;\n}") {
 		t.Fatal("app.css must force [hidden] to display: none; component display rules override the UA default")
 	}
@@ -584,7 +610,7 @@ func TestHiddenAttributeBeatsComponentDisplayRules(t *testing.T) {
 		}
 	}
 
-	script := readAsset(t, "assets/app.js")
+	script := readScriptAssets(t)
 	requireContains(t, "app.js", script, []string{
 		"dom.warningCount.hidden = total === 0",
 		"dom.nextRun.hidden = !command",
@@ -592,7 +618,7 @@ func TestHiddenAttributeBeatsComponentDisplayRules(t *testing.T) {
 }
 
 func TestScriptItemIDRegexMatchesTheServerContract(t *testing.T) {
-	script := readAsset(t, "assets/app.js")
+	script := readScriptAssets(t)
 	requireContains(t, "app.js", script, []string{
 		"const ITEM_ID = /^w[1-9][0-9]*$/;",
 		"const MAX_ITEM_ID = 32;",
@@ -620,7 +646,7 @@ func TestScriptItemIDRegexMatchesTheServerContract(t *testing.T) {
 }
 
 func TestScriptGroupsWarningsBySourceBeforeProgram(t *testing.T) {
-	script := readAsset(t, "assets/app.js")
+	script := readScriptAssets(t)
 	_, body, found := strings.Cut(script, "function warningGroups()")
 	if !found {
 		t.Fatal("app.js no longer groups warnings")
@@ -642,7 +668,7 @@ func TestScriptGroupsWarningsBySourceBeforeProgram(t *testing.T) {
 }
 
 func TestScriptRestoresFocusAndDoesNotChurnLiveRegions(t *testing.T) {
-	script := readAsset(t, "assets/app.js")
+	script := readScriptAssets(t)
 	requireContains(t, "app.js", script, []string{
 		"function returnFocusTo(node)",
 		"node === document.body",
@@ -703,7 +729,7 @@ func cssPixels(t *testing.T, rule, property string) float64 {
 }
 
 func TestDrawerTypographyIsNotAMicroInspector(t *testing.T) {
-	styles := readAsset(t, "assets/app.css")
+	styles := readStyleAssets(t)
 
 	head := cssRule(t, styles, ".drawer__head")
 	if padding := cssPixels(t, head, "padding"); padding < 28 || padding > 36 {
@@ -830,7 +856,7 @@ func TestDrawerTypographyIsNotAMicroInspector(t *testing.T) {
 }
 
 func TestDrawerSectionBarIsWarmAndComfortable(t *testing.T) {
-	styles := readAsset(t, "assets/app.css")
+	styles := readStyleAssets(t)
 	nav := cssRule(t, styles, ".drawer__nav")
 	if padding := cssPixels(t, nav, "padding"); padding != 0 {
 		t.Errorf("the section bar should have no vertical padding, got %g", padding)
@@ -859,7 +885,7 @@ func TestDrawerSectionBarIsWarmAndComfortable(t *testing.T) {
 }
 
 func TestWarmPaletteReachesTheWholeInterface(t *testing.T) {
-	styles := readAsset(t, "assets/app.css")
+	styles := readStyleAssets(t)
 
 	// Selection, emphasis and the roadmap all speak clay, never electric blue.
 	for selector, want := range map[string]string{
@@ -901,7 +927,7 @@ func TestWarmPaletteReachesTheWholeInterface(t *testing.T) {
 }
 
 func TestStylesDropBlueprintChromeAndBroadMotion(t *testing.T) {
-	styles := readAsset(t, "assets/app.css")
+	styles := readStyleAssets(t)
 	requireAbsent(t, "app.css", styles, []string{
 		"transition: all",
 		"@keyframes",
@@ -914,14 +940,14 @@ func TestStylesDropBlueprintChromeAndBroadMotion(t *testing.T) {
 		"blueprint",
 	})
 
-	script := readAsset(t, "assets/app.js")
+	script := readScriptAssets(t)
 	requireAbsent(t, "app.js", script, []string{
 		`behavior: "smooth"`,
 	})
 }
 
 func TestStylesUseExactPropertyTransitionsUnderThreeHundredMilliseconds(t *testing.T) {
-	styles := readAsset(t, "assets/app.css")
+	styles := readStyleAssets(t)
 	requireContains(t, "app.css", styles, []string{
 		"--ease-out: cubic-bezier(0.23, 1, 0.32, 1);",
 		"transform: scale(0.98);",
@@ -950,7 +976,7 @@ func TestStylesUseExactPropertyTransitionsUnderThreeHundredMilliseconds(t *testi
 }
 
 func TestStylesGateHoverStayResponsiveAndRespectReducedMotion(t *testing.T) {
-	styles := readAsset(t, "assets/app.css")
+	styles := readStyleAssets(t)
 	requireContains(t, "app.css", styles, []string{
 		"@media (hover: hover) and (pointer: fine)",
 		"@media (max-width: 960px)",
@@ -984,7 +1010,7 @@ func TestStylesGateHoverStayResponsiveAndRespectReducedMotion(t *testing.T) {
 }
 
 func TestScriptKeepsPollingSelectionAndLinkSafety(t *testing.T) {
-	script := readAsset(t, "assets/app.js")
+	script := readScriptAssets(t)
 	requireContains(t, "app.js", script, []string{
 		"/api/program",
 		"/api/artifact",
@@ -1041,13 +1067,17 @@ func TestScriptKeepsPollingSelectionAndLinkSafety(t *testing.T) {
 		t.Fatal("app.js is missing renderActiveTab after renderInitial")
 	}
 	if strings.Index(renderInitial, "renderHeader();") > strings.Index(renderInitial, "window.__relayUsableAt") ||
-		strings.Index(renderInitial, "renderActiveTab();") > strings.Index(renderInitial, "window.__relayUsableAt") {
+		!strings.Contains(renderInitial, `if (state.tab === "roadmap" && !state.selected) {
+    renderActiveTab();
+    markUsable();
+    return;
+  }`) {
 		t.Error("the usable marker must follow the complete header and active-tab render")
 	}
 }
 
 func TestScriptDerivesTheDisplayTitleAndDeduplicatesWarnings(t *testing.T) {
-	script := readAsset(t, "assets/app.js")
+	script := readScriptAssets(t)
 	requireContains(t, "app.js", script, []string{
 		"program.display_title",
 		"text(program.summary)",

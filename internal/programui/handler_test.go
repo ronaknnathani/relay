@@ -1,6 +1,7 @@
 package programui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,84 @@ import (
 	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/programview"
 )
+
+func TestHandlerCachesRenderedIndex(t *testing.T) {
+	handler := NewHandler(HandlerOptions{Slug: "relay-v1", Port: 4321})
+	request := httptest.NewRequest(http.MethodGet, "http://localhost:4321/", nil)
+	request.Host = "localhost:4321"
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET index status = %d: %s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Content-Length"); got != fmt.Sprint(response.Body.Len()) {
+		t.Fatalf("Content-Length = %q, want %d", got, response.Body.Len())
+	}
+	if bytes.Contains(response.Body.Bytes(), []byte(appTemplateToken)) ||
+		!bytes.Contains(response.Body.Bytes(), []byte("relay-usable")) {
+		t.Fatal("rendered index must contain the application bundle and no template token")
+	}
+}
+
+func TestHandlerRoadmapViewKeepsOnlyInitialUIData(t *testing.T) {
+	handler := NewHandler(HandlerOptions{
+		Slug: "relay-v1",
+		Port: 4321,
+		Builder: func(_, _ string) (programview.Snapshot, error) {
+			return programview.Snapshot{
+				Schema:  "relay.program.v1",
+				Program: programview.ProgramDTO{Title: "Program"},
+				Graph: programview.GraphDTO{Nodes: []programview.GraphNodeDTO{{
+					ID: "w1", Title: "Task", Lane: "pending",
+				}}},
+				Items: []programview.ItemDTO{{
+					ID: "w1", Title: "Task", Priority: "P0", Status: "pending",
+					Dependencies: []string{"w0"}, Notes: []string{"deferred"},
+					Worker:  &programview.WorkerDTO{Status: "working"},
+					Mailbox: programview.MailboxDTO{Available: true, Inbox: 2, Outbox: 1},
+				}},
+				OpenDecisions:    []programview.DecisionDTO{{ID: "d1"}},
+				Contracts:        []programview.ContractDTO{{Ref: "contract"}},
+				ProgramArtifacts: []programview.ArtifactDTO{{Name: "goal.md"}},
+			}, nil
+		},
+	})
+	request := httptest.NewRequest(http.MethodGet, "http://localhost:4321/api/program?view=roadmap", nil)
+	request.Host = "localhost:4321"
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET roadmap status = %d: %s", response.Code, response.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode roadmap response: %v", err)
+	}
+	if payload["schema"] != "relay.program.roadmap.v1" {
+		t.Fatalf("schema = %v", payload["schema"])
+	}
+	if _, ok := payload["contracts"]; ok {
+		t.Fatal("roadmap response includes deferred contracts")
+	}
+	overview := payload["overview"].(map[string]any)
+	if overview["open_decisions"] != float64(1) ||
+		overview["workers"] != float64(1) ||
+		overview["active_workers"] != float64(1) ||
+		overview["unread_messages"] != float64(3) {
+		t.Fatalf("overview = %#v", overview)
+	}
+	if _, ok := payload["items"]; ok {
+		t.Fatal("roadmap response duplicates graph nodes as task details")
+	}
+	node := payload["graph"].(map[string]any)["nodes"].([]any)[0].(map[string]any)
+	if node["priority"] != "P0" || node["dependency_count"] != float64(1) {
+		t.Fatalf("roadmap node = %#v", node)
+	}
+}
 
 func TestHandlerSecurityRoutesAndSelectedItem(t *testing.T) {
 	expectedProgress := programview.ProgressDTO{
