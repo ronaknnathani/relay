@@ -364,7 +364,7 @@ func progressDTO(items []program.WorkItem) ProgressDTO {
 	}
 	progress.Completed = progress.Merged + progress.Canceled
 	if progress.Total > 0 {
-		progress.Percent = progress.Completed * 100 / progress.Total
+		progress.Percent = progress.Merged * 100 / progress.Total
 	}
 	return progress
 }
