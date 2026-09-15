@@ -570,6 +570,33 @@ func TestArchiveForceDeletesBranchMergedOnlyIntoRemoteBase(t *testing.T) {
 	}
 }
 
+func TestArchiveDeletesLocallyReachableBranchWhenOriginBaseIsStale(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runArchiveGit(t, filepath.Dir(remote), "init", "-q", "--bare", "--initial-branch=main", remote)
+	runArchiveGit(t, repo, "remote", "add", "origin", remote)
+	runArchiveGit(t, repo, "push", "-q", "-u", "origin", "main")
+
+	slug := "local-merge-stale-origin"
+	branch := "user/local-merge-stale-origin"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "merged locally\n", "merged locally")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, repo, "merge", "-q", "--no-edit", branch)
+
+	result, err := archiveProject(slug, false)
+	if err != nil {
+		t.Fatalf("archiveProject: %v", err)
+	}
+	if result.BranchDeletionWarning != "" {
+		t.Fatalf("branch deletion warning = %q, want none", result.BranchDeletionWarning)
+	}
+	if !result.BranchDeleted || gitx.BranchExists(repo, branch) {
+		t.Fatalf("locally reachable branch %q survived archive", branch)
+	}
+}
+
 func recordArchiveManifestPR(t *testing.T, slug string, number int) {
 	t.Helper()
 	path := project.ManifestPath(project.ActiveDir(), slug)

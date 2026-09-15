@@ -632,6 +632,37 @@ func TestGCRefreshFailureAllowsMergedPullRequest(t *testing.T) {
 	}
 }
 
+func TestGCBaseDiscoveryFailureAllowsMergedPullRequest(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "base-discovery-failure-pr"
+	_, _ = addGCProject(t, fixture, slug)
+	recordArchiveManifestPR(t, slug, 713)
+	installArchivePRIndex(t, map[string]programview.PRState{"#713": programview.PRStateMerged})
+	updateGCManifest(t, slug, func(manifest *project.Manifest) {
+		manifest.BaseBranch = ""
+	})
+	runArchiveGit(t, fixture.repo, "remote", "set-head", "origin", "-d")
+	runArchiveGit(t, fixture.repo, "checkout", "-q", "--detach", fixture.startSHA)
+	runArchiveGit(t, fixture.repo, "branch", "-D", "main")
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if err != nil {
+		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{"cannot determine default branch", "symbolic-ref"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("GC left merged-PR project active after base discovery failed")
+	}
+	if archived := loadArchivedManifest(t, slug); !archived.Merged {
+		t.Fatal("GC did not record merged PR after base discovery failed")
+	}
+}
+
 func TestGCContinuesAfterMalformedAndInvalidMetadata(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	malformedDir := filepath.Join(project.ActiveDir(), "a-malformed")
@@ -796,7 +827,7 @@ func TestGCArchiveWarningReturnsFailureAfterArchiving(t *testing.T) {
 	previous := gcArchiveProject
 	gcArchiveProject = func(slug string, force bool) (archiveResult, error) {
 		result, err := archiveProject(slug, force)
-		result.Warnings = append(result.Warnings, "injected branch cleanup warning")
+		result.BranchDeletionWarning = "injected branch deletion warning"
 		return result, err
 	}
 	t.Cleanup(func() { gcArchiveProject = previous })
@@ -805,8 +836,8 @@ func TestGCArchiveWarningReturnsFailureAfterArchiving(t *testing.T) {
 	if !errors.Is(err, errGCCompletedWithErrors) {
 		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
 	}
-	if !strings.Contains(stderr, "injected branch cleanup warning") {
-		t.Fatalf("stderr %q is missing archive warning", stderr)
+	if !strings.Contains(stderr, "injected branch deletion warning") {
+		t.Fatalf("stderr %q is missing branch deletion warning", stderr)
 	}
 	if pathExists(filepath.Join(project.ActiveDir(), slug)) ||
 		!pathExists(filepath.Join(project.ArchivedDir(), slug)) {

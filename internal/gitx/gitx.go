@@ -190,19 +190,36 @@ func gitCommandError(command string, err error, output []byte) error {
 // origin/HEAD; falls back to probing "main" then "master". Returns "" if
 // none is found.
 func DetectDefaultBranch(repo string) string {
-	out, err := exec.Command("git", "-C", repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output()
+	branch, _ := DetectDefaultBranchWithError(repo)
+	return branch
+}
+
+// DetectDefaultBranchWithError returns the repo's default branch and preserves
+// the Git diagnostic when neither origin/HEAD nor a local main/master exists.
+func DetectDefaultBranchWithError(repo string) (string, error) {
+	out, err := exec.Command(
+		"git", "-C", repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD",
+	).CombinedOutput()
 	if err == nil {
 		ref := strings.TrimSpace(string(out))
 		if i := strings.Index(ref, "/"); i >= 0 && i+1 < len(ref) {
-			return ref[i+1:]
+			return ref[i+1:], nil
 		}
+		return "", fmt.Errorf("cannot determine default branch: symbolic ref %q is invalid", ref)
 	}
+	symbolicRefErr := gitCommandError(
+		"git symbolic-ref --short refs/remotes/origin/HEAD", err, out,
+	)
 	for _, candidate := range []string{"main", "master"} {
-		if BranchExists(repo, candidate) {
-			return candidate
+		exists, branchErr := localBranchExists(repo, candidate)
+		if branchErr != nil {
+			return "", fmt.Errorf("cannot determine default branch: %w", branchErr)
+		}
+		if exists {
+			return candidate, nil
 		}
 	}
-	return ""
+	return "", fmt.Errorf("cannot determine default branch: %w", symbolicRefErr)
 }
 
 // Fetch updates origin's remote-tracking ref for branch. It returns sanitized

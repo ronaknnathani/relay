@@ -66,34 +66,37 @@ func runGC() error {
 			continue
 		}
 		base := m.BaseBranch
+		var baseErr error
 		if base == "" {
-			base = gitx.DetectDefaultBranch(m.Repo)
+			base, baseErr = gitx.DetectDefaultBranchWithError(m.Repo)
 		}
-		if base == "" {
-			ui.Warn("evaluate project %s in %s: cannot determine default branch", m.Slug, m.Repo)
-			hadErrors = true
-			continue
+		if baseErr != nil {
+			ui.Warn("evaluate project %s in %s: %s", m.Slug, m.Repo, baseErr)
 		}
-		key := gcRefreshKey{repo: m.Repo, base: base}
-		refreshErr, found := refreshErrors[key]
-		if !found {
-			diagnostic, err := gitx.Fetch(m.Repo, base)
-			refreshErr = err
-			if refreshErr != nil && diagnostic != "" {
-				refreshErr = fmt.Errorf("%w\n%s", refreshErr, diagnostic)
-			}
-			refreshErrors[key] = refreshErr
-			if refreshErr != nil {
-				ui.Warn(
-					"refresh repository %s base %s: %s",
-					m.Repo, base, refreshErr,
-				)
+		var refreshErr error
+		if base != "" {
+			key := gcRefreshKey{repo: m.Repo, base: base}
+			var found bool
+			refreshErr, found = refreshErrors[key]
+			if !found {
+				diagnostic, err := gitx.Fetch(m.Repo, base)
+				refreshErr = err
+				if refreshErr != nil && diagnostic != "" {
+					refreshErr = fmt.Errorf("%w\n%s", refreshErr, diagnostic)
+				}
+				refreshErrors[key] = refreshErr
+				if refreshErr != nil {
+					ui.Warn(
+						"refresh repository %s base %s: %s",
+						m.Repo, base, refreshErr,
+					)
+				}
 			}
 		}
 
 		var merged bool
 		var evaluationErr error
-		if refreshErr == nil {
+		if base != "" && refreshErr == nil {
 			if m.StartSHA == "" {
 				evaluationErr = fmt.Errorf("project %s has no start_sha", m.Slug)
 			} else {
@@ -107,7 +110,7 @@ func runGC() error {
 			merged, prErr = resolveRecordedPullRequestMerge(m, m.Slug)
 		}
 		if !merged {
-			if refreshErr != nil {
+			if baseErr != nil || refreshErr != nil {
 				hadErrors = true
 			}
 			for _, err := range []error{evaluationErr, prErr} {
