@@ -280,6 +280,53 @@ func TestServePublishesLocalSnapshotBeforeDelayedSources(t *testing.T) {
 	}
 }
 
+func TestServeAttributesExternalFailuresToTheirSources(t *testing.T) {
+	fixture := newReferenceProgramFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	output := newLineWriter()
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, Options{
+			Slug: fixture.program.Slug, Port: 0, Open: false, Out: output,
+			GitHub: &controlledFetcher{err: errors.New("GitHub unavailable")},
+			Agents: &controlledAgentLister{err: errors.New("Herdr unavailable")},
+		})
+	}()
+
+	url := waitForProgramURL(t, output, done)
+	eventually(t, 2*time.Second, func() bool {
+		response, err := http.Get(url + "/api/program")
+		if err != nil {
+			return false
+		}
+		defer response.Body.Close()
+		var snapshot programview.Snapshot
+		if json.NewDecoder(response.Body).Decode(&snapshot) != nil {
+			return false
+		}
+		githubWarnings := strings.Join(snapshot.SourceHealth.GitHub.Warnings, "\n")
+		herdrWarnings := strings.Join(snapshot.SourceHealth.Herdr.Warnings, "\n")
+		return snapshot.Refresh.Status == "fresh" &&
+			snapshot.SourceHealth.GitHub.Status == "degraded" &&
+			strings.Contains(githubWarnings, "GitHub unavailable") &&
+			!strings.Contains(githubWarnings, "Herdr unavailable") &&
+			snapshot.SourceHealth.Herdr.Status == "degraded" &&
+			strings.Contains(herdrWarnings, "Herdr unavailable") &&
+			!strings.Contains(herdrWarnings, "GitHub unavailable")
+	})
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not stop after cancellation")
+	}
+}
+
 type lineWriter struct {
 	lines chan string
 }

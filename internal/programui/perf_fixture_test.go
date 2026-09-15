@@ -143,6 +143,9 @@ func newReferenceProgramFixture(t *testing.T) referenceProgramFixture {
 			Notes:     []string{fmt.Sprintf("Deterministic note %03d", index)},
 			CreatedAt: at, UpdatedAt: at, DispatchedAt: at,
 		}
+		if index == 1 {
+			item.PRRef = "#42"
+		}
 		p.Items = append(p.Items, item)
 	}
 	if err := program.Create(p); err != nil {
@@ -170,6 +173,11 @@ func newReferenceProgramFixture(t *testing.T) referenceProgramFixture {
 			Program: p.Slug, ProgramItem: item.ID, Phase: "implement",
 			Created: at, Updated: at, PhasesCompleted: []string{},
 			PhasesRemaining: []string{},
+		}
+		if index == 0 {
+			number := 42
+			url := "https://github.example/pr/42"
+			manifest.PR = project.PRInfo{Number: &number, URL: &url}
 		}
 		if err := project.Save(project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest); err != nil {
 			t.Fatal(err)
@@ -231,6 +239,7 @@ type controlledAgentLister struct {
 	err     error
 	once    sync.Once
 	started chan struct{}
+	delay   time.Duration
 }
 
 func (l *controlledAgentLister) Agents() ([]herdr.Agent, error) {
@@ -239,6 +248,9 @@ func (l *controlledAgentLister) Agents() ([]herdr.Agent, error) {
 	}
 	if l.release != nil {
 		<-l.release
+	}
+	if l.delay > 0 {
+		time.Sleep(l.delay)
 	}
 	return append([]herdr.Agent(nil), l.agents...), l.err
 }

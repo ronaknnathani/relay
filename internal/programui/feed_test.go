@@ -32,6 +32,11 @@ func TestSnapshotFeedSingleFlightsAndRetainsLastSnapshot(t *testing.T) {
 				return programview.Snapshot{
 					GeneratedAt: "fresh",
 					Warnings:    []string{},
+					Items: []programview.ItemDTO{{
+						ID:     "w1",
+						LivePR: &programview.PullRequestDTO{Number: 42},
+						Worker: &programview.WorkerDTO{PaneID: "pane-42"},
+					}},
 					SourceHealth: programview.SourceHealthDTO{
 						GitHub: programview.SourceDTO{
 							Status: "ok", Warnings: []string{"existing GitHub warning"},
@@ -87,7 +92,10 @@ func TestSnapshotFeedSingleFlightsAndRetainsLastSnapshot(t *testing.T) {
 			len(got.SourceHealth.GitHub.Warnings) == 1 &&
 			got.SourceHealth.GitHub.Warnings[0] == "existing GitHub warning" &&
 			got.SourceHealth.Herdr.Status == "ok" &&
-			len(got.SourceHealth.Herdr.Warnings) == 0
+			len(got.SourceHealth.Herdr.Warnings) == 0 &&
+			len(got.Items) == 1 && got.Items[0].LivePR != nil &&
+			got.Items[0].LivePR.Number == 42 && got.Items[0].Worker != nil &&
+			got.Items[0].Worker.PaneID == "pane-42"
 	})
 }
 

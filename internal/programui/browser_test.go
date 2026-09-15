@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,8 +14,87 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
+	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/programview"
 )
+
+func TestBrowserShowsSixSecondExternalRefreshProvenance(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	fixture := newReferenceProgramFixture(t)
+	worktree := filepath.Join(
+		fixture.program.Repo, ".worktrees", fixture.program.Items[0].ProjectSlug,
+	)
+	output := newLineWriter()
+	serverContext, cancelServer := context.WithCancel(context.Background())
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- Serve(serverContext, Options{
+			Slug: fixture.program.Slug, Port: 0, Open: false, Out: output,
+			GitHub: &controlledFetcher{
+				delay: 6 * time.Second,
+				result: programview.PullRequestDTO{
+					Number: 42, Ref: "#42", State: "open", Title: "Delayed PR",
+				},
+			},
+			Agents: &controlledAgentLister{
+				delay: 6 * time.Second,
+				agents: []herdr.Agent{{
+					Status: herdr.StatusWorking, PaneID: "pane-42", CWD: worktree,
+				}},
+			},
+		})
+	}()
+	t.Cleanup(func() {
+		cancelServer()
+		select {
+		case err := <-serverDone:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("program UI did not stop")
+		}
+	})
+	url := waitForProgramURL(t, output, serverDone)
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+	if err := chromedp.Run(browser); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	if err := chromedp.Run(browser,
+		chromedp.Navigate(url),
+		chromedp.Poll(`document.querySelectorAll(".card").length === 100`, nil),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("local UI usability = %s, want < 1s", elapsed)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Poll(`document.querySelector("#feed-state").textContent.startsWith("Refreshing")`, nil),
+		chromedp.Poll(`document.querySelector("#feed-state").textContent === "Live · every 3s" &&
+			document.querySelector(".card[data-item='w1'] .card__pr").textContent === "PR #42" &&
+			document.querySelector("#worker-count").textContent === "1"`, nil),
+	); err != nil {
+		t.Fatalf("external source refresh: %v", err)
+	}
+}
 
 func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
