@@ -520,7 +520,7 @@ func verifyPerformanceReport(t *testing.T, report performanceReport, baselinePat
 		report,
 		baseline,
 		repositoryCommit(t, "HEAD"),
-		repositoryCommit(t, "origin/main"),
+		repositoryMergeBase(t, "HEAD", "origin/main"),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -716,6 +716,17 @@ func repositoryCommit(t *testing.T, ref string) string {
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("resolve git commit %s: %v\n%s", ref, err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func repositoryMergeBase(t *testing.T, left, right string) string {
+	t.Helper()
+	command := exec.Command("git", "merge-base", left, right)
+	command.Dir = filepath.Join("..", "..")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve git merge-base %s %s: %v\n%s", left, right, err, output)
 	}
 	return strings.TrimSpace(string(output))
 }
