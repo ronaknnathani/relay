@@ -754,6 +754,67 @@ func TestArchiveProofRejectsManifestChangeBeforeCleanup(t *testing.T) {
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
 
+func TestArchiveProofReportsArchivedLocationAfterConcurrentArchive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "concurrent-archive-result"
+	branch := "user/concurrent-archive-result"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archiveProject(slug, true); err != nil {
+		t.Fatalf("concurrent archive: %v", err)
+	}
+
+	result, err := archiveProjectWithProof(decision.proof, true)
+	if err == nil || !strings.Contains(err.Error(), "project not found in active") {
+		t.Fatalf("archiveProjectWithProof error = %v, want stale active proof rejection", err)
+	}
+	archivedPath := filepath.Join(project.ArchivedDir(), slug)
+	if result.ProjectLocation != archiveLocationArchived ||
+		result.ProjectPath != archivedPath ||
+		result.ArchivedPath != archivedPath {
+		t.Fatalf("archive result = %+v, want final archived location %q", result, archivedPath)
+	}
+}
+
+func TestArchiveProofReportsUnknownWhenProjectLocationCannotBeFound(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "missing-archive-result"
+	branch := "user/missing-archive-result"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(project.ActiveDir(), slug)); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := archiveProjectWithProof(decision.proof, true)
+	if err == nil || !strings.Contains(err.Error(), "project not found in active") {
+		t.Fatalf("archiveProjectWithProof error = %v, want missing active proof rejection", err)
+	}
+	if result.ProjectLocation != archiveLocationUnknown ||
+		result.ProjectPath != "" ||
+		result.ArchivedPath != "" {
+		t.Fatalf("archive result = %+v, want explicit unknown location", result)
+	}
+}
+
 func TestArchiveRollbackRetainsArchivedProofWhenDirectoryRestoreFails(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	slug := "rollback-cleanup-failure"

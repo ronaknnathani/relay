@@ -1032,6 +1032,48 @@ func TestWorkerCleanupReportsArchivedAfterPostDeleteSaveFailure(t *testing.T) {
 	}
 }
 
+func TestWorkerCleanupReportsArchivedAfterConcurrentArchive(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installStubWatcherState(t, manifest.Slug, false)
+
+	previous := programWorkerArchiveProject
+	programWorkerArchiveProject = func(slug string, force bool) (archiveResult, error) {
+		active, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+		if err != nil {
+			return archiveResult{}, err
+		}
+		decision, err := decideArchive(active, slug, force)
+		if err != nil {
+			return archiveResult{}, err
+		}
+		if _, err := archiveProject(slug, force); err != nil {
+			return archiveResult{}, err
+		}
+		return archiveProjectWithProof(decision.proof, force)
+	}
+	t.Cleanup(func() { programWorkerArchiveProject = previous })
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("worker cleanup: %v", err)
+	}
+	result := decodeCleanupOutput(t, out)
+	archivedPath := filepath.Join(project.ArchivedDir(), manifest.Slug)
+	if result.Status != cleanupIncomplete || !result.Archived ||
+		result.Archive == nil ||
+		result.Archive.ProjectLocation != archiveLocationArchived ||
+		result.Archive.ProjectPath != archivedPath {
+		t.Fatalf("result = %+v, want concurrent final archived location %q", result, archivedPath)
+	}
+	if strings.Contains(result.Error, "project is still active") ||
+		!strings.Contains(result.Error, "archived") {
+		t.Fatalf("cleanup error = %q, want accurate archived concurrent result", result.Error)
+	}
+}
+
 func TestWorkerCleanupReportsArchivedAfterProofRevalidationRollbackFailure(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
 	client := &fakeHerdrClient{}

@@ -33,6 +33,8 @@ const (
 	cleanupWorkerRunning = "running"
 )
 
+var programWorkerArchiveProject = archiveProject
+
 type programWorkerCleanupOutput struct {
 	Program          string         `json:"program"`
 	Item             string         `json:"item"`
@@ -153,7 +155,7 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 		result.Status = cleanupFinalStatus(result)
 		return renderProgramWorkerCleanup(out, result, jsonOutput)
 	}
-	archiveOutcome, err := archiveProject(manifest.Slug, true)
+	archiveOutcome, err := programWorkerArchiveProject(manifest.Slug, true)
 	result.Archive = &archiveOutcome
 	result.Archived = archiveOutcome.ProjectLocation == archiveLocationArchived
 	result.Warnings = append(result.Warnings, archiveOutcome.Warnings...)

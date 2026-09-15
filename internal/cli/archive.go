@@ -209,6 +209,7 @@ const (
 	archiveTransitionRollbackIncomplete = "rollback-incomplete"
 	archiveLocationActive               = "active"
 	archiveLocationArchived             = "archived"
+	archiveLocationUnknown              = "unknown"
 )
 
 // runArchive archives a project and prints the human-facing report.
@@ -562,22 +563,27 @@ func archiveProjectWithProof(proof archiveProofSnapshot, force bool) (archiveRes
 }
 
 func archiveProjectWithProofLocked(proof archiveProofSnapshot, force bool) (archiveResult, error) {
-	m, err := validateArchiveProof(proof)
-	if err != nil {
-		return archiveResult{}, err
-	}
 	result := archiveResult{
 		Slug:               proof.Slug,
 		Branch:             proof.Branch,
 		Merged:             proof.Merged,
 		MetadataTransition: archiveTransitionNone,
-		ProjectLocation:    archiveLocationActive,
-		ProjectPath:        filepath.Join(project.ActiveDir(), proof.Slug),
+		ProjectLocation:    archiveLocationUnknown,
 		Warnings:           []string{},
 	}
 	if proof.HasWorktree {
 		result.Worktree = proof.Worktree
 	}
+	m, err := validateArchiveProof(proof)
+	if err != nil {
+		locationErr := applyCurrentProjectLocation(&result, proof.Slug)
+		return result, errors.Join(err, locationErr)
+	}
+	applyArchiveMetadataState(&result, archiveMetadataState{
+		transition: archiveTransitionNone,
+		location:   archiveLocationActive,
+		path:       filepath.Join(project.ActiveDir(), proof.Slug),
+	})
 	now := time.Now().UTC().Format(time.RFC3339)
 	m.Status = "archived"
 	m.Archived = &now
@@ -691,6 +697,50 @@ func archiveProjectWithProofLocked(proof archiveProofSnapshot, force bool) (arch
 		}
 	}
 	return result, nil
+}
+
+func applyCurrentProjectLocation(result *archiveResult, slug string) error {
+	activePath := filepath.Join(project.ActiveDir(), slug)
+	archivedPath := filepath.Join(project.ArchivedDir(), slug)
+	active, activeErr := manifestExists(project.ManifestPath(project.ActiveDir(), slug))
+	archived, archivedErr := manifestExists(project.ManifestPath(project.ArchivedDir(), slug))
+	if activeErr != nil || archivedErr != nil {
+		applyArchiveMetadataState(result, archiveMetadataState{
+			transition: archiveTransitionNone,
+			location:   archiveLocationUnknown,
+		})
+		return errors.Join(activeErr, archivedErr)
+	}
+	switch {
+	case active && !archived:
+		applyArchiveMetadataState(result, archiveMetadataState{
+			transition: archiveTransitionNone,
+			location:   archiveLocationActive,
+			path:       activePath,
+		})
+	case archived && !active:
+		applyArchiveMetadataState(result, archiveMetadataState{
+			transition: archiveTransitionNone,
+			location:   archiveLocationArchived,
+			path:       archivedPath,
+		})
+	default:
+		applyArchiveMetadataState(result, archiveMetadataState{
+			transition: archiveTransitionNone,
+			location:   archiveLocationUnknown,
+		})
+	}
+	return nil
+}
+
+func manifestExists(path string) (bool, error) {
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect project manifest %s: %w", path, err)
+	}
+	return true, nil
 }
 
 func archiveWorktreeStateAfterFailure(
