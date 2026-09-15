@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -74,4 +75,193 @@ func TestWorktreeRemoveMissingWorktree(t *testing.T) {
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("leftover dir still present: %v", err)
 	}
+}
+
+func TestFetchUpdatesRemoteTrackingBase(t *testing.T) {
+	for _, base := range []string{"main", "master"} {
+		t.Run(base, func(t *testing.T) {
+			_, source, repo := initRemoteRepo(t, base)
+			initial := gitOutput(t, repo, "rev-parse", "origin/"+base)
+			advanceRepo(t, source, "upstream.txt", "upstream\n", "advance upstream")
+			upstream := gitOutput(t, source, "rev-parse", base)
+			if initial == upstream {
+				t.Fatal("upstream did not advance")
+			}
+
+			if _, err := Fetch(repo, base); err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			if got := gitOutput(t, repo, "rev-parse", "origin/"+base); got != upstream {
+				t.Fatalf("origin/%s = %s, want %s", base, got, upstream)
+			}
+		})
+	}
+}
+
+func TestFetchReplacesStaleRemoteTrackingRefWithoutLocalBase(t *testing.T) {
+	_, source, repo := initRemoteRepo(t, "main")
+	initial := gitOutput(t, source, "rev-parse", "main")
+	advanceRepo(t, source, "upstream.txt", "upstream\n", "advance upstream")
+	if _, err := Fetch(repo, "main"); err != nil {
+		t.Fatalf("initial Fetch: %v", err)
+	}
+	runGit(t, repo, "checkout", "-q", "--detach", "origin/main")
+	runGit(t, repo, "branch", "-D", "main")
+	runGit(t, source, "reset", "--hard", initial)
+	runGit(t, source, "push", "--force", "origin", "main")
+
+	if _, err := Fetch(repo, "main"); err != nil {
+		t.Fatalf("Fetch after force-push: %v", err)
+	}
+	if got := gitOutput(t, repo, "rev-parse", "origin/main"); got != initial {
+		t.Fatalf("origin/main = %s, want force-updated %s", got, initial)
+	}
+	if BranchExists(repo, "main") {
+		t.Fatal("Fetch recreated the absent local main branch")
+	}
+}
+
+func TestSanitizeGitDiagnosticRedactsHTTPUserinfo(t *testing.T) {
+	input := "fatal: unable to access 'https://relay:secret@example.com/repo.git/': denied\n" +
+		"remote https://token@example.org/other.git"
+	got := sanitizeGitDiagnostic(input)
+	for _, secret := range []string{"relay", "secret", "token"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("sanitizeGitDiagnostic(%q) leaked %q in %q", input, secret, got)
+		}
+	}
+	for _, want := range []string{"https://[redacted]@example.com/repo.git", "https://[redacted]@example.org/other.git"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("sanitizeGitDiagnostic(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestWorkMerged(t *testing.T) {
+	repo := initRepo(t)
+	start := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "-q", "-b", "merged-work")
+	if err := os.WriteFile(filepath.Join(repo, "merged.txt"), []byte("merged\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "merged.txt")
+	runGit(t, repo, "commit", "-q", "-m", "merged work")
+	runGit(t, repo, "checkout", "-q", "-")
+	runGit(t, repo, "merge", "-q", "--ff-only", "merged-work")
+
+	merged, err := WorkMerged(repo, "merged-work", "HEAD", start)
+	if err != nil {
+		t.Fatalf("WorkMerged: %v", err)
+	}
+	if !merged {
+		t.Fatal("WorkMerged = false, want true")
+	}
+}
+
+func TestWorkMergedReturnsFalseForNormalUnmergedStates(t *testing.T) {
+	repo := initRepo(t)
+	base := currentBranchInRepo(t, repo)
+	start := gitOutput(t, repo, "rev-parse", base)
+	runGit(t, repo, "checkout", "-q", "-b", "unmerged-work")
+	if err := os.WriteFile(filepath.Join(repo, "unmerged.txt"), []byte("unmerged\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "unmerged.txt")
+	runGit(t, repo, "commit", "-q", "-m", "unmerged work")
+	runGit(t, repo, "checkout", "-q", base)
+
+	for _, branch := range []string{"unmerged-work", "missing-work"} {
+		t.Run(branch, func(t *testing.T) {
+			merged, err := WorkMerged(repo, branch, base, start)
+			if err != nil {
+				t.Fatalf("WorkMerged: %v", err)
+			}
+			if merged {
+				t.Fatal("WorkMerged = true, want false")
+			}
+		})
+	}
+}
+
+func TestWorkMergedReturnsEvaluationError(t *testing.T) {
+	repo := initRepo(t)
+	base := currentBranchInRepo(t, repo)
+	start := gitOutput(t, repo, "rev-parse", base)
+	runGit(t, repo, "checkout", "-q", "-b", "work")
+	if err := os.WriteFile(filepath.Join(repo, "work.txt"), []byte("work\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "work.txt")
+	runGit(t, repo, "commit", "-q", "-m", "work")
+	runGit(t, repo, "checkout", "-q", base)
+
+	merged, err := WorkMerged(repo, "work", "missing-base", start)
+	if err == nil {
+		t.Fatal("WorkMerged error = nil, want invalid base diagnostic")
+	}
+	if merged {
+		t.Fatal("WorkMerged = true after evaluation error")
+	}
+	if !strings.Contains(err.Error(), "git merge-base --is-ancestor work missing-base") {
+		t.Fatalf("WorkMerged error = %q", err)
+	}
+	if IsWorkMerged(repo, "work", "missing-base", start) {
+		t.Fatal("IsWorkMerged should remain conservative on evaluation error")
+	}
+}
+
+func currentBranchInRepo(t *testing.T, repo string) string {
+	t.Helper()
+	return gitOutput(t, repo, "branch", "--show-current")
+}
+
+func initRemoteRepo(t *testing.T, base string) (remote, source, repo string) {
+	t.Helper()
+	root := t.TempDir()
+	remote = filepath.Join(root, "origin.git")
+	source = filepath.Join(root, "source")
+	repo = filepath.Join(root, "repo")
+	runGit(t, root, "init", "-q", "--bare", "--initial-branch="+base, remote)
+	runGit(t, root, "init", "-q", "-b", base, source)
+	if err := os.WriteFile(filepath.Join(source, "README"), []byte("initial\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, source, "add", "README")
+	runGit(t, source, "commit", "-q", "-m", "initial")
+	runGit(t, source, "remote", "add", "origin", remote)
+	runGit(t, source, "push", "-q", "-u", "origin", base)
+	runGit(t, root, "clone", "-q", remote, repo)
+	return remote, source, repo
+}
+
+func advanceRepo(t *testing.T, repo, name, content, message string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", name)
+	runGit(t, repo, "commit", "-q", "-m", message)
+	runGit(t, repo, "push", "-q", "origin", "HEAD")
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=relay", "GIT_AUTHOR_EMAIL=relay@example.com",
+		"GIT_COMMITTER_NAME=relay", "GIT_COMMITTER_EMAIL=relay@example.com",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git -C %s %v: %v\n%s", dir, args, err, out)
+	}
+}
+
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git -C %s %v: %v\n%s", dir, args, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }

@@ -4,12 +4,16 @@
 package gitx
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+var httpUserinfoPattern = regexp.MustCompile(`(?i)(https?://)[^\s/]+@`)
 
 // RepoRoot returns the absolute path to the top-level directory of the
 // current git repository, or an empty string and an error if cwd is not
@@ -48,8 +52,8 @@ func HasOrigin(repo string) bool {
 
 // BranchExists reports whether the named branch exists locally.
 func BranchExists(repo, branch string) bool {
-	out, err := exec.Command("git", "-C", repo, "rev-parse", "--verify", branch).CombinedOutput()
-	return err == nil && strings.TrimSpace(string(out)) != ""
+	exists, _ := localBranchExists(repo, branch)
+	return exists
 }
 
 // DeleteBranch removes a branch with `git branch -d` (refuses if unmerged).
@@ -76,18 +80,64 @@ func IsBranchReachable(repo, branch, base string) bool {
 	return exec.Command("git", "-C", repo, "merge-base", "--is-ancestor", branch, base).Run() == nil
 }
 
-// IsWorkMerged reports whether branch has commits beyond startSHA AND those
-// commits are reachable from base. A freshly-created branch (tip == startSHA)
-// is not considered merged.
-func IsWorkMerged(repo, branch, base, startSHA string) bool {
+// WorkMerged reports whether branch has commits beyond startSHA and those
+// commits are reachable from base. Missing branches and normal non-ancestor
+// results are not errors.
+func WorkMerged(repo, branch, base, startSHA string) (bool, error) {
 	if startSHA == "" {
-		return false
+		return false, nil
 	}
-	tip := RevParse(repo, branch)
-	if tip == "" || tip == startSHA {
-		return false
+	exists, err := localBranchExists(repo, branch)
+	if err != nil {
+		return false, err
 	}
-	return IsBranchReachable(repo, branch, base)
+	if !exists {
+		return false, nil
+	}
+	ref := "refs/heads/" + branch
+	out, err := exec.Command("git", "-C", repo, "rev-parse", "--verify", ref+"^{commit}").CombinedOutput()
+	if err != nil {
+		return false, gitCommandError("git rev-parse --verify "+ref+"^{commit}", err, out)
+	}
+	if strings.TrimSpace(string(out)) == startSHA {
+		return false, nil
+	}
+	out, err = exec.Command("git", "-C", repo, "merge-base", "--is-ancestor", branch, base).CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, gitCommandError("git merge-base --is-ancestor "+branch+" "+base, err, out)
+}
+
+// IsWorkMerged preserves the conservative boolean interface for existing callers.
+func IsWorkMerged(repo, branch, base, startSHA string) bool {
+	merged, _ := WorkMerged(repo, branch, base, startSHA)
+	return merged
+}
+
+func localBranchExists(repo, branch string) (bool, error) {
+	ref := "refs/heads/" + branch
+	out, err := exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", ref).CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, gitCommandError("git show-ref --verify "+ref, err, out)
+}
+
+func gitCommandError(command string, err error, output []byte) error {
+	diagnostic := sanitizeGitDiagnostic(string(output))
+	if diagnostic == "" {
+		return fmt.Errorf("%s: %w", command, err)
+	}
+	return fmt.Errorf("%s: %w\n%s", command, err, diagnostic)
 }
 
 // DetectDefaultBranch returns the repo's default branch. Prefers
@@ -109,14 +159,21 @@ func DetectDefaultBranch(repo string) string {
 	return ""
 }
 
-// Fetch runs `git fetch origin <branch>`. Returns the trimmed combined output
-// alongside any error so callers can decide whether to warn.
+// Fetch updates origin's remote-tracking ref for branch. It returns sanitized
+// combined output alongside any error so callers can emit useful diagnostics.
 func Fetch(repo, branch string) (string, error) {
-	out, err := exec.Command("git", "-C", repo, "fetch", "origin", branch).CombinedOutput()
+	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branch, branch)
+	out, err := exec.Command("git", "-C", repo, "fetch", "origin", refspec).CombinedOutput()
+	diagnostic := sanitizeGitDiagnostic(string(out))
 	if err != nil {
-		return strings.TrimRight(string(out), "\n"), fmt.Errorf("git fetch origin %s: %w", branch, err)
+		return diagnostic, fmt.Errorf("git fetch origin %s: %w", branch, err)
 	}
-	return strings.TrimRight(string(out), "\n"), nil
+	return diagnostic, nil
+}
+
+func sanitizeGitDiagnostic(output string) string {
+	output = strings.TrimSpace(output)
+	return httpUserinfoPattern.ReplaceAllString(output, `${1}[redacted]@`)
 }
 
 // WorktreeAdd creates a new worktree at dir on a new branch, started from startPoint.
