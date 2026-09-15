@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-cksdwEPAV9lajVKhZ70vrEAKZO/JeUNno7W9HbVfvlM=' 'sha256-nCnP0l3vNllGYTgmepdFwevc5ZUtlIuUnbPCNKzfpvY='; style-src 'self' 'sha256-3n7xJ5R9dlqJ0VeUIhBJfhXw7/pu51DAm1PGmDRgqHY='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-cksdwEPAV9lajVKhZ70vrEAKZO/JeUNno7W9HbVfvlM=' 'sha256-nCnP0l3vNllGYTgmepdFwevc5ZUtlIuUnbPCNKzfpvY='; style-src 'self' 'sha256-Xw7wxTOiYy+b6PIFWGKVbmnC36csxkOzdj0re5zdObc='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	appTemplateToken      = "__RELAY_APP__"
 	cssTemplateToken      = "__RELAY_CSS__"
 )
@@ -108,9 +108,9 @@ func (h *handler) serveIndex(response http.ResponseWriter, request *http.Request
 		http.Error(response, "read embedded asset assets/app.min.js", http.StatusInternalServerError)
 		return
 	}
-	styles, err := fs.ReadFile(embeddedAssets, "assets/app.css")
+	styles, err := fs.ReadFile(embeddedAssets, "assets/app.min.css")
 	if err != nil {
-		http.Error(response, "read embedded asset assets/app.css", http.StatusInternalServerError)
+		http.Error(response, "read embedded asset assets/app.min.css", http.StatusInternalServerError)
 		return
 	}
 	index = bytes.Replace(index, []byte(cssTemplateToken), styles, 1)

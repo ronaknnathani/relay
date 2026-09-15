@@ -15,6 +15,7 @@ import (
 var assetNames = []string{
 	"assets/index.html",
 	"assets/app.css",
+	"assets/app.min.css",
 	"assets/app.js",
 	"assets/app.min.js",
 }
@@ -156,7 +157,11 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	if !strings.Contains(contentSecurityPolicy, hash) {
 		t.Errorf("content security policy is missing the application hash %s", hash)
 	}
-	styleDigest := sha256.Sum256([]byte(readAsset(t, "assets/app.css")))
+	minifiedStyles := readAsset(t, "assets/app.min.css")
+	if len(minifiedStyles) >= len(readAsset(t, "assets/app.css")) {
+		t.Error("the served stylesheet must be minified")
+	}
+	styleDigest := sha256.Sum256([]byte(minifiedStyles))
 	styleHash := "'sha256-" + base64.StdEncoding.EncodeToString(styleDigest[:]) + "'"
 	if !strings.Contains(contentSecurityPolicy, styleHash) {
 		t.Errorf("content security policy is missing the stylesheet hash %s", styleHash)
