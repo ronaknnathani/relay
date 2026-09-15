@@ -209,7 +209,7 @@ func (c *agentCache) Agents() ([]herdr.Agent, error) {
 	c.mu.Unlock()
 
 	if c.lister == nil {
-		flight.err = fmt.Errorf("Herdr agent lister is not configured")
+		flight.err = fmt.Errorf("herdr agent lister is not configured")
 	} else {
 		flight.agents, flight.err = c.lister.Agents()
 	}
