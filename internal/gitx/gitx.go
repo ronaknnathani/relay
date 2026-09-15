@@ -26,7 +26,7 @@ var (
 func RepoRoot() (string, error) {
 	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
-		return "", fmt.Errorf("git rev-parse --show-toplevel: %w", err)
+		return "", gitOutputError("git rev-parse --show-toplevel", err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -58,15 +58,16 @@ func LocalBranchTip(repo, branch string) (sha string, found bool, err error) {
 		return "", exists, err
 	}
 	ref := "refs/heads/" + branch
-	out, err := exec.Command("git", "-C", repo, "rev-parse", "--verify", ref+"^{commit}").CombinedOutput()
+	out, err := exec.Command("git", "-C", repo, "rev-parse", "--verify", ref+"^{commit}").Output()
 	if err != nil {
-		return "", false, gitCommandError("git rev-parse --verify "+ref+"^{commit}", err, out)
+		return "", false, gitOutputError("git rev-parse --verify "+ref+"^{commit}", err)
 	}
 	return strings.TrimSpace(string(out)), true, nil
 }
 
 // WorktreeHead resolves the current commit of a registered worktree directory.
-// Missing and unregistered directories are returned as found=false.
+// Missing directories are returned as found=false; existing unregistered
+// directories return an error.
 func WorktreeHead(repo, dir string) (sha string, found bool, err error) {
 	if _, err := os.Stat(dir); err != nil {
 		if os.IsNotExist(err) {
@@ -81,18 +82,18 @@ func WorktreeHead(repo, dir string) (sha string, found bool, err error) {
 	if !registered {
 		return "", false, fmt.Errorf("worktree path %s exists but is not registered in %s", dir, repo)
 	}
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "--verify", "HEAD^{commit}").CombinedOutput()
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--verify", "HEAD^{commit}").Output()
 	if err != nil {
-		return "", false, gitCommandError("git -C "+dir+" rev-parse --verify HEAD^{commit}", err, out)
+		return "", false, gitOutputError("git -C "+dir+" rev-parse --verify HEAD^{commit}", err)
 	}
 	return strings.TrimSpace(string(out)), true, nil
 }
 
 // OriginURL returns the configured URL for the origin remote.
 func OriginURL(repo string) (string, error) {
-	out, err := exec.Command("git", "-C", repo, "remote", "get-url", "origin").CombinedOutput()
+	out, err := exec.Command("git", "-C", repo, "remote", "get-url", "origin").Output()
 	if err != nil {
-		return "", gitCommandError("git remote get-url origin", err, out)
+		return "", gitOutputError("git remote get-url origin", err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -174,7 +175,7 @@ func IsWorkMerged(repo, branch, base, startSHA string) bool {
 
 func localBranchExists(repo, branch string) (bool, error) {
 	ref := "refs/heads/" + branch
-	out, err := exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", ref).CombinedOutput()
+	_, err := exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", ref).Output()
 	if err == nil {
 		return true, nil
 	}
@@ -182,7 +183,7 @@ func localBranchExists(repo, branch string) (bool, error) {
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 		return false, nil
 	}
-	return false, gitCommandError("git show-ref --verify "+ref, err, out)
+	return false, gitOutputError("git show-ref --verify "+ref, err)
 }
 
 func gitCommandError(command string, err error, output []byte) error {
@@ -214,7 +215,7 @@ func DetectDefaultBranch(repo string) string {
 func DetectDefaultBranchWithError(repo string) (string, error) {
 	out, err := exec.Command(
 		"git", "-C", repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD",
-	).CombinedOutput()
+	).Output()
 	var symbolicRefErr error
 	if err == nil {
 		ref := strings.TrimSpace(string(out))
@@ -223,8 +224,8 @@ func DetectDefaultBranchWithError(repo string) (string, error) {
 		}
 		symbolicRefErr = fmt.Errorf("symbolic ref %q is invalid", ref)
 	} else {
-		symbolicRefErr = gitCommandError(
-			"git symbolic-ref --short refs/remotes/origin/HEAD", err, out,
+		symbolicRefErr = gitOutputError(
+			"git symbolic-ref --short refs/remotes/origin/HEAD", err,
 		)
 	}
 	for _, candidate := range []string{"main", "master"} {
@@ -317,9 +318,9 @@ func WorktreeAdd(repo, dir, branch, startPoint string) error {
 // IsWorktree reports whether dir is registered as a git worktree of repo.
 // The returned bool is only meaningful when err is nil.
 func IsWorktree(repo, dir string) (bool, error) {
-	out, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").CombinedOutput()
+	out, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").Output()
 	if err != nil {
-		return false, gitCommandError("git worktree list", err, out)
+		return false, gitOutputError("git worktree list", err)
 	}
 	target := canonPath(dir)
 	for _, line := range strings.Split(string(out), "\n") {
@@ -346,9 +347,9 @@ func canonPath(p string) string {
 // uncommitted changes and no untracked files (i.e. `git status --porcelain`
 // is empty). The bool is only meaningful when err is nil.
 func WorktreeClean(dir string) (bool, error) {
-	out, err := exec.Command("git", "-C", dir, "status", "--porcelain").CombinedOutput()
+	out, err := exec.Command("git", "-C", dir, "status", "--porcelain").Output()
 	if err != nil {
-		return false, gitCommandError("git -C "+dir+" status --porcelain", err, out)
+		return false, gitOutputError("git -C "+dir+" status --porcelain", err)
 	}
 	return strings.TrimSpace(string(out)) == "", nil
 }
@@ -380,6 +381,9 @@ func WorktreeRemove(repo, dir string, force bool) error {
 // Relay's interrupted-project setup recovery, where the caller has already
 // applied its clean-worktree and confirmation policy.
 func WorktreeReclaim(repo, dir string, force bool) error {
+	if err := validateRelayWorktreeTarget(repo, dir); err != nil {
+		return err
+	}
 	registered, err := IsWorktree(repo, dir)
 	if err != nil {
 		return err
@@ -393,17 +397,36 @@ func WorktreeReclaim(repo, dir string, force bool) error {
 		}
 		return fmt.Errorf("stat worktree %s: %w", dir, err)
 	}
-	root := canonPath(filepath.Join(repo, ".worktrees"))
-	target := canonPath(dir)
-	rel, err := filepath.Rel(root, target)
-	if err != nil || rel == "." || filepath.Dir(rel) != "." {
-		return fmt.Errorf("refuse to reclaim unregistered worktree path outside %s: %s", root, dir)
-	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("remove Relay worktree path %s: %w", dir, err)
 	}
 	if out, err := exec.Command("git", "-C", repo, "worktree", "prune").CombinedOutput(); err != nil {
 		return gitCommandError("git worktree prune", err, out)
+	}
+	return nil
+}
+
+func validateRelayWorktreeTarget(repo, dir string) error {
+	root, err := filepath.Abs(filepath.Join(repo, ".worktrees"))
+	if err != nil {
+		return fmt.Errorf("resolve Relay worktree root: %w", err)
+	}
+	root = canonPath(root)
+	target, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("resolve worktree path %s: %w", dir, err)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(target); resolveErr == nil {
+		target = resolved
+	} else if parent, parentErr := filepath.EvalSymlinks(filepath.Dir(target)); parentErr == nil {
+		target = filepath.Join(parent, filepath.Base(target))
+	} else {
+		target = filepath.Clean(target)
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || filepath.IsAbs(rel) || rel == "." || rel == ".." ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.Dir(rel) != "." {
+		return fmt.Errorf("refuse to reclaim worktree path outside %s: %s", root, dir)
 	}
 	return nil
 }

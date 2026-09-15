@@ -838,3 +838,40 @@ func TestWorkerCleanupReturnsIncompleteWhenBranchDeletionFails(t *testing.T) {
 		t.Fatal("branch deletion failure did not preserve the registered worktree and branch")
 	}
 }
+
+func TestWorkerCleanupPreservesWatcherRetryWhenBranchDeletionAlsoFails(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	actualWorktree := *manifest.Worktree
+	missingWorktree := actualWorktree + "-missing"
+	manifest.Worktree = &missingWorktree
+	if err := project.Save(
+		project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{closeErr: errors.New("herdr refused to close the watcher tab")}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installCompletedWatcherState(t, manifest.Slug)
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("worker cleanup: %v", err)
+	}
+	result := decodeCleanupOutput(t, out)
+	watcherRetry := "relay program worker cleanup " + p.Slug + " " + item.ID
+	branchDelete := manualBranchDeleteCommand(manifest.Repo, manifest.Branch)
+	warnings := strings.Join(result.Warnings, "\n")
+	if result.Status != cleanupIncomplete || !result.Archived {
+		t.Fatalf("result = %+v, want incomplete archived cleanup", result)
+	}
+	if result.NextCommand != watcherRetry {
+		t.Fatalf("next command = %q, want watcher retry %q", result.NextCommand, watcherRetry)
+	}
+	if !strings.Contains(warnings, branchDelete) {
+		t.Fatalf("warnings = %q, want branch deletion guidance %q", warnings, branchDelete)
+	}
+	if !gitx.BranchExists(manifest.Repo, manifest.Branch) || !pathExists(actualWorktree) {
+		t.Fatal("combined cleanup failure did not preserve the registered worktree and branch")
+	}
+}

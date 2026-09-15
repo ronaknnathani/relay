@@ -106,6 +106,36 @@ func TestWorktreeReclaimRestrictsUnregisteredPathsToRelayWorktreeRoot(t *testing
 	}
 }
 
+func TestWorktreeReclaimRejectsTargetsOutsideRelayWorktreeRoot(t *testing.T) {
+	repo := initRepo(t)
+	externalWorktree := filepath.Join(t.TempDir(), "registered")
+	runGit(t, repo, "worktree", "add", "-q", externalWorktree, "-b", "external", "HEAD")
+
+	tests := []struct {
+		name string
+		dir  string
+	}{
+		{name: "repository root", dir: repo},
+		{name: "parent traversal", dir: filepath.Join(repo, "..")},
+		{name: "absolute external worktree", dir: externalWorktree},
+		{name: "escaping relative path", dir: filepath.Join(repo, ".worktrees", "..", "outside")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := WorktreeReclaim(repo, test.dir, true)
+			if err == nil || !strings.Contains(err.Error(), "refuse to reclaim") {
+				t.Fatalf("WorktreeReclaim(%q) error = %v, want containment rejection", test.dir, err)
+			}
+		})
+	}
+	if _, err := os.Stat(repo); err != nil {
+		t.Fatalf("repository root was changed: %v", err)
+	}
+	if _, err := os.Stat(externalWorktree); err != nil {
+		t.Fatalf("external worktree was changed: %v", err)
+	}
+}
+
 func TestWorktreeHeadRejectsExistingUnregisteredDirectory(t *testing.T) {
 	repo := initRepo(t)
 	dir := filepath.Join(repo, ".worktrees", "leftover")
@@ -119,6 +149,42 @@ func TestWorktreeHeadRejectsExistingUnregisteredDirectory(t *testing.T) {
 	}
 	if found || sha != "" {
 		t.Fatalf("WorktreeHead = (%q, %t), want empty, false", sha, found)
+	}
+}
+
+func TestGitValueHelpersIgnoreSuccessfulStderr(t *testing.T) {
+	repo := initRepo(t)
+	base := currentBranchInRepo(t, repo)
+	runGit(t, repo, "remote", "add", "origin", "https://example.com/acme/widgets.git")
+	runGit(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/"+base)
+	worktree := filepath.Join(repo, ".worktrees", "traced")
+	runGit(t, repo, "worktree", "add", "-q", worktree, "-b", "traced", "HEAD")
+	wantSHA := gitOutput(t, repo, "rev-parse", "refs/heads/traced")
+	t.Setenv("GIT_TRACE", "1")
+
+	branchTip, found, err := LocalBranchTip(repo, "traced")
+	if err != nil || !found || branchTip != wantSHA {
+		t.Fatalf("LocalBranchTip = (%q, %t, %v), want (%q, true, nil)", branchTip, found, err, wantSHA)
+	}
+	worktreeHead, found, err := WorktreeHead(repo, worktree)
+	if err != nil || !found || worktreeHead != wantSHA {
+		t.Fatalf("WorktreeHead = (%q, %t, %v), want (%q, true, nil)", worktreeHead, found, err, wantSHA)
+	}
+	origin, err := OriginURL(repo)
+	if err != nil || origin != "https://example.com/acme/widgets.git" {
+		t.Fatalf("OriginURL = (%q, %v), want exact URL", origin, err)
+	}
+	detected, err := DetectDefaultBranchWithError(repo)
+	if err != nil || detected != base {
+		t.Fatalf("DetectDefaultBranchWithError = (%q, %v), want (%q, nil)", detected, err, base)
+	}
+	registered, err := IsWorktree(repo, worktree)
+	if err != nil || !registered {
+		t.Fatalf("IsWorktree = (%t, %v), want (true, nil)", registered, err)
+	}
+	clean, err := WorktreeClean(worktree)
+	if err != nil || !clean {
+		t.Fatalf("WorktreeClean = (%t, %v), want (true, nil)", clean, err)
 	}
 }
 

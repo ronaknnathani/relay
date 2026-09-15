@@ -150,7 +150,9 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 	result.Warnings = append(result.Warnings, archiveOutcome.Warnings...)
 	if archiveOutcome.BranchDeletionWarning != "" {
 		result.Warnings = append(result.Warnings, archiveOutcome.BranchDeletionWarning)
-		result.NextCommand = manualBranchDeleteCommand(manifest.Repo, manifest.Branch)
+		if result.NextCommand == "" {
+			result.NextCommand = manualBranchDeleteCommand(manifest.Repo, manifest.Branch)
+		}
 	}
 	result.Status = cleanupFinalStatus(result)
 	return renderProgramWorkerCleanup(out, result, jsonOutput)

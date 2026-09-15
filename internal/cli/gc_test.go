@@ -124,13 +124,12 @@ func TestGCArchivesUpstreamMergedMainAndMaster(t *testing.T) {
 			slug := "upstream-" + base
 			branch, worktree := addGCProject(t, fixture, slug)
 			mergeGCProjectUpstream(t, fixture, branch)
-			if base == "master" {
-				updateGCManifest(t, slug, func(manifest *project.Manifest) {
-					manifest.BaseBranch = ""
-				})
-				runArchiveGit(t, fixture.repo, "checkout", "-q", "--detach", fixture.startSHA)
-				runArchiveGit(t, fixture.repo, "branch", "-D", base)
-			}
+			updateGCManifest(t, slug, func(manifest *project.Manifest) {
+				manifest.BaseBranch = ""
+			})
+			runArchiveGit(t, fixture.repo, "checkout", "-q", "--detach", fixture.startSHA)
+			runArchiveGit(t, fixture.repo, "branch", "-D", base)
+			t.Setenv("GIT_TRACE", "1")
 
 			stdout, stderr, err := captureGCOutput(t, runGC)
 			if err != nil {
@@ -235,6 +234,7 @@ func TestGCArchivesMergedPullRequestWithMatchingBranchTip(t *testing.T) {
 	_, _ = addGCProject(t, fixture, slug)
 	recordArchiveManifestPR(t, slug, 701)
 	installArchivePRIndex(t, map[string]programview.PRState{"#701": programview.PRStateMerged})
+	t.Setenv("GIT_TRACE", "1")
 
 	_, stderr, err := captureGCOutput(t, runGC)
 	if err != nil {
@@ -245,6 +245,55 @@ func TestGCArchivesMergedPullRequestWithMatchingBranchTip(t *testing.T) {
 	}
 	if archived := loadArchivedManifest(t, slug); !archived.Merged {
 		t.Fatal("GC did not record the merged pull request")
+	}
+}
+
+func TestGCKeepsBranchMergedOnlyIntoLocalBase(t *testing.T) {
+	for _, base := range []string{"main", "master"} {
+		t.Run(base, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			fixture := newGCRepoFixture(t, base)
+			slug := "local-only-" + base
+			branch, worktree := addGCProject(t, fixture, slug)
+			runArchiveGit(t, fixture.repo, "merge", "-q", "--no-edit", "refs/heads/"+branch)
+
+			_, stderr, err := captureGCOutput(t, runGC)
+			if err != nil {
+				t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+			}
+			if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+				!pathExists(worktree) ||
+				!gitx.BranchExists(fixture.repo, branch) {
+				t.Fatal("GC removed a branch merged only into the local base")
+			}
+			if pathExists(filepath.Join(project.ArchivedDir(), slug)) {
+				t.Fatal("GC archived a branch that is not merged upstream")
+			}
+		})
+	}
+}
+
+func TestGCForceCleansDirtyUntrackedMergedWorktree(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "dirty-merged"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	writeArchiveFile(t, worktree, slug+".txt", "modified\n")
+	writeArchiveFile(t, worktree, "untracked.txt", "untracked\n")
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if err != nil {
+		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	}
+	if pathExists(worktree) || gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC left a proven-merged dirty worktree or branch behind")
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("GC left the proven-merged dirty project active")
+	}
+	if archived := loadArchivedManifest(t, slug); !archived.Merged {
+		t.Fatal("GC did not record the force-cleaned project as merged")
 	}
 }
 
