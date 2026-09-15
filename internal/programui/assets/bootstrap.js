@@ -95,17 +95,15 @@
   graphNodes.addEventListener("click", onClick);
   graphNodes.addEventListener("keydown", onKeyDown);
 
-  window.setTimeout(() => {
-    const script = document.createElement("script");
-    script.src = "/app.js";
-    script.onload = () => {
-      graphNodes.removeEventListener("click", onClick);
-      graphNodes.removeEventListener("keydown", onKeyDown);
-    };
-    script.onerror = () => {
-      reconnect.hidden = false;
-      reconnect.textContent = "The Program UI bundle failed to load. Reload the page to retry.";
-    };
-    document.body.append(script);
-  }, 50);
+  const script = document.createElement("script");
+  script.src = "/app.js";
+  script.onload = () => {
+    graphNodes.removeEventListener("click", onClick);
+    graphNodes.removeEventListener("keydown", onKeyDown);
+  };
+  script.onerror = () => {
+    reconnect.hidden = false;
+    reconnect.textContent = "The Program UI bundle failed to load. Reload the page to retry.";
+  };
+  document.body.append(script);
 })();

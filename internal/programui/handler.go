@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	contentSecurityPolicy  = "default-src 'self'; script-src 'self' 'sha256-UXIL+j6UmJdVusQ2iRt/3tKDJxuh42y6D1HM1W2MC54=' 'sha256-nq+HP9Kvhsa7qwFfZ6cZ2ifZEqWqebxrZBzvQNZU1Fk='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy  = "default-src 'self'; script-src 'self' 'sha256-UXIL+j6UmJdVusQ2iRt/3tKDJxuh42y6D1HM1W2MC54=' 'sha256-ncjhV6C1L5kC8SgYq/0dH4o0OSDhU5RVh6iIop7qsIk='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	bootstrapTemplateToken = "__RELAY_BOOTSTRAP__"
 	roadmapTemplateToken   = "__RELAY_INITIAL_ROADMAP__"
 )

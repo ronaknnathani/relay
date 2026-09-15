@@ -225,6 +225,17 @@ func TestBootstrapUsesMergedProgress(t *testing.T) {
 	})
 }
 
+func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
+	bootstrap := readAsset(t, "assets/bootstrap.js")
+	requireContains(t, "bootstrap.js", bootstrap, []string{
+		`script.src = "/app.js"`,
+		"document.body.append(script)",
+	})
+	requireAbsent(t, "bootstrap.js", bootstrap, []string{
+		"window.setTimeout",
+	})
+}
+
 func TestIndexExposesFourTabsAndDefaultsToRoadmap(t *testing.T) {
 	index := readAsset(t, "assets/index.html")
 	requireContains(t, "index.html", index, []string{

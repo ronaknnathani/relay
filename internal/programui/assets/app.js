@@ -14,7 +14,7 @@ function applyTheme(theme) {
 const POLL_INTERVAL = 3000;
 const BACKOFF = [3000, 6000, 12000];
 const INITIAL_ROADMAP_CARDS = 2;
-const ROADMAP_RENDER_BATCH = 32;
+const ROADMAP_RENDER_BATCH = 128;
 const LANES = ["pending", "dispatched", "in-review", "blocked", "merged", "cancelled"];
 const TABS = ["roadmap", "tasks", "decisions", "goal"];
 const ACTIVE_STATUSES = ["dispatched", "in-review"];
@@ -916,7 +916,7 @@ function renderRoadmap() {
     }
     window.requestAnimationFrame(finish);
   };
-  window.setTimeout(() => window.requestAnimationFrame(finish), 50);
+  window.requestAnimationFrame(finish);
   return false;
 }
 
@@ -1481,6 +1481,34 @@ function signatureOf(body) {
   return body.replace(/"generated_at":"[^"]*"/g, "");
 }
 
+function roadmapRenderSignature(snapshot) {
+  const graph = snapshot.graph || {};
+  const byID = new Map(list(snapshot.items).map((item) => [item.id, item]));
+  const nodes = list(graph.nodes).map((node) => {
+    const item = byID.get(node.id);
+    const pr = item && (item.live_pr || item.recorded_pr);
+    return [
+      node.id,
+      node.title,
+      node.lane,
+      count(node.layer),
+      text(item ? item.priority : node.priority),
+      item ? list(item.dependencies) : list(node.dependencies),
+      item ? count(pr && pr.number) : count(node.pr_number),
+      Boolean(item ? item.ready : node.ready),
+      Boolean(item ? item.orphaned : node.orphaned),
+    ];
+  });
+  return JSON.stringify({
+    nodes,
+    edges: list(graph.edges),
+    layers: list(graph.layers),
+    cyclic: Boolean(graph.cyclic),
+    progress: snapshot.progress || {},
+    plan: snapshot.plan || {},
+  });
+}
+
 async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
   if (programController) {
     programController.abort();
@@ -1501,6 +1529,8 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
     }
     state.failures = 0;
     hideReconnect();
+    const roadmapUnchanged =
+      roadmapRenderSignature(snapshotOf()) === roadmapRenderSignature(snapshot);
     state.snapshot = snapshot;
     state.itemsByID = new Map();
     for (const item of items()) {
@@ -1525,6 +1555,10 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
     setSnapshotFeed(snapshot);
     if (signature === state.signature) {
       renderHeader();
+    } else if (roadmapUnchanged && state.tab === "roadmap") {
+      state.signature = signature;
+      renderHeader();
+      TABS.filter((tab) => tab !== "roadmap").forEach((tab) => state.dirtyTabs.add(tab));
     } else {
       state.signature = signature;
       render();
