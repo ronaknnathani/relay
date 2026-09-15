@@ -520,6 +520,48 @@ func TestWorkerCleanupIsIdempotentForAnArchivedChild(t *testing.T) {
 	}
 }
 
+func TestWorkerCleanupRetryUsesPersistedForceAuthorization(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installStubWatcherState(t, manifest.Slug, false)
+
+	decision, err := decideArchive(manifest, manifest.Slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Status = "archived"
+	manifest.ArchiveCleanup = archiveCleanupProof(decision.proof)
+	if _, err := stageArchivedProject(
+		filepath.Join(project.ActiveDir(), manifest.Slug),
+		filepath.Join(project.ArchivedDir(), manifest.Slug),
+		manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	writeArchiveFile(t, *manifest.Worktree, "dirty.txt", "discard on worker retry\n")
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("worker cleanup retry: %v", err)
+	}
+	result := decodeCleanupOutput(t, out)
+	if !result.AlreadyArchived || result.Status != cleanupClean {
+		t.Fatalf("result = %+v, want clean force-authorized retry", result)
+	}
+	if pathExists(*manifest.Worktree) || gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("worker cleanup retry left force-authorized resources behind")
+	}
+	archived := loadArchivedManifest(t, manifest.Slug)
+	if archived.ArchiveCleanup == nil || !archived.ArchiveCleanup.ForceAuthorized {
+		t.Fatalf(
+			"cleanup proof = %+v, want persisted force authorization",
+			archived.ArchiveCleanup,
+		)
+	}
+}
+
 func TestWorkerCleanupRefusesEveryUnmergedItemStatus(t *testing.T) {
 	for _, status := range []program.ItemStatus{
 		program.ItemPending, program.ItemDispatched, program.ItemInReview,

@@ -1330,6 +1330,34 @@ func TestArchiveRecordsMergedPullRequestWhenTheLocalBranchIsGone(t *testing.T) {
 	}
 }
 
+func TestArchiveRecordsMergedPullRequestWhenDeletedBranchLeavesDetachedWorktree(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "deleted-branch-detached-worktree"
+	branch := "user/deleted-branch-detached-worktree"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "merged\n", "merged work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	recordArchiveManifestPR(t, slug, 411)
+	installArchivePRIndex(t, map[string]programview.PRState{"#411": programview.PRStateMerged})
+	runArchiveGit(t, worktree, "checkout", "-q", "--detach")
+	runArchiveGit(t, repo, "branch", "-D", branch)
+
+	if _, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	}); err != nil {
+		t.Fatalf("runArchive with detached worktree at merged PR head: %v", err)
+	}
+	if pathExists(worktree) {
+		t.Fatal("archive left the verified detached worktree behind")
+	}
+	archived := loadArchivedManifest(t, slug)
+	if !archived.Merged || archived.ArchiveCleanup == nil ||
+		archived.ArchiveCleanup.AuthoritativeCommit == "" {
+		t.Fatalf("archived manifest = %+v, want authoritative merged PR cleanup proof", archived)
+	}
+}
+
 func TestArchiveWarnsAndContinuesWhenDeletedBranchProofFails(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
@@ -2353,6 +2381,15 @@ func TestRunArchiveRetriesStandaloneArchivedCleanupAndAllowsSlugReuse(t *testing
 	); err != nil {
 		t.Fatal(err)
 	}
+	writeArchiveFile(t, worktree, "dirty.txt", "discard on authorized retry\n")
+	archivedBeforeRetry := loadArchivedManifest(t, slug)
+	if archivedBeforeRetry.ArchiveCleanup == nil ||
+		!archivedBeforeRetry.ArchiveCleanup.ForceAuthorized {
+		t.Fatalf(
+			"cleanup proof = %+v, want persisted force authorization",
+			archivedBeforeRetry.ArchiveCleanup,
+		)
+	}
 
 	stdout, stderr, err := captureGCOutput(t, func() error {
 		return runArchive(slug, false)
@@ -2401,6 +2438,62 @@ func TestRunArchiveRetriesStandaloneArchivedCleanupAndAllowsSlugReuse(t *testing
 	}
 	if created.manifest.Slug != slug || !pathExists(created.worktreeDir) {
 		t.Fatalf("created project = %+v, want reusable slug %q", created, slug)
+	}
+}
+
+func TestRunArchiveArchivedRetryRequiresForceForDirtyWorktree(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "standalone-dirty-archived-retry"
+	branch := "test/" + slug
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Status = "archived"
+	manifest.ArchiveCleanup = archiveCleanupProof(decision.proof)
+	if _, err := stageArchivedProject(
+		filepath.Join(project.ActiveDir(), slug),
+		filepath.Join(project.ArchivedDir(), slug),
+		manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	writeArchiveFile(t, worktree, "dirty.txt", "preserve me\n")
+
+	_, _, err = captureGCOutput(t, func() error {
+		return runArchive(slug, false)
+	})
+	if err == nil || !strings.Contains(err.Error(), "incomplete") ||
+		!strings.Contains(err.Error(), "--force") {
+		t.Fatalf("plain archived retry error = %v, want incomplete --force guidance", err)
+	}
+	if !pathExists(worktree) || !gitx.BranchExists(repo, branch) {
+		t.Fatal("plain archived retry removed dirty project resources")
+	}
+	if data, readErr := os.ReadFile(filepath.Join(worktree, "dirty.txt")); readErr != nil ||
+		string(data) != "preserve me\n" {
+		t.Fatalf("dirty work changed: data=%q err=%v", data, readErr)
+	}
+	archived := loadArchivedManifest(t, slug)
+	if archived.ArchiveCleanup == nil ||
+		archived.ArchiveCleanup.WorktreeState != project.ArchiveCleanupPending {
+		t.Fatalf("cleanup proof = %+v, want retryable pending worktree cleanup", archived.ArchiveCleanup)
+	}
+
+	if _, _, err := captureGCOutput(t, func() error {
+		return runArchive(slug, true)
+	}); err != nil {
+		t.Fatalf("forced archived retry: %v", err)
+	}
+	if pathExists(worktree) || gitx.BranchExists(repo, branch) {
+		t.Fatal("forced archived retry left project resources behind")
 	}
 }
 

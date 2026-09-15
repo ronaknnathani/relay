@@ -42,6 +42,7 @@ type ArchiveCleanupProof struct {
 	ExpectedWorktreeBranch string              `json:"expected_worktree_branch,omitempty"`
 	WorktreeDetached       bool                `json:"worktree_detached,omitempty"`
 	AuthoritativeCommit    string              `json:"authoritative_commit,omitempty"`
+	ForceAuthorized        bool                `json:"force_authorized,omitempty"`
 	WorktreeState          ArchiveCleanupState `json:"worktree_state,omitempty"`
 }
 

@@ -247,7 +247,7 @@ func runArchive(slug string, force bool) error {
 			slug, project.ManifestPath(project.ArchivedDir(), slug),
 		)
 	}
-	result, err = retryArchivedProjectCleanup(archived)
+	result, err = retryArchivedProjectCleanupWithForce(archived, force)
 	if err != nil {
 		return err
 	}
@@ -334,6 +334,7 @@ type archiveProofSnapshot struct {
 	ExpectedWorktreeBranch string
 	WorktreeDetached       bool
 	AuthoritativeCommit    string
+	ForceAuthorized        bool
 	Merged                 bool
 }
 
@@ -374,6 +375,7 @@ func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision
 	if err != nil {
 		return archiveDecision{}, err
 	}
+	proof.ForceAuthorized = force
 	recordedMerge := recordedPullRequestMergeOnce(m, slug)
 	reachable := false
 	workMerged := false
@@ -453,11 +455,11 @@ func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision
 		if evidenceErr != nil {
 			warnings = append(warnings, evidenceErr.Error())
 		} else if evidence.Merged {
+			proof.AuthoritativeCommit = evidence.HeadSHA
 			if err := validatePullRequestProofTips(proof, evidence.HeadSHA); err != nil {
 				warnings = append(warnings, err.Error())
 			} else {
 				workMerged = true
-				proof.AuthoritativeCommit = evidence.HeadSHA
 				proof.Kind = archiveProofPullRequest
 			}
 		}
@@ -628,6 +630,7 @@ func archiveProjectWithProof(proof archiveProofSnapshot, force bool) (archiveRes
 }
 
 func archiveProjectWithProofLocked(proof archiveProofSnapshot, force bool) (archiveResult, error) {
+	proof.ForceAuthorized = proof.ForceAuthorized || force
 	result := archiveResult{
 		Slug:               proof.Slug,
 		Branch:             proof.Branch,
@@ -958,6 +961,12 @@ func loadArchivedCleanupManifest(slug string) (project.Manifest, error) {
 }
 
 func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
+	return retryArchivedProjectCleanupWithForce(m, false)
+}
+
+func retryArchivedProjectCleanupWithForce(
+	m project.Manifest, force bool,
+) (archiveResult, error) {
 	if err := project.ValidateSlug(m.Slug); err != nil {
 		return archiveResult{}, err
 	}
@@ -966,11 +975,13 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 		if err != nil {
 			return archiveResult{}, err
 		}
-		return retryArchivedProjectCleanupLocked(current)
+		return retryArchivedProjectCleanupLocked(current, force)
 	})
 }
 
-func retryArchivedProjectCleanupLocked(m project.Manifest) (archiveResult, error) {
+func retryArchivedProjectCleanupLocked(
+	m project.Manifest, force bool,
+) (archiveResult, error) {
 	result := archiveResult{
 		Slug:               m.Slug,
 		Branch:             m.Branch,
@@ -994,6 +1005,7 @@ func retryArchivedProjectCleanupLocked(m project.Manifest) (archiveResult, error
 	if err != nil {
 		return result, err
 	}
+	force = force || proof.ForceAuthorized
 	current, err := validateArchivedCleanupResources(proof)
 	if err != nil {
 		return result, err
@@ -1034,8 +1046,29 @@ func retryArchivedProjectCleanupLocked(m project.Manifest) (archiveResult, error
 				Branch:   proof.ExpectedWorktreeBranch,
 				Detached: proof.WorktreeDetached,
 			},
-			true,
+			force,
 		); err != nil {
+			if !force {
+				state, found, inspectErr := gitx.RegisteredWorktreeState(m.Repo, *m.Worktree)
+				unchanged := found &&
+					state.Head == proof.ExpectedWorktreeTip &&
+					state.Branch == proof.ExpectedWorktreeBranch &&
+					state.Detached == proof.WorktreeDetached
+				if inspectErr == nil && unchanged {
+					if resetErr := resetArchivedWorktreeCleanup(&m); resetErr != nil {
+						return result, fmt.Errorf(
+							"finish archived worktree cleanup for %s: removal failed without force: %w; "+
+								"restore retry authorization: %v",
+							m.Slug, err, resetErr,
+						)
+					}
+					return result, fmt.Errorf(
+						"finish archived worktree cleanup for %s: cleanup remains incomplete: %w\n"+
+							"hint: retry with: relay archive %s --force",
+						m.Slug, err, m.Slug,
+					)
+				}
+			}
 			return result, fmt.Errorf(
 				"finish archived worktree cleanup for %s: removal was claimed and will not be "+
 					"retried automatically: %w; inspect %s and remove it manually if it still belongs "+
@@ -1170,6 +1203,7 @@ func archiveCleanupProof(proof archiveProofSnapshot) *project.ArchiveCleanupProo
 		ExpectedWorktreeBranch: proof.ExpectedWorktreeBranch,
 		WorktreeDetached:       proof.WorktreeDetached,
 		AuthoritativeCommit:    proof.AuthoritativeCommit,
+		ForceAuthorized:        proof.ForceAuthorized,
 		WorktreeState:          worktreeState,
 	}
 }
@@ -1180,6 +1214,16 @@ func claimArchivedWorktreeCleanup(m *project.Manifest) error {
 			return fmt.Errorf("worktree cleanup state is %q, want pending", proof.WorktreeState)
 		}
 		proof.WorktreeState = project.ArchiveCleanupClaimed
+		return nil
+	})
+}
+
+func resetArchivedWorktreeCleanup(m *project.Manifest) error {
+	return updateArchivedCleanupProof(m, func(proof *project.ArchiveCleanupProof) error {
+		if cleanupState(proof.WorktreeState, proof.WorktreePresent) != project.ArchiveCleanupClaimed {
+			return fmt.Errorf("worktree cleanup state is %q, want claimed", proof.WorktreeState)
+		}
+		proof.WorktreeState = project.ArchiveCleanupPending
 		return nil
 	})
 }

@@ -345,8 +345,15 @@ func TestGCForceCleansDirtyUntrackedMergedWorktree(t *testing.T) {
 	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
 		t.Fatal("GC left the proven-merged dirty project active")
 	}
-	if archived := loadArchivedManifest(t, slug); !archived.Merged {
+	archived := loadArchivedManifest(t, slug)
+	if !archived.Merged {
 		t.Fatal("GC did not record the force-cleaned project as merged")
+	}
+	if archived.ArchiveCleanup == nil || !archived.ArchiveCleanup.ForceAuthorized {
+		t.Fatalf(
+			"cleanup proof = %+v, want GC force authorization persisted",
+			archived.ArchiveCleanup,
+		)
 	}
 }
 
