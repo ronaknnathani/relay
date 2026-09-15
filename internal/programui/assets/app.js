@@ -91,11 +91,11 @@ const dom = {};
 const cardTemplate = document.createElement("button");
 cardTemplate.className = "card";
 cardTemplate.type = "button";
-const cardTopTemplate = make("div", "card__top");
-const cardStatusTemplate = make("span", "status");
-cardTopTemplate.append(make("span", "card__id"), cardStatusTemplate);
-const cardFootTemplate = make("div", "card__foot");
-cardTemplate.append(cardTopTemplate, make("p", "card__title"), cardFootTemplate);
+cardTemplate.append(
+  make("div", "card__top card__id"),
+  make("p", "card__title"),
+  make("div", "card__foot"),
+);
 
 const state = {
   snapshot: null,
@@ -1028,12 +1028,9 @@ function taskCard(node, position, hasSelection) {
 
 function decorateTaskCard(card, node, item, lane) {
   const top = card.children[0];
-  const status = top.children[1];
   const foot = card.children[2];
   const meta = statusMeta(lane);
-  top.children[0].textContent = node.id;
-  status.dataset.lane = lane;
-  status.textContent = `${meta.glyph} ${meta.word}`;
+  top.textContent = `${node.id} · ${meta.glyph} ${meta.word}`;
   card.children[1].textContent = text(node.title, "Untitled task");
   if (item) {
     const dependencyCount = list(item.dependencies).length;
