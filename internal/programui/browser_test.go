@@ -160,17 +160,34 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 			`document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}))`, nil,
 		),
 		chromedp.Poll(`document.querySelector("#drawer").hidden === true`, nil),
-		chromedp.Click(`.card[data-item="w2"]`, chromedp.ByQuery),
+		chromedp.Click(`.card[data-item="w1"]`, chromedp.ByQuery),
 		chromedp.Poll(`Array.from(document.querySelectorAll(".artifact-text"))
-			.some((node) => node.textContent === "w2:assignment.md")`, nil),
+			.some((node) => node.textContent === "w1:assignment.md:updated")`, nil),
 	); err != nil {
-		t.Fatal(err)
+		t.Fatalf("reopen aborted artifact: %v", err)
 	}
 	artifactMu.Lock()
-	reopenCalls := artifactCalls["task:w2:assignment.md"]
+	reopenCalls := artifactCalls["task:w1:assignment.md"]
 	artifactMu.Unlock()
-	if reopenCalls != 1 {
-		t.Fatalf("cached reopen requests = %d, want 1", reopenCalls)
+	if reopenCalls != 2 {
+		t.Fatalf("aborted artifact requests = %d, want 2", reopenCalls)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(
+			`document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}))`, nil,
+		),
+		chromedp.Poll(`document.querySelector("#drawer").hidden === true`, nil),
+		chromedp.Click(`.card[data-item="w2"]`, chromedp.ByQuery),
+		chromedp.Poll(`Array.from(document.querySelectorAll(".artifact-text"))
+			.some((node) => node.textContent === "w2:assignment.md:updated")`, nil),
+	); err != nil {
+		t.Fatalf("revalidate cached artifact on reopen: %v", err)
+	}
+	artifactMu.Lock()
+	reopenCalls = artifactCalls["task:w2:assignment.md"]
+	artifactMu.Unlock()
+	if reopenCalls != 2 {
+		t.Fatalf("cached reopen requests = %d, want 2", reopenCalls)
 	}
 	for _, test := range []struct {
 		name string
@@ -190,11 +207,20 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 		); err != nil {
 			t.Fatalf("%s state: %v", test.name, err)
 		}
+		var focusKey string
+		if err := chromedp.Run(browser,
+			chromedp.Evaluate(`document.activeElement && document.activeElement.dataset.focusKey`, &focusKey),
+		); err != nil {
+			t.Fatalf("%s focus: %v", test.name, err)
+		}
+		if want := "art:w2:" + test.name; focusKey != want {
+			t.Fatalf("%s focus = %q, want %q", test.name, focusKey, want)
+		}
 	}
 	if err := chromedp.Run(browser,
 		chromedp.Click(`button[data-focus-key="art:w2:assignment.md"]`, chromedp.ByQuery),
 		chromedp.Poll(`Array.from(document.querySelectorAll(".artifact-text"))
-			.some((node) => node.textContent === "w2:assignment.md")`, nil),
+			.some((node) => node.textContent === "w2:assignment.md:updated")`, nil),
 		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
 		chromedp.Sleep(500*time.Millisecond),
 		chromedp.Text(".artifact-text", &body, chromedp.ByQuery),

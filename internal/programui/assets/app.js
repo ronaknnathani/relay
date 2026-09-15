@@ -1996,10 +1996,12 @@ function itemContractSection(item) {
     button.setAttribute("aria-current",
       currentArtifactKey(item.id) === artifactCacheKey({ kind: "contract", ref }) ? "true" : "false");
     button.addEventListener("click", () => {
+      const selector = { kind: "contract", ref };
       state.contractByItem.set(item.id, ref);
-      state.artifactSelection.set(item.id, { kind: "contract", ref });
+      state.artifactSelection.set(item.id, selector);
       renderDetail();
       restoreFocus(`contract:${item.id}:${ref}`);
+      loadArtifact(selector, true);
     });
     nav.append(button);
   });
@@ -2044,10 +2046,12 @@ function artifactSection(item) {
       button.title = "Not written yet";
     }
     button.addEventListener("click", () => {
+      const selector = { kind: "task", item: item.id, name: artifact.name };
       state.artifactByItem.set(item.id, artifact.name);
-      state.artifactSelection.set(item.id, { kind: "task", item: item.id, name: artifact.name });
+      state.artifactSelection.set(item.id, selector);
       renderDetail();
       restoreFocus(`art:${item.id}:${artifact.name}`);
+      loadArtifact(selector, true);
     });
     nav.append(button);
   });
@@ -2168,6 +2172,7 @@ async function loadArtifact(selector, revalidate) {
     etag: existing && existing.etag,
     loading: true,
     error: "",
+    generation,
   });
   const headers = { Accept: "application/json" };
   if (existing && existing.etag) {
@@ -2184,7 +2189,7 @@ async function loadArtifact(selector, revalidate) {
       state.artifactCache.set(key, {
         envelope: existing.envelope, etag: existing.etag, loading: false, error: "",
       });
-      renderDetail();
+      renderDetailPreservingFocus();
       return;
     }
     const envelope = await response.json();
@@ -2197,7 +2202,7 @@ async function loadArtifact(selector, revalidate) {
     state.artifactCache.set(key, {
       envelope, etag: response.headers.get("ETag") || "", loading: false, error: "",
     });
-    renderDetail();
+    renderDetailPreservingFocus();
   } catch (error) {
     if (controller.signal.aborted || generation !== state.artifactGeneration ||
         !artifactMatchesSelection(selector)) {
@@ -2209,8 +2214,16 @@ async function loadArtifact(selector, revalidate) {
       loading: false,
       error: error.message || "Artifact content could not be loaded.",
     });
-    renderDetail();
+    renderDetailPreservingFocus();
   } finally {
+    const current = state.artifactCache.get(key);
+    if (current && current.loading && current.generation === generation) {
+      if (existing) {
+        state.artifactCache.set(key, { ...existing, loading: false });
+      } else {
+        state.artifactCache.delete(key);
+      }
+    }
     if (state.artifactController === controller) {
       state.artifactController = null;
     }
@@ -2257,6 +2270,7 @@ function openDrawer(instant) {
   }
   state.drawerOpen = true;
   renderDetail();
+  loadCurrentArtifact(true);
   dom.drawer.hidden = false;
   dom.drawer.dataset.instant = instant ? "true" : "false";
   /* Reading a layout value commits the closed state so the transition runs. */
@@ -2353,6 +2367,12 @@ function restoreFocus(key) {
       return;
     }
   }
+}
+
+function renderDetailPreservingFocus() {
+  const focusKey = captureFocus();
+  renderDetail();
+  restoreFocus(focusKey);
 }
 
 function scrollTargets() {
