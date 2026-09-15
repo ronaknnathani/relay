@@ -236,6 +236,9 @@ func prefetchPullRequests(
 // identical capacity, status, and readiness. A configured pull request fetcher
 // is reused as the lifecycle source instead of running a second GitHub query.
 func projectViewsForSnapshot(p program.Program, options Options) ([]program.ProjectView, []ProjectWarning, error) {
+	if options.LocalOnly {
+		return projectViews(p, nil)
+	}
 	index := options.PRIndex
 	if index == nil {
 		index = NewFetcherPRIndex(context.Background(), p.Repo, options.GitHub)
@@ -598,91 +601,147 @@ func buildItems(
 		reasons[blocked.Item.ID] = append([]string(nil), blocked.Reasons...)
 	}
 
+	type builtItem struct {
+		dto      ItemDTO
+		snapshot Snapshot
+	}
+	built := make([]builtItem, len(items))
+	jobs := make(chan int)
+	var wait sync.WaitGroup
+	workers := min(8, len(items))
+	wait.Add(workers)
+	for range workers {
+		go func() {
+			defer wait.Done()
+			for index := range jobs {
+				itemSnapshot := emptySnapshot()
+				built[index] = builtItem{
+					dto: buildItem(
+						ctx, p, items[index], ready, reasons, dependents, orphaned,
+						detailItem, limit, github, prefetched, agents, agentsErr, &itemSnapshot,
+					),
+					snapshot: itemSnapshot,
+				}
+			}
+		}()
+	}
+	for index := range items {
+		jobs <- index
+	}
+	close(jobs)
+	wait.Wait()
+
 	result := make([]ItemDTO, 0, len(items))
-	for _, item := range items {
-		dto := ItemDTO{
-			ID:           item.ID,
-			Kind:         string(item.Kind),
-			Title:        item.Title,
-			Priority:     string(item.Priority),
-			Status:       string(item.Status),
-			Lane:         string(item.Status),
-			Repo:         item.Repo,
-			ProjectSlug:  item.ProjectSlug,
-			Ready:        ready[item.ID],
-			Orphaned:     orphaned[item.ID],
-			Reasons:      nonNilStrings(reasons[item.ID]),
-			Dependencies: nonNilStrings(item.Dependencies),
-			Dependents:   nonNilStrings(dependents[item.ID]),
-			Contracts:    nonNilStrings(item.ContractRefs),
-			Notes:        nonNilStrings(item.Notes),
-			Timestamps: ItemTimestampsDTO{
-				CreatedAt:    item.CreatedAt,
-				UpdatedAt:    item.UpdatedAt,
-				DispatchedAt: item.DispatchedAt,
-				InReviewAt:   item.InReviewAt,
-				MergedAt:     item.MergedAt,
-				CanceledAt:   item.CancelledAt,
-			},
-			Mailbox:   emptyMailbox(),
-			Decisions: itemDecisions(p.Decisions, item.ID),
-			Artifacts: missingChildArtifacts(),
-			Warnings:  []string{},
+	for _, item := range built {
+		result = append(result, item.dto)
+		for _, warning := range item.snapshot.SourceHealth.Mailbox.Warnings {
+			addSourceWarning(snapshot, &snapshot.SourceHealth.Mailbox, warning)
 		}
-		if dto.Orphaned {
-			dto.Reasons = append(dto.Reasons, "linked child project is missing or archived without verified merge")
+		for _, warning := range item.snapshot.SourceHealth.GitHub.Warnings {
+			addSourceWarning(snapshot, &snapshot.SourceHealth.GitHub, warning)
 		}
-		if item.PRGrantedAt != "" {
-			dto.Grant = &GrantDTO{GrantedAt: item.PRGrantedAt, GrantedBy: item.PRGrantedBy}
-		}
-		childDir, manifest, archived, childErr := loadChild(item.ProjectSlug)
-		if childErr != nil && item.ProjectSlug != "" {
-			dto.Warnings = append(dto.Warnings, childErr.Error())
-		}
-		if agentsErr != nil && item.ProjectSlug != "" {
-			dto.Warnings = append(dto.Warnings, fmt.Sprintf("Herdr unavailable: %v", agentsErr))
-		}
-		if childErr == nil && item.ProjectSlug != "" {
-			dto.Child = childDTO(manifest, childDir, archived, &dto.Warnings)
-			dto.Artifacts = childArtifacts(childDir, detailItem == item.ID, limit, &dto.Warnings)
-			dto.Mailbox = mailboxCounts(childDir, item.ID, snapshot, &dto.Warnings)
-			dto.RecordedPR = recordedPullRequest(manifest, filepath.Join(childDir, "state.json"), item.PRRef, &dto.Warnings)
-			worktree := ""
-			if manifest.Worktree != nil {
-				worktree = *manifest.Worktree
-			}
-			if agentsErr == nil {
-				if agent, ok := herdr.FindLiveWorker(agents, manifest.Slug, manifest.Repo, worktree); ok {
-					dto.Worker = workerDTO(agent)
-				}
-			}
-		} else if item.PRRef != "" {
-			dto.RecordedPR = pullRequestFromRef(item.PRRef)
-		}
-		if item.ProjectSlug != "" && childErr != nil {
-			dto.Mailbox.Available = false
-			addSourceWarning(snapshot, &snapshot.SourceHealth.Mailbox, fmt.Sprintf("item %s mailbox unavailable: child project %q not found", item.ID, item.ProjectSlug))
-		}
-		if github != nil && dto.RecordedPR != nil {
-			result, ok := prefetched[dto.RecordedPR.Ref]
-			if !ok {
-				result.pullRequest, result.err = github.Fetch(ctx, p.Repo, dto.RecordedPR.Ref)
-			}
-			live, err := result.pullRequest, result.err
-			if err != nil {
-				message := fmt.Sprintf("item %s GitHub refresh failed: %v", item.ID, err)
-				dto.Warnings = append(dto.Warnings, message)
-				addSourceWarning(snapshot, &snapshot.SourceHealth.GitHub, message)
-				if live.Stale {
-					dto.LivePR = &live
-				}
-			} else {
-				dto.LivePR = &live
-			}
-		}
-		result = append(result, dto)
 	}
 	return result
+}
+
+func buildItem(
+	ctx context.Context,
+	p program.Program,
+	item program.WorkItem,
+	ready map[string]bool,
+	reasons map[string][]string,
+	dependents map[string][]string,
+	orphaned map[string]bool,
+	detailItem string,
+	limit int64,
+	github Fetcher,
+	prefetched map[string]memoResult,
+	agents []herdr.Agent,
+	agentsErr error,
+	snapshot *Snapshot,
+) ItemDTO {
+	dto := ItemDTO{
+		ID:           item.ID,
+		Kind:         string(item.Kind),
+		Title:        item.Title,
+		Priority:     string(item.Priority),
+		Status:       string(item.Status),
+		Lane:         string(item.Status),
+		Repo:         item.Repo,
+		ProjectSlug:  item.ProjectSlug,
+		Ready:        ready[item.ID],
+		Orphaned:     orphaned[item.ID],
+		Reasons:      nonNilStrings(reasons[item.ID]),
+		Dependencies: nonNilStrings(item.Dependencies),
+		Dependents:   nonNilStrings(dependents[item.ID]),
+		Contracts:    nonNilStrings(item.ContractRefs),
+		Notes:        nonNilStrings(item.Notes),
+		Timestamps: ItemTimestampsDTO{
+			CreatedAt:    item.CreatedAt,
+			UpdatedAt:    item.UpdatedAt,
+			DispatchedAt: item.DispatchedAt,
+			InReviewAt:   item.InReviewAt,
+			MergedAt:     item.MergedAt,
+			CanceledAt:   item.CancelledAt,
+		},
+		Mailbox:   emptyMailbox(),
+		Decisions: itemDecisions(p.Decisions, item.ID),
+		Artifacts: missingChildArtifacts(),
+		Warnings:  []string{},
+	}
+	if dto.Orphaned {
+		dto.Reasons = append(dto.Reasons, "linked child project is missing or archived without verified merge")
+	}
+	if item.PRGrantedAt != "" {
+		dto.Grant = &GrantDTO{GrantedAt: item.PRGrantedAt, GrantedBy: item.PRGrantedBy}
+	}
+	childDir, manifest, archived, childErr := loadChild(item.ProjectSlug)
+	if childErr != nil && item.ProjectSlug != "" {
+		dto.Warnings = append(dto.Warnings, childErr.Error())
+	}
+	if agentsErr != nil && item.ProjectSlug != "" {
+		dto.Warnings = append(dto.Warnings, fmt.Sprintf("Herdr unavailable: %v", agentsErr))
+	}
+	if childErr == nil && item.ProjectSlug != "" {
+		dto.Child = childDTO(manifest, childDir, archived, &dto.Warnings)
+		dto.Artifacts = childArtifacts(childDir, detailItem == item.ID, limit, &dto.Warnings)
+		dto.Mailbox = mailboxCounts(childDir, item.ID, snapshot, &dto.Warnings)
+		dto.RecordedPR = recordedPullRequest(manifest, filepath.Join(childDir, "state.json"), item.PRRef, &dto.Warnings)
+		worktree := ""
+		if manifest.Worktree != nil {
+			worktree = *manifest.Worktree
+		}
+		if agentsErr == nil {
+			if agent, ok := herdr.FindLiveWorker(agents, manifest.Slug, manifest.Repo, worktree); ok {
+				dto.Worker = workerDTO(agent)
+			}
+		}
+	} else if item.PRRef != "" {
+		dto.RecordedPR = pullRequestFromRef(item.PRRef)
+	}
+	if item.ProjectSlug != "" && childErr != nil {
+		dto.Mailbox.Available = false
+		addSourceWarning(snapshot, &snapshot.SourceHealth.Mailbox,
+			fmt.Sprintf("item %s mailbox unavailable: child project %q not found", item.ID, item.ProjectSlug))
+	}
+	if github != nil && dto.RecordedPR != nil {
+		result, ok := prefetched[dto.RecordedPR.Ref]
+		if !ok {
+			result.pullRequest, result.err = github.Fetch(ctx, p.Repo, dto.RecordedPR.Ref)
+		}
+		live, err := result.pullRequest, result.err
+		if err != nil {
+			message := fmt.Sprintf("item %s GitHub refresh failed: %v", item.ID, err)
+			dto.Warnings = append(dto.Warnings, message)
+			addSourceWarning(snapshot, &snapshot.SourceHealth.GitHub, message)
+			if live.Stale {
+				dto.LivePR = &live
+			}
+		} else {
+			dto.LivePR = &live
+		}
+	}
+	return dto
 }
 
 func dependentIDs(items []program.WorkItem) map[string][]string {
@@ -1020,13 +1079,26 @@ func missingChildArtifacts() []ArtifactDTO {
 }
 
 func childArtifacts(childDir string, includeText bool, limit int64, warnings *[]string) []ArtifactDTO {
-	result := make([]ArtifactDTO, 0, len(childArtifactNames))
-	for _, name := range childArtifactNames {
-		artifact, err := readArtifact(childDir, name, limit, includeText)
-		if err != nil {
-			*warnings = append(*warnings, err.Error())
+	type artifactResult struct {
+		artifact ArtifactDTO
+		err      error
+	}
+	loaded := make([]artifactResult, len(childArtifactNames))
+	var wait sync.WaitGroup
+	wait.Add(len(childArtifactNames))
+	for index, name := range childArtifactNames {
+		go func() {
+			defer wait.Done()
+			loaded[index].artifact, loaded[index].err = readArtifact(childDir, name, limit, includeText)
+		}()
+	}
+	wait.Wait()
+	result := make([]ArtifactDTO, 0, len(loaded))
+	for _, loadedArtifact := range loaded {
+		if loadedArtifact.err != nil {
+			*warnings = append(*warnings, loadedArtifact.err.Error())
 		}
-		result = append(result, artifact)
+		result = append(result, loadedArtifact.artifact)
 	}
 	return result
 }

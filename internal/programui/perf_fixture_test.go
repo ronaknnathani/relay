@@ -52,6 +52,23 @@ func TestReferenceProgramFixture(t *testing.T) {
 	}
 }
 
+func TestReferenceProgramLocalBuildBudget(t *testing.T) {
+	fixture := newReferenceProgramFixture(t)
+	started := time.Now()
+	snapshot, err := programview.Build(fixture.program.Slug, programview.Options{LocalOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(started)
+	t.Logf("local build: %s", elapsed)
+	if len(snapshot.Items) != 100 {
+		t.Fatalf("snapshot items = %d, want 100", len(snapshot.Items))
+	}
+	if elapsed > time.Second {
+		t.Fatalf("local build = %s, want <= 1s", elapsed)
+	}
+}
+
 type referenceProgramFixture struct {
 	home        string
 	projectsDir string

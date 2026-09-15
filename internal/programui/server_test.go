@@ -180,7 +180,7 @@ func TestServeDefaultHerdrListerTimesOutInsteadOfHanging(t *testing.T) {
 	if !strings.Contains(string(body), `"status":"loading"`) {
 		t.Fatalf("initial API response did not report pending enrichment: %s", body)
 	}
-	eventually(t, time.Second, func() bool {
+	eventually(t, 2*time.Second, func() bool {
 		response, requestErr := http.Get(url + "/api/program")
 		if requestErr != nil {
 			return false

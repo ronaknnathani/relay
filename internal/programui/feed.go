@@ -27,7 +27,9 @@ func newSnapshotFeed(
 	if now == nil {
 		now = time.Now
 	}
-	return &snapshotFeed{snapshot: seed, ttl: ttl, now: now, refresh: refresh}
+	return &snapshotFeed{
+		snapshot: seed, expiresAt: now().Add(ttl), ttl: ttl, now: now, refresh: refresh,
+	}
 }
 
 func (f *snapshotFeed) Get() programview.Snapshot {

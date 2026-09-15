@@ -94,6 +94,7 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 	views := make([]program.ProjectView, 0, len(entries))
 	warnings := []ProjectWarning{}
 	active := make(map[string]bool, len(entries))
+	repositories := make(map[string]projectRepositoryState)
 	for _, entry := range entries {
 		if !entry.IsDir() || !linkedSlugs[entry.Name()] {
 			continue
@@ -112,7 +113,20 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 			continue
 		}
 		active[manifest.Slug] = true
-		view, viewErr := ActiveProjectView(manifest)
+		repository, found := repositories[manifest.Repo]
+		if !found {
+			repository = projectRepositoryState{hasOrigin: gitx.HasOrigin(manifest.Repo)}
+			if manifest.BaseBranch == "" {
+				repository.defaultBranch = gitx.DetectDefaultBranch(manifest.Repo)
+			}
+			repositories[manifest.Repo] = repository
+		} else if manifest.BaseBranch == "" && repository.defaultBranch == "" {
+			repository.defaultBranch = gitx.DetectDefaultBranch(manifest.Repo)
+			repositories[manifest.Repo] = repository
+		}
+		view, viewErr := activeProjectViewWithRepository(
+			manifest, project.StatePath(manifest.Slug), repository,
+		)
 		if viewErr != nil {
 			warnings = append(warnings, ProjectWarning{
 				ProjectSlug: manifest.Slug,
@@ -239,16 +253,33 @@ func ActiveProjectView(manifest project.Manifest) (program.ProjectView, error) {
 }
 
 func activeProjectView(manifest project.Manifest, statePath string) (program.ProjectView, error) {
+	repository := projectRepositoryState{hasOrigin: gitx.HasOrigin(manifest.Repo)}
+	if manifest.BaseBranch == "" {
+		repository.defaultBranch = gitx.DetectDefaultBranch(manifest.Repo)
+	}
+	return activeProjectViewWithRepository(manifest, statePath, repository)
+}
+
+type projectRepositoryState struct {
+	defaultBranch string
+	hasOrigin     bool
+}
+
+func activeProjectViewWithRepository(
+	manifest project.Manifest,
+	statePath string,
+	repository projectRepositoryState,
+) (program.ProjectView, error) {
 	hasPR, prRef, err := RecordedPR(manifest, statePath)
 	if err != nil {
 		return program.ProjectView{}, err
 	}
 	base := manifest.BaseBranch
 	if base == "" {
-		base = gitx.DetectDefaultBranch(manifest.Repo)
+		base = repository.defaultBranch
 	}
 	baseRef := base
-	if base != "" && gitx.HasOrigin(manifest.Repo) && gitx.RevParse(manifest.Repo, "origin/"+base) != "" {
+	if base != "" && repository.hasOrigin && gitx.RevParse(manifest.Repo, "origin/"+base) != "" {
 		baseRef = "origin/" + base
 	}
 	merged := baseRef != "" && gitx.IsWorkMerged(manifest.Repo, manifest.Branch, baseRef, manifest.StartSHA)

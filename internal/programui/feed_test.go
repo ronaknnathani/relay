@@ -27,6 +27,7 @@ func TestSnapshotFeedSingleFlightsAndRetainsLastSnapshot(t *testing.T) {
 			return programview.Snapshot{}, errors.New("refresh failed")
 		},
 	)
+	feed.Refresh()
 
 	var wait sync.WaitGroup
 	for range 12 {

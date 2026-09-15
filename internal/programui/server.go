@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	snapshotTTL = 2 * time.Second
-	githubTTL   = 12 * time.Second
+	snapshotTTL        = 2 * time.Second
+	githubTTL          = 12 * time.Second
+	initialRefreshWait = 500 * time.Millisecond
 )
 
 var programUIHerdrCommandTimeout = 5 * time.Second
@@ -108,7 +109,6 @@ func Serve(ctx context.Context, options Options) error {
 	go func() {
 		serveError <- server.Serve(listener)
 	}()
-	feed.Refresh()
 
 	out := options.Out
 	if out == nil {
@@ -118,6 +118,15 @@ func Serve(ctx context.Context, options Options) error {
 		stopErr := stopServer(server, serveError)
 		return errors.Join(fmt.Errorf("print program UI URL: %w", err), stopErr)
 	}
+	go func() {
+		timer := time.NewTimer(initialRefreshWait)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+			feed.Refresh()
+		}
+	}()
 	if options.Open {
 		openBrowser := options.OpenBrowser
 		if openBrowser == nil {
