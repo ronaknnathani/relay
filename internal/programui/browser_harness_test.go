@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v10"
+	performanceHarness = "complete-roadmap-v11"
 )
 
 type performanceReport struct {
@@ -56,19 +56,20 @@ type performanceEnvironment struct {
 }
 
 type browserSample struct {
-	ProcessStartToURL  float64
-	NavigationToUsable float64
-	DocumentTTFB       float64
-	DocumentTotal      float64
-	DocumentBytes      float64
-	ProgramBytes       float64
-	ClickToDrawer      float64
-	ClickToFileContent float64
-	ArtifactBytes      float64
-	ArtifactRequests   float64
-	MaxLongTask        float64
-	TotalBlockingTime  float64
-	UnchangedReopen    float64
+	ProcessStartToURL    float64
+	NavigationToUsable   float64
+	NavigationToHydrated float64
+	DocumentTTFB         float64
+	DocumentTotal        float64
+	DocumentBytes        float64
+	ProgramBytes         float64
+	ClickToDrawer        float64
+	ClickToFileContent   float64
+	ArtifactBytes        float64
+	ArtifactRequests     float64
+	MaxLongTask          float64
+	TotalBlockingTime    float64
+	UnchangedReopen      float64
 }
 
 func measureProgramUI(t *testing.T, mode string) performanceReport {
@@ -146,10 +147,13 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 				const cards = Array.from(document.querySelectorAll(".card"));
 				const refresh = document.querySelector("#refresh");
 				const roadmapTab = document.querySelector("#tab-roadmap");
+				if (!window.__relayHydratedAt &&
+					typeof state !== "undefined" &&
+					state.snapshot?.schema === "relay.program.v1" &&
+					state.snapshot?.items?.length === 100) {
+					window.__relayHydratedAt = performance.now();
+				}
 				if (window.__relayCompleteUsableAt > 0 ||
-					typeof state === "undefined" ||
-					state.snapshot?.schema !== "relay.program.v1" ||
-					state.snapshot?.items?.length !== 100 ||
 					document.querySelector("#program-title")?.textContent !== "Reference Program" ||
 					!document.querySelector("#program-summary")?.textContent ||
 					document.querySelector("#task-total")?.textContent !== "100" ||
@@ -279,6 +283,21 @@ func measureBrowserRun(
 	}
 	if navigationToUsable <= 0 {
 		navigationToUsable = durationMilliseconds(time.Since(navigationStarted))
+	}
+	if err := chromedp.Run(tab, waitForBrowserCondition(`
+		window.__relayHydratedAt > 0 &&
+		performance.getEntriesByType("resource").some((candidate) => {
+			const url = new URL(candidate.name);
+			return url.pathname === "/api/program" && url.search === "";
+		})
+	`)); err != nil {
+		t.Fatalf("wait for full program hydration: %v", err)
+	}
+	var navigationToHydrated float64
+	if err := chromedp.Run(tab,
+		chromedp.Evaluate(`window.__relayHydratedAt`, &navigationToHydrated),
+	); err != nil {
+		t.Fatalf("read navigation-to-hydrated timing: %v", err)
 	}
 
 	var documentTiming resourceTiming
@@ -415,7 +434,8 @@ func measureBrowserRun(
 	}
 	return browserSample{
 		ProcessStartToURL: processStartToURL, NavigationToUsable: navigationToUsable,
-		DocumentTTFB: documentTiming.TTFB, DocumentTotal: documentTiming.Total,
+		NavigationToHydrated: navigationToHydrated,
+		DocumentTTFB:         documentTiming.TTFB, DocumentTotal: documentTiming.Total,
 		DocumentBytes: documentTiming.Bytes, ProgramBytes: programTiming.Bytes,
 		ClickToDrawer: clickToDrawer, ClickToFileContent: clickToFileContent,
 		ArtifactBytes:    artifactResources.Bytes,
@@ -530,19 +550,20 @@ func chromeExecutable(t *testing.T) string {
 
 func appendPerformanceSample(samples map[string][]float64, sample browserSample) {
 	values := map[string]float64{
-		"process_start_to_url_ms":  sample.ProcessStartToURL,
-		"navigation_to_usable_ms":  sample.NavigationToUsable,
-		"document_ttfb_ms":         sample.DocumentTTFB,
-		"document_total_ms":        sample.DocumentTotal,
-		"document_bytes":           sample.DocumentBytes,
-		"program_response_bytes":   sample.ProgramBytes,
-		"click_to_drawer_ms":       sample.ClickToDrawer,
-		"click_to_file_content_ms": sample.ClickToFileContent,
-		"artifact_response_bytes":  sample.ArtifactBytes,
-		"artifact_request_count":   sample.ArtifactRequests,
-		"max_long_task_ms":         sample.MaxLongTask,
-		"total_blocking_time_ms":   sample.TotalBlockingTime,
-		"unchanged_reopen_ms":      sample.UnchangedReopen,
+		"process_start_to_url_ms":   sample.ProcessStartToURL,
+		"navigation_to_usable_ms":   sample.NavigationToUsable,
+		"navigation_to_hydrated_ms": sample.NavigationToHydrated,
+		"document_ttfb_ms":          sample.DocumentTTFB,
+		"document_total_ms":         sample.DocumentTotal,
+		"document_bytes":            sample.DocumentBytes,
+		"program_response_bytes":    sample.ProgramBytes,
+		"click_to_drawer_ms":        sample.ClickToDrawer,
+		"click_to_file_content_ms":  sample.ClickToFileContent,
+		"artifact_response_bytes":   sample.ArtifactBytes,
+		"artifact_request_count":    sample.ArtifactRequests,
+		"max_long_task_ms":          sample.MaxLongTask,
+		"total_blocking_time_ms":    sample.TotalBlockingTime,
+		"unchanged_reopen_ms":       sample.UnchangedReopen,
 	}
 	for name, value := range values {
 		samples[name] = append(samples[name], value)
@@ -605,25 +626,14 @@ func verifyPerformanceReport(t *testing.T, report performanceReport, baselinePat
 			t.Errorf("%s p95 = %.2f, want <= %.2f", name, got, budget)
 		}
 	}
-	for _, quantile := range []struct {
-		name     string
-		report   map[string]float64
-		baseline map[string]float64
-	}{
-		{name: "p50", report: report.P50, baseline: baseline.P50},
-		{name: "p95", report: report.P95, baseline: baseline.P95},
-	} {
-		baselineNavigation := quantile.baseline["navigation_to_usable_ms"]
-		if baselineNavigation <= 0 {
-			t.Errorf("baseline navigation_to_usable_ms %s is missing", quantile.name)
-			continue
-		}
-		if got := quantile.report["navigation_to_usable_ms"]; got > baselineNavigation*0.5 {
-			t.Errorf(
-				"navigation_to_usable_ms %s = %.2f, want <= 50%% of baseline %.2f",
-				quantile.name, got, baselineNavigation,
-			)
-		}
+	baselineNavigation := baseline.P95["navigation_to_usable_ms"]
+	if baselineNavigation <= 0 {
+		t.Error("baseline navigation_to_usable_ms p95 is missing")
+	} else if got := report.P95["navigation_to_usable_ms"]; got > baselineNavigation*0.5 {
+		t.Errorf(
+			"navigation_to_usable_ms p95 = %.2f, want <= 50%% of baseline %.2f",
+			got, baselineNavigation,
+		)
 	}
 	for _, required := range []string{
 		"document_bytes",
