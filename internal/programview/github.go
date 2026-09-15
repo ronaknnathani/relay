@@ -367,13 +367,18 @@ func (l ghPullRequestLookup) Repository(repo string) (string, error) {
 
 func pullRequestRepository(rawURL string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || parsed.Scheme != "https" || parsed.User != nil ||
+	if err != nil {
+		return "", fmt.Errorf(
+			"parse URL %q: invalid URL syntax", gitx.SanitizeDiagnostic(rawURL),
+		)
+	}
+	if parsed.Scheme != "https" || parsed.User != nil ||
 		parsed.Hostname() == "" || parsed.Port() != "" ||
 		parsed.RawQuery != "" || parsed.Fragment != "" {
-		if err == nil {
-			err = errors.New("URL is not a canonical HTTPS pull request URL")
-		}
-		return "", fmt.Errorf("parse URL %q: %w", gitx.SanitizeDiagnostic(rawURL), err)
+		return "", fmt.Errorf(
+			"parse URL %q: URL is not a canonical HTTPS pull request URL",
+			gitx.SanitizeDiagnostic(rawURL),
+		)
 	}
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if len(segments) < 4 || segments[0] == "" || segments[1] == "" || segments[2] != "pull" {
@@ -420,7 +425,9 @@ func gitHubRepositoryFromRemote(rawURL string) (string, error) {
 	if strings.Contains(trimmed, "://") {
 		parsed, err := url.Parse(trimmed)
 		if err != nil {
-			return "", fmt.Errorf("parse origin URL %q: %w", gitx.SanitizeDiagnostic(trimmed), err)
+			return "", fmt.Errorf(
+				"parse origin URL %q: invalid URL syntax", gitx.SanitizeDiagnostic(trimmed),
+			)
 		}
 		switch strings.ToLower(parsed.Scheme) {
 		case "http", "https", "ssh", "git":
@@ -449,7 +456,9 @@ func gitHubRepositoryFromRemote(rawURL string) (string, error) {
 func repositoryIdentity(rawURL, nameWithOwner string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
-		return "", fmt.Errorf("parse URL %q: %w", gitx.SanitizeDiagnostic(rawURL), err)
+		return "", fmt.Errorf(
+			"parse URL %q: invalid URL syntax", gitx.SanitizeDiagnostic(rawURL),
+		)
 	}
 	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
 	if host == "" {

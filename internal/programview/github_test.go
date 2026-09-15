@@ -531,6 +531,64 @@ func TestGHPullRequestLookupSanitizesRemoteDerivedValidationErrors(t *testing.T)
 	}
 }
 
+func TestGHPullRequestLookupSanitizesCustomSchemeErrors(t *testing.T) {
+	lookup := ghPullRequestLookup{
+		originURL: func(string) (string, error) {
+			return "vault+token://origin-user:origin-secret@github.example/acme/widgets.git" +
+				"?access_token=query-secret#fragment-secret", nil
+		},
+	}
+
+	_, err := lookup.Repository("/repo")
+	if err == nil {
+		t.Fatal("Repository error = nil")
+	}
+	for _, secret := range []string{
+		"origin-user", "origin-secret", "access_token", "query-secret", "fragment-secret",
+	} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("Repository error %q leaked %q", err, secret)
+		}
+	}
+	for _, want := range []string{
+		"vault+token://[redacted]@github.example/acme/widgets.git",
+		"unsupported scheme",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Repository error %q is missing %q", err, want)
+		}
+	}
+}
+
+func TestGHPullRequestLookupSanitizesMalformedOriginParseErrors(t *testing.T) {
+	lookup := ghPullRequestLookup{
+		originURL: func(string) (string, error) {
+			return "custom://origin-user:origin-secret@github.example/acme/%zz.git" +
+				"?access_token=query-secret#fragment-secret", nil
+		},
+	}
+
+	_, err := lookup.Repository("/repo")
+	if err == nil {
+		t.Fatal("Repository error = nil")
+	}
+	for _, secret := range []string{
+		"origin-user", "origin-secret", "access_token", "query-secret", "fragment-secret",
+	} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("Repository error %q leaked %q", err, secret)
+		}
+	}
+	for _, want := range []string{
+		"custom://[redacted]@github.example/acme/%zz.git",
+		"invalid URL",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Repository error %q is missing %q", err, want)
+		}
+	}
+}
+
 func TestGHPullRequestLookupRepositoryPreservesOriginFailure(t *testing.T) {
 	lookup := ghPullRequestLookup{
 		originURL: func(string) (string, error) {

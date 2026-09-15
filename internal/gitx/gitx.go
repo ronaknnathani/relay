@@ -18,7 +18,7 @@ var (
 	// destructive merge decision.
 	ErrInvalidWorkStart = errors.New("invalid work start")
 
-	gitURLPattern     = regexp.MustCompile(`(?i)(?:file|ftp|ftps|git|https?|ssh)://[^\s'"<>]+`)
+	gitURLPattern     = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s'"<>]+`)
 	scpLikeURLPattern = regexp.MustCompile(
 		`(?i)\b[^\s'"<>/@:]+@(?:\[[0-9a-f:.]+\]|[^\s'"<>/:]+):[^\s'"<>]+`,
 	)
