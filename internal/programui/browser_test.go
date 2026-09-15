@@ -101,7 +101,7 @@ func TestBrowserShowsSixSecondExternalRefreshProvenance(t *testing.T) {
 			if err := chromedp.Run(browser,
 				chromedp.Poll(`document.querySelector("#feed-state").dataset.live === "false"`, nil),
 				chromedp.Poll(`document.querySelector("#feed-state").textContent === "Live · every 3s" &&
-					document.querySelector(".card[data-item='w1'] .card__foot").textContent.includes("PR #42") &&
+					document.querySelector(".card[data-item='w1']").dataset.meta.includes("PR #42") &&
 					document.querySelector("#worker-count").textContent === "1"`, nil),
 			); err != nil {
 				t.Fatalf("%s refresh: %v", delayedSource, err)
@@ -192,7 +192,7 @@ func TestBrowserRetainsAndRecoversEachExternalSource(t *testing.T) {
 			if err := chromedp.Run(browser,
 				chromedp.Navigate(url),
 				chromedp.Poll(`document.querySelector("#feed-state").textContent === "Live · every 3s" &&
-					document.querySelector(".card[data-item='w1'] .card__foot").textContent.includes("PR #42") &&
+					document.querySelector(".card[data-item='w1']").dataset.meta.includes("PR #42") &&
 					document.querySelector("#worker-count").textContent === "1"`, nil),
 				chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
 				chromedp.Poll(`document.querySelector("#detail-body").textContent.includes("Initial PR") &&

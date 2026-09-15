@@ -130,7 +130,7 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 					!document.querySelector("#progress-counts")?.textContent.includes("100") ||
 					!document.querySelector("#roadmap-note")?.textContent ||
 					cards.length !== 100 ||
-					!cards.every((card) => card.dataset.focusKey && card.querySelector(".card__foot")) ||
+					!cards.every((card) => card.dataset.focusKey && card.dataset.meta) ||
 					document.querySelectorAll("#graph-nodes .stage[data-label]").length === 0 ||
 					!document.querySelector("#graph")?.getAttribute("aria-label")?.includes(
 						"100 tasks, 200 dependency links") ||
