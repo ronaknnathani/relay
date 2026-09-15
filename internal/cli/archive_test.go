@@ -964,6 +964,72 @@ func TestArchivedCleanupRetryIsCleanAfterProofConsumption(t *testing.T) {
 	}
 }
 
+func TestLegacyArchivedCleanupIsCleanWhenResourcesAreAlreadyAbsent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "legacy-absent-resources"
+	branch := "user/legacy-absent-resources"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	runArchiveGit(t, repo, "worktree", "remove", "--force", worktree)
+	runArchiveGit(t, repo, "branch", "-D", branch)
+	manifest := project.Manifest{
+		Slug: slug, Repo: repo, Branch: branch, Worktree: &worktree, Status: "archived",
+	}
+
+	result, err := retryArchivedProjectCleanup(manifest)
+	if err != nil {
+		t.Fatalf("retryArchivedProjectCleanup: %v", err)
+	}
+	if result.WorktreeRemoved || result.BranchDeleted || result.BranchDeletionWarning != "" {
+		t.Fatalf("legacy cleanup replayed destructive work: %+v", result)
+	}
+}
+
+func TestLegacyArchivedCleanupPreservesRemainingResources(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "legacy-present-resources"
+	branch := "user/legacy-present-resources"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	manifest := project.Manifest{
+		Slug: slug, Repo: repo, Branch: branch, Worktree: &worktree, Status: "archived",
+	}
+
+	_, err := retryArchivedProjectCleanup(manifest)
+	if err == nil || !strings.Contains(err.Error(), "no durable cleanup proof") ||
+		!strings.Contains(err.Error(), "manual inspection") {
+		t.Fatalf("retryArchivedProjectCleanup error = %v, want manual inspection", err)
+	}
+	if !pathExists(worktree) || !gitx.BranchExists(repo, branch) {
+		t.Fatal("legacy cleanup removed resources without durable proof")
+	}
+}
+
+func TestLegacyArchivedCleanupReportsWorktreeProbeFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "legacy-worktree-probe-failure"
+	branch := "user/legacy-worktree-probe-failure"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	runArchiveGit(t, repo, "worktree", "remove", "--force", worktree)
+	runArchiveGit(t, repo, "branch", "-D", branch)
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := project.Manifest{
+		Slug: slug, Repo: repo, Branch: branch, Worktree: &worktree, Status: "archived",
+	}
+
+	_, err := retryArchivedProjectCleanup(manifest)
+	if err == nil || !strings.Contains(err.Error(), "not registered") ||
+		!strings.Contains(err.Error(), "manual inspection") {
+		t.Fatalf("retryArchivedProjectCleanup error = %v, want worktree probe failure", err)
+	}
+	if !pathExists(worktree) {
+		t.Fatal("legacy cleanup removed the unregistered worktree path")
+	}
+}
+
 func TestResolveRecordedPullRequestMergeReturnsStateReadError(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	slug := "malformed-state"

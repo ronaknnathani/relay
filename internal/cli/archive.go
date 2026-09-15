@@ -676,6 +676,12 @@ func retryArchivedProjectCleanup(m project.Manifest) (archiveResult, error) {
 	if m.Worktree != nil {
 		result.Worktree = *m.Worktree
 	}
+	if m.ArchiveCleanup == nil {
+		if err := validateLegacyArchivedCleanup(m); err != nil {
+			return result, err
+		}
+		return result, nil
+	}
 	proof, err := validateArchivedCleanupProof(m)
 	if err != nil {
 		return result, err
@@ -759,6 +765,36 @@ func persistArchivedCleanupProof(m project.Manifest) error {
 		return fmt.Errorf("save archived cleanup proof %s: %w", path, err)
 	}
 	return nil
+}
+
+func validateLegacyArchivedCleanup(m project.Manifest) error {
+	var issues []string
+	if m.Branch != "" {
+		present, err := archiveBranchExists(m.Repo, m.Branch)
+		switch {
+		case err != nil:
+			issues = append(issues, fmt.Sprintf("inspect archived branch %q: %s", m.Branch, err))
+		case present:
+			issues = append(issues, fmt.Sprintf("branch %q is still present", m.Branch))
+		}
+	}
+	if m.Worktree != nil && *m.Worktree != "" {
+		_, present, err := gitx.RegisteredWorktreeState(m.Repo, *m.Worktree)
+		switch {
+		case err != nil:
+			issues = append(issues, fmt.Sprintf("inspect archived worktree %s: %s", *m.Worktree, err))
+		case present:
+			issues = append(issues, fmt.Sprintf("worktree %s is still present", *m.Worktree))
+		}
+	}
+	if len(issues) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"archived project %s has no durable cleanup proof and cleanup is incomplete or uncertain: %s; "+
+			"preserving worktree and branch for manual inspection",
+		m.Slug, strings.Join(issues, "; "),
+	)
 }
 
 func validateArchivedCleanupProof(m project.Manifest) (project.ArchiveCleanupProof, error) {

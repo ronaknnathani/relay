@@ -1073,8 +1073,10 @@ func TestWorkerCleanupRetryReturnsIncompleteWhenBranchProbeFails(t *testing.T) {
 	if result.Status != cleanupIncomplete || !result.AlreadyArchived {
 		t.Fatalf("result = %+v, want incomplete archived cleanup", result)
 	}
-	if !strings.Contains(result.Error, "no durable cleanup proof") {
-		t.Fatalf("cleanup error %q is missing legacy manifest guidance", result.Error)
+	for _, want := range []string{"no durable cleanup proof", "git branch probe failed", "manual inspection"} {
+		if !strings.Contains(result.Error, want) {
+			t.Fatalf("cleanup error %q is missing %q", result.Error, want)
+		}
 	}
 	if result.NextCommand != "relay program worker cleanup "+p.Slug+" "+item.ID {
 		t.Fatalf("next command = %q, want worker cleanup retry", result.NextCommand)
