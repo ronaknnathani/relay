@@ -444,7 +444,18 @@ func (b *diagnosticBuffer) Bytes() []byte {
 		"[... git diagnostic truncated; showing last %d bytes ...]\n",
 		maxGitDiagnosticOutput,
 	)
-	return append([]byte(notice), b.buffer.Bytes()...)
+	retained := b.buffer.Bytes()
+	if len(retained) > 0 && retained[0] > ' ' {
+		boundary := bytes.IndexFunc(retained, func(character rune) bool {
+			return character <= ' ' || strings.ContainsRune("\"'<>`", character)
+		})
+		notice += "[... leading truncated token redacted ...]"
+		if boundary < 0 {
+			return []byte(notice)
+		}
+		retained = retained[boundary:]
+	}
+	return append([]byte(notice), retained...)
 }
 
 func boundedCombinedOutput(command *exec.Cmd) ([]byte, error) {

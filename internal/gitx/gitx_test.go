@@ -572,6 +572,11 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			want:  "remote: ssh://git.example.net/team/repo.git",
 		},
 		{
+			name:  "bracketed IPv6 scheme URL",
+			input: "remote: https://ipv6-token@[2001:db8::1]/team/repo.git?identity=secret#scope",
+			want:  "remote: https://[redacted]@[2001:db8::1]/team/repo.git",
+		},
+		{
 			name:  "file",
 			input: "remote: file:///tmp/repo.git?credential=secret#scope",
 			want:  "remote: file:///tmp/repo.git",
@@ -602,6 +607,11 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			want:  "remote: [redacted]@git.example.com:team/[private].git",
 		},
 		{
+			name:  "bracketed IPv6 scp-like URL",
+			input: "remote: ipv6-token@[2001:db8::1]:team/repo.git?identity=secret#scope",
+			want:  "remote: [redacted]@[2001:db8::1]:team/repo.git",
+		},
+		{
 			name:  "scp-like without userinfo",
 			input: "remote: git.example.io:team/repo.git?token=secret#scope",
 			want:  "remote: git.example.io:team/repo.git",
@@ -627,9 +637,19 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			want:  "remote: git::https://[redacted]@github.com/o/r.git",
 		},
 		{
+			name:  "remote helper wrapping bracketed IPv6 scheme URL",
+			input: "remote: cache::https://ipv6-token@[2001:db8::1]/team/repo.git?secret=x#fragment",
+			want:  "remote: cache::https://[redacted]@[2001:db8::1]/team/repo.git",
+		},
+		{
 			name:  "remote helper wrapping scp URL",
 			input: "remote: cache::deploy-token@git.example.com:team/repo.git?secret=x#fragment",
 			want:  "remote: cache::[redacted]@git.example.com:team/repo.git",
+		},
+		{
+			name:  "remote helper wrapping bracketed IPv6 scp URL",
+			input: "remote: cache::ipv6-token@[2001:db8::1]:team/repo.git?secret=x#fragment",
+			want:  "remote: cache::[redacted]@[2001:db8::1]:team/repo.git",
 		},
 		{
 			name:  "remote helper wrapping underscore scp userinfo",
@@ -701,11 +721,36 @@ func TestDiagnosticBufferKeepsActionableTailAndMarksTruncation(t *testing.T) {
 	if !strings.Contains(got, "git diagnostic truncated") {
 		t.Fatalf("bounded output %q is missing the truncation marker", got)
 	}
-	if !strings.HasSuffix(got, string(tail)) {
+	if !strings.Contains(got, "final actionable diagnostic") {
 		t.Fatalf("bounded output does not preserve the actionable tail: %q", got)
 	}
 	if len(output.buffer.Bytes()) != maxGitDiagnosticOutput {
 		t.Fatalf("captured bytes = %d, want %d", len(output.buffer.Bytes()), maxGitDiagnosticOutput)
+	}
+}
+
+func TestDiagnosticBufferRedactsTokenSplitByTruncationBoundary(t *testing.T) {
+	const leakedFragment = "cret-token"
+	partialURL := leakedFragment + "@[2001:db8::1]/team/repo.git"
+	retained := partialURL + "\n" +
+		strings.Repeat("x", maxGitDiagnosticOutput-len(partialURL)-1)
+	raw := "fatal: https://super-se" + retained
+
+	var output diagnosticBuffer
+	if _, err := output.Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	got := SanitizeDiagnostic(string(output.Bytes()))
+
+	if strings.Contains(got, leakedFragment) {
+		t.Fatalf("bounded diagnostic leaked split credential fragment: %q", got[:256])
+	}
+	if !strings.Contains(got, "git diagnostic truncated") ||
+		!strings.Contains(got, "truncated token redacted") {
+		t.Fatalf("bounded diagnostic %q is missing truncation redaction markers", got[:256])
+	}
+	if !strings.HasSuffix(got, strings.Repeat("x", 128)) {
+		t.Fatal("bounded diagnostic did not preserve its actionable tail")
 	}
 }
 
