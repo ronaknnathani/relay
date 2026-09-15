@@ -22,12 +22,91 @@ func TestArchiveRejectsNonGeneratedAgentsMDWithoutForce(t *testing.T) {
 	worktree := addArchiveWorktree(t, repo, slug, branch)
 	writeArchiveManifest(t, slug, repo, branch, worktree)
 	writeArchiveFile(t, worktree, "AGENTS.md", "# project\n\nPlease keep this.\n")
+	manifestPath := project.ManifestPath(project.ActiveDir(), slug)
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := captureStdout(t, func() error {
+	_, err = captureStdout(t, func() error {
 		return runArchive(slug, false)
 	})
 	if err == nil {
 		t.Fatalf("runArchive succeeded, want non-generated AGENTS.md to be preserved")
+	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
+	after, readErr := os.ReadFile(manifestPath)
+	if readErr != nil || string(after) != string(before) {
+		t.Fatalf("active manifest changed during rollback: data=%q err=%v", after, readErr)
+	}
+}
+
+func TestArchivePreservesProjectWhenArchivedDirectoryCannotBeCreated(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archive-dir-failure"
+	branch := "user/archive-dir-failure"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	if err := os.WriteFile(project.ArchivedDir(), []byte("not a directory\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := captureStdout(t, func() error {
+		return runArchive(slug, true)
+	})
+	if err == nil || !strings.Contains(err.Error(), "create archived dir") {
+		t.Fatalf("runArchive error = %v, want archived directory creation failure", err)
+	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
+}
+
+func TestArchivePreservesProjectWhenMoveToArchivedFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archive-move-failure"
+	branch := "user/archive-move-failure"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	if err := os.MkdirAll(project.ArchivedDir(), 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(project.ArchivedDir(), 0755); err != nil && !os.IsNotExist(err) {
+			t.Errorf("restore archived directory permissions: %v", err)
+		}
+	})
+
+	_, err := captureStdout(t, func() error {
+		return runArchive(slug, true)
+	})
+	if err == nil || !strings.Contains(err.Error(), "move project to archived") {
+		t.Fatalf("runArchive error = %v, want project move failure", err)
+	}
+	if chmodErr := os.Chmod(project.ArchivedDir(), 0755); chmodErr != nil {
+		t.Fatal(chmodErr)
+	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
+}
+
+func TestArchivePreservesProjectWhenArchivedManifestCannotBeStaged(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archive-manifest-failure"
+	branch := "user/archive-manifest-failure"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	previous := saveArchiveManifest
+	saveArchiveManifest = func(string, project.Manifest) error {
+		return errors.New("injected manifest save failure")
+	}
+	t.Cleanup(func() { saveArchiveManifest = previous })
+
+	_, err := captureStdout(t, func() error {
+		return runArchive(slug, true)
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected manifest save failure") {
+		t.Fatalf("runArchive error = %v, want manifest staging failure", err)
 	}
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }

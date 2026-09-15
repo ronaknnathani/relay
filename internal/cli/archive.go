@@ -18,6 +18,7 @@ import (
 var (
 	loadArchivePullRequestProof = programview.GitHubPullRequestProof
 	loadArchiveRepository       = programview.GitHubRepository
+	saveArchiveManifest         = project.Save
 )
 
 func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, error) {
@@ -268,10 +269,26 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 		}
 	}
 
+	now := time.Now().UTC().Format(time.RFC3339)
+	m.Status = "archived"
+	m.Archived = &now
+	m.Merged = workMerged
+	result.Merged = workMerged
+
+	dstDir := filepath.Join(project.ArchivedDir(), slug)
+	rollbackMetadata, err := stageArchivedProject(srcDir, dstDir, m)
+	if err != nil {
+		return archiveResult{}, err
+	}
+	result.ArchivedPath = dstDir
+
 	if m.Worktree != nil && *m.Worktree != "" {
 		worktree := *m.Worktree
 		result.Worktree = worktree
 		if err := gitx.WorktreeRemove(m.Repo, worktree, force); err != nil {
+			if rollbackErr := rollbackMetadata(); rollbackErr != nil {
+				err = fmt.Errorf("%w; rollback archive metadata: %v", err, rollbackErr)
+			}
 			if !force {
 				return archiveResult{}, fmt.Errorf("%w\nhint: use --force to remove worktrees with untracked/modified files", err)
 			}
@@ -295,23 +312,81 @@ func archiveProjectWithMergeProof(slug string, force, mergeProven bool) (archive
 			result.BranchDeleted = true
 		}
 	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	m.Status = "archived"
-	m.Archived = &now
-	m.Merged = workMerged
-	result.Merged = workMerged
-
-	dstDir := filepath.Join(project.ArchivedDir(), slug)
-	if err := os.MkdirAll(project.ArchivedDir(), 0755); err != nil {
-		return archiveResult{}, fmt.Errorf("create archived dir: %w", err)
-	}
-	if err := os.Rename(srcDir, dstDir); err != nil {
-		return archiveResult{}, fmt.Errorf("move project to archived: %w", err)
-	}
-	if err := project.Save(filepath.Join(dstDir, "manifest.json"), m); err != nil {
-		return archiveResult{}, err
-	}
-	result.ArchivedPath = dstDir
 	return result, nil
+}
+
+func stageArchivedProject(srcDir, dstDir string, m project.Manifest) (func() error, error) {
+	manifestPath := filepath.Join(srcDir, "manifest.json")
+	originalManifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("read active manifest for archive: %w", err)
+	}
+	info, err := os.Stat(manifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat active manifest for archive: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dstDir), 0755); err != nil {
+		return nil, fmt.Errorf("create archived dir: %w", err)
+	}
+	if _, err := os.Lstat(dstDir); err == nil {
+		return nil, fmt.Errorf("move project to archived: destination already exists: %s", dstDir)
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("inspect archive destination %s: %w", dstDir, err)
+	}
+
+	staged, err := os.CreateTemp(srcDir, ".manifest.archived-*")
+	if err != nil {
+		return nil, fmt.Errorf("stage archived manifest: %w", err)
+	}
+	stagedPath := staged.Name()
+	if err := staged.Close(); err != nil {
+		err = archiveCleanupError(err, "remove staged manifest", os.Remove(stagedPath))
+		return nil, fmt.Errorf("stage archived manifest: close temporary file: %w", err)
+	}
+	if err := saveArchiveManifest(stagedPath, m); err != nil {
+		err = archiveCleanupError(err, "remove staged manifest", os.Remove(stagedPath))
+		return nil, fmt.Errorf("stage archived manifest: %w", err)
+	}
+
+	if err := os.Rename(srcDir, dstDir); err != nil {
+		err = archiveCleanupError(err, "remove staged manifest", os.Remove(stagedPath))
+		return nil, fmt.Errorf("move project to archived: %w", err)
+	}
+	stagedPath = filepath.Join(dstDir, filepath.Base(stagedPath))
+	archivedManifestPath := filepath.Join(dstDir, "manifest.json")
+	if err := os.Rename(stagedPath, archivedManifestPath); err != nil {
+		rollbackErr := os.Rename(dstDir, srcDir)
+		if rollbackErr != nil {
+			return nil, fmt.Errorf(
+				"install archived manifest: %w; rollback project directory: %v", err, rollbackErr,
+			)
+		}
+		err = archiveCleanupError(
+			err, "remove staged manifest", os.Remove(filepath.Join(srcDir, filepath.Base(stagedPath))),
+		)
+		return nil, fmt.Errorf("install archived manifest: %w", err)
+	}
+
+	rollback := func() error {
+		rollbackPath := filepath.Join(dstDir, ".manifest.active")
+		if err := os.WriteFile(rollbackPath, originalManifest, info.Mode().Perm()); err != nil {
+			return fmt.Errorf("stage active manifest: %w", err)
+		}
+		if err := os.Rename(rollbackPath, archivedManifestPath); err != nil {
+			os.Remove(rollbackPath)
+			return fmt.Errorf("restore active manifest: %w", err)
+		}
+		if err := os.Rename(dstDir, srcDir); err != nil {
+			return fmt.Errorf("restore active project directory: %w", err)
+		}
+		return nil
+	}
+	return rollback, nil
+}
+
+func archiveCleanupError(cause error, action string, cleanupErr error) error {
+	if cleanupErr == nil || os.IsNotExist(cleanupErr) {
+		return cause
+	}
+	return fmt.Errorf("%w; %s: %v", cause, action, cleanupErr)
 }

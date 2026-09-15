@@ -858,7 +858,7 @@ func TestGCContinuesAfterArchiveFailure(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	failingRepo := newGCRepoFixture(t, "main")
 	failingSlug := "a-archive-failure"
-	failingBranch, _ := addGCProject(t, failingRepo, failingSlug)
+	failingBranch, failingWorktree := addGCProject(t, failingRepo, failingSlug)
 	mergeGCProjectUpstream(t, failingRepo, failingBranch)
 	collisionDir := filepath.Join(project.ArchivedDir(), failingSlug)
 	if err := os.MkdirAll(collisionDir, 0755); err != nil {
@@ -881,6 +881,12 @@ func TestGCContinuesAfterArchiveFailure(t *testing.T) {
 	}
 	if !pathExists(filepath.Join(project.ActiveDir(), failingSlug)) {
 		t.Fatal("failed archive project was removed")
+	}
+	if !pathExists(failingWorktree) {
+		t.Fatal("failed archive worktree was removed")
+	}
+	if !gitx.BranchExists(failingRepo.repo, failingBranch) {
+		t.Fatal("failed archive branch was removed")
 	}
 	if !pathExists(collisionMarker) {
 		t.Fatal("archive destination collision was overwritten")
