@@ -1108,8 +1108,8 @@ func TestWorkerCleanupPreservesWatcherRetryWhenBranchDeletionAlsoFails(t *testin
 	}
 	retried := decodeCleanupOutput(t, out)
 	if retried.Status != cleanupIncomplete || !retried.AlreadyArchived ||
-		retried.NextCommand != watcherRetry {
-		t.Fatalf("retry result = %+v, want pending archived cleanup", retried)
+		retried.NextCommand != branchDelete {
+		t.Fatalf("retry result = %+v, want manual branch cleanup %q", retried, branchDelete)
 	}
 	if !strings.Contains(retried.Error, branchDelete) ||
 		!strings.Contains(retried.Error, "will not retry removal") {
@@ -1177,9 +1177,11 @@ func TestWorkerCleanupDoesNotReplayClaimedBranchDeletion(t *testing.T) {
 		t.Fatalf("retry cleanup: %v", err)
 	}
 	second := decodeCleanupOutput(t, out)
+	manualDelete := manualBranchDeleteCommand(manifest.Repo, manifest.Branch)
 	if !second.AlreadyArchived || second.Status != cleanupIncomplete ||
-		!strings.Contains(second.Error, "will not retry removal") {
-		t.Fatalf("retry result = %+v, want claimed cleanup preservation", second)
+		!strings.Contains(second.Error, "will not retry removal") ||
+		second.NextCommand != manualDelete {
+		t.Fatalf("retry result = %+v, want claimed cleanup command %q", second, manualDelete)
 	}
 	if !gitx.BranchExists(manifest.Repo, manifest.Branch) {
 		t.Fatal("retry replayed claimed branch deletion")
@@ -1204,6 +1206,55 @@ func TestWorkerCleanupDoesNotReplayClaimedBranchDeletion(t *testing.T) {
 	if archived.ArchiveCleanup.BranchPresent ||
 		archived.ArchiveCleanup.ExpectedBranchTip != "" {
 		t.Fatalf("branch cleanup proof was not consumed: %+v", archived.ArchiveCleanup)
+	}
+}
+
+func TestWorkerCleanupReturnsManualBranchConfigCommandForClaimedCleanup(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installStubWatcherState(t, manifest.Slug, false)
+	runArchiveGit(
+		t, manifest.Repo, "config", "--local",
+		"branch."+manifest.Branch+".remote", "origin",
+	)
+
+	previousDelete := archiveForceDeleteBranchAt
+	archiveForceDeleteBranchAt = func(repo, branch, expectedSHA string) error {
+		runArchiveGit(t, repo, "update-ref", "-d", "refs/heads/"+branch, expectedSHA)
+		return errors.New("injected branch config cleanup failure")
+	}
+	t.Cleanup(func() { archiveForceDeleteBranchAt = previousDelete })
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("initial cleanup: %v", err)
+	}
+	command := manualBranchConfigRemoveCommand(manifest.Repo, manifest.Branch)
+	first := decodeCleanupOutput(t, out)
+	if first.Status != cleanupIncomplete || !first.Archived || first.NextCommand != command {
+		t.Fatalf("initial result = %+v, want manual branch config command %q", first, command)
+	}
+
+	archiveForceDeleteBranchAt = previousDelete
+	previousConfig := archiveRemoveBranchConfig
+	archiveRemoveBranchConfig = func(string, string) error {
+		return errors.New("injected manual config cleanup failure")
+	}
+	t.Cleanup(func() { archiveRemoveBranchConfig = previousConfig })
+
+	out, err = runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("retry cleanup: %v", err)
+	}
+	second := decodeCleanupOutput(t, out)
+	if second.Status != cleanupIncomplete || !second.AlreadyArchived ||
+		second.NextCommand != command {
+		t.Fatalf("retry result = %+v, want manual branch config command %q", second, command)
+	}
+	if !strings.Contains(second.Error, "injected manual config cleanup failure") {
+		t.Fatalf("retry error = %q, want config cleanup failure", second.Error)
 	}
 }
 

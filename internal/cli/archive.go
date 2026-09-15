@@ -908,11 +908,12 @@ func retryArchivedProjectCleanupLocked(m project.Manifest) (archiveResult, error
 	if !current.branchPresent {
 		if proof.BranchState != project.ArchiveCleanupDone {
 			if err := archiveRemoveBranchConfig(m.Repo, m.Branch); err != nil {
-				return result, fmt.Errorf(
+				command := manualBranchConfigRemoveCommand(m.Repo, m.Branch)
+				return result, newManualCleanupError(fmt.Errorf(
 					"finish archived branch cleanup for %s: branch ref is absent, but its local "+
 						"config could not be removed: %w; retry with: %s",
-					m.Slug, err, manualBranchConfigRemoveCommand(m.Repo, m.Branch),
-				)
+					m.Slug, err, command,
+				), command)
 			}
 			if err := consumeArchivedBranchProof(&m, proof.BranchState); err != nil {
 				return result, fmt.Errorf(
@@ -960,12 +961,33 @@ func claimedCleanupError(m project.Manifest, resource, identity string) error {
 	} else {
 		manual = "git -C " + shellQuote(m.Repo) + " worktree remove --force " + shellQuote(identity)
 	}
-	return fmt.Errorf(
+	return newManualCleanupError(fmt.Errorf(
 		"finish archived %s cleanup for %s: cleanup was already claimed and its outcome is ambiguous; "+
 			"will not retry removal of %s; inspect it and remove it manually only if it still belongs "+
 			"to this archived project\nhint: remove manually with: %s",
 		resource, m.Slug, identity, manual,
-	)
+	), manual)
+}
+
+type manualCleanupError struct {
+	cause   error
+	command string
+}
+
+func newManualCleanupError(cause error, command string) error {
+	return &manualCleanupError{cause: cause, command: command}
+}
+
+func (e *manualCleanupError) Error() string { return e.cause.Error() }
+
+func (e *manualCleanupError) Unwrap() error { return e.cause }
+
+func manualCleanupCommand(err error) string {
+	var manualErr *manualCleanupError
+	if errors.As(err, &manualErr) {
+		return manualErr.command
+	}
+	return ""
 }
 
 type archivedCleanupResources struct {

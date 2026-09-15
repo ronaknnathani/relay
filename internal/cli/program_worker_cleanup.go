@@ -146,9 +146,13 @@ func runProgramWorkerCleanup(out io.Writer, programSlug, itemID string, jsonOutp
 			))
 		}
 		if archiveOutcome.BranchDeletionWarning != "" {
-			result.NextCommand = fmt.Sprintf(
-				"relay program worker cleanup %s %s", p.Slug, item.ID,
-			)
+			if result.NextCommand == "" {
+				if archiveOutcome.BranchDeleted {
+					result.NextCommand = manualBranchConfigRemoveCommand(manifest.Repo, manifest.Branch)
+				} else {
+					result.NextCommand = manualBranchDeleteCommand(manifest.Repo, manifest.Branch)
+				}
+			}
 		}
 		result.Status = cleanupFinalStatus(result)
 		return renderProgramWorkerCleanup(out, result, jsonOutput)
@@ -200,9 +204,15 @@ func failProgramWorkerCleanup(
 ) error {
 	result.Status = cleanupIncomplete
 	result.Error = cause.Error()
-	result.NextCommand = fmt.Sprintf(
-		"relay program worker cleanup %s %s", result.Program, result.Item,
-	)
+	if result.NextCommand == "" {
+		if command := manualCleanupCommand(cause); command != "" {
+			result.NextCommand = command
+		} else {
+			result.NextCommand = fmt.Sprintf(
+				"relay program worker cleanup %s %s", result.Program, result.Item,
+			)
+		}
+	}
 	return renderProgramWorkerCleanup(out, *result, jsonOutput)
 }
 
