@@ -50,42 +50,36 @@ func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, err
 	if err != nil {
 		return false, fmt.Errorf("resolve branch %q tip for recorded pull request %s for %s: %w", m.Branch, safeRef, slug, err)
 	}
-	if !found {
-		if proof.HeadBranch != m.Branch {
+	if !found && proof.HeadBranch != m.Branch {
+		return false, fmt.Errorf(
+			"recorded pull request %s for %s head branch %q does not match manifest branch %q",
+			safeRef, slug, proof.HeadBranch, m.Branch,
+		)
+	}
+	worktreeHead := ""
+	worktreeFound := false
+	if m.Worktree != nil && *m.Worktree != "" {
+		worktreeHead, worktreeFound, err = gitx.WorktreeHead(*m.Worktree)
+		if err != nil {
 			return false, fmt.Errorf(
-				"recorded pull request %s for %s head branch %q does not match manifest branch %q",
-				safeRef, slug, proof.HeadBranch, m.Branch,
+				"resolve worktree HEAD for recorded pull request %s for %s: %w",
+				safeRef, slug, err,
 			)
 		}
-		if m.Worktree != nil && *m.Worktree != "" {
-			worktreeHead, worktreeFound, err := gitx.WorktreeHead(*m.Worktree)
-			if err != nil {
-				return false, fmt.Errorf(
-					"resolve worktree HEAD for recorded pull request %s for %s: %w",
-					safeRef, slug, err,
-				)
-			}
-			if worktreeFound {
-				if proof.HeadSHA == "" {
-					return false, fmt.Errorf("recorded pull request %s for %s has no head SHA", safeRef, slug)
-				}
-				if worktreeHead != proof.HeadSHA {
-					return false, fmt.Errorf(
-						"recorded pull request %s for %s head %s does not match worktree HEAD %s",
-						safeRef, slug, proof.HeadSHA, worktreeHead,
-					)
-				}
-			}
-		}
-		return true, nil
 	}
-	if proof.HeadSHA == "" {
+	if (found || worktreeFound) && proof.HeadSHA == "" {
 		return false, fmt.Errorf("recorded pull request %s for %s has no head SHA", safeRef, slug)
 	}
-	if branchTip != proof.HeadSHA {
+	if found && branchTip != proof.HeadSHA {
 		return false, fmt.Errorf(
 			"recorded pull request %s for %s head %s does not match branch %q tip %s",
 			safeRef, slug, proof.HeadSHA, m.Branch, branchTip,
+		)
+	}
+	if worktreeFound && worktreeHead != proof.HeadSHA {
+		return false, fmt.Errorf(
+			"recorded pull request %s for %s head %s does not match worktree HEAD %s",
+			safeRef, slug, proof.HeadSHA, worktreeHead,
 		)
 	}
 	return true, nil
