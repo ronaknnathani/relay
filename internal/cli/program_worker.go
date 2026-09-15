@@ -216,11 +216,8 @@ func runProgramWorkerStart(out io.Writer, programSlug, itemID string, jsonOutput
 func startProgramWorker(
 	programSlug, itemID, command string,
 ) (result programWorkerOutput, retErr error) {
-	target, p, err := loadProgramWorkerStartTarget(programSlug, itemID)
+	initialTarget, _, err := loadProgramWorkerStartTarget(programSlug, itemID)
 	if err != nil {
-		return programWorkerOutput{}, err
-	}
-	if err := requireManagedAgent(p.Agent, fmt.Sprintf("program %q", p.Slug)); err != nil {
 		return programWorkerOutput{}, err
 	}
 	if _, err := requireHerdrPane(command); err != nil {
@@ -229,7 +226,7 @@ func startProgramWorker(
 	// One child project has exactly one owner, so discovery, tab creation, the
 	// resume command, Herdr recognition, and renaming all run under a per-child
 	// kernel lock that a crashed holder releases automatically.
-	lock, err := acquireWorkerStartLock(target.manifest.Slug, command)
+	lock, err := acquireWorkerStartLock(initialTarget.manifest.Slug, command)
 	if err != nil {
 		return programWorkerOutput{}, err
 	}
@@ -239,6 +236,32 @@ func startProgramWorker(
 		}
 	}()
 
+	return withProjectLifecycleLock(
+		initialTarget.manifest.Slug,
+		func() (programWorkerOutput, error) {
+			target, p, err := loadProgramWorkerStartTarget(programSlug, itemID)
+			if err != nil {
+				return programWorkerOutput{}, err
+			}
+			if target.item.ProjectSlug != initialTarget.item.ProjectSlug ||
+				target.manifest.Slug != initialTarget.manifest.Slug {
+				return programWorkerOutput{}, fmt.Errorf(
+					"program worker %q: child project changed from %q to %q while waiting for its "+
+						"lifecycle lock; no worker was started, retry with current program state",
+					itemID, initialTarget.item.ProjectSlug, target.item.ProjectSlug,
+				)
+			}
+			if err := requireManagedAgent(p.Agent, fmt.Sprintf("program %q", p.Slug)); err != nil {
+				return programWorkerOutput{}, err
+			}
+			return startProgramWorkerLocked(target, programSlug, itemID, command)
+		},
+	)
+}
+
+func startProgramWorkerLocked(
+	target programWorkerTarget, programSlug, itemID, command string,
+) (programWorkerOutput, error) {
 	// The server probe and its agent list run inside the lock so a concurrent
 	// start that already created the owner is adopted instead of duplicated.
 	readiness, err := requireHerdrRuntime(command, true)
@@ -677,6 +700,12 @@ func loadProgramWorkerStartTarget(programSlug, itemID string) (programWorkerTarg
 	if err != nil {
 		return programWorkerTarget{}, program.Program{}, err
 	}
+	if p.Slug != programSlug {
+		return programWorkerTarget{}, program.Program{}, fmt.Errorf(
+			"program worker %q: program manifest slug %q does not match requested program %q",
+			itemID, p.Slug, programSlug,
+		)
+	}
 	target, err := programWorkerTargetFor(p, itemID)
 	if err != nil {
 		return programWorkerTarget{}, program.Program{}, err
@@ -734,6 +763,19 @@ func loadProgramWorkerManifest(p program.Program, item program.WorkItem) (projec
 		return project.Manifest{}, fmt.Errorf(
 			"program worker %q: child project %q is linked to %q/%q, want %q/%q",
 			item.ID, manifest.Slug, manifest.Program, manifest.ProgramItem, p.Slug, item.ID,
+		)
+	}
+	if manifest.Slug != item.ProjectSlug {
+		return project.Manifest{}, fmt.Errorf(
+			"program worker %q: child project manifest slug %q does not match linked project %q",
+			item.ID, manifest.Slug, item.ProjectSlug,
+		)
+	}
+	if item.Repo != p.Repo || manifest.Repo != p.Repo {
+		return project.Manifest{}, fmt.Errorf(
+			"program worker %q: child project repository identity does not match dispatch "+
+				"(manifest %q, item %q, program %q)",
+			item.ID, manifest.Repo, item.Repo, p.Repo,
 		)
 	}
 	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {

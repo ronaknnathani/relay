@@ -1365,6 +1365,73 @@ func TestWorkerStartLockPathIsPerChildProject(t *testing.T) {
 	}
 }
 
+func TestProgramWorkerStartReloadsAfterWorkerThenProjectLifecycleLock(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+	client := &fakeHerdrClient{}
+	installWorkerFakes(t, client)
+
+	lifecycleLock, err := patrollock.Acquire(projectLifecycleLockPath(manifest.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan error, 1)
+	go func() {
+		_, startErr := startProgramWorker(
+			p.Slug, item.ID, "relay program worker start",
+		)
+		started <- startErr
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		select {
+		case err := <-started:
+			t.Fatalf("worker start returned before waiting for the lifecycle lock: %v", err)
+		default:
+		}
+		held, inspectErr := patrollock.IsHeld(workerStartLockPath(manifest.Slug))
+		if inspectErr != nil {
+			t.Fatal(inspectErr)
+		}
+		if held {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("worker start did not acquire its worker lock before the project lifecycle lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	activeDir := filepath.Join(project.ActiveDir(), manifest.Slug)
+	archivedDir := filepath.Join(project.ArchivedDir(), manifest.Slug)
+	if err := os.MkdirAll(project.ArchivedDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(activeDir, archivedDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycleLock.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-started:
+		if err == nil || !strings.Contains(err.Error(), "is not active") {
+			t.Fatalf("worker start error = %v, want archived child rejection", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker start did not continue after the lifecycle lock was released")
+	}
+	if len(client.created) != 0 || len(client.runPane) != 0 || len(client.renamed) != 0 {
+		t.Fatalf(
+			"stale worker start mutated Herdr: created=%v run=%v renamed=%v",
+			client.created, client.runPane, client.renamed,
+		)
+	}
+}
+
 func TestWorkerPollBacksOffToBoundedCalls(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	worktree := t.TempDir()
