@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v9"
+	performanceHarness = "complete-roadmap-v10"
 )
 
 type performanceReport struct {
@@ -61,9 +61,11 @@ type browserSample struct {
 	DocumentTTFB       float64
 	DocumentTotal      float64
 	DocumentBytes      float64
+	ProgramBytes       float64
 	ClickToDrawer      float64
 	ClickToFileContent float64
 	ArtifactBytes      float64
+	ArtifactRequests   float64
 	MaxLongTask        float64
 	TotalBlockingTime  float64
 	UnchangedReopen    float64
@@ -145,15 +147,19 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 				const refresh = document.querySelector("#refresh");
 				const roadmapTab = document.querySelector("#tab-roadmap");
 				if (window.__relayCompleteUsableAt > 0 ||
+					typeof state === "undefined" ||
+					state.snapshot?.schema !== "relay.program.v1" ||
+					state.itemsByID?.size !== 100 ||
 					document.querySelector("#program-title")?.textContent !== "Reference Program" ||
 					!document.querySelector("#program-summary")?.textContent ||
 					document.querySelector("#task-total")?.textContent !== "100" ||
 					!document.querySelector("#progress-counts")?.textContent.includes("100") ||
 					!document.querySelector("#roadmap-note")?.textContent ||
-					cards.length < 2 ||
+					cards.length !== 100 ||
 					!cards.every((card) => card.dataset.focusKey &&
 						card.textContent.includes("Reference task")) ||
 					document.querySelectorAll("#graph-nodes .stage").length === 0 ||
+					document.querySelectorAll("#graph-edges .edge").length !== 200 ||
 					!document.querySelector("#graph")?.getAttribute("aria-label")?.includes(
 						"100 tasks, 200 dependency links") ||
 					!refresh || refresh.disabled ||
@@ -255,6 +261,7 @@ func measureBrowserRun(
 	}
 
 	var documentTiming resourceTiming
+	var programTiming resourceTiming
 	if err := chromedp.Run(tab, chromedp.Evaluate(`
 		(() => {
 			const entry = performance.getEntriesByType("navigation")[0];
@@ -264,8 +271,30 @@ func measureBrowserRun(
 				bytes: entry.encodedBodySize
 			} : {ttfb: 0, total: 0, bytes: 0};
 		})()
-	`, &documentTiming)); err != nil {
-		t.Fatalf("read initial document timing: %v", err)
+	`, &documentTiming), chromedp.Evaluate(`
+		(() => {
+			const entry = performance.getEntriesByType("resource").find((candidate) => {
+				const url = new URL(candidate.name);
+				return url.pathname === "/api/program" && url.search === "";
+			});
+			return entry ? {
+				ttfb: entry.responseStart - entry.startTime,
+				total: entry.responseEnd - entry.startTime,
+				bytes: entry.encodedBodySize
+			} : {ttfb: 0, total: 0, bytes: 0};
+		})()
+	`, &programTiming)); err != nil {
+		t.Fatalf("read initial resource timings: %v", err)
+	}
+	var taskArtifactTextPresent bool
+	if err := chromedp.Run(tab, chromedp.Evaluate(`
+		state.snapshot.items.some((item) =>
+			(item.artifacts || []).some((artifact) => artifact.text !== undefined))
+	`, &taskArtifactTextPresent)); err != nil {
+		t.Fatalf("inspect initial program payload: %v", err)
+	}
+	if taskArtifactTextPresent {
+		t.Fatal("initial /api/program response included task artifact text")
 	}
 
 	if err := chromedp.Run(tab, chromedp.Evaluate(`performance.clearResourceTimings()`, nil)); err != nil {
@@ -295,20 +324,21 @@ func measureBrowserRun(
 	if want := strings.Repeat(`"`, 128*1024); artifactText != want {
 		t.Fatalf("selected artifact content differs from deterministic fixture")
 	}
-	var artifactResource resourceTiming
+	var artifactResources struct {
+		Count int     `json:"count"`
+		Bytes float64 `json:"bytes"`
+	}
 	if err := chromedp.Run(tab, chromedp.Evaluate(`
 		(() => {
 			const entries = performance.getEntriesByType("resource")
 				.filter((entry) => new URL(entry.name).pathname === "/api/artifact");
-			const entry = entries[entries.length - 1];
-			return entry ? {
-				ttfb: entry.responseStart - entry.startTime,
-				total: entry.responseEnd - entry.startTime,
-				bytes: entry.encodedBodySize
-			} : {ttfb: 0, total: 0, bytes: 0};
+			return {
+				count: entries.length,
+				bytes: entries.reduce((total, entry) => total + entry.encodedBodySize, 0)
+			};
 		})()
-	`, &artifactResource)); err != nil {
-		t.Fatalf("read artifact response timing: %v", err)
+	`, &artifactResources)); err != nil {
+		t.Fatalf("read artifact response timings: %v", err)
 	}
 
 	if err := chromedp.Run(tab,
@@ -365,9 +395,11 @@ func measureBrowserRun(
 	return browserSample{
 		ProcessStartToURL: processStartToURL, NavigationToUsable: navigationToUsable,
 		DocumentTTFB: documentTiming.TTFB, DocumentTotal: documentTiming.Total,
-		DocumentBytes: documentTiming.Bytes, ClickToDrawer: clickToDrawer,
-		ClickToFileContent: clickToFileContent, ArtifactBytes: artifactResource.Bytes,
-		MaxLongTask: maxLongTask, TotalBlockingTime: totalBlockingTime,
+		DocumentBytes: documentTiming.Bytes, ProgramBytes: programTiming.Bytes,
+		ClickToDrawer: clickToDrawer, ClickToFileContent: clickToFileContent,
+		ArtifactBytes:    artifactResources.Bytes,
+		ArtifactRequests: float64(artifactResources.Count),
+		MaxLongTask:      maxLongTask, TotalBlockingTime: totalBlockingTime,
 		UnchangedReopen: unchangedReopen,
 	}
 }
@@ -482,9 +514,11 @@ func appendPerformanceSample(samples map[string][]float64, sample browserSample)
 		"document_ttfb_ms":         sample.DocumentTTFB,
 		"document_total_ms":        sample.DocumentTotal,
 		"document_bytes":           sample.DocumentBytes,
+		"program_response_bytes":   sample.ProgramBytes,
 		"click_to_drawer_ms":       sample.ClickToDrawer,
 		"click_to_file_content_ms": sample.ClickToFileContent,
 		"artifact_response_bytes":  sample.ArtifactBytes,
+		"artifact_request_count":   sample.ArtifactRequests,
 		"max_long_task_ms":         sample.MaxLongTask,
 		"total_blocking_time_ms":   sample.TotalBlockingTime,
 		"unchanged_reopen_ms":      sample.UnchangedReopen,
@@ -539,8 +573,9 @@ func verifyPerformanceReport(t *testing.T, report performanceReport, baselinePat
 		"click_to_drawer_ms":       100,
 		"click_to_file_content_ms": 500,
 		"unchanged_reopen_ms":      100,
-		"document_bytes":           1024 * 1024,
+		"program_response_bytes":   1024 * 1024,
 		"artifact_response_bytes":  192 * 1024,
+		"artifact_request_count":   1,
 		"max_long_task_ms":         100,
 		"total_blocking_time_ms":   200,
 	}
@@ -569,7 +604,12 @@ func verifyPerformanceReport(t *testing.T, report performanceReport, baselinePat
 			)
 		}
 	}
-	for _, required := range []string{"document_bytes", "artifact_response_bytes"} {
+	for _, required := range []string{
+		"document_bytes",
+		"program_response_bytes",
+		"artifact_response_bytes",
+		"artifact_request_count",
+	} {
 		if report.P50[required] <= 0 || report.P95[required] <= 0 {
 			t.Errorf("%s exact resource measurements are missing", required)
 		}

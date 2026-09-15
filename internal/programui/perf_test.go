@@ -140,3 +140,21 @@ func TestValidatePerformancePercentiles(t *testing.T) {
 		t.Fatalf("percentile validation error = %v, want p50 mismatch", err)
 	}
 }
+
+func TestAppendPerformanceSampleTracksExactProgramAndAllArtifactResponses(t *testing.T) {
+	samples := map[string][]float64{}
+	appendPerformanceSample(samples, browserSample{
+		ProgramBytes:     512,
+		ArtifactBytes:    1024,
+		ArtifactRequests: 1,
+	})
+	for name, want := range map[string]float64{
+		"program_response_bytes":  512,
+		"artifact_response_bytes": 1024,
+		"artifact_request_count":  1,
+	} {
+		if got := samples[name]; len(got) != 1 || got[0] != want {
+			t.Fatalf("%s samples = %v, want [%v]", name, got, want)
+		}
+	}
+}
