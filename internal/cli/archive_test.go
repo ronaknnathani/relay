@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1293,6 +1294,148 @@ func TestArchivedCleanupRetryDoesNotReplayClaimedBranchDeletion(t *testing.T) {
 	}
 	if !gitx.BranchExists(repo, branch) {
 		t.Fatal("claimed-state retry replayed branch deletion")
+	}
+}
+
+func TestArchivedCleanupConcurrentRetryClaimsWorktreeOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archived-concurrent-worktree"
+	branch := "user/archived-concurrent-worktree"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Status = "archived"
+	manifest.ArchiveCleanup = archiveCleanupProof(decision.proof)
+	if _, err := stageArchivedProject(
+		filepath.Join(project.ActiveDir(), slug),
+		filepath.Join(project.ArchivedDir(), slug),
+		manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	archived := loadArchivedManifest(t, slug)
+
+	previous := archiveWorktreeRemove
+	var removeCalls atomic.Int32
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	archiveWorktreeRemove = func(repo, worktree string, force bool) error {
+		removeCalls.Add(1)
+		entered <- struct{}{}
+		<-release
+		return gitx.WorktreeRemove(repo, worktree, force)
+	}
+	t.Cleanup(func() { archiveWorktreeRemove = previous })
+
+	results := make(chan error, 2)
+	go func() {
+		_, cleanupErr := retryArchivedProjectCleanup(archived)
+		results <- cleanupErr
+	}()
+	<-entered
+	go func() {
+		_, cleanupErr := retryArchivedProjectCleanup(archived)
+		results <- cleanupErr
+	}()
+
+	select {
+	case <-entered:
+		close(release)
+		<-results
+		<-results
+		t.Fatal("concurrent cleanup entered worktree removal twice")
+	case <-time.After(100 * time.Millisecond):
+		close(release)
+	}
+	for range 2 {
+		if cleanupErr := <-results; cleanupErr != nil {
+			t.Fatalf("retryArchivedProjectCleanup: %v", cleanupErr)
+		}
+	}
+	if removeCalls.Load() != 1 {
+		t.Fatalf("worktree removal calls = %d, want 1", removeCalls.Load())
+	}
+}
+
+func TestArchivedCleanupConcurrentRetryClaimsBranchOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archived-concurrent-branch"
+	branch := "user/archived-concurrent-branch"
+	runArchiveGit(t, repo, "branch", branch, "HEAD")
+	now := time.Now().UTC().Format(time.RFC3339)
+	manifest := project.Manifest{
+		Slug: slug, Title: slug, Repo: repo, Branch: branch, BaseBranch: "main",
+		StartSHA: gitOutput(t, repo, "rev-parse", "main"),
+		Status:   "active", Created: now, Updated: now,
+	}
+	activeDir := filepath.Join(project.ActiveDir(), slug)
+	if err := os.MkdirAll(activeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(filepath.Join(activeDir, "manifest.json"), manifest); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Status = "archived"
+	manifest.ArchiveCleanup = archiveCleanupProof(decision.proof)
+	if _, err := stageArchivedProject(
+		activeDir, filepath.Join(project.ArchivedDir(), slug), manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	archived := loadArchivedManifest(t, slug)
+
+	previous := archiveForceDeleteBranchAt
+	var deleteCalls atomic.Int32
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	archiveForceDeleteBranchAt = func(repo, branch, expectedSHA string) error {
+		deleteCalls.Add(1)
+		entered <- struct{}{}
+		<-release
+		return gitx.ForceDeleteBranchAt(repo, branch, expectedSHA)
+	}
+	t.Cleanup(func() { archiveForceDeleteBranchAt = previous })
+
+	results := make(chan error, 2)
+	go func() {
+		_, cleanupErr := retryArchivedProjectCleanup(archived)
+		results <- cleanupErr
+	}()
+	<-entered
+	go func() {
+		_, cleanupErr := retryArchivedProjectCleanup(archived)
+		results <- cleanupErr
+	}()
+
+	select {
+	case <-entered:
+		close(release)
+		<-results
+		<-results
+		t.Fatal("concurrent cleanup entered branch deletion twice")
+	case <-time.After(100 * time.Millisecond):
+		close(release)
+	}
+	for range 2 {
+		if cleanupErr := <-results; cleanupErr != nil {
+			t.Fatalf("retryArchivedProjectCleanup: %v", cleanupErr)
+		}
+	}
+	if deleteCalls.Load() != 1 {
+		t.Fatalf("branch deletion calls = %d, want 1", deleteCalls.Load())
 	}
 }
 
