@@ -10,7 +10,13 @@ import (
 )
 
 // assetNames lists every file the browser is allowed to load.
-var assetNames = []string{"assets/index.html", "assets/app.css", "assets/theme.js", "assets/app.js"}
+var assetNames = []string{
+	"assets/index.html",
+	"assets/app.css",
+	"assets/theme.js",
+	"assets/app.js",
+	"assets/app.min.js",
+}
 
 // forbiddenAssetSubstrings keeps the embedded UI local-only and free of any
 // API that turns data into markup.
@@ -144,6 +150,10 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	if !strings.Contains(script, "function start()") ||
 		!strings.Contains(script, `document.addEventListener("DOMContentLoaded", start)`) {
 		t.Error("app.js must defer its own boot to DOMContentLoaded while the theme applies immediately")
+	}
+	minified := readAsset(t, "assets/app.min.js")
+	if len(minified) >= len(script) || !strings.Contains(minified, "relay-usable") {
+		t.Error("the served application bundle must be minified and retain the usable marker")
 	}
 	if strings.Index(script, "applyTheme(storedTheme()") > strings.Index(script, "function start()") {
 		t.Error("the theme must be applied before the app boot code")
