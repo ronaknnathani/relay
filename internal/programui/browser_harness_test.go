@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v16"
+	performanceHarness = "complete-roadmap-v17"
 )
 
 type performanceReport struct {
@@ -216,6 +216,10 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 					return;
 				}
 				const probe = window.__relayUsabilityProbe;
+				if (!probe.prevented) {
+					window.__relayUsabilityProbe = null;
+					return;
+				}
 				const selected = document.querySelector(
 					'.card[data-item="' + probe.target + '"]');
 				if (probe.prevented &&

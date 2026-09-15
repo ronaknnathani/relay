@@ -252,6 +252,16 @@ func renderRoadmapMarkup(snapshot roadmapSnapshot) []byte {
 	}
 	layers := make([][]string, 0, len(snapshot.Graph.Layers)+1)
 	placed := make(map[string]bool, len(snapshot.Graph.Nodes))
+	if len(snapshot.Graph.Layers) == 0 {
+		grouped := make([][]string, 0)
+		for _, node := range snapshot.Graph.Nodes {
+			for len(grouped) <= node.Layer {
+				grouped = append(grouped, []string{})
+			}
+			grouped[node.Layer] = append(grouped[node.Layer], node.ID)
+		}
+		snapshot.Graph.Layers = grouped
+	}
 	for _, layer := range snapshot.Graph.Layers {
 		current := make([]string, 0, len(layer))
 		for _, id := range layer {
@@ -474,6 +484,7 @@ func newRoadmapSnapshot(snapshot programview.Snapshot) roadmapSnapshot {
 		Graph: roadmapGraph{
 			Nodes:  make([]roadmapNode, 0, len(snapshot.Graph.Nodes)),
 			Edges:  snapshot.Graph.Edges,
+			Layers: snapshot.Graph.Layers,
 			Cyclic: snapshot.Graph.Cyclic,
 		},
 		Overview: roadmapOverview{OpenDecisions: len(snapshot.OpenDecisions)},
