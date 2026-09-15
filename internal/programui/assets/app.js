@@ -2785,14 +2785,14 @@ async function poll(preloadedRequest, preloadedController) {
     if (!response.ok) {
       throw new Error(`Program request failed with status ${response.status}`);
     }
-    const body = await response.text();
-    const snapshot = JSON.parse(body);
+    const initial = !state.snapshot;
+    const body = initial ? "" : await response.text();
+    const snapshot = initial ? await response.json() : JSON.parse(body);
     if (generation !== state.programGeneration) {
       return;
     }
     state.failures = 0;
     hideReconnect();
-    const initial = !state.snapshot;
     state.snapshot = snapshot;
     state.itemsByID = new Map();
     for (const item of items()) {
@@ -2801,7 +2801,7 @@ async function poll(preloadedRequest, preloadedController) {
     if (initial) {
       renderInitial();
       window.requestAnimationFrame(() => {
-        state.signature = signatureOf(body);
+        state.signature = signatureOf(JSON.stringify(snapshot));
         setSnapshotFeed(snapshot);
         if (state.pendingDrawer && state.selected) {
           state.pendingDrawer = false;

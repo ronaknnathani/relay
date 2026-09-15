@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-cksdwEPAV9lajVKhZ70vrEAKZO/JeUNno7W9HbVfvlM=' 'sha256-DEEfw/Td2mp9R509O7VFOPLIqfzde30ilBCt4DMaF4s='; style-src 'self' 'sha256-Xw7wxTOiYy+b6PIFWGKVbmnC36csxkOzdj0re5zdObc='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-cksdwEPAV9lajVKhZ70vrEAKZO/JeUNno7W9HbVfvlM=' 'sha256-TUV6qr+i/wohxbMuvB1XH33Hmvu6YVBjd2wAeuf9eKE='; style-src 'self' 'sha256-Xw7wxTOiYy+b6PIFWGKVbmnC36csxkOzdj0re5zdObc='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	appTemplateToken      = "__RELAY_APP__"
 	cssTemplateToken      = "__RELAY_CSS__"
 )
