@@ -930,6 +930,20 @@ func TestGCFetchWarningRedactsApostrophesInURLTokens(t *testing.T) {
 			secrets:    []string{"deploy-token", "token=", "query-secret", "fragment-secret"},
 			wantProse:  "is unavailable",
 		},
+		{
+			name:       "underscore SCP URL",
+			diagnostic: "fatal: repository '_deploy-token@git_alias_1:team/repo.git?token=query-secret#fragment-secret' is unavailable",
+			wantURL:    "[redacted]@git_alias_1:team/repo.git",
+			secrets:    []string{"_deploy-token", "token=", "query-secret", "fragment-secret"},
+			wantProse:  "is unavailable",
+		},
+		{
+			name:       "nested helper underscore SCP URL",
+			diagnostic: "fatal: repository 'cache::_deploy-token@git_alias_1:team/repo.git?token=query-secret#fragment-secret' is unavailable",
+			wantURL:    "cache::[redacted]@git_alias_1:team/repo.git",
+			secrets:    []string{"_deploy-token", "token=", "query-secret", "fragment-secret"},
+			wantProse:  "is unavailable",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -966,6 +980,56 @@ func TestGCFetchWarningRedactsApostrophesInURLTokens(t *testing.T) {
 				t.Fatal("GC changed a project after its credential-bearing fetch failure")
 			}
 		})
+	}
+}
+
+func TestGCDeepRemoteHelperDiagnosticDoesNotBlockAnotherRepository(t *testing.T) {
+	const expectedPreservedDepth = 8
+	t.Setenv("HOME", t.TempDir())
+	failingRepo := newGCRepoFixture(t, "main")
+	failingBranch, failingWorktree := addGCProject(t, failingRepo, "a-deep-helper-failure")
+	diagnostic := "fatal: repository '" + strings.Repeat("cache::", 10000) +
+		"_deep-secret@git.example.com:team/repo.git?token=also-secret#fragment' is unavailable"
+	scriptPath := filepath.Join(t.TempDir(), "failing-upload-pack")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' " + shellQuote(diagnostic) + " >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	runArchiveGit(t, failingRepo.repo, "config", "remote.origin.uploadpack", scriptPath)
+
+	successRepo := newGCRepoFixture(t, "main")
+	successBranch, successWorktree := addGCProject(t, successRepo, "z-deep-helper-success")
+	mergeGCProjectUpstream(t, successRepo, successBranch)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, secret := range []string{"deep-secret", "also-secret"} {
+		if strings.Contains(stderr, secret) {
+			t.Fatalf("stderr leaked %q in %q", secret, stderr)
+		}
+	}
+	if count := strings.Count(stderr, "cache::"); count != expectedPreservedDepth {
+		t.Fatalf(
+			"preserved helper depth = %d, want %d\nstderr: %s",
+			count, expectedPreservedDepth, stderr,
+		)
+	}
+	if !strings.Contains(stderr, "[redacted]") {
+		t.Fatalf("stderr %q is missing the bounded helper redaction", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), "a-deep-helper-failure")) ||
+		!pathExists(failingWorktree) ||
+		!gitx.BranchExists(failingRepo.repo, failingBranch) {
+		t.Fatal("GC changed the repository whose deep helper diagnostic failed")
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), "z-deep-helper-success")) ||
+		pathExists(successWorktree) ||
+		gitx.BranchExists(successRepo.repo, successBranch) {
+		t.Fatal("GC did not continue to archive the independent repository")
 	}
 }
 

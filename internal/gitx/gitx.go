@@ -485,9 +485,35 @@ func SanitizeDiagnostic(output string) string {
 	return sanitized.String()
 }
 
+const maxRemoteHelperDepth = 8
+
 func remoteHelperURLTokenEnd(output string, start int) (int, bool) {
-	if !urlTokenBoundary(output, start) || start >= len(output) ||
-		!isASCIILetter(output[start]) {
+	if !urlTokenBoundary(output, start) {
+		return 0, false
+	}
+	addressStart, ok := remoteHelperAddressStart(output, start)
+	if !ok {
+		return 0, false
+	}
+	for depth := 1; ; depth++ {
+		nextAddressStart, nested := remoteHelperAddressStart(output, addressStart)
+		if !nested {
+			break
+		}
+		if depth == maxRemoteHelperDepth {
+			end := scanURLTokenEnd(output, start, nextAddressStart)
+			return end, end > nextAddressStart
+		}
+		addressStart = nextAddressStart
+	}
+	if end, ok := schemeURLTokenEnd(output, addressStart); ok {
+		return end, true
+	}
+	return scpStyleURLTokenEnd(output, addressStart)
+}
+
+func remoteHelperAddressStart(output string, start int) (int, bool) {
+	if start >= len(output) || !isASCIILetter(output[start]) {
 		return 0, false
 	}
 	separator := start + 1
@@ -499,16 +525,7 @@ func remoteHelperURLTokenEnd(output string, start int) (int, bool) {
 		return 0, false
 	}
 	addressStart := separator + 2
-	if addressStart >= len(output) {
-		return 0, false
-	}
-	if end, ok := remoteHelperURLTokenEnd(output, addressStart); ok {
-		return end, true
-	}
-	if end, ok := schemeURLTokenEnd(output, addressStart); ok {
-		return end, true
-	}
-	return scpStyleURLTokenEnd(output, addressStart)
+	return addressStart, addressStart < len(output)
 }
 
 func schemeURLTokenEnd(output string, start int) (int, bool) {
@@ -532,9 +549,7 @@ func schemeURLTokenEnd(output string, start int) (int, bool) {
 
 func scpStyleURLTokenEnd(output string, start int) (int, bool) {
 	if !urlTokenBoundary(output, start) || start >= len(output) ||
-		(!isASCIILetter(output[start]) &&
-			(output[start] < '0' || output[start] > '9') &&
-			output[start] != '[') {
+		!isSCPStyleURLStart(output[start]) {
 		return 0, false
 	}
 	end := scanURLTokenEnd(output, start, start)
@@ -572,6 +587,13 @@ func scpStyleURLTokenEnd(output string, start int) (int, bool) {
 		return 0, false
 	}
 	return end, true
+}
+
+func isSCPStyleURLStart(character byte) bool {
+	return isASCIILetter(character) ||
+		character >= '0' && character <= '9' ||
+		character == '[' ||
+		strings.ContainsRune("-._~!$&()*+,;=%", rune(character))
 }
 
 func scanURLTokenEnd(output string, start, scanFrom int) int {
@@ -647,12 +669,25 @@ func sanitizeGitDiagnosticURL(rawURL string) string {
 }
 
 func sanitizeRemoteHelperURL(rawURL string) string {
-	separator := strings.Index(rawURL, "::")
-	if separator < 0 {
+	addressStart, ok := remoteHelperAddressStart(rawURL, 0)
+	if !ok {
 		return rawURL
 	}
-	addressStart := separator + 2
-	return rawURL[:addressStart] + SanitizeDiagnostic(rawURL[addressStart:])
+	for depth := 1; ; depth++ {
+		nextAddressStart, nested := remoteHelperAddressStart(rawURL, addressStart)
+		if !nested {
+			break
+		}
+		if depth == maxRemoteHelperDepth {
+			return rawURL[:addressStart] + "[redacted]"
+		}
+		addressStart = nextAddressStart
+	}
+	address := rawURL[addressStart:]
+	if _, ok := schemeURLTokenEnd(rawURL, addressStart); ok {
+		return rawURL[:addressStart] + sanitizeGitDiagnosticURL(address)
+	}
+	return rawURL[:addressStart] + sanitizeSCPStyleURL(address)
 }
 
 func sanitizeSCPStyleURL(rawURL string) string {

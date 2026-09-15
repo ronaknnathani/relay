@@ -586,6 +586,16 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			want:  "remote: [redacted]@git_alias_1:team/repo.git",
 		},
 		{
+			name:  "scp-like underscore userinfo",
+			input: "remote: _deploy-token@git.example.com:team/repo.git?identity=secret#scope",
+			want:  "remote: [redacted]@git.example.com:team/repo.git",
+		},
+		{
+			name:  "scp-like punctuation userinfo",
+			input: "remote: +deploy-token@git.example.com:team/repo.git?identity=secret#scope",
+			want:  "remote: [redacted]@git.example.com:team/repo.git",
+		},
+		{
 			name:  "scp-like without userinfo",
 			input: "remote: git.example.io:team/repo.git?token=secret#scope",
 			want:  "remote: git.example.io:team/repo.git",
@@ -616,6 +626,11 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			want:  "remote: cache::[redacted]@git.example.com:team/repo.git",
 		},
 		{
+			name:  "remote helper wrapping underscore scp userinfo",
+			input: "remote: cache::_deploy-token@git.example.com:team/repo.git?secret=x#fragment",
+			want:  "remote: cache::[redacted]@git.example.com:team/repo.git",
+		},
+		{
 			name:  "nested remote helpers",
 			input: "remote: trace::cache::https://token@git.example.com/team/repo.git?secret=x#fragment",
 			want:  "remote: trace::cache::https://[redacted]@git.example.com/team/repo.git",
@@ -627,6 +642,25 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 				t.Fatalf("SanitizeDiagnostic(%q) = %q, want %q", test.input, got, test.want)
 			}
 		})
+	}
+}
+
+func TestSanitizeDiagnosticBoundsRemoteHelperNesting(t *testing.T) {
+	const helperDepth = 10000
+	const expectedPreservedDepth = 8
+	input := "remote: " + strings.Repeat("cache::", helperDepth) +
+		"_deep-secret@git.example.com:team/repo.git?token=also-secret#fragment"
+
+	got := SanitizeDiagnostic(input)
+
+	if strings.Contains(got, "deep-secret") || strings.Contains(got, "also-secret") {
+		t.Fatalf("SanitizeDiagnostic leaked a secret from deeply nested helper input: %q", got)
+	}
+	if count := strings.Count(got, "cache::"); count != expectedPreservedDepth {
+		t.Fatalf("preserved helper depth = %d, want %d", count, expectedPreservedDepth)
+	}
+	if !strings.HasSuffix(got, "[redacted]") {
+		t.Fatalf("SanitizeDiagnostic deep nesting result = %q, want fully redacted remainder", got)
 	}
 }
 
