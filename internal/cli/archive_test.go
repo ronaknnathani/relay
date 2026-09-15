@@ -598,6 +598,39 @@ func TestArchiveRejectsManifestSlugMismatchWithoutChangingVictim(t *testing.T) {
 	}
 }
 
+func TestArchiveRejectsNonNilEmptyWorktreeMetadata(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "empty-worktree"
+	branch := "user/empty-worktree"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	manifestPath := project.ManifestPath(project.ActiveDir(), slug)
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := "\n "
+	manifest.Worktree = &empty
+	if err := project.Save(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = captureStdout(t, func() error {
+		return runArchive(slug, true)
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "worktree is present but empty") ||
+		!strings.Contains(err.Error(), "preserving project resources") {
+		t.Fatalf("runArchive error = %v, want malformed worktree rejection", err)
+	}
+	assertArchiveManifestAndResourcesUnchanged(t, manifestPath, before, repo, branch, worktree)
+}
+
 func TestArchiveForcePreservesWorktreeFromStaleManifest(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)

@@ -174,5 +174,8 @@ func validateGCManifest(result project.ManifestLoadResult) error {
 	if m.Branch == "" {
 		return fmt.Errorf("invalid project metadata %s: branch is empty", result.Path)
 	}
+	if err := validateManifestWorktreeMetadata(m); err != nil {
+		return fmt.Errorf("invalid project metadata %s: %w", result.Path, err)
+	}
 	return nil
 }

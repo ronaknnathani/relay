@@ -476,6 +476,9 @@ func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision
 func newArchiveProofSnapshot(
 	m project.Manifest, kind archiveProofKind, merged bool,
 ) (archiveProofSnapshot, error) {
+	if err := validateManifestWorktreeMetadata(m); err != nil {
+		return archiveProofSnapshot{}, err
+	}
 	manifest, err := json.Marshal(m)
 	if err != nil {
 		return archiveProofSnapshot{}, fmt.Errorf("snapshot project %s manifest: %w", m.Slug, err)
@@ -982,6 +985,17 @@ func retryArchivedProjectCleanupWithForce(
 	})
 }
 
+func validateManifestWorktreeMetadata(m project.Manifest) error {
+	if m.Worktree != nil && strings.TrimSpace(*m.Worktree) == "" {
+		return fmt.Errorf(
+			"project %s has malformed worktree metadata: worktree is present but empty; "+
+				"preserving project resources for manual repair",
+			m.Slug,
+		)
+	}
+	return nil
+}
+
 func retryArchivedProjectCleanupLocked(
 	m project.Manifest, force bool,
 ) (archiveResult, error) {
@@ -997,6 +1011,9 @@ func retryArchivedProjectCleanupLocked(
 	}
 	if m.Worktree != nil {
 		result.Worktree = *m.Worktree
+	}
+	if err := validateManifestWorktreeMetadata(m); err != nil {
+		return result, err
 	}
 	if m.ArchiveCleanup == nil {
 		if err := validateLegacyArchivedCleanup(m); err != nil {

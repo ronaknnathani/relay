@@ -1154,6 +1154,34 @@ func TestGCContinuesAfterMalformedAndInvalidMetadata(t *testing.T) {
 	}
 }
 
+func TestGCRejectsNonNilEmptyWorktreeMetadata(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "empty-worktree"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	updateGCManifest(t, slug, func(manifest *project.Manifest) {
+		empty := " \t "
+		manifest.Worktree = &empty
+	})
+
+	_, stderr, err := captureGCOutput(t, runGC)
+
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{"worktree is present but empty", "preserving project resources"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC changed resources for malformed worktree metadata")
+	}
+}
+
 func TestGCRejectsPathLikeManifestSlugWithoutChangingVictim(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")

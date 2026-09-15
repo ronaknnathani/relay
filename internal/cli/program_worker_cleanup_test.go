@@ -17,6 +17,14 @@ import (
 	"github.com/ronaknnathani/relay/internal/prwatch"
 )
 
+type cleanupErrorWriter struct {
+	err error
+}
+
+func (w cleanupErrorWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
 // createCleanupFixture builds a merged managed item whose child project has a
 // real worktree and branch, so cleanup can actually archive it.
 func createCleanupFixture(t *testing.T) (program.Program, program.WorkItem, project.Manifest) {
@@ -270,6 +278,25 @@ func TestWorkerCleanupOutputsCleanJSON(t *testing.T) {
 	}
 }
 
+func TestFailProgramWorkerCleanupJoinsCauseAndRenderError(t *testing.T) {
+	cause := errors.New("cleanup cause")
+	renderErr := errors.New("render failure")
+	result := programWorkerCleanupOutput{
+		Program: "delivery", Item: "w1", Project: "delivery-w1",
+	}
+
+	err := failProgramWorkerCleanup(
+		cleanupErrorWriter{err: renderErr}, &result, true, cause,
+	)
+
+	if !errors.Is(err, cause) || !errors.Is(err, renderErr) {
+		t.Fatalf("failProgramWorkerCleanup error = %v, want cause and render failure", err)
+	}
+	if result.Status != cleanupIncomplete || result.Error != cause.Error() {
+		t.Fatalf("rendered cleanup result = %+v, want incomplete cause", result)
+	}
+}
+
 func TestWorkerCleanupDiscardsDirtyAndUntrackedWorktreeFiles(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
 	commitArchiveFile(t, *manifest.Worktree, "feature.txt", "unique\n", "unique work")
@@ -306,8 +333,8 @@ func TestWorkerCleanupLeavesABusyWorkerAlone(t *testing.T) {
 			installStubWatcherState(t, manifest.Slug, true)
 
 			out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-			if err != nil {
-				t.Fatalf("worker cleanup: %v", err)
+			if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
+				t.Fatalf("worker cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
 			}
 			result := decodeCleanupOutput(t, out)
 			if result.Status != cleanupWorkerBusy {
@@ -371,8 +398,8 @@ func TestWorkerCleanupKeepsEverythingWhenTheExitIsUncertain(t *testing.T) {
 	installStubWatcherState(t, manifest.Slug, true)
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("cleanup result: %v", err)
+	if err == nil {
+		t.Fatal("cleanup returned nil after an uncertain worker exit")
 	}
 	if closedIDs(client).has(workerTabID) {
 		t.Fatal("an uncertain exit still closed the worker tab")
@@ -412,8 +439,8 @@ func TestWorkerCleanupRefusesToCloseAReplacementSession(t *testing.T) {
 	installStubWatcherState(t, manifest.Slug, true)
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("cleanup result: %v", err)
+	if err == nil {
+		t.Fatal("cleanup returned nil after detecting a replacement session")
 	}
 	if closedIDs(client).has(workerTabID) || closedIDs(client).has(worker.PaneID) {
 		t.Fatalf("cleanup closed a replacement session's ids: %v %v",
@@ -453,8 +480,8 @@ func TestWorkerCleanupRefusesToCloseAReusedPaneAfterTheExit(t *testing.T) {
 	installStubWatcherState(t, manifest.Slug, true)
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("cleanup result: %v", err)
+	if err == nil {
+		t.Fatal("cleanup returned nil after detecting a reused pane")
 	}
 	if closedIDs(client).has(workerTabID) || closedIDs(client).has(worker.PaneID) {
 		t.Fatalf("cleanup closed a reused id: %v %v", client.closedTabs, client.closedPanes)
@@ -487,8 +514,8 @@ func TestWorkerCleanupReportsAFailedTabClose(t *testing.T) {
 	installStubWatcherState(t, manifest.Slug, true)
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("cleanup result: %v", err)
+	if err == nil {
+		t.Fatal("cleanup returned nil after a worker tab close failure")
 	}
 	if !pathExists(filepath.Join(project.ActiveDir(), manifest.Slug)) {
 		t.Fatal("cleanup archived the project after failing to close the tab")
@@ -685,8 +712,8 @@ func TestWorkerCleanupRefusesAnAmbiguousOwner(t *testing.T) {
 	installStubWatcherState(t, manifest.Slug, true)
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("cleanup result: %v", err)
+	if err == nil {
+		t.Fatal("cleanup returned nil for ambiguous worker ownership")
 	}
 	if len(client.exited) != 0 {
 		t.Fatalf("cleanup ended a session while ownership was ambiguous: %#v", client.exited)
@@ -711,8 +738,8 @@ func TestWorkerCleanupStopsWhenTheWatcherCannotBeStopped(t *testing.T) {
 	t.Cleanup(func() { prWatchSignal = previousSignal })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("cleanup result: %v", err)
+	if err == nil {
+		t.Fatal("cleanup returned nil after the watcher stop failure")
 	}
 	if !pathExists(filepath.Join(project.ActiveDir(), manifest.Slug)) {
 		t.Fatal("cleanup archived the project after failing to stop the watcher")
@@ -851,8 +878,8 @@ func TestWorkerCleanupRetriesAWatcherTabItCouldNotClose(t *testing.T) {
 	installCompletedWatcherState(t, manifest.Slug)
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("first cleanup: %v", err)
+	if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
+		t.Fatalf("first cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
 	}
 	blocked := decodeCleanupOutput(t, out)
 	retry := "relay program worker cleanup " + p.Slug + " " + item.ID
@@ -920,8 +947,8 @@ func TestWorkerCleanupExplainsHowToCloseALegacyWatcherTab(t *testing.T) {
 	}
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("worker cleanup: %v", err)
+	if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
+		t.Fatalf("worker cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
 	}
 	result := decodeCleanupOutput(t, out)
 	warnings := strings.Join(result.Warnings, " ")
@@ -944,8 +971,8 @@ func TestWorkerCleanupReturnsIncompleteWhenBranchDeletionFails(t *testing.T) {
 	t.Cleanup(func() { archiveForceDeleteBranchAt = previous })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("worker cleanup: %v", err)
+	if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
+		t.Fatalf("worker cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
 	}
 	result := decodeCleanupOutput(t, out)
 	expectedSHA := gitx.RevParse(manifest.Repo, "refs/heads/"+manifest.Branch)
@@ -988,8 +1015,8 @@ func TestWorkerCleanupRequiresInspectionWhenBranchAdvancedDuringDeletion(t *test
 	t.Cleanup(func() { archiveForceDeleteBranchAt = previous })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("worker cleanup: %v", err)
+	if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
+		t.Fatalf("worker cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
 	}
 	result := decodeCleanupOutput(t, out)
 	warnings := strings.Join(result.Warnings, "\n")
@@ -1054,8 +1081,8 @@ func TestWorkerCleanupReportsArchivedAfterPostDeleteSaveFailure(t *testing.T) {
 	t.Cleanup(func() { saveArchiveManifest = previous })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("worker cleanup: %v", err)
+	if err == nil {
+		t.Fatal("cleanup returned nil after archived cleanup save failure")
 	}
 	result := decodeCleanupOutput(t, out)
 	if result.Status != cleanupIncomplete || !result.Archived || result.AlreadyArchived ||
@@ -1091,8 +1118,8 @@ func TestWorkerCleanupReportsArchivedAfterConcurrentArchive(t *testing.T) {
 	t.Cleanup(func() { programWorkerArchiveProject = previous })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("worker cleanup: %v", err)
+	if err == nil {
+		t.Fatal("cleanup returned nil after concurrent archive")
 	}
 	result := decodeCleanupOutput(t, out)
 	archivedPath := filepath.Join(project.ArchivedDir(), manifest.Slug)
@@ -1142,8 +1169,8 @@ func TestWorkerCleanupReportsArchivedAfterProofRevalidationRollbackFailure(t *te
 	})
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("worker cleanup: %v", err)
+	if err == nil {
+		t.Fatal("cleanup returned nil after proof revalidation rollback failure")
 	}
 	result := decodeCleanupOutput(t, out)
 	if result.Status != cleanupIncomplete || !result.Archived {
@@ -1179,8 +1206,8 @@ func TestWorkerCleanupReportsArchivedAfterManifestInstallRollbackFailure(t *test
 	t.Cleanup(func() { archiveRename = previousRename })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("worker cleanup: %v", err)
+	if err == nil {
+		t.Fatal("cleanup returned nil after manifest install rollback failure")
 	}
 	result := decodeCleanupOutput(t, out)
 	if result.Status != cleanupIncomplete || !result.Archived {
@@ -1205,8 +1232,8 @@ func TestWorkerCleanupPreservesWatcherRetryWhenBranchDeletionAlsoFails(t *testin
 	t.Cleanup(func() { archiveForceDeleteBranchAt = previous })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("worker cleanup: %v", err)
+	if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
+		t.Fatalf("worker cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
 	}
 	result := decodeCleanupOutput(t, out)
 	watcherRetry := "relay program worker cleanup " + p.Slug + " " + item.ID
@@ -1607,8 +1634,8 @@ func TestWorkerCleanupDoesNotReplayClaimedBranchDeletion(t *testing.T) {
 	t.Cleanup(func() { archiveForceDeleteBranchAt = previousDelete })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("first cleanup: %v", err)
+	if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
+		t.Fatalf("first cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
 	}
 	first := decodeCleanupOutput(t, out)
 	retry := "relay program worker cleanup " + p.Slug + " " + item.ID
@@ -1641,8 +1668,8 @@ func TestWorkerCleanupDoesNotReplayClaimedBranchDeletion(t *testing.T) {
 
 	client.closeErr = nil
 	out, err = runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("retry cleanup: %v", err)
+	if err == nil {
+		t.Fatal("retry cleanup returned nil after branch config cleanup failure")
 	}
 	second := decodeCleanupOutput(t, out)
 	manualDelete := manualBranchDeleteAtCommand(
@@ -1701,8 +1728,8 @@ func TestWorkerCleanupReturnsManualBranchConfigCommandForClaimedCleanup(t *testi
 	t.Cleanup(func() { archiveForceDeleteBranchAt = previousDelete })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("initial cleanup: %v", err)
+	if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
+		t.Fatalf("initial cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
 	}
 	command := manualBranchConfigRemoveCommand(manifest.Repo, manifest.Branch)
 	first := decodeCleanupOutput(t, out)
@@ -1718,8 +1745,8 @@ func TestWorkerCleanupReturnsManualBranchConfigCommandForClaimedCleanup(t *testi
 	t.Cleanup(func() { archiveRemoveBranchConfig = previousConfig })
 
 	out, err = runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("retry cleanup: %v", err)
+	if err == nil {
+		t.Fatal("retry cleanup returned nil after branch config cleanup failure")
 	}
 	second := decodeCleanupOutput(t, out)
 	if second.Status != cleanupIncomplete || !second.AlreadyArchived ||
@@ -1757,8 +1784,8 @@ func TestWorkerCleanupRetryReturnsIncompleteWhenBranchProbeFails(t *testing.T) {
 	t.Cleanup(func() { archiveBranchExists = previous })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if err != nil {
-		t.Fatalf("worker cleanup: %v", err)
+	if err == nil {
+		t.Fatal("cleanup returned nil after archived branch probe failure")
 	}
 	result := decodeCleanupOutput(t, out)
 	if result.Status != cleanupIncomplete || !result.AlreadyArchived {
