@@ -81,6 +81,12 @@ func resolveRecordedPullRequestEvidence(
 			safeRef, slug, proof.BaseBranch, base,
 		)
 	}
+	if proof.HeadBranch != m.Branch {
+		return recordedPullRequestEvidence{}, fmt.Errorf(
+			"recorded pull request %s for %s head branch %q does not match manifest branch %q",
+			safeRef, slug, proof.HeadBranch, m.Branch,
+		)
+	}
 	branchTip, found, err := gitx.LocalBranchTip(m.Repo, m.Branch)
 	if err != nil {
 		return recordedPullRequestEvidence{}, fmt.Errorf(
@@ -88,20 +94,21 @@ func resolveRecordedPullRequestEvidence(
 			m.Branch, safeRef, slug, err,
 		)
 	}
-	if !found && proof.HeadBranch != m.Branch {
-		return recordedPullRequestEvidence{}, fmt.Errorf(
-			"recorded pull request %s for %s head branch %q does not match manifest branch %q",
-			safeRef, slug, proof.HeadBranch, m.Branch,
-		)
-	}
-	worktreeHead := ""
+	worktreeState := gitx.WorktreeState{}
 	worktreeFound := false
 	if m.Worktree != nil && *m.Worktree != "" {
-		worktreeHead, worktreeFound, err = gitx.WorktreeHead(m.Repo, *m.Worktree)
+		worktreeState, worktreeFound, err = gitx.RegisteredWorktreeState(m.Repo, *m.Worktree)
 		if err != nil {
 			return recordedPullRequestEvidence{}, fmt.Errorf(
 				"resolve worktree HEAD for recorded pull request %s for %s: %w",
 				safeRef, slug, err,
+			)
+		}
+		if worktreeFound && !worktreeState.Detached &&
+			worktreeState.Branch != "refs/heads/"+m.Branch {
+			return recordedPullRequestEvidence{}, fmt.Errorf(
+				"recorded pull request %s for %s worktree %s is attached to %q, want %q",
+				safeRef, slug, *m.Worktree, worktreeState.Branch, "refs/heads/"+m.Branch,
 			)
 		}
 	}
@@ -116,10 +123,10 @@ func resolveRecordedPullRequestEvidence(
 			safeRef, slug, proof.HeadSHA, m.Branch, branchTip,
 		)
 	}
-	if worktreeFound && worktreeHead != proof.HeadSHA {
+	if worktreeFound && worktreeState.Head != proof.HeadSHA {
 		return recordedPullRequestEvidence{}, fmt.Errorf(
 			"recorded pull request %s for %s head %s does not match worktree HEAD %s",
-			safeRef, slug, proof.HeadSHA, worktreeHead,
+			safeRef, slug, proof.HeadSHA, worktreeState.Head,
 		)
 	}
 	return recordedPullRequestEvidence{Merged: true, HeadSHA: proof.HeadSHA}, nil
@@ -450,6 +457,9 @@ func newMergedBranchArchiveProof(
 			proof.ExpectedWorktreeTip, m.Slug, m.Branch, expectedTip,
 		)
 	}
+	if err := validateArchiveWorktreeBinding(proof); err != nil {
+		return archiveProofSnapshot{}, err
+	}
 	return proof, nil
 }
 
@@ -477,6 +487,23 @@ func validatePullRequestProofTips(proof archiveProofSnapshot, expectedTip string
 		return fmt.Errorf(
 			"recorded pull request head %s does not match worktree HEAD %s",
 			expectedTip, proof.ExpectedWorktreeTip,
+		)
+	}
+	if err := validateArchiveWorktreeBinding(proof); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateArchiveWorktreeBinding(proof archiveProofSnapshot) error {
+	if !proof.WorktreePresent || proof.WorktreeDetached {
+		return nil
+	}
+	expectedBranch := "refs/heads/" + proof.Branch
+	if proof.ExpectedWorktreeBranch != expectedBranch {
+		return fmt.Errorf(
+			"worktree %s for project %s is attached to %q, want %q",
+			proof.Worktree, proof.Slug, proof.ExpectedWorktreeBranch, expectedBranch,
 		)
 	}
 	return nil
@@ -718,6 +745,13 @@ func validateArchivedCleanupProof(m project.Manifest) (project.ArchiveCleanupPro
 			return project.ArchiveCleanupProof{}, fmt.Errorf(
 				"archived project %s cleanup proof has ambiguous worktree state; preserving resources for manual inspection",
 				m.Slug,
+			)
+		}
+		if !proof.WorktreeDetached && proof.ExpectedWorktreeBranch != "refs/heads/"+proof.Branch {
+			return project.ArchiveCleanupProof{}, fmt.Errorf(
+				"archived project %s cleanup proof records worktree %s on branch %q, want %q; "+
+					"preserving resources for manual inspection",
+				m.Slug, proof.Worktree, proof.ExpectedWorktreeBranch, "refs/heads/"+proof.Branch,
 			)
 		}
 	} else if proof.ExpectedWorktreeTip != "" || proof.ExpectedWorktreeBranch != "" ||

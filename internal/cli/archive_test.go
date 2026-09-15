@@ -894,6 +894,7 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 		repository      string
 		localRepository string
 		baseBranch      string
+		headBranch      string
 		headSHA         string
 		wantMerged      bool
 		wantError       string
@@ -903,6 +904,7 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 			repository:      "github.com/acme/widgets",
 			localRepository: "github.com/acme/widgets",
 			baseBranch:      "main",
+			headBranch:      branch,
 			headSHA:         branchTip,
 			wantMerged:      true,
 		},
@@ -911,6 +913,7 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 			repository:      "github.example/acme/widgets",
 			localRepository: "github.example/acme/widgets",
 			baseBranch:      "main",
+			headBranch:      branch,
 			headSHA:         branchTip,
 			wantMerged:      true,
 		},
@@ -919,6 +922,7 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 			repository:      "github.example/acme/widgets",
 			localRepository: "github.com/acme/widgets",
 			baseBranch:      "main",
+			headBranch:      branch,
 			headSHA:         branchTip,
 			wantError:       "repository",
 		},
@@ -927,6 +931,7 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 			repository:      "github.com/acme/other",
 			localRepository: "github.com/acme/widgets",
 			baseBranch:      "main",
+			headBranch:      branch,
 			headSHA:         branchTip,
 			wantError:       "repository",
 		},
@@ -935,14 +940,25 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 			repository:      "github.com/acme/widgets",
 			localRepository: "github.com/acme/widgets",
 			baseBranch:      "release",
+			headBranch:      branch,
 			headSHA:         branchTip,
 			wantError:       "base branch",
+		},
+		{
+			name:            "different head branch with local branch",
+			repository:      "github.com/acme/widgets",
+			localRepository: "github.com/acme/widgets",
+			baseBranch:      "main",
+			headBranch:      "user/another-branch",
+			headSHA:         branchTip,
+			wantError:       "head branch",
 		},
 		{
 			name:            "different head",
 			repository:      "github.com/acme/widgets",
 			localRepository: "github.com/acme/widgets",
 			baseBranch:      "main",
+			headBranch:      branch,
 			headSHA:         manifest.StartSHA,
 			wantError:       "head",
 		},
@@ -951,6 +967,7 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 			repository:      "github.com/acme/widgets",
 			localRepository: "github.com/acme/widgets",
 			baseBranch:      "main",
+			headBranch:      branch,
 			wantError:       "head",
 		},
 	}
@@ -963,6 +980,7 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 					State:      programview.PRStateMerged,
 					Repository: test.repository,
 					BaseBranch: test.baseBranch,
+					HeadBranch: test.headBranch,
 					HeadSHA:    test.headSHA,
 				}, nil
 			}
@@ -988,6 +1006,62 @@ func TestResolveRecordedPullRequestMergeRequiresMatchingRepositoryAndHead(t *tes
 				t.Fatalf("error = %v, want %q diagnostic", err, test.wantError)
 			}
 		})
+	}
+}
+
+func TestResolveRecordedPullRequestMergeRejectsAttachedWorktreeOnAnotherBranch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "wrong-attached-branch"
+	branch := "user/wrong-attached-branch"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	recordArchiveManifestPR(t, slug, 409)
+	tip := gitx.RevParse(repo, "refs/heads/"+branch)
+	replacement := "user/replacement-at-same-tip"
+	runArchiveGit(t, repo, "branch", replacement, tip)
+	runArchiveGit(t, worktree, "checkout", "-q", replacement)
+	installArchivePRIndex(t, map[string]programview.PRState{"#409": programview.PRStateMerged})
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	merged, err := resolveRecordedPullRequestMerge(manifest, slug)
+	if err == nil || !strings.Contains(err.Error(), "attached to") ||
+		!strings.Contains(err.Error(), "refs/heads/"+branch) {
+		t.Fatalf("resolveRecordedPullRequestMerge error = %v, want worktree branch rejection", err)
+	}
+	if merged {
+		t.Fatal("resolveRecordedPullRequestMerge accepted another branch at the same commit")
+	}
+	if !pathExists(worktree) || !gitx.BranchExists(repo, branch) ||
+		!gitx.BranchExists(repo, replacement) {
+		t.Fatal("pull request proof validation changed worktree or branch resources")
+	}
+}
+
+func TestResolveRecordedPullRequestMergeAllowsMatchingDetachedWorktree(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "matching-detached-worktree"
+	branch := "user/matching-detached-worktree"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	recordArchiveManifestPR(t, slug, 410)
+	installArchivePRIndex(t, map[string]programview.PRState{"#410": programview.PRStateMerged})
+	runArchiveGit(t, worktree, "checkout", "-q", "--detach")
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	merged, err := resolveRecordedPullRequestMerge(manifest, slug)
+	if err != nil {
+		t.Fatalf("resolveRecordedPullRequestMerge: %v", err)
+	}
+	if !merged {
+		t.Fatal("resolveRecordedPullRequestMerge rejected a detached worktree at the proven head")
 	}
 }
 
