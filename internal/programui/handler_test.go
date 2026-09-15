@@ -36,9 +36,9 @@ func TestHandlerCachesRenderedIndex(t *testing.T) {
 	if got := response.Header().Get("Content-Length"); got != fmt.Sprint(response.Body.Len()) {
 		t.Fatalf("Content-Length = %q, want %d", got, response.Body.Len())
 	}
-	if bytes.Contains(response.Body.Bytes(), []byte(appTemplateToken)) ||
-		!bytes.Contains(response.Body.Bytes(), []byte("relay-usable")) {
-		t.Fatal("rendered index must contain the application bundle and no template token")
+	if bytes.Contains(response.Body.Bytes(), []byte(roadmapTemplateToken)) ||
+		!bytes.Contains(response.Body.Bytes(), []byte(`<script src="/app.js"></script>`)) {
+		t.Fatal("rendered index must contain the external application bundle and no template token")
 	}
 }
 
