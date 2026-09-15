@@ -1908,6 +1908,67 @@ func TestArchivedCleanupRetryRejectsRecreatedBranchAtConsumedTip(t *testing.T) {
 	}
 }
 
+func TestArchivedCleanupRetryPreservesBranchAppearingDuringWorktreeCleanup(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archived-branch-appeared-during-worktree"
+	branch := "user/" + slug
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, worktree, "checkout", "--detach")
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Status = "archived"
+	manifest.ArchiveCleanup = archiveCleanupProof(decision.proof)
+	if _, err := stageArchivedProject(
+		filepath.Join(project.ActiveDir(), slug),
+		filepath.Join(project.ArchivedDir(), slug),
+		manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	runArchiveGit(t, repo, "branch", "-D", branch)
+
+	previousRemove := archiveWorktreeRemove
+	archiveWorktreeRemove = func(
+		repoPath, worktreePath string, expected gitx.WorktreeState, force bool,
+	) error {
+		if err := previousRemove(repoPath, worktreePath, expected, force); err != nil {
+			return err
+		}
+		runArchiveGit(t, repoPath, "branch", branch, decision.proof.ExpectedBranchTip)
+		return nil
+	}
+	t.Cleanup(func() { archiveWorktreeRemove = previousRemove })
+
+	result, err := retryArchivedProjectCleanup(loadArchivedManifest(t, slug))
+	if err == nil || !strings.Contains(err.Error(), "appeared during worktree cleanup") {
+		t.Fatalf("retryArchivedProjectCleanup error = %v, want appearing branch rejection", err)
+	}
+	if !result.WorktreeRemoved || result.BranchDeleted {
+		t.Fatalf("result = %+v, want only worktree removal", result)
+	}
+	tip, found, tipErr := gitx.LocalBranchTip(repo, branch)
+	if tipErr != nil || !found || tip != decision.proof.ExpectedBranchTip {
+		t.Fatalf(
+			"appearing branch = (%q, %t, %v), want (%q, true, nil)",
+			tip, found, tipErr, decision.proof.ExpectedBranchTip,
+		)
+	}
+	archived := loadArchivedManifest(t, slug)
+	if archived.ArchiveCleanup == nil ||
+		archived.ArchiveCleanup.WorktreeState != project.ArchiveCleanupDone ||
+		archived.ArchiveCleanup.BranchState != project.ArchiveCleanupPending {
+		t.Fatalf("cleanup proof = %+v, want branch obligation preserved", archived.ArchiveCleanup)
+	}
+}
+
 func TestArchivedCleanupRetryIsCleanAfterProofConsumption(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
@@ -2639,8 +2700,8 @@ func TestRunArchiveReportsIncompleteArchivedCleanupWithManualGuidance(t *testing
 		return runArchive(slug, false)
 	})
 	archiveForceDeleteBranchAt = previousDelete
-	if err != nil {
-		t.Fatalf("runArchive incomplete archived retry: %v", err)
+	if !errors.Is(err, errArchivedCleanupIncomplete) {
+		t.Fatalf("runArchive incomplete archived retry error = %v, want %v", err, errArchivedCleanupIncomplete)
 	}
 	for _, want := range []string{
 		"Archived cleanup incomplete:", slug, "Worktree removed:", "Branch still present:",

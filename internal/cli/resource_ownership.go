@@ -129,8 +129,12 @@ func canonicalArchivedProjectIdentity(
 	if !branchPending && !worktreePending {
 		return projectResourceIdentity{}, false, nil
 	}
+	worktree := ""
+	if worktreePending {
+		worktree = proof.Worktree
+	}
 	identity, err := canonicalProjectResourceIdentity(
-		proof.Repository, proof.Branch, proof.Worktree, worktreePending, result.Path,
+		proof.Repository, proof.Branch, worktree, worktreePending, result.Path,
 	)
 	if err != nil {
 		return projectResourceIdentity{}, false, err

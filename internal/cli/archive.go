@@ -21,6 +21,8 @@ import (
 const projectLifecycleLockTimeout = 30 * time.Second
 
 var (
+	errArchivedCleanupIncomplete = errors.New("archived cleanup incomplete")
+
 	loadArchivePullRequestProof = programview.GitHubPullRequestProof
 	loadArchiveRepository       = programview.GitHubRepository
 	saveArchiveManifest         = project.Save
@@ -252,6 +254,9 @@ func runArchive(slug string, force bool) error {
 		return err
 	}
 	renderArchivedCleanupRetry(os.Stdout, result)
+	if result.BranchDeletionWarning != "" {
+		return errArchivedCleanupIncomplete
+	}
 	return nil
 }
 
@@ -1119,6 +1124,17 @@ func retryArchivedProjectCleanupLocked(
 			)
 		}
 	}
+	latestBranchPresent, err := validateArchivedBranchCleanupResource(proof)
+	if err != nil {
+		return result, err
+	}
+	if !current.branchPresent && latestBranchPresent {
+		return result, archivedCleanupDriftError(
+			proof,
+			fmt.Sprintf("branch %q appeared during worktree cleanup", proof.Branch),
+		)
+	}
+	current.branchPresent = latestBranchPresent
 	if !current.branchPresent {
 		if proof.BranchState != project.ArchiveCleanupDone {
 			if err := archiveRemoveBranchConfig(m.Repo, m.Branch); err != nil {
@@ -1499,29 +1515,9 @@ func validateArchivedCleanupProof(m project.Manifest) (project.ArchiveCleanupPro
 func validateArchivedCleanupResources(
 	proof project.ArchiveCleanupProof,
 ) (archivedCleanupResources, error) {
-	branchPresent := false
-	if proof.Branch != "" {
-		branchTip, found, err := gitx.LocalBranchTip(proof.Repository, proof.Branch)
-		if err != nil {
-			return archivedCleanupResources{}, fmt.Errorf(
-				"inspect archived branch %q: %w", proof.Branch, err,
-			)
-		}
-		branchPresent = found
-		if !proof.BranchPresent && branchPresent {
-			return archivedCleanupResources{}, archivedCleanupDriftError(
-				proof, fmt.Sprintf("branch %q appeared after the original cleanup proof", proof.Branch),
-			)
-		}
-		if branchPresent && branchTip != proof.ExpectedBranchTip {
-			return archivedCleanupResources{}, archivedCleanupDriftError(
-				proof,
-				fmt.Sprintf(
-					"branch %q advanced from %s to %s",
-					proof.Branch, proof.ExpectedBranchTip, branchTip,
-				),
-			)
-		}
+	branchPresent, err := validateArchivedBranchCleanupResource(proof)
+	if err != nil {
+		return archivedCleanupResources{}, err
 	}
 
 	worktreePresent := false
@@ -1550,6 +1546,33 @@ func validateArchivedCleanupResources(
 	return archivedCleanupResources{
 		branchPresent: branchPresent, worktreePresent: worktreePresent,
 	}, nil
+}
+
+func validateArchivedBranchCleanupResource(
+	proof project.ArchiveCleanupProof,
+) (bool, error) {
+	if proof.Branch == "" {
+		return false, nil
+	}
+	branchTip, found, err := gitx.LocalBranchTip(proof.Repository, proof.Branch)
+	if err != nil {
+		return false, fmt.Errorf("inspect archived branch %q: %w", proof.Branch, err)
+	}
+	if !proof.BranchPresent && found {
+		return false, archivedCleanupDriftError(
+			proof, fmt.Sprintf("branch %q appeared after the original cleanup proof", proof.Branch),
+		)
+	}
+	if found && branchTip != proof.ExpectedBranchTip {
+		return false, archivedCleanupDriftError(
+			proof,
+			fmt.Sprintf(
+				"branch %q advanced from %s to %s",
+				proof.Branch, proof.ExpectedBranchTip, branchTip,
+			),
+		)
+	}
+	return found, nil
 }
 
 func archivedCleanupDriftError(proof project.ArchiveCleanupProof, detail string) error {

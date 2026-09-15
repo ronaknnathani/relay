@@ -131,18 +131,20 @@ func createChangeFixture(t *testing.T, status program.ItemStatus) (program.Progr
 			t.Fatal(err)
 		}
 	}
+	branch := "test/" + childSlug
+	worktree := addArchiveWorktree(t, repo, childSlug, branch)
+	manifest := project.Manifest{
+		Slug: childSlug, Title: item.Title, Repo: repo, Agent: "copilot",
+		Branch: branch, Worktree: &worktree,
+		Program: p.Slug, ProgramItem: item.ID, Phase: "implement",
+	}
+	if err := bindDispatchIdentity(&p, item.ID, manifest); err != nil {
+		t.Fatal(err)
+	}
 	if err := program.Create(p); err != nil {
 		t.Fatal(err)
 	}
 	loadedItem, _ := p.Item(item.ID)
-	worktree := filepath.Join(repo, ".worktrees", childSlug)
-	if err := os.MkdirAll(worktree, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	manifest := project.Manifest{
-		Slug: childSlug, Title: item.Title, Repo: repo, Agent: "copilot",
-		Worktree: &worktree, Program: p.Slug, ProgramItem: item.ID, Phase: "implement",
-	}
 	manifestPath := project.ManifestPath(project.ActiveDir(), childSlug)
 	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
 		t.Fatal(err)
