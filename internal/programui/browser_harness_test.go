@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v11"
+	performanceHarness = "complete-roadmap-v12"
 )
 
 type performanceReport struct {
@@ -143,16 +143,26 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 					});
 				}
 			}).observe({type: "longtask", buffered: true});
+			const relayHydrated = () => {
+				if (typeof state === "undefined" ||
+					state.snapshot?.schema !== "relay.program.v1" ||
+					state.snapshot?.items?.length !== 100) {
+					return;
+				}
+				window.__relayHydratedAt = performance.now();
+				relayHydrationObserver.disconnect();
+			};
+			const relayHydrationObserver = new MutationObserver(relayHydrated);
+			relayHydrationObserver.observe(document, {
+				attributes: true,
+				characterData: true,
+				childList: true,
+				subtree: true
+			});
 			const relayUsable = () => {
 				const cards = Array.from(document.querySelectorAll(".card"));
 				const refresh = document.querySelector("#refresh");
 				const roadmapTab = document.querySelector("#tab-roadmap");
-				if (!window.__relayHydratedAt &&
-					typeof state !== "undefined" &&
-					state.snapshot?.schema === "relay.program.v1" &&
-					state.snapshot?.items?.length === 100) {
-					window.__relayHydratedAt = performance.now();
-				}
 				if (window.__relayCompleteUsableAt > 0 ||
 					document.querySelector("#program-title")?.textContent !== "Reference Program" ||
 					!document.querySelector("#program-summary")?.textContent ||
@@ -207,6 +217,7 @@ func installPerformanceObserver(t *testing.T, tab context.Context) {
 				childList: true,
 				subtree: true
 			});
+			queueMicrotask(relayHydrated);
 			queueMicrotask(relayUsable);
 		`).Do(ctx)
 		return err
@@ -285,7 +296,9 @@ func measureBrowserRun(
 		navigationToUsable = durationMilliseconds(time.Since(navigationStarted))
 	}
 	if err := chromedp.Run(tab, waitForBrowserCondition(`
-		window.__relayHydratedAt > 0 &&
+		typeof state !== "undefined" &&
+		state.snapshot?.schema === "relay.program.v1" &&
+		state.snapshot?.items?.length === 100 &&
 		performance.getEntriesByType("resource").some((candidate) => {
 			const url = new URL(candidate.name);
 			return url.pathname === "/api/program" && url.search === "";
