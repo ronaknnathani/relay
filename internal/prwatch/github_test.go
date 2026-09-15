@@ -444,7 +444,7 @@ func TestCLIRunnerDoesNotClassifyCommandArgumentsAsGitHubErrorDetail(t *testing.
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	_, err := NewCLIRunner(time.Second).Run(
+	_, err := NewCLIRunner(0).Run(
 		context.Background(),
 		t.TempDir(),
 		"api",
