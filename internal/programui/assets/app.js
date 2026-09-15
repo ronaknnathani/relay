@@ -1002,14 +1002,18 @@ function stageLists(graph, nodes) {
 }
 
 function roadmapLabel(nodes, edges) {
-  const counts = new Map();
-  nodes.forEach((node) => {
-    const lane = text(node.lane, "unknown");
-    counts.set(lane, (counts.get(lane) || 0) + 1);
-  });
+  const progress = snapshotOf().progress || {};
+  const counts = {
+    pending: count(progress.pending),
+    dispatched: count(progress.dispatched),
+    "in-review": count(progress.in_review),
+    blocked: count(progress.blocked),
+    merged: count(progress.merged),
+    cancelled: count(progress.cancelled),
+  };
   const breakdown = LANES
-    .filter((lane) => counts.has(lane))
-    .map((lane) => `${counts.get(lane)} ${statusMeta(lane).word.toLowerCase()}`)
+    .filter((lane) => counts[lane] > 0)
+    .map((lane) => `${counts[lane]} ${statusMeta(lane).word.toLowerCase()}`)
     .join(", ");
   return `Dependency flow: ${plural(nodes.length, "task")}, ${plural(edges.length, "dependency link")}. ` +
     `${breakdown}. The Tasks tab carries the same information as a table.`;
