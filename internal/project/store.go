@@ -80,7 +80,9 @@ type ManifestLoadResult struct {
 }
 
 // LoadAllResults reads every project directory under dir without discarding
-// manifest errors. Results preserve the order returned by os.ReadDir.
+// manifest errors. Directories without manifest.json are intentionally ignored:
+// the active store also contains coordination and incomplete directories that
+// are not Relay projects. Results preserve the order returned by os.ReadDir.
 func LoadAllResults(dir string) ([]ManifestLoadResult, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

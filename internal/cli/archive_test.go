@@ -107,8 +107,9 @@ func TestArchivePreservesProjectWhenArchivedDirectoryCannotBeCreated(t *testing.
 	_, err := captureStdout(t, func() error {
 		return runArchive(slug, true)
 	})
-	if err == nil || !strings.Contains(err.Error(), "create archived dir") {
-		t.Fatalf("runArchive error = %v, want archived directory creation failure", err)
+	if err == nil || !strings.Contains(err.Error(), "archived resource ownership") ||
+		!strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("runArchive error = %v, want fail-closed archived ownership failure", err)
 	}
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }

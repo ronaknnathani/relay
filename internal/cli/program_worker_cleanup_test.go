@@ -1450,6 +1450,41 @@ func TestWorkerCleanupLegacyUpgradeRejectsRepositoryMismatchWithoutChangingVicti
 	}
 }
 
+func TestWorkerCleanupRejectsDuplicateManagedChildManifestWithoutSideEffects(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	duplicate := manifest
+	duplicate.Slug = "duplicate-managed-child"
+	duplicate.Program = "other-program"
+	duplicate.ProgramItem = "other-item"
+	duplicatePath := project.ManifestPath(project.ActiveDir(), duplicate.Slug)
+	if err := os.MkdirAll(filepath.Dir(duplicatePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(duplicatePath, duplicate); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{}
+	installManagedHerdrFakes(t, client)
+	stopped := installStubWatcherState(t, manifest.Slug, true)
+
+	_, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), duplicate.Slug) ||
+		!strings.Contains(err.Error(), "also claimed") ||
+		!strings.Contains(err.Error(), "refusing automatic forced cleanup") {
+		t.Fatalf("worker cleanup error = %v, want duplicate managed ownership rejection", err)
+	}
+	if len(*stopped) != 0 || len(client.exited) != 0 ||
+		len(client.closedTabs) != 0 || len(client.closedPanes) != 0 {
+		t.Fatalf(
+			"cleanup performed side effects: stopped=%v exited=%v tabs=%v panes=%v",
+			*stopped, client.exited, client.closedTabs, client.closedPanes,
+		)
+	}
+	if !pathExists(*manifest.Worktree) || !gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("cleanup removed duplicate managed child resources")
+	}
+}
+
 func TestWorkerCleanupLegacyUpgradeRejectsReusedVictimWorktree(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
 	path := program.ManifestPath(program.ActiveDir(), p.Slug)

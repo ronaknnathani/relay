@@ -85,6 +85,11 @@ func TestLoadAllResultsReportsReadableManifestPaths(t *testing.T) {
 	if len(results) != 3 {
 		t.Fatalf("len(results) = %d, want 3", len(results))
 	}
+	for _, result := range results {
+		if result.Name == "c-missing" {
+			t.Fatal("directory without manifest.json was reported as a project")
+		}
+	}
 	if results[0].Name != "a-valid" ||
 		results[0].Path != filepath.Join(validDir, "manifest.json") ||
 		results[0].Manifest.Slug != "a-valid" ||

@@ -544,6 +544,86 @@ func TestProgramDispatchAdoptionCannotOverwriteArchivedChild(t *testing.T) {
 	}
 }
 
+func TestProgramDispatchAdoptionFailsClosedOnUnreadableCompetingMetadata(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	fixture := newGCRepoFixture(t, "main")
+	childSlug := "adoption-unreadable-owner"
+	branch, worktree := addGCProject(t, fixture, childSlug)
+	p := program.Program{Slug: "delivery", Repo: fixture.repo}
+	item := program.WorkItem{ID: "worker-1", Repo: fixture.repo}
+	manifestPath := project.ManifestPath(project.ActiveDir(), childSlug)
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	competingPath := project.ManifestPath(project.ActiveDir(), "unreadable-owner")
+	if err := os.MkdirAll(filepath.Dir(competingPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(competingPath, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = prepareDispatchChild(p, item, childSlug, "copilot", true)
+	if err == nil || !strings.Contains(err.Error(), competingPath) ||
+		!strings.Contains(err.Error(), "parse manifest") ||
+		!strings.Contains(err.Error(), "cannot prove exclusive") {
+		t.Fatalf("adoption error = %v, want unreadable competing ownership failure", err)
+	}
+	after, readErr := os.ReadFile(manifestPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !reflect.DeepEqual(after, before) || !pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("adoption changed resources after unreadable competing metadata")
+	}
+}
+
+func TestProgramDispatchAdoptionFailsClosedOnAmbiguousCompetingWorktree(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	fixture := newGCRepoFixture(t, "main")
+	childSlug := "adoption-ambiguous-owner"
+	branch, worktree := addGCProject(t, fixture, childSlug)
+	p := program.Program{Slug: "delivery", Repo: fixture.repo}
+	item := program.WorkItem{ID: "worker-1", Repo: fixture.repo}
+
+	dangling := filepath.Join(fixture.repo, ".worktrees", "dangling-owner")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	competing := project.Manifest{
+		Slug: "ambiguous-owner", Repo: fixture.repo, Branch: "user/ambiguous-owner",
+		Worktree: &dangling,
+	}
+	competingPath := project.ManifestPath(project.ActiveDir(), competing.Slug)
+	if err := os.MkdirAll(filepath.Dir(competingPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(competingPath, competing); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := prepareDispatchChild(p, item, childSlug, "copilot", true)
+	if err == nil || !strings.Contains(err.Error(), competingPath) ||
+		!strings.Contains(err.Error(), "resolve symlink path") ||
+		!strings.Contains(err.Error(), "cannot prove exclusive") {
+		t.Fatalf("adoption error = %v, want ambiguous worktree ownership failure", err)
+	}
+	if !pathExists(worktree) || !gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("adoption changed resources after ambiguous competing worktree metadata")
+	}
+	manifest, loadErr := project.Load(project.ManifestPath(project.ActiveDir(), childSlug))
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if manifest.Program != "" || manifest.ProgramItem != "" {
+		t.Fatalf("adoption persisted ownership after ambiguity: %q/%q", manifest.Program, manifest.ProgramItem)
+	}
+}
+
 func TestProgramDispatchRejectsConflictingNameWithoutSideEffects(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	saveProgramTestConfig(t)

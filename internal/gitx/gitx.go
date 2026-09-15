@@ -43,6 +43,65 @@ func RepositoryRoot(path string) (string, error) {
 	return filepath.Clean(root), nil
 }
 
+// CanonicalRepositoryRoot resolves path and requires it to name the repository
+// root exactly. Symlink-resolution failures are returned instead of guessed.
+func CanonicalRepositoryRoot(path string) (string, error) {
+	root, err := RepositoryRoot(path)
+	if err != nil {
+		return "", err
+	}
+	root, err = CanonicalPath(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository root %s: %w", root, err)
+	}
+	recorded, err := CanonicalPath(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve recorded repository %s: %w", path, err)
+	}
+	if recorded != root {
+		return "", fmt.Errorf(
+			"recorded repository %q resolves inside repository root %q instead of naming the root",
+			path, root,
+		)
+	}
+	return root, nil
+}
+
+// CanonicalPath resolves all existing symlinks in path. Missing final
+// components are appended only after their nearest existing ancestor resolves.
+func CanonicalPath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("path is empty")
+	}
+	current, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("make path absolute: %w", err)
+	}
+	var suffix []string
+	for {
+		_, err := os.Lstat(current)
+		switch {
+		case err == nil:
+			resolved, resolveErr := filepath.EvalSymlinks(current)
+			if resolveErr != nil {
+				return "", fmt.Errorf("resolve symlink path %s: %w", current, resolveErr)
+			}
+			for index := len(suffix) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, suffix[index])
+			}
+			return filepath.Clean(resolved), nil
+		case !errors.Is(err, os.ErrNotExist):
+			return "", fmt.Errorf("inspect path %s: %w", current, err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("resolve path %s: no existing ancestor", path)
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
+}
+
 // CurrentBranch returns the abbreviated current branch name, or "unknown"
 // if git fails.
 func CurrentBranch() string {
@@ -247,6 +306,20 @@ func RemoveBranchConfig(repo, branch string) error {
 		return err
 	}
 	return removeLocalBranchConfig(repo, branch)
+}
+
+// CanonicalBranchRef validates branch as an exact local branch name and
+// returns its fully qualified ref.
+func CanonicalBranchRef(repo, branch string) (string, error) {
+	if strings.TrimSpace(branch) == "" {
+		return "", fmt.Errorf("branch is empty")
+	}
+	ref := "refs/heads/" + branch
+	out, err := boundedCombinedOutput(exec.Command("git", "-C", repo, "check-ref-format", ref))
+	if err != nil {
+		return "", gitCommandError("git check-ref-format "+ref, err, out)
+	}
+	return ref, nil
 }
 
 func validateBranchName(repo, branch string) error {

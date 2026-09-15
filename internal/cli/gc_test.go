@@ -984,7 +984,6 @@ func TestGCFetchWarningRedactsApostrophesInURLTokens(t *testing.T) {
 }
 
 func TestGCDeepRemoteHelperDiagnosticDoesNotBlockAnotherRepository(t *testing.T) {
-	const expectedPreservedDepth = 8
 	t.Setenv("HOME", t.TempDir())
 	failingRepo := newGCRepoFixture(t, "main")
 	failingBranch, failingWorktree := addGCProject(t, failingRepo, "a-deep-helper-failure")
@@ -1012,14 +1011,8 @@ func TestGCDeepRemoteHelperDiagnosticDoesNotBlockAnotherRepository(t *testing.T)
 			t.Fatalf("stderr leaked %q in %q", secret, stderr)
 		}
 	}
-	if count := strings.Count(stderr, "cache::"); count != expectedPreservedDepth {
-		t.Fatalf(
-			"preserved helper depth = %d, want %d\nstderr: %s",
-			count, expectedPreservedDepth, stderr,
-		)
-	}
-	if !strings.Contains(stderr, "[redacted]") {
-		t.Fatalf("stderr %q is missing the bounded helper redaction", stderr)
+	if !strings.Contains(stderr, "leading truncated token redacted") {
+		t.Fatalf("stderr %q is missing the boundary redaction", stderr)
 	}
 	if !strings.Contains(stderr, "git diagnostic truncated") {
 		t.Fatalf("stderr %q is missing the subprocess diagnostic truncation marker", stderr)
@@ -1112,7 +1105,7 @@ func TestGCKeepsMergedPullRequestWhenBaseCannotBeVerified(t *testing.T) {
 	}
 }
 
-func TestGCContinuesAfterMalformedAndInvalidMetadata(t *testing.T) {
+func TestGCFailsClosedAfterMalformedAndInvalidCompetingMetadata(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	malformedDir := filepath.Join(project.ActiveDir(), "a-malformed")
 	if err := os.MkdirAll(malformedDir, 0755); err != nil {
@@ -1149,8 +1142,8 @@ func TestGCContinuesAfterMalformedAndInvalidMetadata(t *testing.T) {
 			t.Fatalf("stderr %q is missing %q", stderr, want)
 		}
 	}
-	if pathExists(filepath.Join(project.ActiveDir(), "z-eligible")) {
-		t.Fatal("GC did not continue to archive an independent eligible project")
+	if !pathExists(filepath.Join(project.ActiveDir(), "z-eligible")) {
+		t.Fatal("GC archived an eligible project while competing ownership metadata was unreadable")
 	}
 }
 
@@ -1437,13 +1430,14 @@ func TestGCRecordedStateFailureIsActionable(t *testing.T) {
 
 func TestGCSkipsProgramManagedProjects(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
 	slug := "program-managed"
 	dir := filepath.Join(project.ActiveDir(), slug)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	manifest := project.Manifest{
-		Slug: slug, Repo: "/unused/repo", Branch: "unused/branch",
+		Slug: slug, Repo: repo, Branch: "unused/branch",
 		Program: "delivery", ProgramItem: "worker-1",
 	}
 	path := project.ManifestPath(project.ActiveDir(), slug)
@@ -1473,6 +1467,137 @@ func TestGCSkipsProgramManagedProjects(t *testing.T) {
 	}
 	if !reflect.DeepEqual(after, before) {
 		t.Fatal("GC changed complete program ownership metadata")
+	}
+}
+
+func TestGCPreservesResourcesClaimedByStandaloneAndManagedManifests(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "duplicate-owner"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+
+	managedSlug := "managed-duplicate-owner"
+	managed := project.Manifest{
+		Slug: managedSlug, Repo: fixture.repo, Branch: branch, Worktree: &worktree,
+		Program: "delivery", ProgramItem: "worker-1",
+	}
+	if err := os.MkdirAll(filepath.Join(project.ActiveDir(), managedSlug), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(
+		project.ManifestPath(project.ActiveDir(), managedSlug), managed,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{slug, managedSlug, "branch", "worktree", "also claimed"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(filepath.Join(project.ActiveDir(), managedSlug)) ||
+		pathExists(filepath.Join(project.ArchivedDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC changed resources with duplicate standalone and managed ownership")
+	}
+}
+
+func TestGCPreservesResourcesClaimedByDuplicateStandaloneManifest(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "standalone-owner"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+
+	duplicate := project.Manifest{
+		Slug: "standalone-duplicate", Repo: fixture.repo, Branch: branch, Worktree: &worktree,
+	}
+	duplicatePath := project.ManifestPath(project.ActiveDir(), duplicate.Slug)
+	if err := os.MkdirAll(filepath.Dir(duplicatePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(duplicatePath, duplicate); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{slug, duplicate.Slug, "also claimed"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(filepath.Join(project.ActiveDir(), duplicate.Slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC changed resources with duplicate standalone ownership")
+	}
+}
+
+func TestGCPreservesResourcesClaimedByArchivedPendingCleanup(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "active-owner"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	branchTip, found, err := gitx.LocalBranchTip(fixture.repo, branch)
+	if err != nil || !found {
+		t.Fatalf("branch tip = %q, %t, %v", branchTip, found, err)
+	}
+	worktreeState, found, err := gitx.RegisteredWorktreeState(fixture.repo, worktree)
+	if err != nil || !found {
+		t.Fatalf("worktree state = %+v, %t, %v", worktreeState, found, err)
+	}
+
+	archivedSlug := "archived-owner"
+	archived := project.Manifest{
+		Slug: archivedSlug, Repo: fixture.repo, Branch: branch, Worktree: &worktree,
+		Status: "archived", Merged: true,
+		ArchiveCleanup: &project.ArchiveCleanupProof{
+			Repository:             fixture.repo,
+			Branch:                 branch,
+			Worktree:               worktree,
+			BranchPresent:          true,
+			ExpectedBranchTip:      branchTip,
+			BranchState:            project.ArchiveCleanupPending,
+			WorktreePresent:        true,
+			ExpectedWorktreeTip:    worktreeState.Head,
+			ExpectedWorktreeBranch: worktreeState.Branch,
+			WorktreeState:          project.ArchiveCleanupPending,
+			AuthoritativeCommit:    branchTip,
+		},
+	}
+	archivedPath := project.ManifestPath(project.ArchivedDir(), archivedSlug)
+	if err := os.MkdirAll(filepath.Dir(archivedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(archivedPath, archived); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{slug, archivedSlug, "also claimed"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC changed resources claimed by archived pending cleanup")
 	}
 }
 

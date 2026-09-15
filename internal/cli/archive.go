@@ -653,6 +653,12 @@ func archiveProjectWithProofLocked(proof archiveProofSnapshot, force bool) (arch
 		locationErr := applyCurrentProjectLocation(&result, proof.Slug)
 		return result, errors.Join(err, locationErr)
 	}
+	if err := requireExclusiveProjectResources(activeManifestPath(m), nil); err != nil {
+		locationErr := applyCurrentProjectLocation(&result, proof.Slug)
+		return result, errors.Join(fmt.Errorf(
+			"archive project %s: %w", proof.Slug, err,
+		), locationErr)
+	}
 	applyArchiveMetadataState(&result, archiveMetadataState{
 		transition: archiveTransitionNone,
 		location:   archiveLocationActive,
@@ -1024,6 +1030,14 @@ func retryArchivedProjectCleanupLocked(
 	proof, err := validateArchivedCleanupProof(m)
 	if err != nil {
 		return result, err
+	}
+	if proof.BranchState != project.ArchiveCleanupDone ||
+		proof.WorktreeState != project.ArchiveCleanupDone {
+		if err := requireExclusiveProjectResources(
+			project.ManifestPath(project.ArchivedDir(), m.Slug), nil,
+		); err != nil {
+			return result, fmt.Errorf("finish archived cleanup for %s: %w", m.Slug, err)
+		}
 	}
 	force = force || proof.ForceAuthorized
 	current, err := validateArchivedCleanupResources(proof)

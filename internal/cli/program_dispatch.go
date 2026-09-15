@@ -273,27 +273,18 @@ func validateManagedChildResourceIdentity(
 		strings.TrimSpace(manifest.Branch) == "" {
 		return fmt.Errorf("manifest has no complete branch/worktree identity")
 	}
-	repoRoot, err := gitx.RepositoryRoot(manifest.Repo)
+	repoRoot, err := gitx.CanonicalRepositoryRoot(manifest.Repo)
 	if err != nil {
 		return fmt.Errorf("resolve repository root %s: %w", manifest.Repo, err)
 	}
-	recordedRepo, err := filepath.EvalSymlinks(manifest.Repo)
-	if err != nil {
-		return fmt.Errorf("resolve recorded repository %s: %w", manifest.Repo, err)
-	}
-	if recordedRepo != repoRoot {
-		return fmt.Errorf(
-			"recorded repository %q resolves inside repository root %q instead of naming the root",
-			manifest.Repo, repoRoot,
-		)
-	}
-	worktree, err := filepath.EvalSymlinks(strings.TrimSpace(*manifest.Worktree))
+	worktree, err := gitx.CanonicalPath(strings.TrimSpace(*manifest.Worktree))
 	if err != nil {
 		return fmt.Errorf("resolve worktree %s: %w", *manifest.Worktree, err)
 	}
 	worktreeRoot := filepath.Join(repoRoot, ".worktrees")
-	if resolved, resolveErr := filepath.EvalSymlinks(worktreeRoot); resolveErr == nil {
-		worktreeRoot = resolved
+	worktreeRoot, err = gitx.CanonicalPath(worktreeRoot)
+	if err != nil {
+		return fmt.Errorf("resolve managed worktree root %s: %w", worktreeRoot, err)
 	}
 	if filepath.Dir(worktree) != worktreeRoot {
 		return fmt.Errorf(
@@ -328,25 +319,8 @@ func validateManagedChildResourceIdentity(
 			worktree, state.Head, manifest.Branch, branchTip,
 		)
 	}
-	for _, dir := range []string{project.ActiveDir(), project.ArchivedDir()} {
-		results, err := project.LoadAllResults(dir)
-		if err != nil {
-			return fmt.Errorf("inspect project identities in %s: %w", dir, err)
-		}
-		for _, result := range results {
-			if result.Err != nil || result.Manifest.Slug == manifest.Slug ||
-				result.Manifest.Worktree == nil ||
-				strings.TrimSpace(*result.Manifest.Worktree) == "" {
-				continue
-			}
-			claimed, err := filepath.EvalSymlinks(strings.TrimSpace(*result.Manifest.Worktree))
-			if err == nil && claimed == worktree {
-				return fmt.Errorf(
-					"worktree %s is also claimed by project %q in %s",
-					worktree, result.Manifest.Slug, result.Path,
-				)
-			}
-		}
+	if err := requireExclusiveProjectResources(activeManifestPath(manifest), nil); err != nil {
+		return err
 	}
 	return nil
 }

@@ -37,15 +37,22 @@ func runGC() error {
 	if err != nil {
 		return err
 	}
+	ownership, ownershipIssues := loadProjectResourceOwnershipIndex(loadResults)
+	if len(ownershipIssues) > 0 {
+		for _, issue := range ownershipIssues {
+			ui.Warn("%s", issue)
+		}
+		return errGCCompletedWithErrors
+	}
 	refreshErrors := make(map[gcRefreshKey]error)
 	hadErrors := false
 	for _, loadResult := range loadResults {
-		if loadResult.Err != nil {
-			ui.Warn("load project metadata %s: %s", loadResult.Path, loadResult.Err)
+		m := loadResult.Manifest
+		if err := ownership.requireExclusive(loadResult.Path); err != nil {
+			ui.Warn("project %s: %s", loadResult.Name, err)
 			hadErrors = true
 			continue
 		}
-		m := loadResult.Manifest
 		if (m.Program == "") != (m.ProgramItem == "") {
 			ui.Warn(
 				"invalid project metadata %s: program ownership requires both program and program_item; "+
