@@ -160,6 +160,78 @@ func TestCreateProjectWaitsForConcurrentArchiveOfSameSlug(t *testing.T) {
 	}
 }
 
+func TestCreateProjectBlocksArchivedCleanupBeforeReusingSlug(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "interrupted-archive"
+	branch := "test/" + slug
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/",
+		DefaultAgent: "copilot",
+		PermissionModes: map[string]string{
+			"copilot": "allow-all",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Status = "archived"
+	manifest.ArchiveCleanup = archiveCleanupProof(decision.proof)
+	if _, err := stageArchivedProject(
+		filepath.Join(project.ActiveDir(), slug),
+		filepath.Join(project.ArchivedDir(), slug),
+		manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = createProject(projectCreateOpts{
+		task: "replacement project", name: slug, repo: repo,
+	})
+	if err == nil {
+		t.Fatal("createProject succeeded with pending archived cleanup")
+	}
+	for _, want := range []string{
+		"incomplete archived cleanup",
+		project.ManifestPath(project.ArchivedDir(), slug),
+		"finish the archived cleanup before recreating",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("createProject error %q is missing %q", err, want)
+		}
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
+		t.Fatal("blocked creation installed a replacement active project")
+	}
+
+	if _, err := retryArchivedProjectCleanup(loadArchivedManifest(t, slug)); err != nil {
+		t.Fatalf("retry original archived cleanup: %v", err)
+	}
+	if pathExists(worktree) || gitx.BranchExists(repo, branch) {
+		t.Fatal("original archived cleanup left resources behind")
+	}
+
+	created, err := createProject(projectCreateOpts{
+		task: "replacement project", name: slug, repo: repo,
+	})
+	if err != nil {
+		t.Fatalf("createProject after cleanup completion: %v", err)
+	}
+	if created.manifest.Slug != slug || !pathExists(created.worktreeDir) {
+		t.Fatalf("created project = %+v, want replacement for %q", created, slug)
+	}
+}
+
 func TestReclaimLeftoversRemovesBranchWorktreeAndDir(t *testing.T) {
 	repo := newTestRepo(t)
 	worktreeDir := filepath.Join(repo, ".worktrees", "wt")
