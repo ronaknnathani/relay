@@ -432,6 +432,42 @@ func TestArchiveRestoresActiveProjectWhenArchivedManifestInstallFails(t *testing
 	}
 }
 
+func TestArchiveReturnsArchivedPathWhenManifestInstallRollbackFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archive-manifest-install-rollback-failure"
+	branch := "user/archive-manifest-install-rollback-failure"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	srcDir := filepath.Join(project.ActiveDir(), slug)
+	dstDir := filepath.Join(project.ArchivedDir(), slug)
+
+	previous := archiveRename
+	archiveRename = func(oldPath, newPath string) error {
+		switch {
+		case strings.HasPrefix(filepath.Base(oldPath), ".manifest.archived-") &&
+			filepath.Base(newPath) == "manifest.json":
+			return errors.New("injected archived manifest install failure")
+		case oldPath == dstDir && newPath == srcDir:
+			return errors.New("injected directory restore failure")
+		default:
+			return os.Rename(oldPath, newPath)
+		}
+	}
+	t.Cleanup(func() { archiveRename = previous })
+
+	result, err := archiveProject(slug, true)
+	if err == nil || !strings.Contains(err.Error(), "rollback project directory") {
+		t.Fatalf("archiveProject error = %v, want manifest install rollback failure", err)
+	}
+	if result.ArchivedPath != dstDir {
+		t.Fatalf("archive result = %+v, want archived path %q", result, dstDir)
+	}
+	if pathExists(srcDir) || !pathExists(dstDir) {
+		t.Fatal("archive result did not match metadata left in archived location")
+	}
+}
+
 func TestArchiveRejectsInvalidRequestedSlugWithoutChangingVictim(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
@@ -662,6 +698,60 @@ func TestArchiveRollbackRetainsArchivedProofWhenDirectoryRestoreFails(t *testing
 	}
 	if retained.Status != "archived" || retained.ArchiveCleanup == nil {
 		t.Fatalf("retained manifest = %+v, want archived cleanup proof", retained)
+	}
+}
+
+func TestArchiveReturnsArchivedPathWhenProofRevalidationRollbackFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "proof-revalidation-rollback-failure"
+	branch := "user/proof-revalidation-rollback-failure"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	previousSave := saveArchiveManifest
+	advanced := false
+	saveArchiveManifest = func(path string, candidate project.Manifest) error {
+		if err := project.Save(path, candidate); err != nil {
+			return err
+		}
+		if !advanced && candidate.ArchiveCleanup != nil {
+			advanced = true
+			commitArchiveFile(t, worktree, "late.txt", "late\n", "late change")
+		}
+		return nil
+	}
+	previousRename := archiveRename
+	srcDir := filepath.Join(project.ActiveDir(), slug)
+	dstDir := filepath.Join(project.ArchivedDir(), slug)
+	archiveRename = func(oldPath, newPath string) error {
+		if oldPath == dstDir && newPath == srcDir {
+			return errors.New("injected directory restore failure")
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	t.Cleanup(func() {
+		saveArchiveManifest = previousSave
+		archiveRename = previousRename
+	})
+
+	result, err := archiveProjectWithProof(decision.proof, true)
+	if err == nil || !strings.Contains(err.Error(), "rollback archive metadata") {
+		t.Fatalf("archiveProjectWithProof error = %v, want rollback failure", err)
+	}
+	if result.ArchivedPath != dstDir {
+		t.Fatalf("archive result = %+v, want archived path %q", result, dstDir)
+	}
+	if pathExists(srcDir) || !pathExists(dstDir) {
+		t.Fatal("archive result did not match metadata left in archived location")
 	}
 }
 

@@ -981,6 +981,90 @@ func TestWorkerCleanupReportsArchivedAfterPostDeleteSaveFailure(t *testing.T) {
 	}
 }
 
+func TestWorkerCleanupReportsArchivedAfterProofRevalidationRollbackFailure(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installStubWatcherState(t, manifest.Slug, false)
+
+	previousSave := saveArchiveManifest
+	advanced := false
+	saveArchiveManifest = func(path string, candidate project.Manifest) error {
+		if err := project.Save(path, candidate); err != nil {
+			return err
+		}
+		if !advanced && candidate.ArchiveCleanup != nil {
+			advanced = true
+			commitArchiveFile(t, *manifest.Worktree, "late.txt", "late\n", "late change")
+		}
+		return nil
+	}
+	previousRename := archiveRename
+	srcDir := filepath.Join(project.ActiveDir(), manifest.Slug)
+	dstDir := filepath.Join(project.ArchivedDir(), manifest.Slug)
+	archiveRename = func(oldPath, newPath string) error {
+		if oldPath == dstDir && newPath == srcDir {
+			return errors.New("injected directory restore failure")
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	t.Cleanup(func() {
+		saveArchiveManifest = previousSave
+		archiveRename = previousRename
+	})
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("worker cleanup: %v", err)
+	}
+	result := decodeCleanupOutput(t, out)
+	if result.Status != cleanupIncomplete || !result.Archived {
+		t.Fatalf("result = %+v, want archived incomplete cleanup", result)
+	}
+	if strings.Contains(result.Error, "project is still active") ||
+		!strings.Contains(result.Error, "rollback archive metadata") {
+		t.Fatalf("cleanup error = %q, want accurate archived rollback failure", result.Error)
+	}
+}
+
+func TestWorkerCleanupReportsArchivedAfterManifestInstallRollbackFailure(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installStubWatcherState(t, manifest.Slug, false)
+
+	previousRename := archiveRename
+	srcDir := filepath.Join(project.ActiveDir(), manifest.Slug)
+	dstDir := filepath.Join(project.ArchivedDir(), manifest.Slug)
+	archiveRename = func(oldPath, newPath string) error {
+		switch {
+		case strings.HasPrefix(filepath.Base(oldPath), ".manifest.archived-") &&
+			filepath.Base(newPath) == "manifest.json":
+			return errors.New("injected archived manifest install failure")
+		case oldPath == dstDir && newPath == srcDir:
+			return errors.New("injected directory restore failure")
+		default:
+			return os.Rename(oldPath, newPath)
+		}
+	}
+	t.Cleanup(func() { archiveRename = previousRename })
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("worker cleanup: %v", err)
+	}
+	result := decodeCleanupOutput(t, out)
+	if result.Status != cleanupIncomplete || !result.Archived {
+		t.Fatalf("result = %+v, want archived incomplete cleanup", result)
+	}
+	if strings.Contains(result.Error, "project is still active") ||
+		!strings.Contains(result.Error, "rollback project directory") {
+		t.Fatalf("cleanup error = %q, want accurate archived manifest failure", result.Error)
+	}
+}
+
 func TestWorkerCleanupPreservesWatcherRetryWhenBranchDeletionAlsoFails(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
 	actualWorktree := *manifest.Worktree

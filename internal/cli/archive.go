@@ -556,6 +556,9 @@ func archiveProjectWithProofLocked(proof archiveProofSnapshot, force bool) (arch
 	result := archiveResult{
 		Slug: proof.Slug, Branch: proof.Branch, Merged: proof.Merged, Warnings: []string{},
 	}
+	if proof.HasWorktree {
+		result.Worktree = proof.Worktree
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	m.Status = "archived"
 	m.Archived = &now
@@ -566,7 +569,10 @@ func archiveProjectWithProofLocked(proof archiveProofSnapshot, force bool) (arch
 	dstDir := filepath.Join(project.ArchivedDir(), proof.Slug)
 	rollbackMetadata, err := stageArchivedProject(srcDir, dstDir, m)
 	if err != nil {
-		return archiveResult{}, err
+		if _, statErr := os.Stat(dstDir); statErr == nil {
+			result.ArchivedPath = dstDir
+		}
+		return result, err
 	}
 	result.ArchivedPath = dstDir
 	m, err = loadArchivedCleanupManifest(proof.Slug)
@@ -582,12 +588,13 @@ func archiveProjectWithProofLocked(proof archiveProofSnapshot, force bool) (arch
 	}
 
 	if proof.HasWorktree && proof.Worktree != "" {
-		result.Worktree = proof.Worktree
 		if err := validateArchiveTips(proof); err != nil {
 			if rollbackErr := rollbackMetadata(); rollbackErr != nil {
 				err = fmt.Errorf("%w; rollback archive metadata: %v", err, rollbackErr)
+				return result, err
 			}
-			return archiveResult{}, err
+			result.ArchivedPath = ""
+			return result, err
 		}
 		if proof.WorktreePresent {
 			if err := claimArchivedWorktreeCleanup(&m); err != nil {
