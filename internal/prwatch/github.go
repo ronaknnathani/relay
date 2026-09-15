@@ -57,6 +57,10 @@ func (e *recoverableGitHubAccessError) Unwrap() error {
 	return e.cause
 }
 
+var githubRateLimitDiagnosticPattern = regexp.MustCompile(
+	`^(?:(?:gh|graphql):\s*)?(?:api rate limit (?:already )?exceeded|you have exceeded a secondary rate limit)(?:$|[ \t\r\n.,:;])`,
+)
+
 func classifyGitHubAccessError(err error) error {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
@@ -71,15 +75,16 @@ func classifyGitHubAccessError(err error) error {
 	if errors.As(err, &commandErr) {
 		detail = commandErr.detail
 	}
-	message := strings.ToLower(strings.ReplaceAll(detail, "-", " "))
+	message := strings.ToLower(strings.TrimSpace(detail))
+	allowListMessage := strings.ReplaceAll(message, "allow-list", "allow list")
 	switch {
-	case (strings.Contains(message, "ip allow list") || strings.Contains(message, "ip allowlist")) &&
-		(strings.Contains(message, "not permitted") ||
-			strings.Contains(message, "not allowed") ||
-			strings.Contains(message, "denied")):
+	case (strings.Contains(allowListMessage, "ip allow list") ||
+		strings.Contains(allowListMessage, "ip allowlist")) &&
+		(strings.Contains(allowListMessage, "not permitted") ||
+			strings.Contains(allowListMessage, "not allowed") ||
+			strings.Contains(allowListMessage, "denied")):
 		return &recoverableGitHubAccessError{cause: err}
-	case strings.Contains(message, "api rate limit exceeded"),
-		strings.Contains(message, "secondary rate limit"):
+	case githubRateLimitDiagnosticPattern.MatchString(message):
 		return &recoverableGitHubAccessError{cause: err}
 	default:
 		return err

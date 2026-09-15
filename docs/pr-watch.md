@@ -115,7 +115,8 @@ automatic wakes until the watcher is restarted, because retrying can duplicate t
   or a primary or secondary API rate limit keeps the watcher running.
   These failures retry every 15 minutes until a complete observation succeeds.
 - Recoverable access failures neither increment nor reset the non-recoverable failure budget. The
-  budget spans interleaved access failures and resets only after a complete successful observation.
+  Within one watcher run, the budget spans interleaved access failures and resets after a complete
+  successful observation; restarting the watcher also resets it.
 - A GraphQL `RATE_LIMITED` error can arrive in a successful `gh` command response. Relay recognizes
   it immediately without exhausting the command attempts.
 - That later success clears the latest error and consecutive-error count, then resumes the existing

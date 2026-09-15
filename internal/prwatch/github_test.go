@@ -262,9 +262,18 @@ func TestObserveClassifiesRecoverableGitHubAccessFailures(t *testing.T) {
 			failure:     errors.New("API rate limit exceeded for 192.0.2.1"),
 			recoverable: true,
 		},
+		"primary rate limit already exceeded": {
+			failure:     errors.New("API rate limit already exceeded"),
+			recoverable: true,
+		},
 		"secondary rate limit": {
 			failure:     errors.New("You have exceeded a secondary rate limit"),
 			recoverable: true,
+		},
+		"repository name containing secondary-rate-limit": {
+			failure: errors.New(
+				"GraphQL: Could not resolve to a Repository with the name 'owner/secondary-rate-limit'",
+			),
 		},
 		"unrelated failure": {
 			failure: errors.New("HTTP 502"),

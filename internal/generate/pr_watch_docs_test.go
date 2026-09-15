@@ -90,6 +90,8 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"primary or secondary API rate limit",
 				"retry every 15 minutes until a complete observation succeeds",
 				"Recoverable access failures neither increment nor reset the non-recoverable failure budget",
+				"Within one watcher run, the budget spans interleaved access failures",
+				"restarting the watcher also resets it",
 				"GraphQL `RATE_LIMITED` error can arrive in a successful `gh` command response",
 				"Failures that leave the watcher running also record the next retry",
 				"three non-recoverable observation failures since the last complete success",
