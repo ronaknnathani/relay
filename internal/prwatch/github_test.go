@@ -274,8 +274,26 @@ func TestObserveClassifiesRecoverableGitHubAccessFailures(t *testing.T) {
 			},
 			recoverable: true,
 		},
+		"REST IP allow list denial": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "gh: Although you appear to have the correct authorization credentials, " +
+					"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+					"IP address is not permitted to access this resource. (HTTP 403)",
+			},
+			recoverable: true,
+		},
 		"primary rate limit": {
 			failure:     errors.New("API rate limit exceeded for 192.0.2.1"),
+			recoverable: true,
+		},
+		"REST primary rate limit": {
+			failure: &ghCommandError{
+				args:   "api repos/acme/widgets/pulls/42/reviews",
+				cause:  errors.New("exit status 1"),
+				detail: "gh: API rate limit exceeded for 192.0.2.1. (HTTP 403)",
+			},
 			recoverable: true,
 		},
 		"primary rate limit with retry guidance": {
@@ -300,6 +318,14 @@ func TestObserveClassifiesRecoverableGitHubAccessFailures(t *testing.T) {
 			failure: errors.New(
 				"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
 			),
+			recoverable: true,
+		},
+		"REST secondary rate limit": {
+			failure: &ghCommandError{
+				args:   "api repos/acme/widgets/pulls/42/reviews",
+				cause:  errors.New("exit status 1"),
+				detail: "gh: You have exceeded a secondary rate limit. (HTTP 429)",
+			},
 			recoverable: true,
 		},
 		"multiple recognized diagnostics": {
@@ -350,6 +376,30 @@ func TestObserveClassifiesRecoverableGitHubAccessFailures(t *testing.T) {
 				detail: "You have exceeded a secondary rate limit. " +
 					"Please wait a few minutes before you try again.\n" +
 					"GraphQL: Could not resolve to a Repository with the name 'owner/missing'",
+			},
+		},
+		"REST IP allow list denial with wrong status": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "gh: Although you appear to have the correct authorization credentials, " +
+					"the `linkedin-multiproduct` organization has an IP allow list enabled, and your " +
+					"IP address is not permitted to access this resource. (HTTP 429)",
+			},
+		},
+		"REST rate limit with wrong status": {
+			failure: &ghCommandError{
+				args:   "api repos/acme/widgets/pulls/42/reviews",
+				cause:  errors.New("exit status 1"),
+				detail: "gh: API rate limit exceeded for 192.0.2.1. (HTTP 401)",
+			},
+		},
+		"REST rate limit followed by unrelated failure": {
+			failure: &ghCommandError{
+				args:  "api repos/acme/widgets/pulls/42/reviews",
+				cause: errors.New("exit status 1"),
+				detail: "gh: API rate limit exceeded for 192.0.2.1. (HTTP 403)\n" +
+					"gh: Bad credentials (HTTP 401)",
 			},
 		},
 		"unrelated failure": {
