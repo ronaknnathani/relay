@@ -20,6 +20,8 @@ var (
 	loadArchiveRepository       = programview.GitHubRepository
 	saveArchiveManifest         = project.Save
 	archiveForceDeleteBranch    = gitx.ForceDeleteBranch
+	archiveRename               = os.Rename
+	archiveRemoveFile           = os.Remove
 )
 
 func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, error) {
@@ -376,28 +378,28 @@ func stageArchivedProject(srcDir, dstDir string, m project.Manifest) (func() err
 	}
 	stagedPath := staged.Name()
 	if err := staged.Close(); err != nil {
-		err = archiveCleanupError(err, os.Remove(stagedPath))
+		err = archiveCleanupError(err, archiveRemoveFile(stagedPath))
 		return nil, fmt.Errorf("stage archived manifest: close temporary file: %w", err)
 	}
 	if err := saveArchiveManifest(stagedPath, m); err != nil {
-		err = archiveCleanupError(err, os.Remove(stagedPath))
+		err = archiveCleanupError(err, archiveRemoveFile(stagedPath))
 		return nil, fmt.Errorf("stage archived manifest: %w", err)
 	}
 
-	if err := os.Rename(srcDir, dstDir); err != nil {
-		err = archiveCleanupError(err, os.Remove(stagedPath))
+	if err := archiveRename(srcDir, dstDir); err != nil {
+		err = archiveCleanupError(err, archiveRemoveFile(stagedPath))
 		return nil, fmt.Errorf("move project to archived: %w", err)
 	}
 	stagedPath = filepath.Join(dstDir, filepath.Base(stagedPath))
 	archivedManifestPath := filepath.Join(dstDir, "manifest.json")
-	if err := os.Rename(stagedPath, archivedManifestPath); err != nil {
-		rollbackErr := os.Rename(dstDir, srcDir)
+	if err := archiveRename(stagedPath, archivedManifestPath); err != nil {
+		rollbackErr := archiveRename(dstDir, srcDir)
 		if rollbackErr != nil {
 			return nil, fmt.Errorf(
 				"install archived manifest: %w; rollback project directory: %v", err, rollbackErr,
 			)
 		}
-		err = archiveCleanupError(err, os.Remove(filepath.Join(srcDir, filepath.Base(stagedPath))))
+		err = archiveCleanupError(err, archiveRemoveFile(filepath.Join(srcDir, filepath.Base(stagedPath))))
 		return nil, fmt.Errorf("install archived manifest: %w", err)
 	}
 
@@ -406,11 +408,11 @@ func stageArchivedProject(srcDir, dstDir string, m project.Manifest) (func() err
 		if err := os.WriteFile(rollbackPath, originalManifest, info.Mode().Perm()); err != nil {
 			return fmt.Errorf("stage active manifest: %w", err)
 		}
-		if err := os.Rename(rollbackPath, archivedManifestPath); err != nil {
-			os.Remove(rollbackPath)
+		if err := archiveRename(rollbackPath, archivedManifestPath); err != nil {
+			err = archiveCleanupError(err, archiveRemoveFile(rollbackPath))
 			return fmt.Errorf("restore active manifest: %w", err)
 		}
-		if err := os.Rename(dstDir, srcDir); err != nil {
+		if err := archiveRename(dstDir, srcDir); err != nil {
 			return fmt.Errorf("restore active project directory: %w", err)
 		}
 		return nil

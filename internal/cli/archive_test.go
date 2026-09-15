@@ -111,6 +111,51 @@ func TestArchivePreservesProjectWhenArchivedManifestCannotBeStaged(t *testing.T)
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
 
+func TestArchiveRollbackCombinesManifestRestoreAndCleanupFailures(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	slug := "rollback-cleanup-failure"
+	srcDir := filepath.Join(project.ActiveDir(), slug)
+	dstDir := filepath.Join(project.ArchivedDir(), slug)
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := project.Manifest{Slug: slug, Status: "active"}
+	if err := project.Save(filepath.Join(srcDir, "manifest.json"), manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	rollback, err := stageArchivedProject(srcDir, dstDir, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousRename, previousRemove := archiveRename, archiveRemoveFile
+	archiveRename = func(oldPath, newPath string) error {
+		if filepath.Base(oldPath) == ".manifest.active" {
+			return errors.New("injected restore failure")
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	archiveRemoveFile = func(path string) error {
+		if filepath.Base(path) == ".manifest.active" {
+			return errors.New("injected cleanup failure")
+		}
+		return os.Remove(path)
+	}
+	t.Cleanup(func() {
+		archiveRename, archiveRemoveFile = previousRename, previousRemove
+	})
+
+	err = rollback()
+	if err == nil {
+		t.Fatal("rollback error = nil")
+	}
+	for _, want := range []string{"restore active manifest", "injected restore failure", "injected cleanup failure"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("rollback error %q is missing %q", err, want)
+		}
+	}
+}
+
 func TestArchiveRejectsUnmergedBranchBeforeDirtyWorktree(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
