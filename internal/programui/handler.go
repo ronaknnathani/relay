@@ -156,8 +156,9 @@ func (h *handler) serveProgram(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	var snapshot programview.Snapshot
+	var encoded []byte
 	if detailItem == "" && h.feed != nil {
-		snapshot = h.feed.Get()
+		snapshot, encoded = h.feed.response()
 	} else {
 		var err error
 		snapshot, err = h.cache.Get(h.slug, detailItem)
@@ -169,6 +170,12 @@ func (h *handler) serveProgram(response http.ResponseWriter, request *http.Reque
 	response.Header().Set("Content-Type", "application/json; charset=utf-8")
 	response.WriteHeader(http.StatusOK)
 	if request.Method == http.MethodHead {
+		return
+	}
+	if encoded != nil {
+		if _, err := response.Write(encoded); err != nil {
+			return
+		}
 		return
 	}
 	if err := json.NewEncoder(response).Encode(snapshot); err != nil {

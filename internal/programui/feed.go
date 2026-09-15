@@ -1,6 +1,7 @@
 package programui
 
 import (
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ type snapshotFeed struct {
 	now        func() time.Time
 	refresh    func() (programview.Snapshot, error)
 	refreshing bool
+	encoded    []byte
 }
 
 func newSnapshotFeed(
@@ -27,12 +29,19 @@ func newSnapshotFeed(
 		now = time.Now
 	}
 	seed.Refresh = programview.RefreshDTO{Status: "partial"}
-	return &snapshotFeed{
+	feed := &snapshotFeed{
 		snapshot: seed, expiresAt: now().Add(ttl), ttl: ttl, now: now, refresh: refresh,
 	}
+	feed.encoded = encodeSnapshot(seed)
+	return feed
 }
 
 func (f *snapshotFeed) Get() programview.Snapshot {
+	snapshot, _ := f.response()
+	return snapshot
+}
+
+func (f *snapshotFeed) response() (programview.Snapshot, []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !f.refreshing && !f.now().Before(f.expiresAt) {
@@ -41,8 +50,9 @@ func (f *snapshotFeed) Get() programview.Snapshot {
 	snapshot := f.snapshot
 	if f.refreshing {
 		snapshot.Refresh = programview.RefreshDTO{Status: "refreshing"}
+		return snapshot, nil
 	}
-	return snapshot
+	return snapshot, f.encoded
 }
 
 func (f *snapshotFeed) Refresh() {
@@ -69,9 +79,18 @@ func (f *snapshotFeed) startRefreshLocked() {
 		} else {
 			f.snapshot = snapshotWithRefreshError(f.snapshot, err)
 		}
+		f.encoded = encodeSnapshot(f.snapshot)
 		f.expiresAt = f.now().Add(f.ttl)
 		f.refreshing = false
 	}()
+}
+
+func encodeSnapshot(snapshot programview.Snapshot) []byte {
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 func snapshotWithRefreshError(snapshot programview.Snapshot, refreshErr error) programview.Snapshot {
