@@ -2497,6 +2497,8 @@ function renderInitial() {
   renderHeader();
   state.dirtyTabs = new Set(TABS);
   renderActiveTab();
+  window.__relayUsableAt = performance.now();
+  performance.mark("relay-usable");
 }
 
 function renderActiveTab() {

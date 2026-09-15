@@ -89,6 +89,7 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 		_, err := page.AddScriptToEvaluateOnNewDocument(`
 			window.__relayLongTasks = [];
 			window.__relayUsableAt = 0;
+			window.__relayCompleteUsableAt = 0;
 			new PerformanceObserver((list) => {
 				for (const entry of list.getEntries()) {
 					window.__relayLongTasks.push(entry.duration);
@@ -98,7 +99,7 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 				const cards = Array.from(document.querySelectorAll(".card"));
 				const refresh = document.querySelector("#refresh");
 				const roadmapTab = document.querySelector("#tab-roadmap");
-				if (window.__relayUsableAt > 0 ||
+				if (window.__relayCompleteUsableAt > 0 ||
 					document.querySelector("#program-title")?.textContent !== "Reference Program" ||
 					!document.querySelector("#program-summary")?.textContent ||
 					document.querySelector("#task-total")?.textContent !== "100" ||
@@ -112,7 +113,8 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 					!roadmapTab || roadmapTab.getAttribute("aria-selected") !== "true") {
 					return;
 				}
-				window.__relayUsableAt = performance.now();
+				window.__relayCompleteUsableAt =
+					window.__relayUsableAt > 0 ? window.__relayUsableAt : performance.now();
 				relayObserver.disconnect();
 			};
 			const relayObserver = new MutationObserver(relayUsable);
@@ -185,12 +187,14 @@ func measureBrowserRun(
 	navigationStarted := time.Now()
 	if err := chromedp.Run(tab,
 		chromedp.Navigate(url),
-		waitForBrowserCondition(`window.__relayUsableAt > 0`),
+		waitForBrowserCondition(`window.__relayCompleteUsableAt > 0`),
 	); err != nil {
 		t.Fatalf("navigate to usable program UI: %v", err)
 	}
 	var navigationToUsable float64
-	if err := chromedp.Run(tab, chromedp.Evaluate(`window.__relayUsableAt`, &navigationToUsable)); err != nil {
+	if err := chromedp.Run(tab,
+		chromedp.Evaluate(`window.__relayCompleteUsableAt`, &navigationToUsable),
+	); err != nil {
 		t.Fatalf("read navigation-to-usable timing: %v", err)
 	}
 	if navigationToUsable <= 0 {

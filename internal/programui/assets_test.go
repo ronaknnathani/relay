@@ -1008,6 +1008,12 @@ func TestScriptKeepsPollingSelectionAndLinkSafety(t *testing.T) {
 	if strings.Contains(script, "Object.keys(ARTIFACT_HINTS).map((name) => ({ name }))") {
 		t.Error("pending task metadata must not expose program-only artifact names")
 	}
+	renderInitial := script[strings.Index(script, "function renderInitial()"):]
+	renderInitial = renderInitial[:strings.Index(renderInitial, "function renderActiveTab()")]
+	if strings.Index(renderInitial, "renderHeader();") > strings.Index(renderInitial, "window.__relayUsableAt") ||
+		strings.Index(renderInitial, "renderActiveTab();") > strings.Index(renderInitial, "window.__relayUsableAt") {
+		t.Error("the usable marker must follow the complete header and active-tab render")
+	}
 }
 
 func TestScriptDerivesTheDisplayTitleAndDeduplicatesWarnings(t *testing.T) {
