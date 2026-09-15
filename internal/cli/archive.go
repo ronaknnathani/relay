@@ -289,11 +289,12 @@ func renderArchivedCleanupRetry(out io.Writer, result archiveResult) {
 	if result.WorktreeRemoved {
 		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Dim, "Worktree removed:"), result.Worktree)
 	}
-	if result.BranchDeletionWarning != "" && !result.BranchDeleted {
+	switch {
+	case result.BranchDeletionWarning != "" && !result.BranchDeleted:
 		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Yellow, "Branch still present:"), result.Branch)
-	} else if result.BranchDeletionWarning != "" {
+	case result.BranchDeletionWarning != "":
 		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Yellow, "Branch config cleanup incomplete:"), result.Branch)
-	} else if result.BranchDeleted {
+	case result.BranchDeleted:
 		fmt.Fprintf(out, "  %s %s\n", ui.Color(ui.Dim, "Branch removed:"), result.Branch)
 	}
 	fmt.Fprintln(out)
