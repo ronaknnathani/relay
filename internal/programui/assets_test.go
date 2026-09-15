@@ -19,6 +19,8 @@ var assetNames = []string{
 	"assets/app.min.css",
 	"assets/bootstrap.js",
 	"assets/bootstrap.min.js",
+	"assets/roadmap.js",
+	"assets/roadmap.min.js",
 	"assets/app-deferred.css",
 	"assets/app-deferred.min.css",
 	"assets/app.js",
@@ -114,10 +116,10 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 	})
 
 	if strings.Count(index, "<script") != 4 ||
-		!strings.Contains(index, `<script id="app-script" src="/app.js" defer></script>`) ||
+		!strings.Contains(index, `<script id="app-script" src="/roadmap.js" defer></script>`) ||
 		!strings.Contains(index, `<script id="initial-program" type="application/json">__RELAY_INITIAL_ROADMAP__</script>`) ||
 		!strings.Contains(index, `<script>__RELAY_BOOTSTRAP__</script>`) {
-		t.Error("index.html must preload the core app and embed the initial roadmap before the inline bootstrap")
+		t.Error("index.html must preload the roadmap controller and embed the initial roadmap before the inline bootstrap")
 	}
 	if strings.Count(index, "<link ") != 1 ||
 		!strings.Contains(index, `<link rel="stylesheet" href="/app.css">`) {
@@ -243,9 +245,17 @@ func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
 		"document.createElement(\"script\")",
 	})
 	requireContains(t, "app.js", readAsset(t, "assets/app.js"), []string{
-		`window.__relayCoreReady = true`,
+		`window.__relayRoadmapCoreCleanup`,
 		`requestProgram(initialProgramController, "roadmap")`,
 	})
+	requireContains(t, "roadmap.js", readAsset(t, "assets/roadmap.js"), []string{
+		`window.__relayCoreReady = true`,
+		`script.src = "/app.js"`,
+		`window.__relayRoadmapCoreCleanup`,
+	})
+	if len(readAsset(t, "assets/roadmap.min.js")) >= len(readAsset(t, "assets/roadmap.js")) {
+		t.Error("the roadmap controller must be minified")
+	}
 }
 
 func TestIndexExposesFourTabsAndDefaultsToRoadmap(t *testing.T) {

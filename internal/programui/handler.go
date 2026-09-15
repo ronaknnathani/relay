@@ -143,6 +143,8 @@ func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		h.serveIndex(response, request)
 	case "/app.css":
 		h.serveAsset(response, request, "assets/app.min.css", "text/css; charset=utf-8")
+	case "/roadmap.js":
+		h.serveAsset(response, request, "assets/roadmap.min.js", "text/javascript; charset=utf-8")
 	case "/app-deferred.css":
 		h.serveAsset(response, request, "assets/app-deferred.min.css", "text/css; charset=utf-8")
 	case "/app.js":

@@ -1608,6 +1608,10 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
 
 function start() {
   collectDom();
+  if (window.__relayRoadmapCoreCleanup) {
+    window.__relayRoadmapCoreCleanup();
+    delete window.__relayRoadmapCoreCleanup;
+  }
   if (window.__relayBootstrapCleanup) {
     window.__relayBootstrapCleanup();
     delete window.__relayBootstrapCleanup;
@@ -1623,8 +1627,6 @@ function start() {
   selectTab(parsed.tab || "roadmap");
   setFeed(false, "Connecting…");
   poll(initialProgramRequest, initialProgramController, initialProgramSnapshot);
-  window.__relayCoreReady = true;
-  document.documentElement.dataset.relayCoreReady = "true";
   window.setInterval(() => {
     if (state.snapshot) {
       renderHeader();
