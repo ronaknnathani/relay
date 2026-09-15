@@ -383,6 +383,9 @@ func loadProgramCleanupTarget(
 		)
 	}
 	if item.ProjectBranch == "" || item.ProjectWorktree == "" {
+		if archived {
+			return item, manifest, archiveProofSnapshot{}, true, nil
+		}
 		if len(programPath) == 0 {
 			return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
 				"cleanup %s/%s: child project %q has no durable dispatch branch/worktree identity; "+

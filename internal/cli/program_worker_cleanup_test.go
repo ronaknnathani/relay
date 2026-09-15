@@ -1364,6 +1364,104 @@ func TestWorkerCleanupUpgradesLegacyItemDispatchIdentityBeforeCleanup(t *testing
 	}
 }
 
+func TestWorkerCleanupLegacyArchivedChildWithoutResourcesIsIdempotent(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	programPath := program.ManifestPath(program.ActiveDir(), p.Slug)
+	clearProgramItemDispatchIdentity(t, programPath, item.ID)
+	runArchiveGit(t, manifest.Repo, "worktree", "remove", "--force", *manifest.Worktree)
+	runArchiveGit(t, manifest.Repo, "branch", "-D", manifest.Branch)
+	activeDir := filepath.Join(project.ActiveDir(), manifest.Slug)
+	archivedDir := filepath.Join(project.ArchivedDir(), manifest.Slug)
+	if err := os.MkdirAll(project.ArchivedDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(activeDir, archivedDir); err != nil {
+		t.Fatal(err)
+	}
+	archivedPath := project.ManifestPath(project.ArchivedDir(), manifest.Slug)
+	archived, err := project.Load(archivedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived.Status = "archived"
+	archived.ArchiveCleanup = nil
+	if err := project.Save(archivedPath, archived); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installStubWatcherState(t, manifest.Slug, false)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+		if err != nil {
+			t.Fatalf("cleanup attempt %d: %v", attempt, err)
+		}
+		result := decodeCleanupOutput(t, out)
+		if result.Status != cleanupClean || !result.AlreadyArchived {
+			t.Fatalf("cleanup attempt %d result = %+v, want clean archived result", attempt, result)
+		}
+	}
+	reloaded, err := program.Load(programPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged, _ := reloaded.Item(item.ID)
+	if unchanged.ProjectBranch != "" || unchanged.ProjectWorktree != "" {
+		t.Fatalf("archived cleanup persisted a legacy live identity: %+v", unchanged)
+	}
+}
+
+func TestWorkerCleanupLegacyArchivedChildWithResourcesStaysIncompleteWithoutUpgrade(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	programPath := program.ManifestPath(program.ActiveDir(), p.Slug)
+	clearProgramItemDispatchIdentity(t, programPath, item.ID)
+	activeDir := filepath.Join(project.ActiveDir(), manifest.Slug)
+	archivedDir := filepath.Join(project.ArchivedDir(), manifest.Slug)
+	if err := os.MkdirAll(project.ArchivedDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(activeDir, archivedDir); err != nil {
+		t.Fatal(err)
+	}
+	archivedPath := project.ManifestPath(project.ArchivedDir(), manifest.Slug)
+	archived, err := project.Load(archivedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived.Status = "archived"
+	archived.ArchiveCleanup = nil
+	if err := project.Save(archivedPath, archived); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installStubWatcherState(t, manifest.Slug, false)
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), "no durable cleanup proof") ||
+		!strings.Contains(err.Error(), "cleanup is incomplete or uncertain") {
+		t.Fatalf("worker cleanup error = %v, want conservative legacy archive refusal", err)
+	}
+	result := decodeCleanupOutput(t, out)
+	if result.Status != cleanupIncomplete || !result.AlreadyArchived {
+		t.Fatalf("cleanup result = %+v, want incomplete archived result", result)
+	}
+	if !pathExists(*manifest.Worktree) || !gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("legacy archived cleanup removed resources without durable proof")
+	}
+	reloaded, loadErr := program.Load(programPath)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	unchanged, _ := reloaded.Item(item.ID)
+	if unchanged.ProjectBranch != "" || unchanged.ProjectWorktree != "" {
+		t.Fatalf("legacy archived cleanup persisted live identity: %+v", unchanged)
+	}
+}
+
 func TestWorkerCleanupLegacyUpgradeWaitsForWorkerLifecycleLock(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
 	path := program.ManifestPath(program.ActiveDir(), p.Slug)
