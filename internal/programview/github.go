@@ -3,6 +3,7 @@ package programview
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os/exec"
@@ -111,7 +112,7 @@ func prStateCacheKey(repo, ref string) string {
 var defaultPRStateCache = newPRStateCache(githubPRStateTTL, time.Now)
 
 type ghPRIndexLoader struct {
-	hasOrigin   func(string) bool
+	originURL   func(string) (string, error)
 	lookPath    func(string) (string, error)
 	run         GHCommandRunner
 	cache       *prStateCache
@@ -119,25 +120,33 @@ type ghPRIndexLoader struct {
 }
 
 type ghPullRequestLookup struct {
-	hasOrigin func(string) bool
+	originURL func(string) (string, error)
 	lookPath  func(string) (string, error)
 	run       GHCommandRunner
 }
 
-func (l ghPullRequestLookup) validate(repo, operation string) error {
-	if l.hasOrigin == nil || !l.hasOrigin(repo) {
-		return fmt.Errorf("%s in %s: origin remote is unavailable", operation, repo)
+func (l ghPullRequestLookup) validate(repo, operation string) (string, error) {
+	if l.originURL == nil {
+		return "", fmt.Errorf("%s in %s: origin URL lookup is not configured", operation, repo)
+	}
+	rawOrigin, err := l.originURL(repo)
+	if err != nil {
+		return "", fmt.Errorf("%s in %s: resolve origin URL: %w", operation, repo, err)
+	}
+	repository, err := gitHubRepositoryFromRemote(rawOrigin)
+	if err != nil {
+		return "", fmt.Errorf("%s in %s: resolve origin repository: %w", operation, repo, err)
 	}
 	if l.lookPath == nil {
-		return fmt.Errorf("%s in %s: gh lookup is not configured", operation, repo)
+		return "", fmt.Errorf("%s in %s: gh lookup is not configured", operation, repo)
 	}
 	if _, err := l.lookPath("gh"); err != nil {
-		return fmt.Errorf("%s in %s: find gh: %w", operation, repo, err)
+		return "", fmt.Errorf("%s in %s: find gh: %w", operation, repo, err)
 	}
 	if l.run == nil {
-		return fmt.Errorf("%s in %s: GitHub command runner is not configured", operation, repo)
+		return "", fmt.Errorf("%s in %s: GitHub command runner is not configured", operation, repo)
 	}
-	return nil
+	return repository, nil
 }
 
 // Load resolves only the supplied recorded references, so programs whose
@@ -147,7 +156,15 @@ func (l ghPRIndexLoader) Load(repo string, refs []string) PRIndex {
 	if len(wanted) == 0 {
 		return nil
 	}
-	if l.hasOrigin == nil || !l.hasOrigin(repo) || l.lookPath == nil || l.run == nil {
+	if l.originURL == nil || l.lookPath == nil || l.run == nil {
+		return nil
+	}
+	rawOrigin, err := l.originURL(repo)
+	if err != nil {
+		return nil
+	}
+	repository, err := gitHubRepositoryFromRemote(rawOrigin)
+	if err != nil {
 		return nil
 	}
 	if _, err := l.lookPath("gh"); err != nil {
@@ -162,16 +179,22 @@ func (l ghPRIndexLoader) Load(repo string, refs []string) PRIndex {
 	}
 	slots := make(chan struct{}, limit)
 	for _, ref := range wanted {
+		selector, err := normalizePullRequestReference(ref, repository)
+		if err != nil {
+			continue
+		}
 		if state, found := l.cache.get(repo, ref); found {
 			index.record(ref, "", 0, state)
 			continue
 		}
 		wait.Add(1)
-		go func(ref string) {
+		go func(ref, selector string) {
 			defer wait.Done()
 			slots <- struct{}{}
 			defer func() { <-slots }()
-			state, url, number, err := fetchPRState(context.Background(), repo, ref, l.run)
+			state, url, number, err := fetchPRState(
+				context.Background(), repo, repository, selector, ref, l.run,
+			)
 			if err != nil {
 				return
 			}
@@ -179,7 +202,7 @@ func (l ghPRIndexLoader) Load(repo string, refs []string) PRIndex {
 			mutex.Lock()
 			defer mutex.Unlock()
 			index.record(ref, url, number, state)
-		}(ref)
+		}(ref, selector)
 	}
 	wait.Wait()
 	if len(index.byNumber) == 0 && len(index.byURL) == 0 {
@@ -238,16 +261,16 @@ func PullRequestNumber(ref string) (int, bool) {
 		return positiveNumber(strings.TrimPrefix(ref, "#"))
 	}
 	parsed, err := url.Parse(ref)
-	if err != nil {
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil ||
+		parsed.Hostname() == "" || parsed.Port() != "" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
 		return 0, false
 	}
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	for i := 0; i+1 < len(segments); i++ {
-		if segments[i] == "pull" {
-			return positiveNumber(segments[i+1])
-		}
+	if len(segments) != 4 || segments[0] == "" || segments[1] == "" || segments[2] != "pull" {
+		return 0, false
 	}
-	return 0, false
+	return positiveNumber(segments[3])
 }
 
 func positiveNumber(value string) (int, bool) {
@@ -259,14 +282,21 @@ func positiveNumber(value string) (int, bool) {
 // needed to verify that it belongs to the local project branch.
 func (l ghPullRequestLookup) Lookup(repo, ref string) (PullRequestProof, error) {
 	safeRef := gitx.SanitizeDiagnostic(ref)
-	if err := l.validate(repo, fmt.Sprintf("lookup pull request %q", safeRef)); err != nil {
+	repository, err := l.validate(repo, fmt.Sprintf("lookup pull request %q", safeRef))
+	if err != nil {
 		return PullRequestProof{}, err
+	}
+	selector, err := normalizePullRequestReference(ref, repository)
+	if err != nil {
+		return PullRequestProof{}, fmt.Errorf("lookup pull request %q in %s: %w", safeRef, repo, err)
 	}
 
 	timeoutContext, cancel := context.WithTimeout(context.Background(), githubPRRefTimeout)
 	defer cancel()
 	output, err := l.run(
-		timeoutContext, repo, "gh", "pr", "view", ref, "--json", "state,url,headRefName,headRefOid",
+		timeoutContext, repo, "gh", "pr", "view", selector,
+		"--repo", repository,
+		"--json", "state,url,headRefName,headRefOid",
 	)
 	if err != nil {
 		detail := gitx.SanitizeDiagnostic(string(output))
@@ -288,62 +318,117 @@ func (l ghPullRequestLookup) Lookup(repo, ref string) (PullRequestProof, error) 
 	if !ok {
 		return PullRequestProof{}, fmt.Errorf("parse pull request %q JSON: unknown state %q", safeRef, response.State)
 	}
-	repository, err := pullRequestRepository(response.URL)
+	responseRepository, err := pullRequestRepository(response.URL)
 	if err != nil {
 		return PullRequestProof{}, fmt.Errorf("parse pull request %q repository: %w", safeRef, err)
 	}
+	if !strings.EqualFold(responseRepository, repository) {
+		return PullRequestProof{}, fmt.Errorf(
+			"pull request %q belongs to repository %q, want %q",
+			safeRef, responseRepository, repository,
+		)
+	}
 	return PullRequestProof{
 		State:      state,
-		Repository: repository,
+		Repository: responseRepository,
 		HeadBranch: strings.TrimSpace(response.HeadRefName),
 		HeadSHA:    strings.TrimSpace(response.HeadRefOID),
 	}, nil
 }
 
 func (l ghPullRequestLookup) Repository(repo string) (string, error) {
-	if err := l.validate(repo, "resolve GitHub repository"); err != nil {
-		return "", err
+	if l.originURL == nil {
+		return "", fmt.Errorf("resolve GitHub repository in %s: origin URL lookup is not configured", repo)
 	}
-	timeoutContext, cancel := context.WithTimeout(context.Background(), githubPRRefTimeout)
-	defer cancel()
-	output, err := l.run(timeoutContext, repo, "gh", "repo", "view", "--json", "nameWithOwner,url")
+	rawOrigin, err := l.originURL(repo)
 	if err != nil {
-		detail := gitx.SanitizeDiagnostic(string(output))
-		if detail == "" {
-			return "", fmt.Errorf("resolve GitHub repository in %s: %w", repo, err)
-		}
-		return "", fmt.Errorf("resolve GitHub repository in %s: %w: %s", repo, err, detail)
+		return "", fmt.Errorf("resolve GitHub repository in %s: resolve origin URL: %w", repo, err)
 	}
-	var response struct {
-		NameWithOwner string `json:"nameWithOwner"`
-		URL           string `json:"url"`
-	}
-	if err := json.Unmarshal(output, &response); err != nil {
-		return "", fmt.Errorf("parse GitHub repository JSON in %s: %w", repo, err)
-	}
-	if strings.TrimSpace(response.NameWithOwner) == "" {
-		return "", fmt.Errorf("parse GitHub repository JSON in %s: nameWithOwner is empty", repo)
-	}
-	identity, err := repositoryIdentity(response.URL, response.NameWithOwner)
+	repository, err := gitHubRepositoryFromRemote(rawOrigin)
 	if err != nil {
-		return "", fmt.Errorf("parse GitHub repository JSON in %s: %w", repo, err)
+		return "", fmt.Errorf("resolve GitHub repository in %s: %w", repo, err)
 	}
-	return identity, nil
+	return repository, nil
 }
 
 func pullRequestRepository(rawURL string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil {
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil ||
+		parsed.Hostname() == "" || parsed.Port() != "" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
+		if err == nil {
+			err = errors.New("URL is not a canonical HTTPS pull request URL")
+		}
 		return "", fmt.Errorf("parse URL %q: %w", gitx.SanitizeDiagnostic(rawURL), err)
 	}
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	if len(segments) < 4 || segments[0] == "" || segments[1] == "" || segments[2] != "pull" {
+	if len(segments) != 4 || segments[0] == "" || segments[1] == "" || segments[2] != "pull" {
 		return "", fmt.Errorf(
 			"URL %q does not identify a pull request repository",
 			gitx.SanitizeDiagnostic(rawURL),
 		)
 	}
-	return repositoryIdentity(rawURL, segments[0]+"/"+strings.TrimSuffix(segments[1], ".git"))
+	if _, ok := positiveNumber(segments[3]); !ok {
+		return "", fmt.Errorf("URL %q has an invalid pull request number", gitx.SanitizeDiagnostic(rawURL))
+	}
+	return repositoryIdentity(rawURL, segments[0]+"/"+segments[1])
+}
+
+func normalizePullRequestReference(ref, repository string) (string, error) {
+	trimmed := strings.TrimSpace(ref)
+	if number, ok := PullRequestNumber(trimmed); ok {
+		if strings.HasPrefix(trimmed, "#") {
+			return strconv.Itoa(number), nil
+		}
+		refRepository, err := pullRequestRepository(trimmed)
+		if err != nil {
+			return "", err
+		}
+		if !strings.EqualFold(refRepository, repository) {
+			return "", fmt.Errorf(
+				"pull request URL belongs to repository %q, want %q",
+				refRepository, repository,
+			)
+		}
+		return strconv.Itoa(number), nil
+	}
+	return "", fmt.Errorf(
+		"reference must be #<positive-number> or a canonical pull request URL for %s",
+		repository,
+	)
+}
+
+func gitHubRepositoryFromRemote(rawURL string) (string, error) {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return "", errors.New("origin URL is empty")
+	}
+	if strings.Contains(trimmed, "://") {
+		parsed, err := url.Parse(trimmed)
+		if err != nil {
+			return "", fmt.Errorf("parse origin URL %q: %w", gitx.SanitizeDiagnostic(trimmed), err)
+		}
+		switch strings.ToLower(parsed.Scheme) {
+		case "http", "https", "ssh", "git":
+		default:
+			return "", fmt.Errorf("origin URL %q uses unsupported scheme %q", gitx.SanitizeDiagnostic(trimmed), parsed.Scheme)
+		}
+		if parsed.Hostname() == "" {
+			return "", fmt.Errorf("origin URL %q has no host", gitx.SanitizeDiagnostic(trimmed))
+		}
+		return repositoryIdentity(trimmed, strings.TrimSuffix(strings.Trim(parsed.Path, "/"), ".git"))
+	}
+
+	at := strings.LastIndexByte(trimmed, '@')
+	hostPath := trimmed
+	if at >= 0 {
+		hostPath = trimmed[at+1:]
+	}
+	host, repoPath, ok := strings.Cut(hostPath, ":")
+	if !ok || host == "" || repoPath == "" {
+		return "", fmt.Errorf("origin URL %q is not a supported GitHub remote URL", gitx.SanitizeDiagnostic(trimmed))
+	}
+	return repositoryIdentity("ssh://"+host+"/"+repoPath, strings.TrimSuffix(strings.Trim(repoPath, "/"), ".git"))
 }
 
 func repositoryIdentity(rawURL, nameWithOwner string) (string, error) {
@@ -376,11 +461,19 @@ func repositoryIdentity(rawURL, nameWithOwner string) (string, error) {
 
 // fetchPRState reads one recorded pull request. Referencing the pull request
 // directly keeps repositories with long histories correct.
-func fetchPRState(ctx context.Context, repo, ref string, runner GHCommandRunner) (PRState, string, int, error) {
+func fetchPRState(
+	ctx context.Context,
+	repo, repository, selector, ref string,
+	runner GHCommandRunner,
+) (PRState, string, int, error) {
 	safeRef := gitx.SanitizeDiagnostic(ref)
 	timeoutContext, cancel := context.WithTimeout(ctx, githubPRRefTimeout)
 	defer cancel()
-	output, err := runner(timeoutContext, repo, "gh", "pr", "view", ref, "--json", "number,state,url")
+	output, err := runner(
+		timeoutContext, repo, "gh", "pr", "view", selector,
+		"--repo", repository,
+		"--json", "number,state,url",
+	)
 	if err != nil {
 		detail := gitx.SanitizeDiagnostic(string(output))
 		if detail == "" {
@@ -496,7 +589,7 @@ type GHFetcher struct {
 // identity metadata. Lookup failures are returned to callers.
 func GitHubPullRequestProof(repo, ref string) (PullRequestProof, error) {
 	return ghPullRequestLookup{
-		hasOrigin: gitx.HasOrigin,
+		originURL: gitx.OriginURL,
 		lookPath:  exec.LookPath,
 		run:       runGHCommand,
 	}.Lookup(repo, ref)
@@ -505,15 +598,13 @@ func GitHubPullRequestProof(repo, ref string) (PullRequestProof, error) {
 // GitHubRepository resolves the GitHub owner/name associated with repo.
 func GitHubRepository(repo string) (string, error) {
 	return ghPullRequestLookup{
-		hasOrigin: gitx.HasOrigin,
-		lookPath:  exec.LookPath,
-		run:       runGHCommand,
+		originURL: gitx.OriginURL,
 	}.Repository(repo)
 }
 
 func githubPRIndexForRefs(repo string, refs []string) PRIndex {
 	return ghPRIndexLoader{
-		hasOrigin: gitx.HasOrigin,
+		originURL: gitx.OriginURL,
 		lookPath:  exec.LookPath,
 		run:       runGHCommand,
 		cache:     defaultPRStateCache,

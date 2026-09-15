@@ -81,9 +81,19 @@ func WorktreeHead(dir string) (sha string, found bool, err error) {
 	return strings.TrimSpace(string(out)), true, nil
 }
 
+// OriginURL returns the configured URL for the origin remote.
+func OriginURL(repo string) (string, error) {
+	out, err := exec.Command("git", "-C", repo, "remote", "get-url", "origin").CombinedOutput()
+	if err != nil {
+		return "", gitCommandError("git remote get-url origin", err, out)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // HasOrigin reports whether the repo has an "origin" remote configured.
 func HasOrigin(repo string) bool {
-	return exec.Command("git", "-C", repo, "remote", "get-url", "origin").Run() == nil
+	_, err := OriginURL(repo)
+	return err == nil
 }
 
 // BranchExists reports whether the named branch exists locally.

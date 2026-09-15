@@ -121,6 +121,20 @@ func TestFetchReplacesStaleRemoteTrackingRefWithoutLocalBase(t *testing.T) {
 	}
 }
 
+func TestOriginURLPreservesGitDiagnostic(t *testing.T) {
+	repo := initRepo(t)
+
+	_, err := OriginURL(repo)
+	if err == nil {
+		t.Fatal("OriginURL error = nil")
+	}
+	for _, want := range []string{"git remote get-url origin", "No such remote"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("OriginURL error %q is missing %q", err, want)
+		}
+	}
+}
+
 func TestSanitizeDiagnosticRedactsGitURLUserinfo(t *testing.T) {
 	input := strings.Join([]string{
 		"fatal: unable to access 'https://relay:secret@example.com/repo.git/': denied",
