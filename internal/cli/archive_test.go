@@ -111,6 +111,102 @@ func TestArchivePreservesProjectWhenArchivedManifestCannotBeStaged(t *testing.T)
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
 
+func TestArchiveRestoresActiveProjectWhenArchivedManifestInstallFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archive-manifest-install-failure"
+	branch := "user/archive-manifest-install-failure"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	manifestPath := project.ManifestPath(project.ActiveDir(), slug)
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	previous := archiveRename
+	archiveRename = func(oldPath, newPath string) error {
+		if strings.HasPrefix(filepath.Base(oldPath), ".manifest.archived-") &&
+			filepath.Base(newPath) == "manifest.json" {
+			return errors.New("injected archived manifest install failure")
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	t.Cleanup(func() { archiveRename = previous })
+
+	_, err = captureStdout(t, func() error {
+		return runArchive(slug, true)
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected archived manifest install failure") {
+		t.Fatalf("runArchive error = %v, want archived manifest install failure", err)
+	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
+	after, readErr := os.ReadFile(manifestPath)
+	if readErr != nil || string(after) != string(before) {
+		t.Fatalf("active manifest changed during rollback: data=%q err=%v", after, readErr)
+	}
+}
+
+func TestArchiveRejectsInvalidRequestedSlugWithoutChangingVictim(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "victim"
+	branch := "user/victim"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	manifestPath := project.ManifestPath(project.ActiveDir(), slug)
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = captureStdout(t, func() error {
+		return runArchive("nested/../victim", true)
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid slug") {
+		t.Fatalf("runArchive error = %v, want invalid requested slug rejection", err)
+	}
+	assertArchiveManifestAndResourcesUnchanged(t, manifestPath, before, repo, branch, worktree)
+}
+
+func TestArchiveRejectsManifestSlugMismatchWithoutChangingVictim(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	victimSlug := "victim"
+	victimBranch := "user/victim"
+	victimWorktree := addArchiveWorktree(t, repo, victimSlug, victimBranch)
+	writeArchiveManifest(t, victimSlug, repo, victimBranch, victimWorktree)
+	victimPath := project.ManifestPath(project.ActiveDir(), victimSlug)
+	before, err := os.ReadFile(victimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attackerSlug := "a-attacker"
+	attackerDir := filepath.Join(project.ActiveDir(), attackerSlug)
+	if err := os.MkdirAll(attackerDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	victim, err := project.Load(victimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(filepath.Join(attackerDir, "manifest.json"), victim); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = captureStdout(t, func() error {
+		return runArchive(attackerSlug, true)
+	})
+	if err == nil || !strings.Contains(err.Error(), `slug "victim" does not match requested slug "a-attacker"`) {
+		t.Fatalf("runArchive error = %v, want manifest slug mismatch rejection", err)
+	}
+	assertArchiveManifestAndResourcesUnchanged(t, victimPath, before, repo, victimBranch, victimWorktree)
+	if !pathExists(attackerDir) {
+		t.Fatal("archive removed the mismatched project directory")
+	}
+}
+
 func TestArchiveRejectsDanglingWorktreeSymlink(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
@@ -455,6 +551,43 @@ func assertArchivePreserved(t *testing.T, repo, slug, branch, worktree string) {
 	}
 }
 
+func assertArchiveManifestAndResourcesUnchanged(
+	t *testing.T, manifestPath string, before []byte, repo, branch, worktree string,
+) {
+	t.Helper()
+	after, err := os.ReadFile(manifestPath)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("manifest changed: data=%q err=%v", after, err)
+	}
+	if !pathExists(worktree) {
+		t.Fatal("worktree was removed")
+	}
+	if !gitx.BranchExists(repo, branch) {
+		t.Fatalf("branch %q was removed", branch)
+	}
+}
+
+func archiveWithFailedBranchDeletion(t *testing.T, slug string) project.Manifest {
+	t.Helper()
+	previous := archiveForceDeleteBranchAt
+	archiveForceDeleteBranchAt = func(string, string, string) error {
+		return errors.New("injected branch deletion failure")
+	}
+	result, err := archiveProject(slug, true)
+	archiveForceDeleteBranchAt = previous
+	if err != nil {
+		t.Fatalf("archiveProject: %v", err)
+	}
+	if result.BranchDeletionWarning == "" {
+		t.Fatal("archiveProject did not report the injected branch deletion failure")
+	}
+	archived := loadArchivedManifest(t, slug)
+	if archived.ArchiveCleanup == nil {
+		t.Fatal("archived manifest has no cleanup proof")
+	}
+	return archived
+}
+
 func runArchiveGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
@@ -652,6 +785,66 @@ func TestArchiveDoesNotDeleteBranchAdvancedImmediatelyBeforeDeletion(t *testing.
 	tip, found, tipErr := gitx.LocalBranchTip(repo, branch)
 	if tipErr != nil || !found || tip != advancedTip {
 		t.Fatalf("branch tip = (%q, %t, %v), want (%q, true, nil)", tip, found, tipErr, advancedTip)
+	}
+}
+
+func TestArchivedCleanupRetryPreservesAdvancedBranch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archived-retry-advanced-branch"
+	branch := "user/archived-retry-advanced-branch"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	archived := archiveWithFailedBranchDeletion(t, slug)
+
+	oldTip := archived.ArchiveCleanup.ExpectedBranchTip
+	tree := gitOutput(t, repo, "rev-parse", oldTip+"^{tree}")
+	cmd := exec.Command("git", "-C", repo, "commit-tree", tree, "-p", oldTip, "-m", "new work")
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=relay", "GIT_AUTHOR_EMAIL=relay@example.com",
+		"GIT_COMMITTER_NAME=relay", "GIT_COMMITTER_EMAIL=relay@example.com",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("create advanced branch commit: %v", err)
+	}
+	advancedTip := strings.TrimSpace(string(out))
+	runArchiveGit(t, repo, "update-ref", "refs/heads/"+branch, advancedTip, oldTip)
+
+	_, err = retryArchivedProjectCleanup(archived)
+	if err == nil || !strings.Contains(err.Error(), "advanced from") {
+		t.Fatalf("retryArchivedProjectCleanup error = %v, want advanced branch rejection", err)
+	}
+	tip, found, tipErr := gitx.LocalBranchTip(repo, branch)
+	if tipErr != nil || !found || tip != advancedTip {
+		t.Fatalf("advanced branch = (%q, %t, %v), want (%q, true, nil)", tip, found, tipErr, advancedTip)
+	}
+}
+
+func TestArchivedCleanupRetryPreservesReusedWorktreePath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archived-retry-reused-path"
+	branch := "user/archived-retry-reused-path"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	archived := archiveWithFailedBranchDeletion(t, slug)
+
+	replacementBranch := "user/replacement"
+	runArchiveGit(t, repo, "worktree", "add", "-q", worktree, "-b", replacementBranch, "main")
+
+	_, err := retryArchivedProjectCleanup(archived)
+	if err == nil || !strings.Contains(err.Error(), "reused or changed") {
+		t.Fatalf("retryArchivedProjectCleanup error = %v, want reused worktree rejection", err)
+	}
+	if !pathExists(worktree) {
+		t.Fatal("retry removed the replacement worktree")
+	}
+	if !gitx.BranchExists(repo, branch) {
+		t.Fatal("retry removed the originally recorded branch")
+	}
+	if !gitx.BranchExists(repo, replacementBranch) {
+		t.Fatal("retry removed the replacement branch")
 	}
 }
 

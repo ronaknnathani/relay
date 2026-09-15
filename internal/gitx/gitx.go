@@ -73,28 +73,63 @@ func LocalBranchTip(repo, branch string) (sha string, found bool, err error) {
 // Missing directories are returned as found=false; existing unregistered
 // directories return an error.
 func WorktreeHead(repo, dir string) (sha string, found bool, err error) {
+	state, found, err := RegisteredWorktreeState(repo, dir)
+	return state.Head, found, err
+}
+
+// WorktreeState identifies the commit and checked-out branch of a registered
+// worktree. Branch is empty when Detached is true.
+type WorktreeState struct {
+	Head     string
+	Branch   string
+	Detached bool
+}
+
+// RegisteredWorktreeState resolves the identity of a registered worktree.
+// Missing paths return found=false; existing unregistered paths are errors.
+func RegisteredWorktreeState(repo, dir string) (state WorktreeState, found bool, err error) {
 	info, err := os.Lstat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", false, nil
+			return WorktreeState{}, false, nil
 		}
-		return "", false, fmt.Errorf("inspect worktree %s: %w", dir, err)
+		return WorktreeState{}, false, fmt.Errorf("inspect worktree %s: %w", dir, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return "", false, fmt.Errorf("worktree path %s is a symlink", dir)
+		return WorktreeState{}, false, fmt.Errorf("worktree path %s is a symlink", dir)
 	}
-	registered, err := IsWorktree(repo, dir)
+	out, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").Output()
 	if err != nil {
-		return "", false, err
+		return WorktreeState{}, false, gitOutputError("git worktree list", err)
 	}
-	if !registered {
-		return "", false, fmt.Errorf("worktree path %s exists but is not registered in %s", dir, repo)
+	target := canonPath(dir)
+	var currentPath string
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "" {
+			if currentPath != "" && canonPath(currentPath) == target {
+				return state, true, nil
+			}
+			currentPath = ""
+			state = WorktreeState{}
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			currentPath = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+		case strings.HasPrefix(line, "HEAD "):
+			state.Head = strings.TrimSpace(strings.TrimPrefix(line, "HEAD "))
+		case strings.HasPrefix(line, "branch "):
+			state.Branch = strings.TrimSpace(strings.TrimPrefix(line, "branch "))
+		case line == "detached":
+			state.Detached = true
+		}
 	}
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "--verify", "HEAD^{commit}").Output()
-	if err != nil {
-		return "", false, gitOutputError("git -C "+dir+" rev-parse --verify HEAD^{commit}", err)
+	if currentPath != "" && canonPath(currentPath) == target {
+		return state, true, nil
 	}
-	return strings.TrimSpace(string(out)), true, nil
+	return WorktreeState{}, false, fmt.Errorf(
+		"worktree path %s exists but is not registered in %s", dir, repo,
+	)
 }
 
 // OriginURL returns the configured URL for the origin remote.

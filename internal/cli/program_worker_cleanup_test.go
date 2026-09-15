@@ -926,6 +926,17 @@ func TestWorkerCleanupRetryFinishesArchivedBranchCleanup(t *testing.T) {
 	if !gitx.BranchExists(manifest.Repo, manifest.Branch) {
 		t.Fatal("first cleanup unexpectedly deleted the branch")
 	}
+	archived := loadArchivedManifest(t, manifest.Slug)
+	if archived.ArchiveCleanup == nil {
+		t.Fatal("archived manifest has no durable cleanup proof")
+	}
+	branchTip := gitx.RevParse(manifest.Repo, "refs/heads/"+manifest.Branch)
+	if archived.ArchiveCleanup.ExpectedBranchTip != branchTip {
+		t.Fatalf(
+			"archived cleanup branch tip = %q, want %q",
+			archived.ArchiveCleanup.ExpectedBranchTip, branchTip,
+		)
+	}
 
 	client.closeErr = nil
 	out, err = runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
@@ -977,10 +988,13 @@ func TestWorkerCleanupRetryReturnsIncompleteWhenBranchProbeFails(t *testing.T) {
 	if result.Status != cleanupIncomplete || !result.AlreadyArchived {
 		t.Fatalf("result = %+v, want incomplete archived cleanup", result)
 	}
-	if !strings.Contains(result.Error, "git branch probe failed") {
-		t.Fatalf("cleanup error %q is missing branch probe failure", result.Error)
+	if !strings.Contains(result.Error, "no durable cleanup proof") {
+		t.Fatalf("cleanup error %q is missing legacy manifest guidance", result.Error)
 	}
 	if result.NextCommand != "relay program worker cleanup "+p.Slug+" "+item.ID {
 		t.Fatalf("next command = %q, want worker cleanup retry", result.NextCommand)
+	}
+	if !pathExists(*manifest.Worktree) || !gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("legacy archived cleanup removed resources without durable proof")
 	}
 }
