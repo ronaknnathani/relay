@@ -25,7 +25,7 @@ import (
 const (
 	performanceRuns         = 40
 	performanceFixture      = "reference-program-v1"
-	performanceHarness      = "complete-roadmap-v3"
+	performanceHarness      = "complete-roadmap-v4"
 	performanceSourceCommit = "RELAY_PERF_SOURCE_COMMIT"
 )
 
@@ -83,8 +83,32 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 	if err := chromedp.Run(browser); err != nil {
 		t.Fatalf("start Chromium: %v", err)
 	}
-	tab, cancelTab := chromedp.NewContext(browser)
-	defer cancelTab()
+	report := performanceReport{
+		Mode: mode, GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		SourceCommit: performanceCommit(t), BinarySHA256: fileSHA256(t, binary),
+		FixtureVersion: performanceFixture, HarnessVersion: performanceHarness,
+		ChromiumVersion: chromeVersion(t, chrome),
+		Samples:         map[string][]float64{},
+		Percentiles:     map[string]float64{},
+	}
+	for run := 0; run <= performanceRuns; run++ {
+		tab, cancelTab := chromedp.NewContext(browser)
+		installPerformanceObserver(t, tab)
+		sample := measureBrowserRun(t, tab, binary, commandDir, fixture.program.Slug)
+		cancelTab()
+		if run == 0 {
+			continue
+		}
+		appendPerformanceSample(report.Samples, sample)
+	}
+	for name, samples := range report.Samples {
+		report.Percentiles[name] = percentile(samples, 0.95)
+	}
+	return report
+}
+
+func installPerformanceObserver(t *testing.T, tab context.Context) {
+	t.Helper()
 	if err := chromedp.Run(tab, chromedp.ActionFunc(func(ctx context.Context) error {
 		_, err := page.AddScriptToEvaluateOnNewDocument(`
 			window.__relayLongTasks = [];
@@ -131,26 +155,6 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 	})); err != nil {
 		t.Fatalf("install performance observer: %v", err)
 	}
-
-	report := performanceReport{
-		Mode: mode, GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		SourceCommit: performanceCommit(t), BinarySHA256: fileSHA256(t, binary),
-		FixtureVersion: performanceFixture, HarnessVersion: performanceHarness,
-		ChromiumVersion: chromeVersion(t, chrome),
-		Samples:         map[string][]float64{},
-		Percentiles:     map[string]float64{},
-	}
-	for run := 0; run <= performanceRuns; run++ {
-		sample := measureBrowserRun(t, tab, binary, commandDir, fixture.program.Slug)
-		if run == 0 {
-			continue
-		}
-		appendPerformanceSample(report.Samples, sample)
-	}
-	for name, samples := range report.Samples {
-		report.Percentiles[name] = percentile(samples, 0.95)
-	}
-	return report
 }
 
 func measureBrowserRun(
