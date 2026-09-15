@@ -1,6 +1,7 @@
 package programui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,13 +14,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/heapprofiler"
 	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
 const (
-	performanceRuns       = 20
-	performanceAgentDelay = 900 * time.Millisecond
+	performanceRuns = 20
 )
 
 type performanceReport struct {
@@ -49,7 +51,11 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 		t.Fatalf("RELAY_BROWSER_PERF = %q, want baseline or verify", mode)
 	}
 	fixture := newReferenceProgramFixture(t)
-	buildRelayForPerformance(t)
+	binary := os.Getenv("RELAY_PERF_BINARY")
+	if binary == "" {
+		binary = buildRelayForPerformance(t)
+	}
+	commandDir := performanceCommandDir(t)
 	allocator, cancelAllocator := chromedp.NewExecAllocator(
 		context.Background(),
 		append(chromedp.DefaultExecAllocatorOptions[:],
@@ -66,13 +72,46 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 	if err := chromedp.Run(browser); err != nil {
 		t.Fatalf("start Chromium: %v", err)
 	}
+	tab, cancelTab := chromedp.NewContext(browser)
+	defer cancelTab()
+	if err := chromedp.Run(tab, chromedp.ActionFunc(func(ctx context.Context) error {
+		_, err := page.AddScriptToEvaluateOnNewDocument(`
+			window.__relayLongTasks = [];
+			window.__relayUsableAt = 0;
+			new PerformanceObserver((list) => {
+				for (const entry of list.getEntries()) {
+					window.__relayLongTasks.push(entry.duration);
+				}
+			}).observe({type: "longtask", buffered: true});
+			const relayUsable = () => {
+				if (window.__relayUsableAt > 0 ||
+					document.querySelectorAll(".card").length !== 100 ||
+					document.querySelector("#program-title")?.textContent !== "Reference Program") {
+					return;
+				}
+				window.__relayUsableAt = performance.now();
+				relayObserver.disconnect();
+			};
+			const relayObserver = new MutationObserver(relayUsable);
+			relayObserver.observe(document, {
+				attributes: true,
+				characterData: true,
+				childList: true,
+				subtree: true
+			});
+			queueMicrotask(relayUsable);
+		`).Do(ctx)
+		return err
+	})); err != nil {
+		t.Fatalf("install performance observer: %v", err)
+	}
 
 	report := performanceReport{
 		Mode: mode, GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		Samples: map[string][]float64{}, Percentiles: map[string]float64{},
 	}
 	for run := 0; run <= performanceRuns; run++ {
-		sample := measureBrowserRun(t, browser, fixture.program.Slug)
+		sample := measureBrowserRun(t, tab, binary, commandDir, fixture.program.Slug)
 		if run == 0 {
 			continue
 		}
@@ -84,48 +123,53 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 	return report
 }
 
-func measureBrowserRun(t *testing.T, browser context.Context, slug string) browserSample {
+func measureBrowserRun(
+	t *testing.T,
+	browser context.Context,
+	binary string,
+	commandDir string,
+	slug string,
+) browserSample {
 	t.Helper()
-	release := make(chan struct{})
-	time.AfterFunc(performanceAgentDelay, func() { close(release) })
 	output := newLineWriter()
-	serverContext, cancelServer := context.WithCancel(context.Background())
+	var stderr bytes.Buffer
+	command := exec.Command(binary, "program", "ui", slug, "--port", "0", "--no-open")
+	command.Env = environmentWithPath(commandDir)
+	command.Stdout = output
+	command.Stderr = &stderr
 	serverDone := make(chan error, 1)
 	started := time.Now()
+	if err := command.Start(); err != nil {
+		t.Fatalf("start release binary: %v", err)
+	}
 	go func() {
-		serverDone <- Serve(serverContext, Options{
-			Slug: slug, Port: 0, Open: false, Out: output,
-			Agents: &controlledAgentLister{release: release},
-		})
+		serverDone <- command.Wait()
 	}()
 	url := waitForProgramURL(t, output, serverDone)
 	processStartToURL := durationMilliseconds(time.Since(started))
 
-	tab, cancelTab := chromedp.NewContext(browser)
-	defer cancelTab()
-	tab, cancelTimeout := context.WithTimeout(tab, 20*time.Second)
+	tab, cancelTimeout := context.WithTimeout(browser, 20*time.Second)
 	defer cancelTimeout()
 	if err := chromedp.Run(tab, chromedp.ActionFunc(func(ctx context.Context) error {
-		_, err := page.AddScriptToEvaluateOnNewDocument(`
-			window.__relayLongTasks = [];
-			new PerformanceObserver((list) => {
-				for (const entry of list.getEntries()) {
-					window.__relayLongTasks.push(entry.duration);
-				}
-			}).observe({type: "longtask", buffered: true});
-		`).Do(ctx)
-		return err
+		return heapprofiler.CollectGarbage().Do(ctx)
 	})); err != nil {
-		t.Fatalf("install performance observer: %v", err)
+		t.Fatalf("collect browser garbage before navigation: %v", err)
 	}
+	navigationStarted := time.Now()
 	if err := chromedp.Run(tab,
 		chromedp.Navigate(url),
-		chromedp.Poll(`document.querySelectorAll(".card").length === 100 &&
-			document.querySelector("#program-title").textContent === "Reference Program"`, nil),
+		waitForBrowserCondition(`document.querySelectorAll(".card").length === 100 &&
+			document.querySelector("#program-title").textContent === "Reference Program"`),
 	); err != nil {
 		t.Fatalf("navigate to usable program UI: %v", err)
 	}
-	navigationToUsable := durationMilliseconds(time.Since(started))
+	var navigationToUsable float64
+	if err := chromedp.Run(tab, chromedp.Evaluate(`window.__relayUsableAt`, &navigationToUsable)); err != nil {
+		t.Fatalf("read navigation-to-usable timing: %v", err)
+	}
+	if navigationToUsable <= 0 {
+		navigationToUsable = durationMilliseconds(time.Since(navigationStarted))
+	}
 
 	var initial resourceTiming
 	if err := chromedp.Run(tab, chromedp.Evaluate(`
@@ -146,37 +190,42 @@ func measureBrowserRun(t *testing.T, browser context.Context, slug string) brows
 	beforeBytes := resourceBytes(t, tab)
 	drawerStarted := time.Now()
 	if err := chromedp.Run(tab,
-		chromedp.Click(`.card[data-item="w1"]`, chromedp.ByQuery),
-		chromedp.Poll(`document.querySelector("#drawer").dataset.state === "open" &&
-			document.querySelector("#drawer-title").textContent === "Reference task 001"`, nil),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+		waitForBrowserCondition(`document.querySelector("#drawer").dataset.state === "open" &&
+			document.querySelector("#drawer-title").textContent === "Reference task 001"`),
 	); err != nil {
 		t.Fatalf("open task drawer: %v", err)
 	}
 	clickToDrawer := durationMilliseconds(time.Since(drawerStarted))
-	fileStarted := time.Now()
+	var artifactText string
 	if err := chromedp.Run(tab,
-		chromedp.Poll(`(() => {
+		waitForBrowserCondition(`(() => {
 			return Array.from(document.querySelectorAll(".artifact-text"))
 				.some((artifact) => artifact.textContent.length === 131072);
-		})()`, nil),
+		})()`),
+		chromedp.Evaluate(`Array.from(document.querySelectorAll(".artifact-text"))
+			.find((artifact) => artifact.textContent.length === 131072).textContent`, &artifactText),
 	); err != nil {
 		t.Fatalf("wait for selected artifact: %v", err)
 	}
-	clickToFileContent := durationMilliseconds(time.Since(fileStarted))
+	clickToFileContent := durationMilliseconds(time.Since(drawerStarted))
+	if want := strings.Repeat("a", 128*1024); artifactText != want {
+		t.Fatalf("selected artifact content differs from deterministic fixture")
+	}
 	incrementalBytes := resourceBytes(t, tab) - beforeBytes
 
 	if err := chromedp.Run(tab,
 		chromedp.Evaluate(`document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}))`, nil),
-		chromedp.Poll(`document.querySelector("#drawer").hidden === true`, nil),
+		waitForBrowserCondition(`document.querySelector("#drawer").hidden === true`),
 	); err != nil {
 		t.Fatalf("close task drawer: %v", err)
 	}
 	reopenStarted := time.Now()
 	if err := chromedp.Run(tab,
-		chromedp.Click(`.card[data-item="w1"]`, chromedp.ByQuery),
-		chromedp.Poll(`document.querySelector("#drawer").dataset.state === "open" &&
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+		waitForBrowserCondition(`document.querySelector("#drawer").dataset.state === "open" &&
 			Array.from(document.querySelectorAll(".artifact-text"))
-				.some((artifact) => artifact.textContent.length === 131072)`, nil),
+				.some((artifact) => artifact.textContent.length === 131072)`),
 	); err != nil {
 		t.Fatalf("reopen task drawer: %v", err)
 	}
@@ -195,13 +244,19 @@ func measureBrowserRun(t *testing.T, browser context.Context, slug string) brows
 		}
 	}
 
-	cancelServer()
+	if err := command.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("stop program UI process: %v", err)
+	}
 	select {
 	case err := <-serverDone:
 		if err != nil {
-			t.Fatalf("stop program UI: %v", err)
+			t.Fatalf("stop program UI: %v: %s", err, strings.TrimSpace(stderr.String()))
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(8 * time.Second):
+		if err := command.Process.Kill(); err != nil {
+			t.Fatalf("kill unresponsive program UI: %v", err)
+		}
+		<-serverDone
 		t.Fatal("program UI did not stop")
 	}
 	return browserSample{
@@ -245,15 +300,65 @@ func resourceBytes(t *testing.T, ctx context.Context) float64 {
 	return bytes
 }
 
-func buildRelayForPerformance(t *testing.T) {
+func waitForBrowserCondition(expression string) chromedp.Action {
+	return chromedp.Evaluate(fmt.Sprintf(`
+		new Promise((resolve) => {
+			const ready = () => Boolean(%s);
+			if (ready()) {
+				resolve(true);
+				return;
+			}
+			const observer = new MutationObserver(() => {
+				if (ready()) {
+					observer.disconnect();
+					resolve(true);
+				}
+			});
+			observer.observe(document.documentElement, {
+				attributes: true,
+				characterData: true,
+				childList: true,
+				subtree: true
+			});
+		})
+	`, expression), nil, func(params *runtime.EvaluateParams) *runtime.EvaluateParams {
+		return params.WithAwaitPromise(true)
+	})
+}
+
+func buildRelayForPerformance(t *testing.T) string {
 	t.Helper()
 	binary := filepath.Join(t.TempDir(), "relay")
-	command := exec.Command("go", "build", "-o", binary, "./cmd/relay")
+	command := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", binary, "./cmd/relay")
 	command.Dir = filepath.Join("..", "..")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("build relay for performance test: %v\n%s", err, output)
 	}
+	return binary
+}
+
+func performanceCommandDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	script := `#!/bin/sh
+printf '%s\n' '{"number":42,"url":"https://github.example/pr/42","state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","statusCheckRollup":[],"title":"Fixture PR","updatedAt":"2026-09-14T20:00:00Z"}'
+`
+	if err := os.WriteFile(gh, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	return dir
+}
+
+func environmentWithPath(path string) []string {
+	environment := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "PATH=") {
+			environment = append(environment, entry)
+		}
+	}
+	return append(environment, "PATH="+path)
 }
 
 func chromeExecutable(t *testing.T) string {

@@ -147,31 +147,32 @@ type GraphEdgeDTO struct {
 
 // ItemDTO contains durable and observed work item state.
 type ItemDTO struct {
-	ID           string            `json:"id"`
-	Kind         string            `json:"kind"`
-	Title        string            `json:"title"`
-	Priority     string            `json:"priority"`
-	Status       string            `json:"status"`
-	Lane         string            `json:"lane"`
-	Repo         string            `json:"repo"`
-	ProjectSlug  string            `json:"project_slug"`
-	Ready        bool              `json:"ready"`
-	Orphaned     bool              `json:"orphaned"`
-	Reasons      []string          `json:"reasons"`
-	Dependencies []string          `json:"dependencies"`
-	Dependents   []string          `json:"dependents"`
-	Contracts    []string          `json:"contracts"`
-	Notes        []string          `json:"notes"`
-	Timestamps   ItemTimestampsDTO `json:"timestamps"`
-	Grant        *GrantDTO         `json:"grant,omitempty"`
-	Child        *ChildDTO         `json:"child,omitempty"`
-	RecordedPR   *PullRequestDTO   `json:"recorded_pr,omitempty"`
-	LivePR       *PullRequestDTO   `json:"live_pr,omitempty"`
-	Worker       *WorkerDTO        `json:"worker,omitempty"`
-	Mailbox      MailboxDTO        `json:"mailbox"`
-	Decisions    []DecisionDTO     `json:"decisions"`
-	Artifacts    []ArtifactDTO     `json:"artifacts"`
-	Warnings     []string          `json:"warnings"`
+	ID             string            `json:"id"`
+	Kind           string            `json:"kind"`
+	Title          string            `json:"title"`
+	Priority       string            `json:"priority"`
+	Status         string            `json:"status"`
+	Lane           string            `json:"lane"`
+	Repo           string            `json:"repo"`
+	ProjectSlug    string            `json:"project_slug"`
+	Ready          bool              `json:"ready"`
+	Orphaned       bool              `json:"orphaned"`
+	Reasons        []string          `json:"reasons"`
+	Dependencies   []string          `json:"dependencies"`
+	Dependents     []string          `json:"dependents"`
+	Contracts      []string          `json:"contracts"`
+	Notes          []string          `json:"notes"`
+	Timestamps     ItemTimestampsDTO `json:"timestamps"`
+	Grant          *GrantDTO         `json:"grant,omitempty"`
+	ChildAvailable bool              `json:"child_available"`
+	Child          *ChildDTO         `json:"child,omitempty"`
+	RecordedPR     *PullRequestDTO   `json:"recorded_pr,omitempty"`
+	LivePR         *PullRequestDTO   `json:"live_pr,omitempty"`
+	Worker         *WorkerDTO        `json:"worker,omitempty"`
+	Mailbox        MailboxDTO        `json:"mailbox"`
+	Decisions      []DecisionDTO     `json:"decisions"`
+	Artifacts      []ArtifactDTO     `json:"artifacts"`
+	Warnings       []string          `json:"warnings"`
 }
 
 // ItemTimestampsDTO contains work item lifecycle timestamps.

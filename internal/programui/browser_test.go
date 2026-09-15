@@ -199,7 +199,7 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 	if err := chromedp.Run(browser,
 		chromedp.Navigate(url),
 		chromedp.Poll(`document.querySelectorAll(".card").length === 2`, nil),
-		chromedp.Click(`.card[data-item="w1"]`, chromedp.ByQuery),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
 		chromedp.Poll(`document.querySelector("#drawer-title").textContent === "First task"`, nil),
 	); err != nil {
 		t.Fatal(err)
@@ -214,7 +214,7 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 			`document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}))`, nil,
 		),
 		chromedp.Poll(`document.querySelector("#drawer").hidden === true`, nil),
-		chromedp.Click(`.card[data-item="w2"]`, chromedp.ByQuery),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w2"]').click()`, nil),
 		chromedp.Poll(`Array.from(document.querySelectorAll(".artifact-text"))
 			.some((node) => node.textContent === "w2:assignment.md")`, nil),
 	); err != nil {
@@ -240,7 +240,7 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 			`document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}))`, nil,
 		),
 		chromedp.Poll(`document.querySelector("#drawer").hidden === true`, nil),
-		chromedp.Click(`.card[data-item="w1"]`, chromedp.ByQuery),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
 		chromedp.Poll(`Array.from(document.querySelectorAll(".artifact-text"))
 			.some((node) => node.textContent === "w1:assignment.md:updated")`, nil),
 	); err != nil {
@@ -257,7 +257,7 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 			`document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}))`, nil,
 		),
 		chromedp.Poll(`document.querySelector("#drawer").hidden === true`, nil),
-		chromedp.Click(`.card[data-item="w2"]`, chromedp.ByQuery),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w2"]').click()`, nil),
 		chromedp.Poll(`Array.from(document.querySelectorAll(".artifact-text"))
 			.some((node) => node.textContent === "w2:assignment.md:updated")`, nil),
 	); err != nil {

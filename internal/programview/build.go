@@ -60,6 +60,7 @@ type Options struct {
 	ArtifactLimit int64
 	DetailItem    string
 	LocalOnly     bool
+	SummaryOnly   bool
 }
 
 // Build constructs a read-only snapshot of an active or archived program.
@@ -145,7 +146,11 @@ func Build(slug string, options Options) (Snapshot, error) {
 	snapshot.ProgramArtifacts = programArtifacts(programDir, limit, &snapshot.Warnings)
 	snapshot.Program.DisplayTitle, snapshot.Program.Summary =
 		displayIdentity(p.Title, artifactBody(snapshot.ProgramArtifacts, "goal.md"))
-	snapshot.OpenDecisions, snapshot.ResolvedDecisions = decisionLists(observed.Decisions)
+	if options.SummaryOnly {
+		snapshot.ProgramArtifacts = []ArtifactDTO{}
+	} else {
+		snapshot.OpenDecisions, snapshot.ResolvedDecisions = decisionLists(observed.Decisions)
+	}
 
 	var agents []herdr.Agent
 	var agentsErr error
@@ -166,9 +171,14 @@ func Build(slug string, options Options) (Snapshot, error) {
 	}
 	snapshot.Items = buildItems(
 		context.Background(), observed, plan, orphaned, detailItem, limit,
-		options.GitHub, prefetched, agents, agentsErr, &snapshot,
+		!options.SummaryOnly, options.GitHub, prefetched, agents, agentsErr, &snapshot,
 	)
-	snapshot.Contracts = buildContracts(programDir, observed.Contracts, selectedContractRefs(observed.Items, detailItem), limit, &snapshot.Warnings)
+	if !options.SummaryOnly {
+		snapshot.Contracts = buildContracts(
+			programDir, observed.Contracts, selectedContractRefs(observed.Items, detailItem),
+			limit, &snapshot.Warnings,
+		)
+	}
 	return snapshot, nil
 }
 
@@ -584,6 +594,7 @@ func buildItems(
 	orphaned map[string]bool,
 	detailItem string,
 	limit int64,
+	includeArtifacts bool,
 	github Fetcher,
 	prefetched map[string]memoResult,
 	agents []herdr.Agent,
@@ -619,7 +630,8 @@ func buildItems(
 				built[index] = builtItem{
 					dto: buildItem(
 						ctx, p, items[index], ready, reasons, dependents, orphaned,
-						detailItem, limit, github, prefetched, agents, agentsErr, &itemSnapshot,
+						detailItem, limit, includeArtifacts, github, prefetched, agents, agentsErr,
+						&itemSnapshot,
 					),
 					snapshot: itemSnapshot,
 				}
@@ -655,12 +667,17 @@ func buildItem(
 	orphaned map[string]bool,
 	detailItem string,
 	limit int64,
+	includeArtifacts bool,
 	github Fetcher,
 	prefetched map[string]memoResult,
 	agents []herdr.Agent,
 	agentsErr error,
 	snapshot *Snapshot,
 ) ItemDTO {
+	artifacts := []ArtifactDTO{}
+	if includeArtifacts {
+		artifacts = missingChildArtifacts()
+	}
 	dto := ItemDTO{
 		ID:           item.ID,
 		Kind:         string(item.Kind),
@@ -687,8 +704,16 @@ func buildItem(
 		},
 		Mailbox:   emptyMailbox(),
 		Decisions: itemDecisions(p.Decisions, item.ID),
-		Artifacts: missingChildArtifacts(),
+		Artifacts: artifacts,
 		Warnings:  []string{},
+	}
+	if !includeArtifacts {
+		dto.Repo = ""
+		dto.ProjectSlug = ""
+		dto.Contracts = []string{}
+		dto.Notes = []string{}
+		dto.Timestamps = ItemTimestampsDTO{}
+		dto.Decisions = []DecisionDTO{}
 	}
 	if dto.Orphaned {
 		dto.Reasons = append(dto.Reasons, "linked child project is missing or archived without verified merge")
@@ -704,9 +729,12 @@ func buildItem(
 		dto.Warnings = append(dto.Warnings, fmt.Sprintf("Herdr unavailable: %v", agentsErr))
 	}
 	if childErr == nil && item.ProjectSlug != "" {
-		dto.Child = childDTO(manifest, childDir, archived, &dto.Warnings)
-		dto.Artifacts = childArtifacts(childDir, detailItem == item.ID, limit, &dto.Warnings)
-		dto.Mailbox = mailboxCounts(childDir, item.ID, snapshot, &dto.Warnings)
+		dto.ChildAvailable = true
+		if includeArtifacts {
+			dto.Child = childDTO(manifest, childDir, archived, &dto.Warnings)
+			dto.Artifacts = childArtifacts(childDir, detailItem == item.ID, limit, &dto.Warnings)
+			dto.Mailbox = mailboxCounts(childDir, item.ID, snapshot, &dto.Warnings)
+		}
 		dto.RecordedPR = recordedPullRequest(manifest, filepath.Join(childDir, "state.json"), item.PRRef, &dto.Warnings)
 		worktree := ""
 		if manifest.Worktree != nil {

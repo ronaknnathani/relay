@@ -78,6 +78,11 @@ const ARTIFACT_HINTS = {
 };
 
 const dom = {};
+const cardTemplate = document.createElement("button");
+cardTemplate.className = "card";
+cardTemplate.type = "button";
+cardTemplate.append(document.createElement("p"));
+cardTemplate.firstElementChild.className = "card__title";
 
 const state = {
   snapshot: null,
@@ -91,6 +96,7 @@ const state = {
   contractByItem: new Map(),
   artifactSelection: new Map(),
   artifactCache: new Map(),
+  itemsByID: new Map(),
   artifactController: null,
   artifactGeneration: 0,
   programGeneration: 0,
@@ -106,6 +112,9 @@ const state = {
   failures: 0,
   live: false,
 };
+
+const initialProgramController = new AbortController();
+const initialProgramRequest = requestProgram(initialProgramController);
 
 /* ---------- DOM helpers ---------- */
 
@@ -498,7 +507,7 @@ function items() {
 }
 
 function itemByID(id) {
-  return items().find((item) => item.id === id) || null;
+  return state.itemsByID.get(id) || null;
 }
 
 function selectedItem() {
@@ -536,6 +545,11 @@ function toggleTheme() {
 /* ---------- header ---------- */
 
 function renderHeader() {
+  renderHeaderIdentity();
+  renderHeaderDetails();
+}
+
+function renderHeaderIdentity() {
   const program = programOf();
   const displayTitle = text(program.display_title) ||
     truncate(text(program.title, "Untitled program"), 72);
@@ -544,7 +558,19 @@ function renderHeader() {
   dom.title.textContent = displayTitle;
   dom.summary.textContent = text(program.summary);
   dom.slug.textContent = text(program.slug, "program");
+  if (program.archived) {
+    dom.slug.textContent = `${text(program.slug, "program")} (archived)`;
+  }
+}
 
+function renderHeaderTitle() {
+  const program = programOf();
+  dom.title.textContent = text(program.display_title) ||
+    truncate(text(program.title, "Untitled program"), 72);
+}
+
+function renderHeaderDetails() {
+  const program = programOf();
   const programState = text(program.state, "unknown");
   dom.programState.replaceChildren(
     stateGlyph(programState),
@@ -554,10 +580,6 @@ function renderHeader() {
   setText(dom.updated, program.updated_at ? `updated ${formatRelative(program.updated_at)}` : "");
   setText(dom.repo, text(program.repo));
   setText(dom.agent, program.agent ? `agent ${program.agent}` : "");
-  if (program.archived) {
-    dom.slug.textContent = `${text(program.slug, "program")} (archived)`;
-  }
-
   renderOverview();
   renderNextAction();
   renderWarningCount();
@@ -888,19 +910,7 @@ function renderRoadmap() {
   const graph = snapshotOf().graph || {};
   const nodes = list(graph.nodes);
   const plan = planOf();
-
-  dom.roadmapNote.textContent = [
-    `${list(plan.ready).length} ready`,
-    `${list(plan.in_flight).length} in flight`,
-    `${list(plan.blocked).length} blocked`,
-    list(plan.orphaned).length ? `${list(plan.orphaned).length} orphaned` : "",
-  ].filter(Boolean).join(" · ");
-
-  dom.roadmapCycle.hidden = !graph.cyclic;
-  if (graph.cyclic) {
-    dom.roadmapCycle.textContent =
-      "This program has a dependency cycle. Cyclic links are drawn dashed and stage order is approximate.";
-  }
+  renderRoadmapSummary(graph, plan, nodes);
 
   state.cards.clear();
   dom.graphNodes.replaceChildren();
@@ -917,9 +927,8 @@ function renderRoadmap() {
   }
   dom.roadmapEmpty.hidden = true;
   dom.roadmapScroll.hidden = false;
-  dom.graph.setAttribute("aria-label", roadmapLabel(nodes, list(graph.edges)));
-
   const stages = stageLists(graph, nodes);
+  const nodesByID = new Map(nodes.map((node) => [node.id, node]));
   const hasSelection = Boolean(selectedItem());
   let position = 0;
   const fragment = new DocumentFragment();
@@ -929,7 +938,7 @@ function renderRoadmap() {
     stage.append(make("p", "stage__label", `Stage ${index + 1} · ${plural(ids.length, "task")}`));
     const row = make("div", "stage__row");
     ids.forEach((id) => {
-      const node = nodes.find((entry) => entry.id === id) || { id, title: "", lane: "" };
+      const node = nodesByID.get(id) || { id, title: "", lane: "" };
       const card = taskCard(node, position, hasSelection);
       card.dataset.stage = String(index);
       position += 1;
@@ -945,6 +954,81 @@ function renderRoadmap() {
       drawConnectorsForCurrentGraph();
     }
   });
+}
+
+function renderFastRoadmap() {
+  const nodes = list((snapshotOf().graph || {}).nodes);
+  state.cards.clear();
+  dom.graphEdges.replaceChildren();
+  if (nodes.length === 0) {
+    renderRoadmap();
+    return;
+  }
+  dom.roadmapEmpty.hidden = true;
+  dom.roadmapScroll.hidden = false;
+  const stage = make("div", "stage");
+  const row = make("div", "stage__row");
+  nodes.forEach((node) => {
+    const card = cardTemplate.cloneNode(true);
+    card.dataset.item = node.id;
+    card.firstElementChild.textContent = text(node.title, "Untitled task");
+    state.cards.set(node.id, card);
+    row.append(card);
+  });
+  stage.append(row);
+  dom.graphNodes.replaceChildren(stage);
+}
+
+function upgradeFastRoadmap() {
+  const graph = snapshotOf().graph || {};
+  const nodes = list(graph.nodes);
+  const nodesByID = new Map(nodes.map((node) => [node.id, node]));
+  const fragment = new DocumentFragment();
+  let position = 0;
+  stageLists(graph, nodes).forEach((ids, index) => {
+    const stage = make("div", "stage");
+    stage.dataset.stage = String(index);
+    stage.append(make("p", "stage__label", `Stage ${index + 1} · ${plural(ids.length, "task")}`));
+    const row = make("div", "stage__row");
+    ids.forEach((id) => {
+      const card = state.cards.get(id);
+      const node = nodesByID.get(id);
+      if (!card || !node) {
+        return;
+      }
+      card.dataset.lane = text(node.lane, "pending");
+      card.dataset.focusKey = `card:${node.id}`;
+      card.dataset.selected = id === state.selected ? "true" : "false";
+      card.dataset.stage = String(index);
+      card.setAttribute("tabindex", state.selected
+        ? (id === state.selected ? "0" : "-1")
+        : (position === 0 ? "0" : "-1"));
+      position += 1;
+      decorateTaskCard(card, node, itemByID(id), text(node.lane, "pending"));
+      row.append(card);
+    });
+    stage.append(row);
+    fragment.append(stage);
+  });
+  dom.graphNodes.replaceChildren(fragment);
+  renderRoadmapSummary(graph, planOf(), nodes);
+  state.dirtyTabs.delete("roadmap");
+  window.requestAnimationFrame(drawConnectorsForCurrentGraph);
+}
+
+function renderRoadmapSummary(graph, plan, nodes) {
+  dom.roadmapNote.textContent = [
+    `${list(plan.ready).length} ready`,
+    `${list(plan.in_flight).length} in flight`,
+    `${list(plan.blocked).length} blocked`,
+    list(plan.orphaned).length ? `${list(plan.orphaned).length} orphaned` : "",
+  ].filter(Boolean).join(" · ");
+  dom.roadmapCycle.hidden = !graph.cyclic;
+  if (graph.cyclic) {
+    dom.roadmapCycle.textContent =
+      "This program has a dependency cycle. Cyclic links are drawn dashed and stage order is approximate.";
+  }
+  dom.graph.setAttribute("aria-label", roadmapLabel(nodes, list(graph.edges)));
 }
 
 function stageLists(graph, nodes) {
@@ -979,8 +1063,7 @@ function roadmapLabel(nodes, edges) {
 function taskCard(node, position, hasSelection) {
   const item = itemByID(node.id);
   const lane = text(node.lane, item ? text(item.status) : "pending");
-  const card = make("button", "card");
-  card.type = "button";
+  const card = cardTemplate.cloneNode(true);
   card.dataset.lane = lane;
   card.dataset.item = node.id;
   card.dataset.focusKey = `card:${node.id}`;
@@ -988,13 +1071,19 @@ function taskCard(node, position, hasSelection) {
   card.setAttribute("tabindex", hasSelection
     ? (node.id === state.selected ? "0" : "-1")
     : (position === 0 ? "0" : "-1"));
-  card.setAttribute("aria-label", cardLabel(node, item, lane));
+  card.firstElementChild.textContent = text(node.title, "Untitled task");
+  decorateTaskCard(card, node, item, lane);
+  return card;
+}
 
+function decorateTaskCard(card, node, item, lane) {
+  if (card.querySelector(".card__foot")) {
+    return;
+  }
   const top = make("div", "card__top");
   top.append(make("span", "card__id", node.id), statusNode(lane));
-  card.append(top);
-  card.append(make("p", "card__title", text(node.title, "Untitled task")));
-
+  card.prepend(top);
+  card.setAttribute("aria-label", cardLabel(node, item, lane));
   const foot = make("div", "card__foot");
   if (item) {
     foot.append(make("span", "", text(item.priority, "P?")));
@@ -1013,13 +1102,6 @@ function taskCard(node, position, hasSelection) {
     }
   }
   card.append(foot);
-
-  card.addEventListener("click", () => {
-    selectItem(node.id);
-    openDrawer(false);
-  });
-  card.addEventListener("keydown", (event) => onCardKey(event, node.id));
-  return card;
 }
 
 function cardLabel(node, item, lane) {
@@ -2031,7 +2113,10 @@ function itemContractSection(item) {
 
 function artifactSection(item) {
   const section = detailSection("Files");
-  const artifacts = list(item.artifacts);
+  const metadataAvailable = list(item.artifacts).length > 0;
+  const artifacts = metadataAvailable
+    ? list(item.artifacts)
+    : (item.child_available ? Object.keys(ARTIFACT_HINTS).map((name) => ({ name })) : []);
   if (artifacts.length === 0) {
     section.append(emptyNote("No worker files yet. They appear once the task has a child project."));
     return section;
@@ -2055,7 +2140,7 @@ function artifactSection(item) {
       currentArtifactKey(item.id) === artifactCacheKey({ kind: "task", item: item.id, name: artifact.name })
         ? "true"
         : "false");
-    if (!artifact.present) {
+    if (metadataAvailable && !artifact.present) {
       button.title = "Not written yet";
     }
     button.addEventListener("click", () => {
@@ -2069,7 +2154,9 @@ function artifactSection(item) {
     nav.append(button);
   });
   section.append(nav);
-  section.append(make("p", "muted", `${present.length} of ${artifacts.length} files written`));
+  section.append(make("p", "muted", metadataAvailable
+    ? `${present.length} of ${artifacts.length} files written`
+    : "File metadata loads with the background refresh."));
 
   const artifact = artifacts.find((entry) => entry.name === selected);
   if (!artifact) {
@@ -2423,6 +2510,24 @@ function render() {
   restoreScroll(scroll);
 }
 
+function renderInitial() {
+  renderHeaderTitle();
+  state.dirtyTabs = new Set(TABS);
+  if (state.tab === "roadmap") {
+    renderFastRoadmap();
+  } else {
+    renderActiveTab();
+  }
+  window.requestAnimationFrame(() => {
+    renderHeader();
+    if (state.tab === "roadmap") {
+      upgradeFastRoadmap();
+    } else {
+      renderActiveTab();
+    }
+  });
+}
+
 function renderActiveTab() {
   if (!state.dirtyTabs.has(state.tab)) {
     return;
@@ -2671,6 +2776,20 @@ function bindControls() {
   dom.drawerScrim.addEventListener("click", closeDrawer);
   dom.drawer.addEventListener("keydown", onDrawerKey);
   dom.drawerNav.addEventListener("keydown", onDetailNavKey);
+  dom.graphNodes.addEventListener("click", (event) => {
+    const card = event.target.closest(".card");
+    if (!card) {
+      return;
+    }
+    selectItem(card.dataset.item);
+    openDrawer(false);
+  });
+  dom.graphNodes.addEventListener("keydown", (event) => {
+    const card = event.target.closest(".card");
+    if (card) {
+      onCardKey(event, card.dataset.item);
+    }
+  });
   dom.drawerScroll.addEventListener("scroll", () => {
     if (state.drawerOpen) {
       syncDetailSection();
@@ -2693,6 +2812,14 @@ function bindControls() {
 let pollTimer = null;
 let programController = null;
 
+function requestProgram(controller) {
+  return fetch("/api/program", {
+    cache: "no-store",
+    signal: controller.signal,
+    headers: { Accept: "application/json" },
+  });
+}
+
 function schedule(delay) {
   if (pollTimer !== null) {
     clearTimeout(pollTimer);
@@ -2707,19 +2834,15 @@ function signatureOf(body) {
   return body.replace(/"generated_at":"[^"]*"/g, "");
 }
 
-async function poll() {
+async function poll(preloadedRequest, preloadedController) {
   if (programController) {
     programController.abort();
   }
-  const controller = new AbortController();
+  const controller = preloadedController || new AbortController();
   const generation = ++state.programGeneration;
   programController = controller;
   try {
-    const response = await fetch("/api/program", {
-      cache: "no-store",
-      signal: controller.signal,
-      headers: { Accept: "application/json" },
-    });
+    const response = await (preloadedRequest || requestProgram(controller));
     if (!response.ok) {
       throw new Error(`Program request failed with status ${response.status}`);
     }
@@ -2730,8 +2853,24 @@ async function poll() {
     }
     state.failures = 0;
     hideReconnect();
-    const signature = signatureOf(body);
+    const initial = !state.snapshot;
     state.snapshot = snapshot;
+    state.itemsByID = new Map(items().map((item) => [item.id, item]));
+    if (initial) {
+      renderInitial();
+      window.requestAnimationFrame(() => {
+        state.signature = signatureOf(body);
+        setSnapshotFeed(snapshot);
+        if (state.pendingDrawer && state.selected) {
+          state.pendingDrawer = false;
+          openDrawer(true);
+        }
+        loadCurrentArtifact(true);
+        schedule(POLL_INTERVAL);
+      });
+      return;
+    }
+    const signature = signatureOf(body);
     setSnapshotFeed(snapshot);
     if (signature === state.signature) {
       renderHeader();
@@ -2777,7 +2916,7 @@ function start() {
   selectTab(parsed.tab || "roadmap");
   renderDetail();
   setFeed(false, "Connecting…");
-  poll();
+  poll(initialProgramRequest, initialProgramController);
   window.setInterval(() => {
     if (state.snapshot) {
       renderHeader();
