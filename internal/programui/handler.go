@@ -20,9 +20,8 @@ import (
 )
 
 const (
-	contentSecurityPolicy  = "default-src 'self'; script-src 'self' 'sha256-UXIL+j6UmJdVusQ2iRt/3tKDJxuh42y6D1HM1W2MC54=' 'sha256-+pn1476Cb9QcdZ8587Lzy5K3YliKq8dBuNchMMhir6w='; style-src 'self' 'sha256-LZsfRK6oQ7rdqoRqAydX8hz9pr9+LkYZGbCNUL9y7VI='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy  = "default-src 'self'; script-src 'self' 'sha256-UXIL+j6UmJdVusQ2iRt/3tKDJxuh42y6D1HM1W2MC54=' 'sha256-+pn1476Cb9QcdZ8587Lzy5K3YliKq8dBuNchMMhir6w='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	bootstrapTemplateToken = "__RELAY_BOOTSTRAP__"
-	cssTemplateToken       = "__RELAY_CSS__"
 	roadmapTemplateToken   = "__RELAY_INITIAL_ROADMAP__"
 )
 
@@ -137,7 +136,7 @@ func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	case "/":
 		h.serveIndex(response, request)
 	case "/app.css":
-		h.serveAsset(response, request, "assets/app.css", "text/css; charset=utf-8")
+		h.serveAsset(response, request, "assets/app.min.css", "text/css; charset=utf-8")
 	case "/app-deferred.css":
 		h.serveAsset(response, request, "assets/app-deferred.min.css", "text/css; charset=utf-8")
 	case "/app.js":
@@ -179,11 +178,6 @@ func prepareIndex(roadmap []byte) ([]byte, error) {
 		return nil, fmt.Errorf("read embedded asset assets/bootstrap.min.js: %w", err)
 	}
 	index = bytes.Replace(index, []byte(bootstrapTemplateToken), bootstrap, 1)
-	styles, err := fs.ReadFile(embeddedAssets, "assets/app.min.css")
-	if err != nil {
-		return nil, fmt.Errorf("read embedded asset assets/app.min.css: %w", err)
-	}
-	index = bytes.Replace(index, []byte(cssTemplateToken), styles, 1)
 	index = bytes.Replace(index, []byte(roadmapTemplateToken), roadmap, 1)
 	return index, nil
 }

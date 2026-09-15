@@ -117,8 +117,9 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		!strings.Contains(index, `<script>__RELAY_BOOTSTRAP__</script>`) {
 		t.Error("index.html must embed the initial roadmap before the inline bootstrap")
 	}
-	if strings.Count(index, "<link ") != 0 || !strings.Contains(index, `<style>__RELAY_CSS__</style>`) {
-		t.Error("index.html must inline the embedded stylesheet")
+	if strings.Count(index, "<link ") != 1 ||
+		!strings.Contains(index, `<link rel="stylesheet" href="/app.css">`) {
+		t.Error("index.html must load the minified core stylesheet")
 	}
 }
 
@@ -192,11 +193,6 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	bootstrapHash := "'sha256-" + base64.StdEncoding.EncodeToString(bootstrapDigest[:]) + "'"
 	if !strings.Contains(contentSecurityPolicy, bootstrapHash) {
 		t.Errorf("content security policy is missing the bootstrap hash %s", bootstrapHash)
-	}
-	styleDigest := sha256.Sum256([]byte(minifiedStyles))
-	styleHash := "'sha256-" + base64.StdEncoding.EncodeToString(styleDigest[:]) + "'"
-	if !strings.Contains(contentSecurityPolicy, styleHash) {
-		t.Errorf("content security policy is missing the stylesheet hash %s", styleHash)
 	}
 	if strings.Index(script, "applyTheme(storedTheme()") > strings.Index(script, "function start()") {
 		t.Error("the theme must be applied before the app boot code")
