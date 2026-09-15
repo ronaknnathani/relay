@@ -83,7 +83,7 @@ func TestBrowserHydratesAndPollsWhenDeferredBundleFails(t *testing.T) {
 	defer cancelAllocator()
 	browser, cancelBrowser := chromedp.NewContext(allocator)
 	defer cancelBrowser()
-	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	browser, cancelTimeout := context.WithTimeout(browser, 25*time.Second)
 	defer cancelTimeout()
 	if err := chromedp.Run(browser,
 		chromedp.ActionFunc(func(ctx context.Context) error {

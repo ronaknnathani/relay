@@ -20,10 +20,10 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-UXIL+j6UmJdVusQ2iRt/3tKDJxuh42y6D1HM1W2MC54=' 'sha256-6kJDvoDlFZNHifgfCkGMPolfHQOdX2QVHfrKiTwAFI8='; style-src 'self' 'sha256-LZsfRK6oQ7rdqoRqAydX8hz9pr9+LkYZGbCNUL9y7VI='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-	appTemplateToken      = "__RELAY_APP__"
-	cssTemplateToken      = "__RELAY_CSS__"
-	roadmapTemplateToken  = "__RELAY_INITIAL_ROADMAP__"
+	contentSecurityPolicy  = "default-src 'self'; script-src 'self' 'sha256-UXIL+j6UmJdVusQ2iRt/3tKDJxuh42y6D1HM1W2MC54=' 'sha256-lMTkawIGgbGW3A0zWuQPyZjYydXgKQh4Y8gtjkKI87c='; style-src 'self' 'sha256-LZsfRK6oQ7rdqoRqAydX8hz9pr9+LkYZGbCNUL9y7VI='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	bootstrapTemplateToken = "__RELAY_BOOTSTRAP__"
+	cssTemplateToken       = "__RELAY_CSS__"
+	roadmapTemplateToken   = "__RELAY_INITIAL_ROADMAP__"
 )
 
 //go:embed assets/*
@@ -174,11 +174,11 @@ func prepareIndex(roadmap []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read embedded asset assets/index.min.html: %w", err)
 	}
-	script, err := fs.ReadFile(embeddedAssets, "assets/app.min.js")
+	bootstrap, err := fs.ReadFile(embeddedAssets, "assets/bootstrap.min.js")
 	if err != nil {
-		return nil, fmt.Errorf("read embedded asset assets/app.min.js: %w", err)
+		return nil, fmt.Errorf("read embedded asset assets/bootstrap.min.js: %w", err)
 	}
-	index = bytes.Replace(index, []byte(appTemplateToken), script, 1)
+	index = bytes.Replace(index, []byte(bootstrapTemplateToken), bootstrap, 1)
 	styles, err := fs.ReadFile(embeddedAssets, "assets/app.min.css")
 	if err != nil {
 		return nil, fmt.Errorf("read embedded asset assets/app.min.css: %w", err)

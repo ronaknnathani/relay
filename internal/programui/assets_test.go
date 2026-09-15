@@ -17,6 +17,8 @@ var assetNames = []string{
 	"assets/index.min.html",
 	"assets/app.css",
 	"assets/app.min.css",
+	"assets/bootstrap.js",
+	"assets/bootstrap.min.js",
 	"assets/app-deferred.css",
 	"assets/app-deferred.min.css",
 	"assets/app.js",
@@ -112,8 +114,8 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 
 	if strings.Count(index, "<script") != 3 ||
 		!strings.Contains(index, `<script id="initial-program" type="application/json">__RELAY_INITIAL_ROADMAP__</script>`) ||
-		!strings.Contains(index, `<script>__RELAY_APP__</script>`) {
-		t.Error("index.html must embed the initial roadmap before the inline application bundle")
+		!strings.Contains(index, `<script>__RELAY_BOOTSTRAP__</script>`) {
+		t.Error("index.html must embed the initial roadmap before the inline bootstrap")
 	}
 	if strings.Count(index, "<link ") != 0 || !strings.Contains(index, `<style>__RELAY_CSS__</style>`) {
 		t.Error("index.html must inline the embedded stylesheet")
@@ -173,11 +175,6 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	if len(minified) >= len(script) || !strings.Contains(minified, "relay-usable") {
 		t.Error("the served application bundle must be minified and retain the usable marker")
 	}
-	digest := sha256.Sum256([]byte(minified))
-	hash := "'sha256-" + base64.StdEncoding.EncodeToString(digest[:]) + "'"
-	if !strings.Contains(contentSecurityPolicy, hash) {
-		t.Errorf("content security policy is missing the application hash %s", hash)
-	}
 	minifiedStyles := readAsset(t, "assets/app.min.css")
 	if len(minifiedStyles) >= len(readStyleAssets(t)) {
 		t.Error("the served stylesheet must be minified")
@@ -185,6 +182,16 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	if len(readAsset(t, "assets/app-deferred.min.css")) >=
 		len(readAsset(t, "assets/app-deferred.css")) {
 		t.Error("the deferred stylesheet must be minified")
+	}
+	bootstrap := readAsset(t, "assets/bootstrap.js")
+	minifiedBootstrap := readAsset(t, "assets/bootstrap.min.js")
+	if len(minifiedBootstrap) >= len(bootstrap) || !strings.Contains(minifiedBootstrap, "/app.js") {
+		t.Error("the first-paint bootstrap must be minified and load the complete core bundle")
+	}
+	bootstrapDigest := sha256.Sum256([]byte(minifiedBootstrap))
+	bootstrapHash := "'sha256-" + base64.StdEncoding.EncodeToString(bootstrapDigest[:]) + "'"
+	if !strings.Contains(contentSecurityPolicy, bootstrapHash) {
+		t.Errorf("content security policy is missing the bootstrap hash %s", bootstrapHash)
 	}
 	styleDigest := sha256.Sum256([]byte(minifiedStyles))
 	styleHash := "'sha256-" + base64.StdEncoding.EncodeToString(styleDigest[:]) + "'"
