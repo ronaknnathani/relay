@@ -42,7 +42,7 @@ func TestHandlerCachesRenderedIndex(t *testing.T) {
 	}
 }
 
-func TestHandlerRefreshesEmbeddedRoadmapProjection(t *testing.T) {
+func TestHandlerLoadsCurrentRoadmapOutsideDocument(t *testing.T) {
 	now := time.Date(2026, 9, 15, 16, 0, 0, 0, time.UTC)
 	seed := programview.Snapshot{
 		Schema:  programview.SchemaVersion,
@@ -70,8 +70,17 @@ func TestHandlerRefreshesEmbeddedRoadmapProjection(t *testing.T) {
 		t.Fatalf("GET index status = %d: %s", response.Code, response.Body.String())
 	}
 	if bytes.Contains(response.Body.Bytes(), []byte("Seed roadmap")) ||
+		bytes.Contains(response.Body.Bytes(), []byte("Updated roadmap")) {
+		t.Fatal("rendered index embedded a roadmap projection")
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "http://localhost:4321/api/program?view=roadmap", nil)
+	request.Host = "localhost:4321"
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
 		!bytes.Contains(response.Body.Bytes(), []byte("Updated roadmap")) {
-		t.Fatal("rendered index did not use the feed's current roadmap projection")
+		t.Fatal("roadmap endpoint did not return the feed's current projection")
 	}
 }
 

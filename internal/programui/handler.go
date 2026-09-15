@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	contentSecurityPolicy  = "default-src 'self'; script-src 'self' 'sha256-UXIL+j6UmJdVusQ2iRt/3tKDJxuh42y6D1HM1W2MC54=' 'sha256-X8NRaTAkneNTSrABTKBreW0i8DF955mIuWsmMwcLnXU='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy  = "default-src 'self'; script-src 'self' 'sha256-QmXPyeTpJcOfWgxmo2ABrL1FRCarHmUFgqtkY4lVo50=' 'sha256-Cy0dF384MVj5mJXglyuU52QcwZfPTEhBbJYnKz6vddo='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	bootstrapTemplateToken = "__RELAY_BOOTSTRAP__"
 	roadmapTemplateToken   = "__RELAY_INITIAL_ROADMAP__"
 )
@@ -60,14 +60,10 @@ func newHandler(
 	feed *snapshotFeed,
 	artifactLoader ArtifactLoader,
 ) *handler {
-	roadmap := []byte("null")
-	if feed != nil {
-		roadmap = feed.roadmapResponse()
-	}
-	index, indexErr := prepareIndexTemplate()
+	index, indexErr := prepareIndex([]byte("null"))
 	return &handler{
 		slug: slug, port: port, cache: cache, feed: feed, artifactLoader: artifactLoader,
-		indexTemplate: index, initialRoadmap: roadmap, indexErr: indexErr,
+		index: index, indexErr: indexErr,
 	}
 }
 
@@ -77,8 +73,7 @@ type handler struct {
 	cache          *snapshotCache
 	feed           *snapshotFeed
 	artifactLoader ArtifactLoader
-	indexTemplate  []byte
-	initialRoadmap []byte
+	index          []byte
 	indexErr       error
 }
 
@@ -159,23 +154,18 @@ func (h *handler) serveIndex(response http.ResponseWriter, request *http.Request
 		http.Error(response, h.indexErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	roadmap := h.initialRoadmap
-	if h.feed != nil {
-		roadmap = h.feed.roadmapResponse()
-	}
-	index := bytes.Replace(h.indexTemplate, []byte(roadmapTemplateToken), roadmap, 1)
-	response.Header().Set("Content-Length", strconv.Itoa(len(index)))
+	response.Header().Set("Content-Length", strconv.Itoa(len(h.index)))
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
 	response.WriteHeader(http.StatusOK)
 	if request.Method == http.MethodHead {
 		return
 	}
-	if _, err := response.Write(index); err != nil {
+	if _, err := response.Write(h.index); err != nil {
 		return
 	}
 }
 
-func prepareIndexTemplate() ([]byte, error) {
+func prepareIndex(roadmap []byte) ([]byte, error) {
 	index, err := fs.ReadFile(embeddedAssets, "assets/index.min.html")
 	if err != nil {
 		return nil, fmt.Errorf("read embedded asset assets/index.min.html: %w", err)
@@ -185,6 +175,7 @@ func prepareIndexTemplate() ([]byte, error) {
 		return nil, fmt.Errorf("read embedded asset assets/bootstrap.min.js: %w", err)
 	}
 	index = bytes.Replace(index, []byte(bootstrapTemplateToken), bootstrap, 1)
+	index = bytes.Replace(index, []byte(roadmapTemplateToken), roadmap, 1)
 	return index, nil
 }
 

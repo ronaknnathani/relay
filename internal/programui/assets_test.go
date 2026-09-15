@@ -148,6 +148,7 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 		`<meta name="color-scheme" content="light dark">`,
 		`id="theme-toggle"`,
 		`aria-label="Switch to dark theme"`,
+		`window.__relayRoadmapRequest=fetch("/api/program?view=roadmap"`,
 	})
 
 	head := index[strings.Index(index, "<head>"):strings.Index(index, "</head>")]
@@ -234,9 +235,9 @@ func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
 	requireContains(t, "bootstrap.js", bootstrap, []string{
 		`document.getElementById("app-script")`,
 		`window.__relayBootstrapCleanup`,
-		`const visibleNodes = nodes.length <= 128 ? nodes : nodes.slice(0, 2)`,
+		`const visibleNodes = nodes.slice(0, 2)`,
 		`stage.dataset.label =`,
-		`document.createElementNS(graph.namespaceURI, "path")`,
+		`window.__relayRoadmapRequest`,
 	})
 	requireAbsent(t, "bootstrap.js", bootstrap, []string{
 		"window.setTimeout",
@@ -244,6 +245,7 @@ func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
 	})
 	requireContains(t, "app.js", readAsset(t, "assets/app.js"), []string{
 		`window.__relayCoreReady = true`,
+		`window.__relayRoadmapRequest || requestProgram(initialProgramController, "roadmap")`,
 	})
 }
 
