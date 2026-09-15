@@ -3,7 +3,9 @@ package programui
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -21,14 +23,22 @@ import (
 )
 
 const (
-	performanceRuns = 20
+	performanceRuns         = 20
+	performanceFixture      = "reference-program-v1"
+	performanceHarness      = "complete-roadmap-v2"
+	performanceSourceCommit = "RELAY_PERF_SOURCE_COMMIT"
 )
 
 type performanceReport struct {
-	Mode        string               `json:"mode"`
-	GeneratedAt string               `json:"generated_at"`
-	Samples     map[string][]float64 `json:"samples"`
-	Percentiles map[string]float64   `json:"p95"`
+	Mode            string               `json:"mode"`
+	GeneratedAt     string               `json:"generated_at"`
+	SourceCommit    string               `json:"source_commit"`
+	BinarySHA256    string               `json:"binary_sha256"`
+	FixtureVersion  string               `json:"fixture_version"`
+	HarnessVersion  string               `json:"harness_version"`
+	ChromiumVersion string               `json:"chromium_version"`
+	Samples         map[string][]float64 `json:"samples"`
+	Percentiles     map[string]float64   `json:"p95"`
 }
 
 type browserSample struct {
@@ -56,10 +66,11 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 		binary = buildRelayForPerformance(t)
 	}
 	commandDir := performanceCommandDir(t)
+	chrome := chromeExecutable(t)
 	allocator, cancelAllocator := chromedp.NewExecAllocator(
 		context.Background(),
 		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.ExecPath(chrome),
 			chromedp.Flag("headless", true),
 			chromedp.Flag("disable-gpu", true),
 			chromedp.Flag("no-first-run", true),
@@ -84,9 +95,21 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 				}
 			}).observe({type: "longtask", buffered: true});
 			const relayUsable = () => {
+				const cards = Array.from(document.querySelectorAll(".card"));
+				const refresh = document.querySelector("#refresh");
+				const roadmapTab = document.querySelector("#tab-roadmap");
 				if (window.__relayUsableAt > 0 ||
-					document.querySelectorAll(".card").length !== 100 ||
-					document.querySelector("#program-title")?.textContent !== "Reference Program") {
+					document.querySelector("#program-title")?.textContent !== "Reference Program" ||
+					!document.querySelector("#program-summary")?.textContent ||
+					document.querySelector("#task-total")?.textContent !== "100" ||
+					!document.querySelector("#progress-counts")?.textContent.includes("100") ||
+					!document.querySelector("#roadmap-note")?.textContent ||
+					cards.length !== 100 ||
+					!cards.every((card) => card.dataset.focusKey && card.querySelector(".card__foot")) ||
+					document.querySelectorAll("#graph-nodes .stage__label").length === 0 ||
+					document.querySelectorAll("#graph-edges .edge").length !== 200 ||
+					!refresh || refresh.disabled ||
+					!roadmapTab || roadmapTab.getAttribute("aria-selected") !== "true") {
 					return;
 				}
 				window.__relayUsableAt = performance.now();
@@ -108,7 +131,11 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 
 	report := performanceReport{
 		Mode: mode, GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		Samples: map[string][]float64{}, Percentiles: map[string]float64{},
+		SourceCommit: performanceCommit(t), BinarySHA256: fileSHA256(t, binary),
+		FixtureVersion: performanceFixture, HarnessVersion: performanceHarness,
+		ChromiumVersion: chromeVersion(t, chrome),
+		Samples:         map[string][]float64{},
+		Percentiles:     map[string]float64{},
 	}
 	for run := 0; run <= performanceRuns; run++ {
 		sample := measureBrowserRun(t, tab, binary, commandDir, fixture.program.Slug)
@@ -158,8 +185,7 @@ func measureBrowserRun(
 	navigationStarted := time.Now()
 	if err := chromedp.Run(tab,
 		chromedp.Navigate(url),
-		waitForBrowserCondition(`document.querySelectorAll(".card").length === 100 &&
-			document.querySelector("#program-title").textContent === "Reference Program"`),
+		waitForBrowserCondition(`window.__relayUsableAt > 0`),
 	); err != nil {
 		t.Fatalf("navigate to usable program UI: %v", err)
 	}
@@ -426,6 +452,14 @@ func verifyPerformanceReport(t *testing.T, report performanceReport, baselinePat
 	if err := json.Unmarshal(data, &baseline); err != nil {
 		t.Fatalf("decode baseline %s: %v", baselinePath, err)
 	}
+	if err := validatePerformanceMetadata(
+		report,
+		baseline,
+		repositoryCommit(t, "HEAD"),
+		repositoryCommit(t, "origin/main"),
+	); err != nil {
+		t.Fatal(err)
+	}
 	budgets := map[string]float64{
 		"navigation_to_usable_ms":  1000,
 		"click_to_drawer_ms":       100,
@@ -453,6 +487,94 @@ func verifyPerformanceReport(t *testing.T, report performanceReport, baselinePat
 			t.Errorf("%s samples = %d, want %d", name, len(samples), performanceRuns)
 		}
 	}
+}
+
+func validatePerformanceMetadata(
+	report performanceReport,
+	baseline performanceReport,
+	currentCommit string,
+	baselineCommit string,
+) error {
+	switch {
+	case report.Mode != "verify":
+		return fmt.Errorf("performance report mode = %q, want verify", report.Mode)
+	case baseline.Mode != "baseline":
+		return fmt.Errorf("baseline report mode = %q, want baseline", baseline.Mode)
+	case report.SourceCommit != currentCommit:
+		return fmt.Errorf("performance source commit = %q, want current HEAD %q", report.SourceCommit, currentCommit)
+	case baseline.SourceCommit != baselineCommit:
+		return fmt.Errorf("baseline source commit = %q, want origin/main %q", baseline.SourceCommit, baselineCommit)
+	case report.BinarySHA256 == "":
+		return errors.New("performance binary SHA-256 is missing")
+	case baseline.BinarySHA256 == "":
+		return errors.New("baseline binary SHA-256 is missing")
+	case report.BinarySHA256 == baseline.BinarySHA256:
+		return errors.New("performance and baseline binary SHA-256 values are identical")
+	case report.FixtureVersion != performanceFixture ||
+		baseline.FixtureVersion != performanceFixture:
+		return fmt.Errorf(
+			"fixture versions = current %q baseline %q, want %q",
+			report.FixtureVersion, baseline.FixtureVersion, performanceFixture,
+		)
+	case report.HarnessVersion != performanceHarness ||
+		baseline.HarnessVersion != performanceHarness:
+		return fmt.Errorf(
+			"harness versions = current %q baseline %q, want %q",
+			report.HarnessVersion, baseline.HarnessVersion, performanceHarness,
+		)
+	case report.ChromiumVersion == "":
+		return errors.New("performance Chromium version is missing")
+	case baseline.ChromiumVersion == "":
+		return errors.New("baseline Chromium version is missing")
+	case report.ChromiumVersion != baseline.ChromiumVersion:
+		return fmt.Errorf(
+			"Chromium versions differ: current %q baseline %q",
+			report.ChromiumVersion, baseline.ChromiumVersion,
+		)
+	default:
+		return nil
+	}
+}
+
+func performanceCommit(t *testing.T) string {
+	t.Helper()
+	if commit := strings.TrimSpace(os.Getenv(performanceSourceCommit)); commit != "" {
+		return repositoryCommit(t, commit)
+	}
+	return repositoryCommit(t, "HEAD")
+}
+
+func repositoryCommit(t *testing.T, ref string) string {
+	t.Helper()
+	command := exec.Command("git", "rev-parse", ref)
+	command.Dir = filepath.Join("..", "..")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve git commit %s: %v\n%s", ref, err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func fileSHA256(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read performance binary %s: %v", path, err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data))
+}
+
+func chromeVersion(t *testing.T, executable string) string {
+	t.Helper()
+	output, err := exec.Command(executable, "--version").CombinedOutput()
+	if err != nil {
+		t.Fatalf("read Chromium version from %s: %v\n%s", executable, err, output)
+	}
+	version := strings.TrimSpace(string(output))
+	if version == "" {
+		t.Fatalf("Chromium version from %s is empty", executable)
+	}
+	return version
 }
 
 func durationMilliseconds(duration time.Duration) float64 {
