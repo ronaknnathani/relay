@@ -17,19 +17,27 @@ import (
 // loadArchivePRIndex resolves authoritative pull request state for archive.
 var loadArchivePRIndex = programview.GitHubPRIndex
 
-// recordedPullRequestMerged reports whether the project's recorded pull request
-// is merged on GitHub. An unavailable or failing GitHub stays conservative.
-func recordedPullRequestMerged(m project.Manifest, slug string) bool {
+func resolveRecordedPullRequestMerge(m project.Manifest, slug string) (bool, error) {
 	hasPR, ref, err := programview.RecordedPR(m, project.StatePath(slug))
-	if err != nil || !hasPR {
-		return false
+	if err != nil {
+		return false, fmt.Errorf("resolve recorded pull request for %s: %w", slug, err)
+	}
+	if !hasPR {
+		return false, nil
 	}
 	index := loadArchivePRIndex(m.Repo, []string{ref})
 	if index == nil {
-		return false
+		return false, nil
 	}
 	state, found := index.Lookup(ref)
-	return found && state == programview.PRStateMerged
+	return found && state == programview.PRStateMerged, nil
+}
+
+// recordedPullRequestMerged reports whether the project's recorded pull request
+// is merged on GitHub. An unavailable or failing GitHub stays conservative.
+func recordedPullRequestMerged(m project.Manifest, slug string) bool {
+	merged, _ := resolveRecordedPullRequestMerge(m, slug)
+	return merged
 }
 
 // recordedPullRequestMergedOnce memoizes recordedPullRequestMerged so archive
@@ -148,9 +156,11 @@ func archiveProject(slug string, force bool) (archiveResult, error) {
 		// recorded pull request when GitHub reports it merged.
 		pullRequestMerged := !workMerged && recordedMerged()
 		switch {
+		case force:
+			deleteBranchAfter, forceDeleteBranchAfter = true, true
 		case reachable:
 			deleteBranchAfter = true
-		case pullRequestMerged, force:
+		case pullRequestMerged:
 			deleteBranchAfter, forceDeleteBranchAfter = true, true
 		default:
 			return archiveResult{}, fmt.Errorf("branch %q has unmerged work; re-run with --force to delete it anyway, or merge it first", m.Branch)

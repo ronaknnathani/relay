@@ -287,6 +287,59 @@ func TestArchiveRecordsMergedPullRequestWhenTheLocalBranchIsGone(t *testing.T) {
 	}
 }
 
+func TestResolveRecordedPullRequestMergeReturnsStateReadError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	slug := "malformed-state"
+	statePath := project.StatePath(slug)
+	if err := os.MkdirAll(filepath.Dir(statePath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, []byte("{"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	merged, err := resolveRecordedPullRequestMerge(project.Manifest{Slug: slug}, slug)
+	if err == nil {
+		t.Fatal("resolveRecordedPullRequestMerge error = nil")
+	}
+	if merged {
+		t.Fatal("resolveRecordedPullRequestMerge reported malformed state as merged")
+	}
+	if !strings.Contains(err.Error(), statePath) {
+		t.Fatalf("resolveRecordedPullRequestMerge error = %q, want state path", err)
+	}
+	if recordedPullRequestMerged(project.Manifest{Slug: slug}, slug) {
+		t.Fatal("recordedPullRequestMerged should remain conservative on state errors")
+	}
+}
+
+func TestArchiveForceDeletesBranchMergedOnlyIntoRemoteBase(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runArchiveGit(t, filepath.Dir(remote), "init", "-q", "--bare", "--initial-branch=main", remote)
+	runArchiveGit(t, repo, "remote", "add", "origin", remote)
+	runArchiveGit(t, repo, "push", "-q", "-u", "origin", "main")
+
+	slug := "remote-only-merge"
+	branch := "user/remote-only-merge"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "merged upstream\n", "merged upstream")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, repo, "push", "-q", "origin", branch+":main")
+
+	result, err := archiveProject(slug, true)
+	if err != nil {
+		t.Fatalf("archiveProject --force: %v", err)
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("archive warnings = %v, want none", result.Warnings)
+	}
+	if !result.BranchDeleted || gitx.BranchExists(repo, branch) {
+		t.Fatalf("branch %q survived forced archive", branch)
+	}
+}
+
 func recordArchiveManifestPR(t *testing.T, slug string, number int) {
 	t.Helper()
 	path := project.ManifestPath(project.ActiveDir(), slug)
