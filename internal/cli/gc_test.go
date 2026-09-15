@@ -667,6 +667,73 @@ func TestGCMissingStartSHARequiresMergedPullRequest(t *testing.T) {
 	}
 }
 
+func TestGCRejectsInvalidStartSHAEvenWithMergedPullRequestAndDirtyWorktree(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		startSHA func(*testing.T, gcRepoFixture) string
+		want     string
+	}{
+		{
+			name: "invalid",
+			startSHA: func(_ *testing.T, _ gcRepoFixture) string {
+				return "not-a-commit"
+			},
+			want: "does not resolve to a commit",
+		},
+		{
+			name: "non-commit",
+			startSHA: func(t *testing.T, fixture gcRepoFixture) string {
+				path := filepath.Join(fixture.repo, "blob")
+				if err := os.WriteFile(path, []byte("not a commit\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return gitOutput(t, fixture.repo, "hash-object", "-w", path)
+			},
+			want: "does not resolve to a commit",
+		},
+		{
+			name: "not branch ancestor",
+			startSHA: func(t *testing.T, fixture gcRepoFixture) string {
+				branch, worktree := addGCBranch(t, fixture, "unrelated-start")
+				sha := gitx.RevParse(fixture.repo, "refs/heads/"+branch)
+				runArchiveGit(t, fixture.repo, "worktree", "remove", "--force", worktree)
+				return sha
+			},
+			want: "not an ancestor",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			fixture := newGCRepoFixture(t, "main")
+			slug := "invalid-start-" + strings.ReplaceAll(test.name, " ", "-")
+			branch, worktree := addGCProject(t, fixture, slug)
+			writeArchiveFile(t, worktree, "dirty.txt", "uncommitted work\n")
+			recordArchiveManifestPR(t, slug, 714)
+			installArchivePRIndex(t, map[string]programview.PRState{"#714": programview.PRStateMerged})
+			updateGCManifest(t, slug, func(manifest *project.Manifest) {
+				manifest.StartSHA = test.startSHA(t, fixture)
+			})
+
+			_, stderr, err := captureGCOutput(t, runGC)
+			if !errors.Is(err, errGCCompletedWithErrors) {
+				t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+			}
+			if !strings.Contains(stderr, test.want) {
+				t.Fatalf("stderr %q is missing %q", stderr, test.want)
+			}
+			if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+				!pathExists(worktree) ||
+				!gitx.BranchExists(fixture.repo, branch) {
+				t.Fatal("GC destructively cleaned a project with invalid start_sha")
+			}
+			if data, readErr := os.ReadFile(filepath.Join(worktree, "dirty.txt")); readErr != nil ||
+				string(data) != "uncommitted work\n" {
+				t.Fatalf("dirty worktree changed: data=%q err=%v", data, readErr)
+			}
+		})
+	}
+}
+
 func TestGCSharedRefreshFailureWarnsOnceAndProtectsStaleRef(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")

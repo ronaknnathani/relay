@@ -110,7 +110,7 @@ func runGC() error {
 			}
 		}
 		var prErr error
-		if !merged {
+		if !merged && !errors.Is(evaluationErr, gitx.ErrInvalidWorkStart) {
 			merged, prErr = resolveRecordedPullRequestMerge(m, m.Slug)
 		}
 		if !merged {

@@ -14,6 +14,10 @@ import (
 )
 
 var (
+	// ErrInvalidWorkStart marks start_sha values that cannot safely anchor a
+	// destructive merge decision.
+	ErrInvalidWorkStart = errors.New("invalid work start")
+
 	gitURLPattern     = regexp.MustCompile(`(?i)(?:file|ftp|ftps|git|https?|ssh)://[^\s'"<>]+`)
 	scpLikeURLPattern = regexp.MustCompile(
 		`(?i)\b[^\s'"<>/@:]+@(?:\[[0-9a-f:.]+\]|[^\s'"<>/:]+):[^\s'"<>]+`,
@@ -141,6 +145,19 @@ func WorkMerged(repo, branch, base, startSHA string) (bool, error) {
 	if startSHA == "" {
 		return false, nil
 	}
+	startExpression := strings.TrimSpace(startSHA) + "^{commit}"
+	startOutput, err := exec.Command(
+		"git", "-C", repo, "rev-parse", "--verify", "--end-of-options", startExpression,
+	).Output()
+	if err != nil {
+		return false, fmt.Errorf(
+			"%w: start_sha %q in %s does not resolve to a commit: %v",
+			ErrInvalidWorkStart, startSHA, repo,
+			gitOutputError("git rev-parse --verify --end-of-options "+startExpression, err),
+		)
+	}
+	startCommit := strings.TrimSpace(string(startOutput))
+
 	exists, err := localBranchExists(repo, branch)
 	if err != nil {
 		return false, err
@@ -153,7 +170,25 @@ func WorkMerged(repo, branch, base, startSHA string) (bool, error) {
 	if err != nil {
 		return false, gitOutputError("git rev-parse --verify "+ref+"^{commit}", err)
 	}
-	if strings.TrimSpace(string(out)) == startSHA {
+	branchTip := strings.TrimSpace(string(out))
+	_, err = exec.Command(
+		"git", "-C", repo, "merge-base", "--is-ancestor", startCommit, ref,
+	).Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, fmt.Errorf(
+				"%w: start_sha %q resolves to %s, which is not an ancestor of branch %q",
+				ErrInvalidWorkStart, startSHA, startCommit, branch,
+			)
+		}
+		return false, fmt.Errorf(
+			"%w: verify start_sha %q against branch %q: %v",
+			ErrInvalidWorkStart, startSHA, branch,
+			gitOutputError("git merge-base --is-ancestor "+startCommit+" "+ref, err),
+		)
+	}
+	if branchTip == startCommit {
 		return false, nil
 	}
 	_, err = exec.Command("git", "-C", repo, "merge-base", "--is-ancestor", ref, base).Output()

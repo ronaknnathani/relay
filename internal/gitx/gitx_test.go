@@ -1,6 +1,7 @@
 package gitx
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -463,6 +464,56 @@ func TestWorkMergedReturnsEvaluationError(t *testing.T) {
 	}
 	if IsWorkMerged(repo, "work", "missing-base", start) {
 		t.Fatal("IsWorkMerged should remain conservative on evaluation error")
+	}
+}
+
+func TestWorkMergedRejectsInvalidStartCommit(t *testing.T) {
+	repo := initRepo(t)
+	base := currentBranchInRepo(t, repo)
+	runGit(t, repo, "checkout", "-q", "-b", "work")
+	if err := os.WriteFile(filepath.Join(repo, "work.txt"), []byte("work\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "work.txt")
+	runGit(t, repo, "commit", "-q", "-m", "work")
+	runGit(t, repo, "checkout", "-q", base)
+
+	blobPath := filepath.Join(repo, "blob")
+	if err := os.WriteFile(blobPath, []byte("not a commit\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	blobSHA := gitOutput(t, repo, "hash-object", "-w", blobPath)
+
+	runGit(t, repo, "checkout", "-q", "-b", "unrelated")
+	if err := os.WriteFile(filepath.Join(repo, "unrelated.txt"), []byte("unrelated\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "unrelated.txt")
+	runGit(t, repo, "commit", "-q", "-m", "unrelated")
+	unrelatedSHA := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "-q", base)
+
+	for _, test := range []struct {
+		name     string
+		startSHA string
+		want     string
+	}{
+		{name: "invalid", startSHA: "not-a-commit", want: "start_sha"},
+		{name: "non-commit", startSHA: blobSHA, want: "commit"},
+		{name: "not branch ancestor", startSHA: unrelatedSHA, want: "ancestor"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			merged, err := WorkMerged(repo, "work", base, test.startSHA)
+			if err == nil || !errors.Is(err, ErrInvalidWorkStart) {
+				t.Fatalf("WorkMerged error = %v, want %v", err, ErrInvalidWorkStart)
+			}
+			if merged {
+				t.Fatal("WorkMerged = true for invalid start commit")
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("WorkMerged error %q is missing %q", err, test.want)
+			}
+		})
 	}
 }
 
