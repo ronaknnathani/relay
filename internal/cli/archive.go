@@ -345,16 +345,16 @@ func stageArchivedProject(srcDir, dstDir string, m project.Manifest) (func() err
 	}
 	stagedPath := staged.Name()
 	if err := staged.Close(); err != nil {
-		err = archiveCleanupError(err, "remove staged manifest", os.Remove(stagedPath))
+		err = archiveCleanupError(err, os.Remove(stagedPath))
 		return nil, fmt.Errorf("stage archived manifest: close temporary file: %w", err)
 	}
 	if err := saveArchiveManifest(stagedPath, m); err != nil {
-		err = archiveCleanupError(err, "remove staged manifest", os.Remove(stagedPath))
+		err = archiveCleanupError(err, os.Remove(stagedPath))
 		return nil, fmt.Errorf("stage archived manifest: %w", err)
 	}
 
 	if err := os.Rename(srcDir, dstDir); err != nil {
-		err = archiveCleanupError(err, "remove staged manifest", os.Remove(stagedPath))
+		err = archiveCleanupError(err, os.Remove(stagedPath))
 		return nil, fmt.Errorf("move project to archived: %w", err)
 	}
 	stagedPath = filepath.Join(dstDir, filepath.Base(stagedPath))
@@ -366,9 +366,7 @@ func stageArchivedProject(srcDir, dstDir string, m project.Manifest) (func() err
 				"install archived manifest: %w; rollback project directory: %v", err, rollbackErr,
 			)
 		}
-		err = archiveCleanupError(
-			err, "remove staged manifest", os.Remove(filepath.Join(srcDir, filepath.Base(stagedPath))),
-		)
+		err = archiveCleanupError(err, os.Remove(filepath.Join(srcDir, filepath.Base(stagedPath))))
 		return nil, fmt.Errorf("install archived manifest: %w", err)
 	}
 
@@ -389,9 +387,9 @@ func stageArchivedProject(srcDir, dstDir string, m project.Manifest) (func() err
 	return rollback, nil
 }
 
-func archiveCleanupError(cause error, action string, cleanupErr error) error {
+func archiveCleanupError(cause, cleanupErr error) error {
 	if cleanupErr == nil || os.IsNotExist(cleanupErr) {
 		return cause
 	}
-	return fmt.Errorf("%w; %s: %v", cause, action, cleanupErr)
+	return fmt.Errorf("%w; remove staged manifest: %v", cause, cleanupErr)
 }
