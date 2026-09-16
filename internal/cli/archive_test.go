@@ -1515,19 +1515,19 @@ func TestArchiveDiagnosticSanitizesRemoteHelperPullRequestRef(t *testing.T) {
 		{
 			name:    "truncated userinfo",
 			ref:     "x-access-token:SECRET@",
-			wantURL: "[redacted]@",
+			wantURL: "[redacted-remote]",
 			secrets: []string{"x-access-token", "SECRET"},
 		},
 		{
 			name:    "truncated host separator",
 			ref:     "x-access-token:SECRET@github.com:",
-			wantURL: "[redacted]@github.com:",
+			wantURL: "[redacted-remote]",
 			secrets: []string{"x-access-token", "SECRET"},
 		},
 		{
 			name:    "nested helper malformed bracketed IPv6",
 			ref:     "trace::cache::x-access-token:SECRET@[2001:db8::1",
-			wantURL: "trace::cache::[redacted]@[2001:db8::1",
+			wantURL: "[redacted-remote]",
 			secrets: []string{"x-access-token", "SECRET"},
 		},
 	}

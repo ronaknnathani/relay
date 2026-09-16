@@ -601,7 +601,7 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 		{
 			name:    "truncated scheme authority with credential pair",
 			input:   "remote: https://x-access-token:ghp_SECRET",
-			want:    "remote: https://[redacted]",
+			want:    "remote: [redacted-remote]",
 			secrets: []string{"x-access-token", "ghp_SECRET"},
 		},
 		{
@@ -668,13 +668,13 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 		{
 			name:    "truncated scheme-less remote after userinfo",
 			input:   "remote: x-access-token:SECRET@",
-			want:    "remote: [redacted]@",
+			want:    "remote: [redacted-remote]",
 			secrets: []string{"x-access-token", "SECRET"},
 		},
 		{
 			name:    "truncated scheme-less remote after host separator",
 			input:   "remote: x-access-token:SECRET@github.com:",
-			want:    "remote: [redacted]@github.com:",
+			want:    "remote: [redacted-remote]",
 			secrets: []string{"x-access-token", "SECRET"},
 		},
 		{
@@ -686,7 +686,7 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 		{
 			name:    "malformed scheme-less bracketed IPv6 remote",
 			input:   "remote: x-access-token:SECRET@[2001:db8::1",
-			want:    "remote: [redacted]@[2001:db8::1",
+			want:    "remote: [redacted-remote]",
 			secrets: []string{"x-access-token", "SECRET"},
 		},
 		{
@@ -698,7 +698,7 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 		{
 			name:  "scp path contains at sign",
 			input: "remote: token@host:repo@mirror",
-			want:  "remote: [redacted]@host:repo@mirror",
+			want:  "remote: [redacted-remote]",
 		},
 		{
 			name:  "remote helper wrapping scheme URL",
@@ -744,19 +744,19 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 		{
 			name:    "nested remote helpers wrapping truncated userinfo",
 			input:   "remote: trace::cache::x-access-token:SECRET@",
-			want:    "remote: trace::cache::[redacted]@",
+			want:    "remote: [redacted-remote]",
 			secrets: []string{"x-access-token", "SECRET"},
 		},
 		{
 			name:    "nested helpers wrapping truncated scheme authority",
 			input:   "remote: trace::cache::https://x-access-token:ghp_SECRET",
-			want:    "remote: trace::cache::https://[redacted]",
+			want:    "remote: [redacted-remote]",
 			secrets: []string{"x-access-token", "ghp_SECRET"},
 		},
 		{
 			name:    "nested helpers wrapping truncated authority",
 			input:   "remote: trace::cache::x-access-token:ghp_SECRET",
-			want:    "remote: trace::cache::[redacted]",
+			want:    "remote: [redacted-remote]",
 			secrets: []string{"x-access-token", "ghp_SECRET"},
 		},
 		{
@@ -798,9 +798,88 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 	}
 }
 
+func TestSanitizeDiagnosticFailsClosedForAmbiguousRemoteTokens(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		secret string
+	}{
+		{
+			name:   "trailing colon",
+			input:  "fatal: repository 'x-access-token:trailing-secret@github.com:' is invalid",
+			secret: "trailing-secret",
+		},
+		{
+			name:   "numeric secret",
+			input:  "fatal: repository 'https://x-access-token:123456' is invalid",
+			secret: "123456",
+		},
+		{
+			name:   "numeric helper transport",
+			input:  "fatal: repository '123::https://numeric-helper-secret@github.com/o/r.git' is invalid",
+			secret: "numeric-helper-secret",
+		},
+		{
+			name:   "scheme delimiter split by CSI",
+			input:  "fatal: repository 'https:\x1b[31m//split-secret@github.com/o/r.git' is invalid",
+			secret: "split-secret",
+		},
+		{
+			name:   "userinfo delimiter split by raw C1 CSI",
+			input:  "fatal: repository 'split-secret\x9b31m@github.com:o/r.git' is invalid",
+			secret: "split-secret",
+		},
+		{
+			name:   "helper delimiter split by raw C1 OSC",
+			input:  "fatal: repository 'cache:\x9dtitle\x9c:https://osc-secret@github.com/o/r.git' is invalid",
+			secret: "osc-secret",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := SanitizeDiagnostic(test.input)
+			if strings.Contains(got, test.secret) {
+				t.Fatalf("SanitizeDiagnostic(%q) leaked %q in %q", test.input, test.secret, got)
+			}
+			if !strings.Contains(got, "fatal: repository") ||
+				!strings.Contains(got, "is invalid") {
+				t.Fatalf("SanitizeDiagnostic(%q) lost surrounding diagnostic text: %q", test.input, got)
+			}
+		})
+	}
+}
+
+func TestSanitizeDiagnosticRemovesTerminalControlsWithoutEatingText(t *testing.T) {
+	input := "fa\x1btal: re\x9b31mmo\x9b0mte \x9dtitle\x9cdenied"
+	got := SanitizeDiagnostic(input)
+	if got != "fatal: remote denied" {
+		t.Fatalf("SanitizeDiagnostic(%q) = %q, want adjacent text preserved", input, got)
+	}
+}
+
+func TestSanitizeDiagnosticRemoteSecretCorpusNeverSurvives(t *testing.T) {
+	const secret = "UNIQUE-REMOTE-SECRET-741852963"
+	inputs := []string{
+		"https://user:" + secret,
+		"https://user:" + secret + "@github.com/o/r.git",
+		"https://x-access-token:" + secret,
+		"x-access-token:" + secret + "@github.com:",
+		"123::https://" + secret + "@github.com/o/r.git",
+		"cache::x-access-token:" + secret,
+		"https:\x1b[31m//" + secret + "@github.com/o/r.git",
+		secret + "\x9b31m@github.com:o/r.git",
+		"cache:\x9dignored\x9c:https://" + secret + "@github.com/o/r.git",
+	}
+	for _, remote := range inputs {
+		got := SanitizeDiagnostic("fatal: remote " + remote + " denied")
+		if strings.Contains(got, secret) {
+			t.Fatalf("SanitizeDiagnostic leaked corpus secret from %q in %q", remote, got)
+		}
+	}
+}
+
 func TestSanitizeDiagnosticBoundsRemoteHelperNesting(t *testing.T) {
 	const helperDepth = 10000
-	const expectedPreservedDepth = 8
 	input := "remote: " + strings.Repeat("cache::", helperDepth) +
 		"_deep-secret@git.example.com:team/repo.git?token=also-secret#fragment"
 
@@ -809,11 +888,8 @@ func TestSanitizeDiagnosticBoundsRemoteHelperNesting(t *testing.T) {
 	if strings.Contains(got, "deep-secret") || strings.Contains(got, "also-secret") {
 		t.Fatalf("SanitizeDiagnostic leaked a secret from deeply nested helper input: %q", got)
 	}
-	if count := strings.Count(got, "cache::"); count != expectedPreservedDepth {
-		t.Fatalf("preserved helper depth = %d, want %d", count, expectedPreservedDepth)
-	}
-	if !strings.HasSuffix(got, "[redacted]") {
-		t.Fatalf("SanitizeDiagnostic deep nesting result = %q, want fully redacted remainder", got)
+	if got != "remote: "+redactedRemoteToken {
+		t.Fatalf("SanitizeDiagnostic deep nesting result = %q, want one safe marker", got)
 	}
 }
 
@@ -834,7 +910,7 @@ func TestSanitizeDiagnosticHandlesLargeTruncatedUserinfo(t *testing.T) {
 
 	got := SanitizeDiagnostic(input)
 
-	if got != "fatal: [redacted]@ continuation" {
+	if got != "fatal: [redacted-remote] continuation" {
 		t.Fatalf("SanitizeDiagnostic large truncated userinfo did not preserve surrounding prose")
 	}
 	if strings.Contains(got, "token") || strings.Contains(got, "SECRET") {
@@ -912,14 +988,23 @@ func TestDiagnosticBufferDoesNotRestartAtApostropheInsideTruncatedToken(t *testi
 	}
 }
 
-func TestSCPStyleURLTokenRejectsRemoteHelperSyntax(t *testing.T) {
-	for _, input := range []string{
-		"git::https://token@github.com/o/r.git?secret=x",
-		"cache::deploy-token@git.example.com:team/repo.git?secret=x",
-	} {
-		if end, ok := scpStyleURLTokenEnd(input, 0); ok {
-			t.Fatalf("scpStyleURLTokenEnd(%q) = (%d, true), want remote-helper rejection", input, end)
-		}
+func TestDiagnosticBufferRedactsANSIPrefixedTruncatedToken(t *testing.T) {
+	const secret = "truncated-ansi-secret"
+	partialURL := "\x1b[31m" + secret + "@github.com/o/r.git"
+	retained := partialURL + "\n" +
+		strings.Repeat("x", maxGitDiagnosticOutput-len(partialURL)-1)
+	raw := "fatal: https://user:" + retained
+
+	var output diagnosticBuffer
+	if _, err := output.Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	got := SanitizeDiagnostic(string(output.Bytes()))
+	if strings.Contains(got, secret) {
+		t.Fatalf("bounded diagnostic leaked ANSI-prefixed split credential: %q", got[:256])
+	}
+	if !strings.Contains(got, "leading truncated token redacted") {
+		t.Fatalf("bounded diagnostic %q is missing the boundary redaction marker", got[:256])
 	}
 }
 

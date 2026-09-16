@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -554,10 +555,8 @@ func (b *diagnosticBuffer) Bytes() []byte {
 		maxGitDiagnosticOutput,
 	)
 	retained := b.buffer.Bytes()
-	if len(retained) > 0 && retained[0] > ' ' {
-		boundary := bytes.IndexFunc(retained, func(character rune) bool {
-			return character <= ' '
-		})
+	if len(retained) > 0 && retained[0] != '\n' && retained[0] != '\t' && retained[0] != ' ' {
+		boundary := bytes.IndexAny(retained, " \t\r\n")
 		notice += "[... leading truncated token redacted ...]"
 		if boundary < 0 {
 			return []byte(notice)
@@ -633,382 +632,335 @@ func Fetch(repo, branch string) (string, error) {
 	return diagnostic, nil
 }
 
-// SanitizeDiagnostic removes secret-bearing URL components from subprocess
-// output while preserving the host, path, and surrounding diagnostic.
+const redactedRemoteToken = "[redacted-remote]"
+
+// SanitizeDiagnostic removes terminal controls and secret-bearing remote
+// tokens while preserving surrounding subprocess diagnostics.
 func SanitizeDiagnostic(output string) string {
-	output = stripTerminalControlSequences(output)
-	output = strings.TrimSpace(output)
-	scanner := newDiagnosticURLScanner(output)
-	var sanitized strings.Builder
-	for index := 0; index < len(output); {
-		if end, ok := scanner.remoteHelperURLTokenEnd(index); ok {
-			sanitized.WriteString(sanitizeRemoteHelperURL(output[index:end]))
-			index = end
-			continue
-		}
-		if end, ok := scanner.schemeURLTokenEnd(index); ok {
-			sanitized.WriteString(sanitizeGitDiagnosticURL(output[index:end]))
-			index = end
-			continue
-		}
-		if end, ok := scanner.scpStyleURLTokenEnd(index); ok {
-			sanitized.WriteString(sanitizeSCPStyleURL(output[index:end]))
-			index = end
-			continue
-		}
-		if end, ok := scanner.userinfoTokenEnd(index); ok {
-			sanitized.WriteString(sanitizeUserinfoHost(output[index:end]))
-			index = end
-			continue
-		}
-		sanitized.WriteByte(output[index])
-		index++
-	}
-	return sanitized.String()
-}
-
-func stripTerminalControlSequences(output string) string {
-	var sanitized strings.Builder
+	var sanitized, token strings.Builder
 	sanitized.Grow(len(output))
+	token.Grow(128)
+	tokenTainted := false
+	pendingControl := false
+	flushToken := func() {
+		if token.Len() == 0 {
+			return
+		}
+		sanitized.WriteString(sanitizeDiagnosticToken(token.String(), tokenTainted))
+		token.Reset()
+		tokenTainted = false
+	}
+
 	for index := 0; index < len(output); {
-		switch output[index] {
-		case '\x1b':
-			index = terminalEscapeEnd(output, index)
-		case '\n', '\t':
-			sanitized.WriteByte(output[index])
-			index++
-		default:
-			if output[index] < ' ' || output[index] == '\x7f' {
-				index++
-				continue
+		if end, control := terminalControlEnd(output, index); control {
+			if token.Len() > 0 {
+				tokenTainted = true
+			} else {
+				pendingControl = true
 			}
-			sanitized.WriteByte(output[index])
-			index++
+			index = end
+			continue
 		}
-	}
-	return sanitized.String()
-}
-
-func terminalEscapeEnd(output string, start int) int {
-	if start+1 >= len(output) {
-		return len(output)
-	}
-	switch output[start+1] {
-	case '[':
-		for index := start + 2; index < len(output); index++ {
-			if output[index] >= 0x40 && output[index] <= 0x7e {
-				return index + 1
-			}
-		}
-		return len(output)
-	case ']', 'P', 'X', '^', '_':
-		for index := start + 2; index < len(output); index++ {
-			if output[index] == '\a' {
-				return index + 1
-			}
-			if output[index] == '\x1b' && index+1 < len(output) && output[index+1] == '\\' {
-				return index + 2
-			}
-		}
-		return len(output)
-	default:
-		return start + 2
-	}
-}
-
-const maxRemoteHelperDepth = 8
-
-type diagnosticURLScanner struct {
-	output              string
-	nextAt              []int
-	nextColon           []int
-	nextHardBoundary    []int
-	nextHostInvalid     []int
-	nextHostMarker      []int
-	nextPathSlash       []int
-	nextBracketColon    []int
-	nextUserinfoInvalid []int
-}
-
-type scpStyleURLBoundary struct {
-	userinfoEnd int
-	hostStart   int
-	pathStart   int
-	tokenLimit  int
-}
-
-func newDiagnosticURLScanner(output string) diagnosticURLScanner {
-	size := len(output) + 1
-	scanner := diagnosticURLScanner{
-		output:              output,
-		nextAt:              make([]int, size),
-		nextColon:           make([]int, size),
-		nextHardBoundary:    make([]int, size),
-		nextHostInvalid:     make([]int, size),
-		nextHostMarker:      make([]int, size),
-		nextPathSlash:       make([]int, size),
-		nextBracketColon:    make([]int, size),
-		nextUserinfoInvalid: make([]int, size),
-	}
-	nextAt, nextColon := -1, -1
-	nextHardBoundary, nextHostInvalid := len(output), -1
-	nextHostMarker, nextPathSlash, nextBracketColon, nextUserinfoInvalid := -1, -1, -1, -1
-	for index := len(output) - 1; index >= 0; index-- {
 		character := output[index]
-		if character == '@' {
-			nextAt = index
+		if character == '\r' {
+			flushToken()
+			sanitized.WriteByte('\n')
+			pendingControl = false
+			index++
+			continue
 		}
-		if character == ':' {
-			nextColon = index
+		if character == '\n' || character == '\t' || character == ' ' {
+			flushToken()
+			sanitized.WriteByte(character)
+			pendingControl = false
+			index++
+			continue
 		}
-		if character <= ' ' || strings.ContainsRune("\"<>`", rune(character)) {
-			nextHardBoundary = index
+		if token.Len() == 0 {
+			tokenTainted = pendingControl
+			pendingControl = false
 		}
-		if character == '/' || character == '@' {
-			nextHostInvalid = index
-		}
-		if strings.ContainsRune("._-", rune(character)) {
-			nextHostMarker = index
-		}
-		if character == '/' {
-			nextPathSlash = index
-		}
-		if character == ']' && index+1 < len(output) && output[index+1] == ':' {
-			nextBracketColon = index + 1
-		}
-		if !isPlausibleURLUserinfoCharacter(character) {
-			nextUserinfoInvalid = index
-		}
-		scanner.nextAt[index] = nextAt
-		scanner.nextColon[index] = nextColon
-		scanner.nextHardBoundary[index] = nextHardBoundary
-		scanner.nextHostInvalid[index] = nextHostInvalid
-		scanner.nextHostMarker[index] = nextHostMarker
-		scanner.nextPathSlash[index] = nextPathSlash
-		scanner.nextBracketColon[index] = nextBracketColon
-		scanner.nextUserinfoInvalid[index] = nextUserinfoInvalid
-	}
-	return scanner
-}
-
-func (s diagnosticURLScanner) remoteHelperURLTokenEnd(start int) (int, bool) {
-	if !urlTokenBoundary(s.output, start) {
-		return 0, false
-	}
-	addressStart, ok := remoteHelperAddressStart(s.output, start)
-	if !ok {
-		return 0, false
-	}
-	for depth := 1; ; depth++ {
-		nextAddressStart, nested := remoteHelperAddressStart(s.output, addressStart)
-		if !nested {
-			break
-		}
-		if depth == maxRemoteHelperDepth {
-			end := scanURLTokenEnd(s.output, start, nextAddressStart)
-			return end, end > nextAddressStart
-		}
-		addressStart = nextAddressStart
-	}
-	if end, ok := s.schemeURLTokenEnd(addressStart); ok {
-		return end, true
-	}
-	if end, ok := s.scpStyleURLTokenEnd(addressStart); ok {
-		return end, true
-	}
-	return s.userinfoTokenEnd(addressStart)
-}
-
-func remoteHelperAddressStart(output string, start int) (int, bool) {
-	if start >= len(output) || !isASCIILetter(output[start]) {
-		return 0, false
-	}
-	separator := start + 1
-	for separator < len(output) &&
-		(isSchemeCharacter(output[separator]) || output[separator] == '_') {
-		separator++
-	}
-	if !strings.HasPrefix(output[separator:], "::") {
-		return 0, false
-	}
-	addressStart := separator + 2
-	return addressStart, addressStart < len(output)
-}
-
-func schemeURLTokenEnd(output string, start int) (int, bool) {
-	return newDiagnosticURLScanner(output).schemeURLTokenEnd(start)
-}
-
-func (s diagnosticURLScanner) schemeURLTokenEnd(start int) (int, bool) {
-	output := s.output
-	if !urlTokenBoundary(output, start) || start >= len(output) ||
-		!isASCIILetter(output[start]) {
-		return 0, false
-	}
-	index := start + 1
-	for index < len(output) && isSchemeCharacter(output[index]) {
+		token.WriteByte(character)
 		index++
 	}
-	if !strings.HasPrefix(output[index:], "://") {
-		return 0, false
-	}
-	end := scanURLTokenEnd(output, start, index+3)
-	if end == index+3 {
-		return 0, false
-	}
-	return end, true
+	flushToken()
+	return strings.TrimSpace(sanitized.String())
 }
 
-func scpStyleURLTokenEnd(output string, start int) (int, bool) {
-	return newDiagnosticURLScanner(output).scpStyleURLTokenEnd(start)
-}
-
-func (s diagnosticURLScanner) scpStyleURLTokenEnd(start int) (int, bool) {
-	output := s.output
-	if !urlTokenBoundary(output, start) || start >= len(output) ||
-		!isSCPStyleURLStart(output[start]) {
-		return 0, false
-	}
-	if _, remoteHelper := remoteHelperAddressStart(output, start); remoteHelper {
-		return 0, false
-	}
-	boundary, ok := s.scpStyleURLBoundary(start)
-	if !ok {
-		return 0, false
-	}
-	userinfoEnd := boundary.userinfoEnd
-	hostStart := boundary.hostStart
-	pathStart := boundary.pathStart
-	tokenLimit := boundary.tokenLimit
-	if pathStart <= start || pathStart+1 >= tokenLimit {
-		return 0, false
-	}
-	if pathStart+1 < len(output) && output[pathStart+1] == ':' {
-		return 0, false
-	}
-	if userinfoEnd >= 0 {
-		if userinfoEnd == start || userinfoEnd == pathStart-1 {
-			return 0, false
+func terminalControlEnd(output string, start int) (int, bool) {
+	character := output[start]
+	switch {
+	case character == '\x1b':
+		if start+1 >= len(output) {
+			return start + 1, true
 		}
-		if anotherAt := s.nextAt[userinfoEnd+1]; anotherAt >= 0 && anotherAt < pathStart {
-			return 0, false
+		switch output[start+1] {
+		case '[':
+			return controlSequenceEnd(output, start+2), true
+		case ']', 'P', 'X', '^', '_':
+			return controlStringEnd(output, start+2), true
+		case '\\':
+			return start + 2, true
+		default:
+			if output[start+1] >= 0x40 && output[start+1] <= 0x5f {
+				return start + 2, true
+			}
+			return start + 1, true
 		}
+	case character == '\x9b':
+		return controlSequenceEnd(output, start+1), true
+	case character == '\x90' || character == '\x98' || character == '\x9d' ||
+		character == '\x9e' || character == '\x9f':
+		return controlStringEnd(output, start+1), true
+	case character < ' ' && character != '\n' && character != '\t' && character != '\r':
+		return start + 1, true
+	case character == '\x7f' || character >= '\x80' && character <= '\x9f':
+		return start + 1, true
+	default:
+		return start, false
 	}
-	if invalid := s.nextHostInvalid[hostStart]; invalid >= 0 && invalid < pathStart {
-		return 0, false
-	}
-	pathHasSlash := s.nextPathSlash[pathStart+1] >= 0 &&
-		s.nextPathSlash[pathStart+1] < tokenLimit
-	hostHasMarker := s.nextHostMarker[hostStart] >= 0 &&
-		s.nextHostMarker[hostStart] < pathStart
-	if userinfoEnd < 0 && !pathHasSlash && !hostHasMarker && output[hostStart] != '[' {
-		return 0, false
-	}
-	end := scanURLTokenEnd(output, start, pathStart+1)
-	if end <= pathStart+1 {
-		return 0, false
-	}
-	return end, true
 }
 
-func (s diagnosticURLScanner) scpStyleURLBoundary(start int) (scpStyleURLBoundary, bool) {
-	if start >= len(s.output) {
-		return scpStyleURLBoundary{}, false
-	}
-	tokenLimit := s.nextHardBoundary[start]
-	userinfoEnd := s.nextAt[start]
-	if userinfoEnd < 0 || userinfoEnd >= tokenLimit {
-		userinfoEnd = -1
-	}
-	hostStart := start
-	if userinfoEnd >= 0 {
-		hostStart = userinfoEnd + 1
-	}
-	pathStart := s.nextColon[hostStart]
-	if hostStart < tokenLimit && s.output[hostStart] == '[' {
-		pathStart = s.nextBracketColon[hostStart]
-	}
-	if pathStart < 0 || pathStart >= tokenLimit {
-		return scpStyleURLBoundary{}, false
-	}
-	return scpStyleURLBoundary{
-		userinfoEnd: userinfoEnd,
-		hostStart:   hostStart,
-		pathStart:   pathStart,
-		tokenLimit:  tokenLimit,
-	}, true
-}
-
-func (s diagnosticURLScanner) userinfoTokenEnd(start int) (int, bool) {
-	output := s.output
-	if !urlTokenBoundary(output, start) || start >= len(output) ||
-		!isSCPStyleURLStart(output[start]) {
-		return 0, false
-	}
-	tokenLimit := s.nextHardBoundary[start]
-	userinfoEnd := s.nextAt[start]
-	if userinfoEnd <= start || userinfoEnd >= tokenLimit {
-		return 0, false
-	}
-	if invalid := s.nextUserinfoInvalid[start]; invalid >= 0 && invalid < userinfoEnd {
-		return 0, false
-	}
-	return scanURLTokenEnd(output, start, userinfoEnd+1), true
-}
-
-func isPlausibleURLUserinfoCharacter(character byte) bool {
-	return isASCIILetter(character) || character >= '0' && character <= '9' ||
-		strings.ContainsRune("-._~!$&'()*+,;=:%", rune(character))
-}
-
-func isSCPStyleURLStart(character byte) bool {
-	return isASCIILetter(character) ||
-		character >= '0' && character <= '9' ||
-		character == '[' ||
-		strings.ContainsRune("-._~!$&()*+,;=%", rune(character))
-}
-
-func scanURLTokenEnd(output string, start, scanFrom int) int {
-	wrappedInSingleQuotes := start > 0 && output[start-1] == '\''
-	for index := scanFrom; index < len(output); index++ {
-		character := output[index]
-		if character <= ' ' || strings.ContainsRune("\"<>`", rune(character)) {
-			return trimURLTrailingProse(output, start, index)
+func controlSequenceEnd(output string, start int) int {
+	for index := start; index < len(output); index++ {
+		if output[index] >= 0x40 && output[index] <= 0x7e {
+			return index + 1
 		}
-		if character == '\'' && wrappedInSingleQuotes && closesQuotedURL(output, index) {
+		if output[index] < 0x20 || output[index] > 0x3f {
 			return index
 		}
 	}
-	return trimURLTrailingProse(output, start, len(output))
+	return start
 }
 
-func closesQuotedURL(output string, quote int) bool {
-	if quote+1 == len(output) {
-		return true
+func controlStringEnd(output string, start int) int {
+	for index := start; index < len(output); index++ {
+		switch output[index] {
+		case '\a', '\x9c':
+			return index + 1
+		case '\x1b':
+			if index+1 < len(output) && output[index+1] == '\\' {
+				return index + 2
+			}
+		}
 	}
-	next := output[quote+1]
-	if next <= ' ' {
-		return true
-	}
-	return strings.ContainsRune(":,.;!?)]}", rune(next)) &&
-		(quote+2 == len(output) || output[quote+2] <= ' ')
+	return start
 }
 
-func trimURLTrailingProse(output string, start, end int) int {
-	for end > start && strings.ContainsRune(",.;!", rune(output[end-1])) {
-		end--
+func sanitizeDiagnosticToken(token string, controlTainted bool) string {
+	prefix, remote, suffix := splitDiagnosticToken(token)
+	cleaned, remoteLike, confident := sanitizeRemoteToken(remote)
+	if remoteLike && !confident {
+		return redactedRemoteToken
 	}
-	return end
+	if confident {
+		return prefix + cleaned + suffix
+	}
+	if controlTainted && looksRemoteLike(remote) {
+		return redactedRemoteToken
+	}
+	return token
 }
 
-func urlTokenBoundary(output string, start int) bool {
-	if start == 0 {
+func splitDiagnosticToken(token string) (prefix, core, suffix string) {
+	if token == "" || token[0] != '\'' && token[0] != '"' {
+		end := len(token)
+		for end > 0 && strings.ContainsRune(",.;!", rune(token[end-1])) {
+			end--
+		}
+		return "", token[:end], token[end:]
+	}
+	quote := token[0]
+	close := strings.LastIndexByte(token[1:], quote)
+	if close < 0 {
+		return token[:1], token[1:], ""
+	}
+	close++
+	for _, character := range token[close+1:] {
+		if !strings.ContainsRune(":,.;!?)]}", character) {
+			return token[:1], token[1:], ""
+		}
+	}
+	return token[:1], token[1:close], token[close:]
+}
+
+func sanitizeRemoteToken(remote string) (cleaned string, remoteLike, confident bool) {
+	helperPrefix, address, hasHelper, validHelpers := splitRemoteHelpers(remote)
+	if !validHelpers {
+		return "", true, false
+	}
+	if strings.Contains(address, "://") {
+		cleaned, ok := sanitizeSchemeRemote(address)
+		return helperPrefix + cleaned, true, ok
+	}
+	if strings.Contains(address, "@") {
+		cleaned, ok := sanitizeUserinfoRemote(address)
+		return helperPrefix + cleaned, true, ok
+	}
+	if cleaned, ok, resemblesRemote := sanitizeSCPRemote(address); resemblesRemote {
+		return helperPrefix + cleaned, true, ok
+	}
+	if hasHelper || looksRemoteLike(address) {
+		return "", true, false
+	}
+	return remote, false, false
+}
+
+func splitRemoteHelpers(remote string) (prefix, address string, hasHelper, valid bool) {
+	const maxHelpers = 32
+	offset := 0
+	address = remote[offset:]
+	helperCount := 0
+	for {
+		helperEnd := strings.Index(address, "::")
+		schemeEnd := strings.Index(address, "://")
+		if helperEnd < 0 || schemeEnd >= 0 && schemeEnd < helperEnd {
+			return remote[:offset], address, hasHelper, true
+		}
+		candidate := address[:helperEnd]
+		if strings.ContainsAny(candidate, "@[]") {
+			return remote[:offset], address, hasHelper, true
+		}
+		if !validRemoteHelper(candidate) {
+			return "", "", true, false
+		}
+		helperCount++
+		if helperCount > maxHelpers {
+			return "", "", true, false
+		}
+		hasHelper = true
+		offset += helperEnd + 2
+		address = remote[offset:]
+		if address == "" {
+			return "", "", true, false
+		}
+	}
+}
+
+func validRemoteHelper(helper string) bool {
+	if helper == "" || !isASCIILetter(helper[0]) {
+		return false
+	}
+	for index := 1; index < len(helper); index++ {
+		if !isSchemeCharacter(helper[index]) && helper[index] != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func sanitizeSchemeRemote(remote string) (string, bool) {
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.Scheme == "" || parsed.Opaque != "" {
+		return "", false
+	}
+	schemeEnd := strings.Index(remote, "://")
+	authorityStart := schemeEnd + 3
+	authorityEnd := len(remote)
+	if boundary := strings.IndexAny(remote[authorityStart:], "/?#"); boundary >= 0 {
+		authorityEnd = authorityStart + boundary
+	}
+	authority := remote[authorityStart:authorityEnd]
+	if parsed.Scheme != "file" && authority == "" || strings.HasSuffix(authority, ":") {
+		return "", false
+	}
+	if parsed.User == nil && parsed.Port() != "" && credentialName(parsed.Hostname()) {
+		return "", false
+	}
+	end := len(remote)
+	if secretStart := strings.IndexAny(remote, "?#"); secretStart >= 0 {
+		end = secretStart
+	}
+	cleaned := remote[:end]
+	if parsed.User == nil {
+		return cleaned, true
+	}
+	userinfoEnd := strings.LastIndexByte(authority, '@')
+	if userinfoEnd < 0 {
+		return "", false
+	}
+	return remote[:authorityStart] + "[redacted]@" +
+		authority[userinfoEnd+1:] + remote[authorityEnd:end], true
+}
+
+func sanitizeUserinfoRemote(remote string) (string, bool) {
+	if strings.Count(remote, "@") != 1 {
+		return "", false
+	}
+	userinfoEnd := strings.IndexByte(remote, '@')
+	if userinfoEnd <= 0 {
+		return "", false
+	}
+	target := remote[userinfoEnd+1:]
+	if secretStart := strings.IndexAny(target, "?#"); secretStart >= 0 {
+		target = target[:secretStart]
+	}
+	if target == "" || strings.HasSuffix(target, ":") || !validRemoteTarget(target) {
+		return "", false
+	}
+	return "[redacted]@" + target, true
+}
+
+func validRemoteTarget(target string) bool {
+	if target[0] == '[' {
+		close := strings.IndexByte(target, ']')
+		if close < 0 {
+			return false
+		}
+		remainder := target[close+1:]
+		return remainder == "" ||
+			len(remainder) > 1 && (remainder[0] == ':' || remainder[0] == '/')
+	}
+	hostEnd := len(target)
+	if separator := strings.IndexAny(target, ":/"); separator >= 0 {
+		hostEnd = separator
+		if separator == len(target)-1 {
+			return false
+		}
+	}
+	return hostEnd > 0
+}
+
+func sanitizeSCPRemote(remote string) (cleaned string, confident, remoteLike bool) {
+	secretStart := strings.IndexAny(remote, "?#")
+	if secretStart >= 0 {
+		remote = remote[:secretStart]
+	}
+	separator := strings.IndexByte(remote, ':')
+	if separator <= 0 {
+		return "", false, false
+	}
+	host, path := remote[:separator], remote[separator+1:]
+	hostLooksRemote := strings.ContainsAny(host, "._-") || strings.HasPrefix(host, "[")
+	if path == "" {
+		return "", false, hostLooksRemote || credentialName(host)
+	}
+	if credentialName(host) {
+		return "", false, true
+	}
+	if !hostLooksRemote && !strings.Contains(path, "/") {
+		return "", false, false
+	}
+	return remote, true, true
+}
+
+func looksRemoteLike(value string) bool {
+	if strings.Contains(value, "://") || strings.Contains(value, "::") ||
+		strings.Contains(value, "@") {
 		return true
 	}
-	previous := output[start-1]
-	return !isASCIILetter(previous) &&
-		(previous < '0' || previous > '9') &&
-		previous != '_'
+	separator := strings.IndexByte(value, ':')
+	return separator > 0 && credentialName(value[:separator])
+}
+
+func credentialName(value string) bool {
+	value = strings.ToLower(value)
+	for _, marker := range []string{"auth", "credential", "oauth", "password", "secret", "token"} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func isASCIILetter(character byte) bool {
@@ -1018,103 +970,6 @@ func isASCIILetter(character byte) bool {
 func isSchemeCharacter(character byte) bool {
 	return isASCIILetter(character) || character >= '0' && character <= '9' ||
 		character == '+' || character == '-' || character == '.'
-}
-
-func sanitizeGitDiagnosticURL(rawURL string) string {
-	if secretStart := strings.IndexAny(rawURL, "?#"); secretStart >= 0 {
-		rawURL = rawURL[:secretStart]
-	}
-	schemeEnd := strings.Index(rawURL, "://")
-	if schemeEnd < 0 {
-		return rawURL
-	}
-	authorityStart := schemeEnd + len("://")
-	authorityEnd := len(rawURL)
-	if pathStart := strings.IndexByte(rawURL[authorityStart:], '/'); pathStart >= 0 {
-		authorityEnd = authorityStart + pathStart
-	}
-	authority := rawURL[authorityStart:authorityEnd]
-	if userinfoEnd := strings.LastIndexByte(authority, '@'); userinfoEnd >= 0 {
-		rawURL = rawURL[:authorityStart] + "[redacted]@" + authority[userinfoEnd+1:] + rawURL[authorityEnd:]
-	} else if credentialLikeAuthority(authority) {
-		rawURL = rawURL[:authorityStart] + "[redacted]" + rawURL[authorityEnd:]
-	}
-	return rawURL
-}
-
-func credentialLikeAuthority(authority string) bool {
-	if authority == "" || authority[0] == '[' {
-		return false
-	}
-	separator := strings.IndexByte(authority, ':')
-	if separator <= 0 || separator == len(authority)-1 {
-		return false
-	}
-	credential := authority[separator+1:]
-	for index := range len(credential) {
-		if credential[index] < '0' || credential[index] > '9' {
-			return true
-		}
-	}
-	return false
-}
-
-func sanitizeRemoteHelperURL(rawURL string) string {
-	addressStart, ok := remoteHelperAddressStart(rawURL, 0)
-	if !ok {
-		return rawURL
-	}
-	for depth := 1; ; depth++ {
-		nextAddressStart, nested := remoteHelperAddressStart(rawURL, addressStart)
-		if !nested {
-			break
-		}
-		if depth == maxRemoteHelperDepth {
-			return rawURL[:addressStart] + "[redacted]"
-		}
-		addressStart = nextAddressStart
-	}
-	address := rawURL[addressStart:]
-	if _, ok := schemeURLTokenEnd(rawURL, addressStart); ok {
-		return rawURL[:addressStart] + sanitizeGitDiagnosticURL(address)
-	}
-	if !strings.ContainsAny(address, "/@") && credentialLikeAuthority(address) {
-		return rawURL[:addressStart] + "[redacted]"
-	}
-	if _, ok := scpStyleURLTokenEnd(rawURL, addressStart); ok {
-		return rawURL[:addressStart] + sanitizeSCPStyleURL(address)
-	}
-	return rawURL[:addressStart] + sanitizeUserinfoHost(address)
-}
-
-func sanitizeSCPStyleURL(rawURL string) string {
-	boundary, ok := newDiagnosticURLScanner(rawURL).scpStyleURLBoundary(0)
-	if !ok || boundary.pathStart <= 0 || boundary.pathStart == len(rawURL)-1 {
-		return rawURL
-	}
-	path := rawURL[boundary.pathStart+1:]
-	if secretStart := strings.IndexAny(path, "?#"); secretStart >= 0 {
-		path = path[:secretStart]
-	}
-	if path == "" {
-		return rawURL
-	}
-	cleaned := rawURL[:boundary.pathStart+1] + path
-	if boundary.userinfoEnd < 0 {
-		return cleaned
-	}
-	return "[redacted]@" + rawURL[boundary.userinfoEnd+1:boundary.pathStart+1] + path
-}
-
-func sanitizeUserinfoHost(value string) string {
-	if secretStart := strings.IndexAny(value, "?#"); secretStart >= 0 {
-		value = value[:secretStart]
-	}
-	userinfoEnd := strings.LastIndexByte(value, '@')
-	if userinfoEnd < 0 {
-		return value
-	}
-	return "[redacted]@" + value[userinfoEnd+1:]
 }
 
 // WorktreeAdd creates a new worktree at dir on a new branch, started from startPoint.
