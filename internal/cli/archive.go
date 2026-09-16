@@ -1355,14 +1355,11 @@ func claimedCleanupError(
 			)
 		}
 		if checkedOut {
-			if err := resetArchivedBranchCleanup(m); err != nil {
-				return fmt.Errorf(
-					"finish archived branch cleanup for %s: branch %q is still checked out at its "+
-						"expected commit, but retry authorization could not be restored: %w",
-					m.Slug, identity, err,
-				)
-			}
-			return checkedOutBranchCleanupError(m.Slug, identity, worktree)
+			return fmt.Errorf(
+				"finish archived branch cleanup for %s: cleanup was already claimed and its outcome "+
+					"is ambiguous; will not retry removal of %s automatically: %w",
+				m.Slug, identity, checkedOutBranchCleanupError(m.Slug, identity, worktree),
+			)
 		}
 		manual := manualBranchDeleteAtCommand(m.Repo, identity, expectedSHA)
 		return newManualCleanupError(fmt.Errorf(
@@ -1836,15 +1833,8 @@ func setBranchDeletionRecovery(
 			deleteErr, branch, tip, expectedSHA,
 		)
 	default:
-		worktree, checkedOut, checkoutErr := gitx.BranchCheckoutWorktree(repo, branch)
-		if checkoutErr != nil {
-			result.BranchDeletionWarning = fmt.Sprintf(
-				"%s\ninspect whether branch %q is checked out before taking any destructive action: %v",
-				deleteErr, branch, checkoutErr,
-			)
-			return nil
-		}
-		if checkedOut {
+		var checkedOutErr *gitx.BranchCheckedOutError
+		if errors.As(deleteErr, &checkedOutErr) && checkedOutErr.Branch == branch {
 			if err := resetArchivedBranchCleanup(m); err != nil {
 				return fmt.Errorf(
 					"branch %q deletion was blocked because it is checked out at expected commit %s, "+
@@ -1854,7 +1844,7 @@ func setBranchDeletionRecovery(
 			}
 			result.BranchDeletionWarning = errors.Join(
 				deleteErr,
-				checkedOutBranchCleanupError(result.Slug, branch, worktree),
+				checkedOutBranchCleanupError(result.Slug, branch, checkedOutErr.Worktree),
 			).Error()
 			return nil
 		}

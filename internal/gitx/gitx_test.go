@@ -412,6 +412,17 @@ func TestForceDeleteBranchAtRejectsBranchCheckedOutInLinkedWorktree(t *testing.T
 		!strings.Contains(err.Error(), filepath.Base(worktree)) {
 		t.Fatalf("ForceDeleteBranchAt error = %v, want checked-out worktree rejection", err)
 	}
+	var checkedOutErr *BranchCheckedOutError
+	if !errors.As(err, &checkedOutErr) {
+		t.Fatalf("ForceDeleteBranchAt error = %T, want *BranchCheckedOutError", err)
+	}
+	canonicalWorktree, canonicalErr := CanonicalPath(worktree)
+	if canonicalErr != nil {
+		t.Fatal(canonicalErr)
+	}
+	if checkedOutErr.Branch != "feature" || checkedOutErr.Worktree != canonicalWorktree {
+		t.Fatalf("checked-out error = %+v, want feature in %s", checkedOutErr, canonicalWorktree)
+	}
 	got, found, tipErr := LocalBranchTip(repo, "feature")
 	if tipErr != nil || !found || got != tip {
 		t.Fatalf("feature tip = (%q, %t, %v), want (%q, true, nil)", got, found, tipErr, tip)

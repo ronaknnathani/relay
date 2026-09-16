@@ -23,6 +23,19 @@ var (
 
 const maxGitDiagnosticOutput = 8 * 1024
 
+// BranchCheckedOutError reports the worktree preventing branch deletion.
+type BranchCheckedOutError struct {
+	Branch   string
+	Worktree string
+}
+
+func (e *BranchCheckedOutError) Error() string {
+	return fmt.Sprintf(
+		"branch %q is checked out in worktree %s; remove or detach that worktree before deleting it",
+		e.Branch, e.Worktree,
+	)
+}
+
 // RepoRoot returns the absolute path to the top-level directory of the
 // current git repository, or an empty string and an error if cwd is not
 // in a git repo.
@@ -282,10 +295,7 @@ func ForceDeleteBranchAt(repo, branch, expectedSHA string) error {
 		return err
 	}
 	if checkedOut {
-		return fmt.Errorf(
-			"branch %q is checked out in worktree %s; remove or detach that worktree before deleting it",
-			branch, worktree,
-		)
+		return &BranchCheckedOutError{Branch: branch, Worktree: worktree}
 	}
 	command := "git update-ref -d " + ref + " " + expectedSHA
 	out, err := boundedCombinedOutput(exec.Command(

@@ -2098,6 +2098,51 @@ func TestArchivedCleanupRetryDoesNotReplayClaimedBranchDeletion(t *testing.T) {
 	}
 }
 
+func TestArchivedCleanupRetryPreservesRecreatedClaimedBranchAtSameSHA(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "archived-retry-recreated-claimed-branch"
+	branch := "user/" + slug
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	archived := archiveWithFailedBranchDeletion(t, slug)
+	if archived.ArchiveCleanup == nil ||
+		archived.ArchiveCleanup.BranchState != project.ArchiveCleanupClaimed {
+		t.Fatalf("cleanup proof = %+v, want claimed branch", archived.ArchiveCleanup)
+	}
+	expectedSHA := archived.ArchiveCleanup.ExpectedBranchTip
+	runArchiveGit(t, repo, "update-ref", "-d", "refs/heads/"+branch, expectedSHA)
+	recreatedWorktree := filepath.Join(t.TempDir(), "recreated-branch")
+	runArchiveGit(t, repo, "worktree", "add", "-q", "-b", branch, recreatedWorktree, expectedSHA)
+
+	for _, state := range []struct {
+		name   string
+		detach bool
+	}{
+		{name: "checked out"},
+		{name: "detached", detach: true},
+	} {
+		t.Run(state.name, func(t *testing.T) {
+			if state.detach {
+				runArchiveGit(t, recreatedWorktree, "checkout", "-q", "--detach")
+			}
+			_, err := retryArchivedProjectCleanup(loadArchivedManifest(t, slug))
+			if err == nil || !strings.Contains(err.Error(), "already claimed") ||
+				!strings.Contains(err.Error(), "will not retry removal") {
+				t.Fatalf("retryArchivedProjectCleanup error = %v, want manual claimed-state recovery", err)
+			}
+			if !gitx.BranchExists(repo, branch) {
+				t.Fatal("claimed-state retry deleted a branch recreated at the recorded commit")
+			}
+			persisted := loadArchivedManifest(t, slug)
+			if persisted.ArchiveCleanup == nil ||
+				persisted.ArchiveCleanup.BranchState != project.ArchiveCleanupClaimed {
+				t.Fatalf("cleanup proof = %+v, want durable claimed branch", persisted.ArchiveCleanup)
+			}
+		})
+	}
+}
+
 func TestArchivedCleanupConcurrentRetryClaimsWorktreeOnce(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
