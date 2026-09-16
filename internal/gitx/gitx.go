@@ -546,7 +546,7 @@ func (b *diagnosticBuffer) Bytes() []byte {
 	retained := b.buffer.Bytes()
 	if len(retained) > 0 && retained[0] > ' ' {
 		boundary := bytes.IndexFunc(retained, func(character rune) bool {
-			return character <= ' ' || strings.ContainsRune("\"'<>`", character)
+			return character <= ' '
 		})
 		notice += "[... leading truncated token redacted ...]"
 		if boundary < 0 {

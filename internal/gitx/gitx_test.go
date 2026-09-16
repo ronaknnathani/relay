@@ -769,6 +769,28 @@ func TestDiagnosticBufferRedactsTokenSplitByTruncationBoundary(t *testing.T) {
 	}
 }
 
+func TestDiagnosticBufferDoesNotRestartAtApostropheInsideTruncatedToken(t *testing.T) {
+	const querySecret = "query-secret"
+	partialURL := "ivate/repo's-private.git?token=" + querySecret
+	retained := partialURL + "\n" +
+		strings.Repeat("x", maxGitDiagnosticOutput-len(partialURL)-1)
+	raw := "fatal: https://host.example/pr" + retained
+
+	var output diagnosticBuffer
+	if _, err := output.Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	got := SanitizeDiagnostic(string(output.Bytes()))
+
+	if strings.Contains(got, querySecret) || strings.Contains(got, "repo's-private.git") {
+		t.Fatalf("bounded diagnostic leaked a split URL fragment: %q", got[:256])
+	}
+	if !strings.Contains(got, "truncated token redacted") ||
+		!strings.HasSuffix(got, strings.Repeat("x", 128)) {
+		t.Fatalf("bounded diagnostic did not preserve truncation markers and actionable tail")
+	}
+}
+
 func TestSCPStyleURLTokenRejectsRemoteHelperSyntax(t *testing.T) {
 	for _, input := range []string{
 		"git::https://token@github.com/o/r.git?secret=x",
