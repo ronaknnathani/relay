@@ -796,6 +796,9 @@ func controlStringEnd(output string, start int) int {
 }
 
 func sanitizeDiagnosticToken(token string, controlTainted bool) string {
+	if controlTainted && looksRemoteLike(token) {
+		return redactedRemoteToken
+	}
 	prefix, remote, suffix := splitDiagnosticToken(token)
 	cleaned, remoteLike, confident := sanitizeRemoteToken(remote)
 	if remoteLike && !confident {
@@ -803,9 +806,6 @@ func sanitizeDiagnosticToken(token string, controlTainted bool) string {
 	}
 	if confident {
 		return prefix + cleaned + suffix
-	}
-	if controlTainted && looksRemoteLike(remote) {
-		return redactedRemoteToken
 	}
 	return token
 }

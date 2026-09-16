@@ -970,6 +970,37 @@ func TestSanitizeDiagnosticRemovesTerminalControlsWithoutEatingText(t *testing.T
 	}
 }
 
+func TestSanitizeDiagnosticWholeTokenRedactsControlTaintedRemotes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "scheme URL",
+			input: "fatal: https://user:se\x9b31mcret@example.com/repo.git denied",
+			want:  "fatal: [redacted-remote] denied",
+		},
+		{
+			name:  "SCP URL",
+			input: "fatal: deploy\x9b31m-token@git.example:repo denied",
+			want:  "fatal: [redacted-remote] denied",
+		},
+		{
+			name:  "remote helper",
+			input: "fatal: cache::https://user:se\x9b31mcret@example.com/repo.git denied",
+			want:  "fatal: [redacted-remote] denied",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := SanitizeDiagnostic(test.input); got != test.want {
+				t.Fatalf("SanitizeDiagnostic(%q) = %q, want %q", test.input, got, test.want)
+			}
+		})
+	}
+}
+
 func TestSanitizeDiagnosticRemoteSecretCorpusNeverSurvives(t *testing.T) {
 	const secret = "UNIQUE-REMOTE-SECRET-741852963"
 	inputs := []string{
