@@ -1078,6 +1078,9 @@ func sanitizeRemoteHelperURL(rawURL string) string {
 	if _, ok := schemeURLTokenEnd(rawURL, addressStart); ok {
 		return rawURL[:addressStart] + sanitizeGitDiagnosticURL(address)
 	}
+	if !strings.ContainsAny(address, "/@") && credentialLikeAuthority(address) {
+		return rawURL[:addressStart] + "[redacted]"
+	}
 	if _, ok := scpStyleURLTokenEnd(rawURL, addressStart); ok {
 		return rawURL[:addressStart] + sanitizeSCPStyleURL(address)
 	}

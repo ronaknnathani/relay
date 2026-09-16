@@ -1115,6 +1115,13 @@ func TestGCFetchWarningRedactsApostrophesInURLTokens(t *testing.T) {
 			wantProse:  "is invalid",
 		},
 		{
+			name:       "truncated nested helper authority",
+			diagnostic: "fatal: repository 'trace::cache::x-access-token:ghp_SECRET' is invalid",
+			wantURL:    "trace::cache::[redacted]",
+			secrets:    []string{"x-access-token", "ghp_SECRET"},
+			wantProse:  "is invalid",
+		},
+		{
 			name:       "colored scheme URL",
 			diagnostic: "fatal: repository 'ht\x1b[31mtps://example.com/repo.git?token=query-secret\x1b[0m' is invalid",
 			wantURL:    "https://example.com/repo.git",

@@ -754,6 +754,12 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			secrets: []string{"x-access-token", "ghp_SECRET"},
 		},
 		{
+			name:    "nested helpers wrapping truncated authority",
+			input:   "remote: trace::cache::x-access-token:ghp_SECRET",
+			want:    "remote: trace::cache::[redacted]",
+			secrets: []string{"x-access-token", "ghp_SECRET"},
+		},
+		{
 			name:  "nested remote helper bracketed SCP path",
 			input: "remote: trace::cache::_deploy-token@git.example.com:team/[private].git?secret=x#fragment",
 			want:  "remote: trace::cache::[redacted]@git.example.com:team/[private].git",
