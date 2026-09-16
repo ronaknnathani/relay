@@ -154,19 +154,7 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 	if source.Modified {
 		return report
 	}
-	fixture := newReferenceProgramFixture(t)
-	binary := os.Getenv("RELAY_PERF_BINARY")
-	if binary == "" {
-		binary = buildRelayForPerformance(t, repositoryDir, source)
-	}
-	binaryMetadata := readBinaryProvenance(t, binary)
-	commandDir := performanceCommandDir(t)
 	chrome := chromeExecutable(t)
-	report.BinaryRevision = binaryMetadata.Commit
-	report.BinaryVersion = binaryMetadata.Version
-	report.BinaryBuildDate = binaryMetadata.BuildDate
-	report.BinaryBuildMethod = performanceBuildProvenance
-	report.BinarySHA256 = fileSHA256(t, binary)
 	report.ChromiumVersion = chromeVersion(t, chrome)
 	for sequence := 0; sequence < loadPolicy.ObservationCount; sequence++ {
 		if sequence > 0 {
@@ -184,6 +172,18 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 	if report.LoadAdmission.Status != performanceLoadValid {
 		return report
 	}
+	fixture := newReferenceProgramFixture(t)
+	binary := os.Getenv("RELAY_PERF_BINARY")
+	if binary == "" {
+		binary = buildRelayForPerformance(t, repositoryDir, source)
+	}
+	binaryMetadata := readBinaryProvenance(t, binary)
+	commandDir := performanceCommandDir(t)
+	report.BinaryRevision = binaryMetadata.Commit
+	report.BinaryVersion = binaryMetadata.Version
+	report.BinaryBuildDate = binaryMetadata.BuildDate
+	report.BinaryBuildMethod = performanceBuildProvenance
+	report.BinarySHA256 = fileSHA256(t, binary)
 	for run := 0; run <= performanceRuns; run++ {
 		sample := measureIsolatedBrowserRun(
 			t, chrome, binary, commandDir, fixture.program.Slug, mode,
