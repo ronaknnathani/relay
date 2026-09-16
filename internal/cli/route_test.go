@@ -493,6 +493,77 @@ func TestRouteClassifyLetsImplementWorkerReassessAndFinishEasyRoute(t *testing.T
 	finishPhase(t, "demo", "implement", implementToken, "done", "--outcome", "material")
 }
 
+func TestRouteClassifyWorkerCannotChangeCoordinatorGatePolicy(t *testing.T) {
+	tests := []struct {
+		name  string
+		gates []string
+	}{
+		{name: "remove gates", gates: []string{"--no-repository-gates"}},
+		{name: "replace gate digest", gates: []string{"--gate", "test=go test ./internal/..."}},
+		{name: "add gate", gates: []string{
+			"--gate", "test=go test ./...",
+			"--gate", "lint=make lint",
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			repo := initCLIGitRepo(t)
+			saveDeliveryProject(t, "demo", repo)
+			state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+				t.Fatal(err)
+			}
+			classify := []string{
+				"classify", "demo", "--requested-behavior-explicit",
+				"--gate", "test=go test ./...", "--risk-assessment-complete",
+				"--predicted-size-known", "--predicted-files", "1", "--predicted-lines", "20",
+			}
+			if _, err := runRoute(t, classify...); err != nil {
+				t.Fatal(err)
+			}
+			routeToken := dispatchPhase(t, "demo", "route")
+			finishPhase(t, "demo", "route", routeToken, "done", "--outcome", "material")
+			implementToken := dispatchPhase(t, "demo", "implement")
+			dispatch := testDispatchTokens[implementToken]
+
+			workerClassify := []string{
+				"classify", "demo", "--requested-behavior-explicit",
+				"--risk-assessment-complete", "--predicted-size-known",
+				"--predicted-files", "1", "--predicted-lines", "20",
+				"--dispatch-token", dispatch.RouteToken,
+			}
+			workerClassify = append(workerClassify, test.gates...)
+			if _, err := runRouteRaw(t, workerClassify...); err == nil ||
+				!strings.Contains(err.Error(), "coordinator-approved gate policy") {
+				t.Fatalf("worker gate-policy mutation error = %v", err)
+			}
+			got, err := project.LoadState(project.StatePath("demo"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Route.Facts.GatePolicy.Mode != project.GatePolicyRequired ||
+				len(got.Route.Facts.GatePolicy.Gates) != 1 ||
+				got.Route.Facts.GatePolicy.Gates[0].CommandDigest != commandDigestForTest("go test ./...") {
+				t.Fatalf("worker changed gate policy: %+v", got.Route.Facts.GatePolicy)
+			}
+
+			workerClassify = []string{
+				"classify", "demo", "--requested-behavior-explicit",
+				"--gate", "test=go test ./...", "--risk-assessment-complete",
+				"--predicted-size-known", "--predicted-files", "1", "--predicted-lines", "20",
+				"--dispatch-token", dispatch.RouteToken,
+			}
+			if _, err := runRouteRaw(t, workerClassify...); err != nil {
+				t.Fatalf("worker could not preserve exact gate policy after rejection: %v", err)
+			}
+		})
+	}
+}
+
 func TestRouteRefreshPreservesCompatibleStandardWorkerDispatch(t *testing.T) {
 	for _, test := range []struct {
 		name          string

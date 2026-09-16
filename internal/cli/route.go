@@ -194,6 +194,12 @@ func newCmdRouteClassify() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if state.Route != nil && strings.TrimSpace(coordinatorToken) == "" {
+				facts, err = preserveWorkerGatePolicy(state.Route.Facts.GatePolicy, facts)
+				if err != nil {
+					return err
+				}
+			}
 			decision, err := deliveryroute.Classify(facts)
 			if err != nil {
 				return err
@@ -641,6 +647,31 @@ func (flags routeFlags) input(snapshot project.RepositorySnapshot) (project.Rout
 		ChangesRepositoryGuidelines:  flags.changesGuidelines,
 		RiskTriggers:                 risks,
 	}, nil
+}
+
+func preserveWorkerGatePolicy(
+	approved project.GatePolicy,
+	facts project.RouteFacts,
+) (project.RouteFacts, error) {
+	approved, err := project.NormalizeGatePolicy(approved)
+	if err != nil {
+		return project.RouteFacts{}, fmt.Errorf("normalize coordinator-approved gate policy: %w", err)
+	}
+	requested, err := project.NormalizeGatePolicy(facts.GatePolicy)
+	if err != nil {
+		return project.RouteFacts{}, err
+	}
+	if requested.Mode == project.GatePolicyUnknown {
+		facts.GatePolicy = approved
+		return facts, nil
+	}
+	if requested.Mode != approved.Mode || !slices.Equal(requested.Gates, approved.Gates) {
+		return project.RouteFacts{}, fmt.Errorf(
+			"dispatch-token route reassessment cannot change the coordinator-approved gate policy",
+		)
+	}
+	facts.GatePolicy = approved
+	return facts, nil
 }
 
 func saveRouteDecision(statePath string, state project.WorkflowState, decision project.RouteDecision) error {
