@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v25"
+	performanceHarness = "complete-roadmap-v26"
 
 	performanceBuildProvenance = "goreleaser-ldflags-normalized-go-env-v2"
 	performanceLoadMetric      = "one_minute_load_average_per_logical_cpu"
@@ -226,6 +226,7 @@ func measureIsolatedBrowserRun(
 			chromedp.ExecPath(chrome),
 			chromedp.Flag("headless", true),
 			chromedp.Flag("disable-gpu", true),
+			chromedp.Flag("disable-frame-rate-limit", true),
 			chromedp.Flag("no-first-run", true),
 			chromedp.Flag("disable-background-networking", true),
 		)...,
