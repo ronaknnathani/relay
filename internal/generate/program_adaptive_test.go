@@ -40,6 +40,15 @@ func TestProgramSkillsDelegateAdaptiveDeliveryContracts(t *testing.T) {
 			if !strings.Contains(monitor, "relay route advance") {
 				t.Error("stack monitor loop does not atomically update the child manifest base")
 			}
+			advance := strings.LastIndex(monitor, "relay route advance")
+			resume := strings.LastIndex(monitor, "relay resume <next-project-slug>")
+			watch := strings.LastIndex(
+				monitor,
+				"relay pr watch start <next-project-slug> --mode stack --owner <stack-orchestrator-slug>",
+			)
+			if advance < 0 || resume < advance || watch < resume {
+				t.Error("stack monitor loop starts watching before route-advance evidence is refreshed")
+			}
 		default:
 			if !strings.Contains(cycle, want) {
 				t.Errorf("stack build cycle missing %q", want)

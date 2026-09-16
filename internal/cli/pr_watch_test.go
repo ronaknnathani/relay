@@ -684,6 +684,36 @@ func TestPRWatchStackModeRequiresAnOwner(t *testing.T) {
 	}
 }
 
+func TestPRWatchStartRejectsStackFrontWithInvalidatedDelivery(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "workspace-1")
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state := openPRReadyState(t, "demo")
+	state.PR = project.PRRef{Number: 42, URL: "https://github.com/example/test/pull/42"}
+	state.Phases["open-pr"] = project.PhaseState{
+		Status: project.PhaseEscalated,
+		Reason: "route revision invalidated opened PR result",
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{}
+	installPRWatchFakes(t, client)
+	prWatchIsRunning = func(string) (bool, error) { return false, nil }
+
+	_, err := runPRCommand(
+		t, "watch", "start", "demo", "--mode", "stack", "--owner", "stack-run",
+	)
+	if err == nil || !strings.Contains(err.Error(), "redispatch") {
+		t.Fatalf("invalidated stack front start error = %v", err)
+	}
+	if len(client.created) != 0 {
+		t.Fatalf("invalidated stack front created watcher tabs: %+v", client.created)
+	}
+}
+
 func TestPRWatchRunRequiresHerdrAndPassesTheOwner(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	client := &fakeHerdrClient{}

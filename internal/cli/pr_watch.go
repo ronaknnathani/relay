@@ -16,6 +16,7 @@ import (
 
 	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/patrollock"
+	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/ronaknnathani/relay/internal/prwatch"
 	"github.com/spf13/cobra"
 )
@@ -195,6 +196,11 @@ func startPRWatcher(
 	}
 	if running {
 		return adoptRunningPRWatcher(slug, mode, owner, readiness.WorkspaceID)
+	}
+	if mode == prwatch.ModeStack {
+		if err := validateStackPRWatchReadiness(slug); err != nil {
+			return prWatchStartOutput{}, err
+		}
 	}
 
 	var warning string
@@ -590,6 +596,26 @@ func prWatchStartTimeoutError(slug, tabID string, stateErr error) error {
 			"inspect Herdr tab %s, then run `relay pr watch status %s` to see the recorded state",
 		slug, prWatchStartTimeout, stateErr, tabID, slug,
 	)
+}
+
+func validateStackPRWatchReadiness(slug string) error {
+	state, _, err := loadStateAt(slug)
+	if err != nil {
+		return err
+	}
+	if !state.UsesAdaptiveDelivery() {
+		return nil
+	}
+	if state.FinalResult == nil || state.FinalResult.Status != "opened" ||
+		state.Phases["open-pr"].Status != project.PhaseDone {
+		return fmt.Errorf(
+			"stack watcher requires a fresh completed open-pr result for the current route; "+
+				"redispatch the child with `relay resume %s` and finish review, validation, "+
+				"and open-pr reconciliation first",
+			slug,
+		)
+	}
+	return nil
 }
 
 func renderPRWatchStart(out io.Writer, result prWatchStartOutput, jsonOutput bool) error {

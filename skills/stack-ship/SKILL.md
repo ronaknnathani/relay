@@ -67,10 +67,14 @@ After the front merges:
 3. push the next branch with `--force-with-lease` and retarget its PR to `<default-branch>`;
 4. consume the child's returned one-time capability with
    `relay route advance <next-project-slug> --base <default-branch> --advance-token <token>`;
-5. verify descendant base refs and intended diffs did not collapse;
-6. cascade the new parent tip through descendants with `git rebase --onto` and
+5. resume the child with `relay resume <next-project-slug>` so adaptive `deliver-pr` redispatches
+   work reopened by the route change, records fresh review and exact-gate validation evidence, and
+   reconciles the existing PR through `open-pr`; wait for a fresh terminal `opened` result;
+6. verify descendant base refs and intended diffs did not collapse;
+7. cascade the new parent tip through descendants with `git rebase --onto` and
    `--force-with-lease`;
-7. start the next front watcher.
+8. only after the refreshed child delivery is complete, start the next front watcher with
+   `relay pr watch start <next-project-slug> --mode stack --owner <stack-orchestrator-slug>`.
 
 Auto-merge is armed only on the front and fires only after genuine human code-owner approval. Never
 self-approve, merge immediately, or arm a child PR based on another feature branch.

@@ -45,15 +45,20 @@ git push --force-with-lease origin <next-branch>
 gh pr edit <next-pr> --base <default-branch>
 gh pr view <next-pr> --json baseRefName,mergeStateStatus
 relay route advance <next-project-slug> --base <default-branch> --advance-token <token>
+relay resume <next-project-slug>
+# Wait for the child to refresh reopened work and finish review, validation, and open-pr reconciliation.
 relay pr watch start <next-project-slug> --mode stack --owner <stack-orchestrator-slug>
 ```
 
 The base update is required after squash merges, merge commits, and deleted parent branches: it
 atomically records the new base identity and immutable start SHA, recomputes route freshness, and
 consumes the child-issued capability so it cannot be reused.
-Confirm `baseRefName == "<default-branch>"`. Then verify every other descendant still targets its
-intended parent feature branch (not the default branch), and let the new front watcher wake you once
-auto-merge can be armed on the default-branch PR.
+It also invalidates the child's prior evidence and opened result. Do not start the watcher until the
+resumed child has completed any reopened implementation work, recorded fresh route-bound review and
+exact-gate validation evidence, reconciled the existing PR through `open-pr`, and returned a fresh
+terminal `opened` result. Confirm `baseRefName == "<default-branch>"`. Then verify every other
+descendant still targets its intended parent feature branch (not the default branch), and let the new
+front watcher wake you once auto-merge can be armed on the default-branch PR.
 
 Stopping the old watcher is **your** job and it is not optional. A merged front PR stays actionable in
 stack mode — the watcher has no local record of "handled", so it re-observes the same merge and wakes

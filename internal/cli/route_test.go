@@ -325,6 +325,9 @@ func TestRouteAdvanceUsesOneTimeScopedCapabilityAfterChildExit(t *testing.T) {
 	if grant.Capability == "" {
 		t.Fatal("stack advance grant returned an empty capability")
 	}
+	if err := validateStackPRWatchReadiness("demo"); err != nil {
+		t.Fatalf("completed child was not ready for stack monitoring before advance: %v", err)
+	}
 
 	tree := gitRevParse(t, repo, baseSHA+"^{tree}")
 	moved := strings.TrimSpace(gitOutput(
@@ -350,6 +353,10 @@ func TestRouteAdvanceUsesOneTimeScopedCapabilityAfterChildExit(t *testing.T) {
 	}
 	if got.StackAdvanceHash != "" {
 		t.Fatal("stack advance capability was not consumed")
+	}
+	if err := validateStackPRWatchReadiness("demo"); err == nil ||
+		!strings.Contains(err.Error(), "redispatch") {
+		t.Fatalf("stack monitoring after route advance readiness = %v", err)
 	}
 	if _, err := runRouteRaw(
 		t, "advance", "demo", "--base", "main", "--advance-token", grant.Capability,
