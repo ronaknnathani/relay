@@ -627,6 +627,11 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			want:  "status [redacted]@example.com:ready",
 		},
 		{
+			name:  "malformed remote with userinfo and host only",
+			input: "remote: github-token@ghe.example?token=secret#scope",
+			want:  "remote: [redacted]@ghe.example",
+		},
+		{
 			name:  "scp path contains at sign",
 			input: "remote: token@host:repo@mirror",
 			want:  "remote: [redacted]@host:repo@mirror",

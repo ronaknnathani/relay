@@ -645,6 +645,11 @@ func SanitizeDiagnostic(output string) string {
 			index = end
 			continue
 		}
+		if end, ok := scanner.userinfoHostTokenEnd(index); ok {
+			sanitized.WriteString(sanitizeUserinfoHost(output[index:end]))
+			index = end
+			continue
+		}
 		sanitized.WriteByte(output[index])
 		index++
 	}
@@ -838,6 +843,40 @@ func (s diagnosticURLScanner) scpStyleURLTokenEnd(start int) (int, bool) {
 	return end, true
 }
 
+func (s diagnosticURLScanner) userinfoHostTokenEnd(start int) (int, bool) {
+	output := s.output
+	if !urlTokenBoundary(output, start) || start >= len(output) ||
+		!isSCPStyleURLStart(output[start]) {
+		return 0, false
+	}
+	tokenLimit := s.nextHardBoundary[start]
+	userinfoEnd := s.nextAt[start]
+	if userinfoEnd <= start || userinfoEnd >= tokenLimit {
+		return 0, false
+	}
+	hostStart := userinfoEnd + 1
+	end := scanURLTokenEnd(output, start, hostStart)
+	hostEnd := end
+	if secretStart := strings.IndexAny(output[hostStart:end], "?#"); secretStart >= 0 {
+		hostEnd = hostStart + secretStart
+	}
+	if hostEnd <= hostStart {
+		return 0, false
+	}
+	if anotherAt := s.nextAt[hostStart]; anotherAt >= 0 && anotherAt < hostEnd {
+		return 0, false
+	}
+	for index := hostStart; index < hostEnd; index++ {
+		character := output[index]
+		if isASCIILetter(character) || character >= '0' && character <= '9' ||
+			strings.ContainsRune(".-_", rune(character)) {
+			continue
+		}
+		return 0, false
+	}
+	return end, true
+}
+
 func isSCPStyleURLStart(character byte) bool {
 	return isASCIILetter(character) ||
 		character >= '0' && character <= '9' ||
@@ -957,6 +996,17 @@ func sanitizeSCPStyleURL(rawURL string) string {
 		return cleaned
 	}
 	return "[redacted]@" + rawURL[userinfoEnd+1:pathStart+1] + path
+}
+
+func sanitizeUserinfoHost(value string) string {
+	if secretStart := strings.IndexAny(value, "?#"); secretStart >= 0 {
+		value = value[:secretStart]
+	}
+	userinfoEnd := strings.LastIndexByte(value, '@')
+	if userinfoEnd < 0 {
+		return value
+	}
+	return "[redacted]@" + value[userinfoEnd+1:]
 }
 
 func scpPathStart(value string) int {

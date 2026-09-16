@@ -1028,6 +1028,13 @@ func TestGCFetchWarningRedactsApostrophesInURLTokens(t *testing.T) {
 			secrets:    []string{"_deploy-token", "token=", "query-secret", "fragment-secret"},
 			wantProse:  "is unavailable",
 		},
+		{
+			name:       "malformed userinfo host remote",
+			diagnostic: "fatal: repository 'github-token@ghe.example?token=query-secret#fragment-secret' is invalid",
+			wantURL:    "[redacted]@ghe.example",
+			secrets:    []string{"github-token", "token=", "query-secret", "fragment-secret"},
+			wantProse:  "is invalid",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
