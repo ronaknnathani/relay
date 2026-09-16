@@ -246,7 +246,6 @@ func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
 		`requestAnimationFrame(() => setTimeout(loadFullApp, 0))`,
 		`document.addEventListener("DOMContentLoaded", loadFullAppAfterPaint, { once: true })`,
 		`window.__relayRoadmapCoreCleanup`,
-		`window.__relayRoadmapConnectorPaths = paths`,
 		`drawInitialConnectors();`,
 	})
 	if !strings.Contains(index, `<div id="graph-nodes" class="roadmap__stages"></div>`) {

@@ -4,8 +4,6 @@
   const graphNodes = document.getElementById("graph-nodes");
   const graph = document.getElementById("graph");
   const graphEdges = document.getElementById("graph-edges");
-  const roadmapScroll = document.getElementById("roadmap-scroll");
-  const roadmapContent = document.getElementById("roadmap-content");
   const reconnect = document.getElementById("reconnect");
   const refresh = document.getElementById("refresh");
   const themeToggle = document.getElementById("theme-toggle");
@@ -181,7 +179,6 @@
     graphNodes.removeEventListener("keydown", onKeyDown);
     themeToggle.removeEventListener("click", onThemeToggle);
     refresh.removeEventListener("click", onRefresh);
-    roadmapScroll.removeEventListener("scroll", onRoadmapScroll);
   };
   renderThemeToggle();
   window.__relayCoreReady = true;
@@ -189,140 +186,34 @@
     document.querySelector('.card[data-selected="true"]')?.dataset.item || "";
   document.documentElement.dataset.relayCoreReady = "true";
 
-  const round = (value) => Math.round(value * 10) / 10;
-  const downwardPath = (from, to) => {
-    const y1 = from.bottom + 1;
-    const y2 = to.top - 7;
-    const channel = Math.max(y1 + 6, to.top - 13);
-    const x1 = from.center;
-    const x2 = to.center;
-    if (Math.abs(x2 - x1) < 1.5) {
-      return `M ${round(x1)} ${round(y1)} V ${round(y2)}`;
+  const drawInitialConnectors = () => {
+    if (!initialConnectors) {
+      return;
     }
-    const direction = x2 > x1 ? 1 : -1;
-    const radius = Math.max(0, Math.min(10, Math.abs(x2 - x1) / 2, channel - y1, y2 - channel));
-    return `M ${round(x1)} ${round(y1)}` +
-      ` V ${round(channel - radius)}` +
-      ` Q ${round(x1)} ${round(channel)} ${round(x1 + direction * radius)} ${round(channel)}` +
-      ` H ${round(x2 - direction * radius)}` +
-      ` Q ${round(x2)} ${round(channel)} ${round(x2)} ${round(channel + radius)}` +
-      ` V ${round(y2)}`;
-  };
-  const renderConnectors = (boxes, coordinateWidth, height, stretch) => {
-    const edges = Array.isArray(graphData.edges) ? graphData.edges : [];
-    const paths = [];
-    edges.forEach((edge) => {
-      const from = boxes.get(edge.from);
-      const to = boxes.get(edge.to);
-      if (!from || !to) {
-        return;
-      }
-      const downward = to.top > from.bottom + 4;
-      paths.push({
-        from: edge.from,
-        to: edge.to,
-        downward,
-        path: downward
-          ? downwardPath(from, to)
-          : `M ${round(from.center)} ${round(from.bottom + 1)} L ${round(to.center)} ${round(to.top - 7)}`,
-      });
-    });
-    const grouped = {
-      normal: paths.filter((edge) => edge.downward),
-      back: paths.filter((edge) => !edge.downward),
-    };
     const fragment = new DocumentFragment();
-    [["normal", "edge"], ["back", "edge edge--back"]].forEach(([name, className]) => {
-      if (grouped[name].length === 0) {
+    [
+      [initialConnectors.normal_path, initialConnectors.normal_count, "edge"],
+      [initialConnectors.back_path, initialConnectors.back_count, "edge edge--back"],
+    ].forEach(([pathData, count, className]) => {
+      if (!pathData || !count) {
         return;
       }
       const path = document.createElementNS(graph.namespaceURI, "path");
       path.setAttribute("class", className);
-      path.setAttribute("d", grouped[name].map((edge) => edge.path).join(" "));
+      path.setAttribute("d", pathData);
       path.setAttribute("marker-end", "url(#flow-arrow)");
-      path.dataset.edgeCount = String(grouped[name].length);
+      path.dataset.edgeCount = String(count);
       fragment.append(path);
     });
-    graph.setAttribute("width", stretch ? "100%" : String(coordinateWidth));
-    graph.setAttribute("height", String(height));
-    graph.setAttribute("viewBox", `0 0 ${coordinateWidth} ${height}`);
-    if (stretch) {
-      graph.setAttribute("preserveAspectRatio", "none");
-    } else {
-      graph.removeAttribute("preserveAspectRatio");
-    }
+    graph.setAttribute("width", "100%");
+    graph.setAttribute("height", String(initialConnectors.height));
+    graph.setAttribute(
+      "viewBox",
+      `0 0 ${initialConnectors.width} ${initialConnectors.height}`,
+    );
+    graph.setAttribute("preserveAspectRatio", "none");
     graphEdges.replaceChildren(fragment);
-    window.__relayRoadmapConnectorPaths = paths;
   };
-  const drawAccurateConnectors = () => {
-    const edges = Array.isArray(graphData.edges) ? graphData.edges : [];
-    const base = roadmapContent.getBoundingClientRect();
-    if (base.width === 0 || edges.length === 0) {
-      return;
-    }
-    const boxes = new Map(cards().map((card) => {
-      const box = card.getBoundingClientRect();
-      return [card.dataset.item, {
-        center: box.left - base.left + box.width / 2,
-        top: box.top - base.top,
-        bottom: box.bottom - base.top,
-      }];
-    }));
-    renderConnectors(boxes, Math.ceil(base.width), Math.ceil(base.height), false);
-  };
-  const drawInitialConnectors = () => {
-    if (initialConnectors) {
-      const fragment = new DocumentFragment();
-      [
-        [initialConnectors.normal_path, initialConnectors.normal_count, "edge"],
-        [initialConnectors.back_path, initialConnectors.back_count, "edge edge--back"],
-      ].forEach(([pathData, count, className]) => {
-        if (!pathData || !count) {
-          return;
-        }
-        const path = document.createElementNS(graph.namespaceURI, "path");
-        path.setAttribute("class", className);
-        path.setAttribute("d", pathData);
-        path.setAttribute("marker-end", "url(#flow-arrow)");
-        path.dataset.edgeCount = String(count);
-        fragment.append(path);
-      });
-      graph.setAttribute("width", "100%");
-      graph.setAttribute("height", String(initialConnectors.height));
-      graph.setAttribute(
-        "viewBox",
-        `0 0 ${initialConnectors.width} ${initialConnectors.height}`,
-      );
-      graph.setAttribute("preserveAspectRatio", "none");
-      graphEdges.replaceChildren(fragment);
-      return;
-    }
-    const stages = Array.from(graphNodes.children);
-    const allSingle = stages.length > 0 &&
-      stages.every((stage) => stage.classList.contains("stage--single"));
-    if (!allSingle) {
-      drawAccurateConnectors();
-      return;
-    }
-    const width = 1000;
-    const stageHeight = 132;
-    const cardTop = 34;
-    const cardHeight = 98;
-    const gap = window.innerWidth <= 560 ? 20 : 26;
-    const boxes = new Map(stages.map((stage, index) => {
-      const card = stage.querySelector(".card");
-      const top = index * (stageHeight + gap) + cardTop;
-      return [card.dataset.item, {
-        center: width / 2,
-        top,
-        bottom: top + cardHeight,
-      }];
-    }));
-    const height = stages.length * stageHeight + Math.max(0, stages.length - 1) * gap;
-    renderConnectors(boxes, width, height, true);
-  };
-  const onRoadmapScroll = () => drawAccurateConnectors();
-  roadmapScroll.addEventListener("scroll", onRoadmapScroll, { once: true });
 
   const loadFullApp = () => {
     const script = document.createElement("script");
