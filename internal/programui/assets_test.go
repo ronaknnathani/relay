@@ -119,9 +119,9 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 			roadmapJSONToken+`</script>`) {
 		t.Error("index.html must embed the initial roadmap data and controller after the complete document")
 	}
-	if strings.Contains(index, "<style>") ||
-		!strings.Contains(index, `<link rel="stylesheet" href="/app.css">`) {
-		t.Error("index.html must load the core stylesheet before parsing the roadmap")
+	if strings.Count(index, "<style>") != 1 ||
+		!strings.Contains(index, `<style>/*!__RELAY_CSS__*/</style>`) {
+		t.Error("index.html must embed the minified core stylesheet")
 	}
 }
 
@@ -189,6 +189,11 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	roadmapHash := "'sha256-" + base64.StdEncoding.EncodeToString(roadmapDigest[:]) + "'"
 	if !strings.Contains(contentSecurityPolicy, roadmapHash) {
 		t.Errorf("content security policy is missing the roadmap controller hash %s", roadmapHash)
+	}
+	styleDigest := sha256.Sum256([]byte(minifiedStyles))
+	styleHash := "'sha256-" + base64.StdEncoding.EncodeToString(styleDigest[:]) + "'"
+	if !strings.Contains(contentSecurityPolicy, styleHash) {
+		t.Errorf("content security policy is missing the core stylesheet hash %s", styleHash)
 	}
 	if strings.Index(script, "applyTheme(storedTheme()") > strings.Index(script, "function start()") {
 		t.Error("the theme must be applied before the app boot code")

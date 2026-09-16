@@ -37,10 +37,11 @@ func TestHandlerCachesRenderedIndex(t *testing.T) {
 		t.Fatalf("Content-Length = %q, want %d", got, response.Body.Len())
 	}
 	if bytes.Contains(response.Body.Bytes(), []byte(roadmapCoreToken)) ||
+		bytes.Contains(response.Body.Bytes(), []byte(cssTemplateToken)) ||
 		bytes.Contains(response.Body.Bytes(), []byte("<style></style>")) ||
-		!bytes.Contains(response.Body.Bytes(), []byte(`rel="stylesheet" href="/app.css"`)) ||
+		!bytes.Contains(response.Body.Bytes(), []byte("--canvas:")) ||
 		!bytes.Contains(response.Body.Bytes(), []byte("/app.js")) {
-		t.Fatal("rendered index must load the first-paint stylesheet and contain the bootstrap with no template token")
+		t.Fatal("rendered index must contain the complete first-paint CSS and bootstrap with no template token")
 	}
 }
 
@@ -51,10 +52,11 @@ func TestPrepareIndexTemplateRejectsMissingRequiredTokens(t *testing.T) {
 		index []byte
 		want  string
 	}{
+		{name: "css", index: bytes.ReplaceAll(valid, []byte(cssTemplateToken), nil), want: cssTemplateToken},
 		{name: "roadmap", index: bytes.ReplaceAll(valid, []byte(roadmapCoreToken), nil), want: roadmapCoreToken},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := prepareIndexTemplateData(test.index, []byte("roadmap"))
+			_, err := prepareIndexTemplateData(test.index, []byte("roadmap"), []byte("styles"))
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("prepareIndexTemplateData() error = %v, want missing %s", err, test.want)
 			}
