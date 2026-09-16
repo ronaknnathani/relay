@@ -880,19 +880,19 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 		{
 			name:    "colored scheme URL",
 			input:   "remote: ht\x1b[31mtps://example.com/repo.git?token=query-secret\x1b[0m",
-			want:    "remote: https://example.com/repo.git",
+			want:    "remote: [redacted-remote]",
 			secrets: []string{"token=", "query-secret"},
 		},
 		{
 			name:    "colored SCP URL",
 			input:   "remote: deploy-secret\x1b[31m@github.com:o/r.git?token=query-secret\x1b[0m",
-			want:    "remote: [redacted]@github.com:o/r.git",
+			want:    "remote: [redacted-remote]",
 			secrets: []string{"deploy-secret", "token=", "query-secret"},
 		},
 		{
 			name:    "colored remote helper URL",
 			input:   "remote: cache::ht\x1b[31mtps://example.com/repo.git?token=query-secret\x1b[0m",
-			want:    "remote: cache::https://example.com/repo.git",
+			want:    "remote: [redacted-remote]",
 			secrets: []string{"token=", "query-secret"},
 		},
 	}
