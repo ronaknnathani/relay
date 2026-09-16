@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"debug/buildinfo"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,23 +28,38 @@ const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
 	performanceHarness = "complete-roadmap-v23"
+
+	performanceBuildProvenance = "relay-ldflags-v1"
+	performanceLoadMetric      = "one_minute_load_average_per_logical_cpu"
+	performanceLoadValid       = "valid"
+	performanceLoadInvalid     = "invalid_shared_host_contention"
+
+	performanceMaxNormalizedOneMinute = 0.75
+	performanceLoadObservationCount   = 5
+	performanceLoadObservationDelay   = time.Second
 )
 
 type performanceReport struct {
-	Mode            string                 `json:"mode"`
-	GeneratedAt     string                 `json:"generated_at"`
-	SourceCommit    string                 `json:"source_commit"`
-	BinaryRevision  string                 `json:"binary_revision"`
-	BinaryModified  bool                   `json:"binary_modified"`
-	BinarySHA256    string                 `json:"binary_sha256"`
-	FixtureVersion  string                 `json:"fixture_version"`
-	HarnessVersion  string                 `json:"harness_version"`
-	ChromiumVersion string                 `json:"chromium_version"`
-	Environment     performanceEnvironment `json:"environment"`
-	Samples         map[string][]float64   `json:"samples"`
-	P50             map[string]float64     `json:"p50"`
-	P95             map[string]float64     `json:"p95"`
-	Max             map[string]float64     `json:"max"`
+	Mode              string                   `json:"mode"`
+	GeneratedAt       string                   `json:"generated_at"`
+	SourceCommit      string                   `json:"source_commit"`
+	SourceCommitTime  string                   `json:"source_commit_time"`
+	SourceModified    bool                     `json:"source_modified"`
+	BinaryRevision    string                   `json:"binary_revision"`
+	BinaryModified    bool                     `json:"binary_modified"`
+	BinaryVersion     string                   `json:"binary_version"`
+	BinaryBuildDate   string                   `json:"binary_build_date"`
+	BinaryBuildMethod string                   `json:"binary_build_method"`
+	BinarySHA256      string                   `json:"binary_sha256"`
+	FixtureVersion    string                   `json:"fixture_version"`
+	HarnessVersion    string                   `json:"harness_version"`
+	ChromiumVersion   string                   `json:"chromium_version"`
+	Environment       performanceEnvironment   `json:"environment"`
+	LoadAdmission     performanceLoadAdmission `json:"load_admission"`
+	Samples           map[string][]float64     `json:"samples"`
+	P50               map[string]float64       `json:"p50"`
+	P95               map[string]float64       `json:"p95"`
+	Max               map[string]float64       `json:"max"`
 }
 
 type performanceEnvironment struct {
@@ -54,6 +69,40 @@ type performanceEnvironment struct {
 	CPU        string `json:"cpu"`
 	LogicalCPU int    `json:"logical_cpu"`
 	GoVersion  string `json:"go_version"`
+}
+
+type repositoryProvenance struct {
+	Commit     string
+	CommitTime time.Time
+	Modified   bool
+}
+
+type performanceLoadPolicy struct {
+	Metric                 string  `json:"metric"`
+	MaxNormalizedOneMinute float64 `json:"max_normalized_one_minute"`
+	ObservationCount       int     `json:"observation_count"`
+	ObservationIntervalMS  int     `json:"observation_interval_ms"`
+}
+
+type performanceLoadObservation struct {
+	Sequence            int     `json:"sequence"`
+	OneMinute           float64 `json:"one_minute"`
+	LogicalCPU          int     `json:"logical_cpu"`
+	NormalizedOneMinute float64 `json:"normalized_one_minute"`
+}
+
+type performanceLoadAdmission struct {
+	Status          string                       `json:"status"`
+	Reason          string                       `json:"reason,omitempty"`
+	InvalidSequence int                          `json:"invalid_sequence"`
+	Policy          performanceLoadPolicy        `json:"policy"`
+	Observations    []performanceLoadObservation `json:"observations"`
+}
+
+type binaryProvenance struct {
+	Version   string
+	Commit    string
+	BuildDate string
 }
 
 type browserSample struct {
@@ -79,26 +128,62 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 	if mode != "baseline" && mode != "verify" {
 		t.Fatalf("RELAY_BROWSER_PERF = %q, want baseline or verify", mode)
 	}
+	repositoryDir := performanceRepositoryDir(t)
+	source, err := readRepositoryProvenance(repositoryDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadPolicy := performanceLoadPolicy{
+		Metric:                 performanceLoadMetric,
+		MaxNormalizedOneMinute: performanceMaxNormalizedOneMinute,
+		ObservationCount:       performanceLoadObservationCount,
+		ObservationIntervalMS:  int(performanceLoadObservationDelay / time.Millisecond),
+	}
+	report := performanceReport{
+		Mode: mode, GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		SourceCommit: source.Commit, SourceCommitTime: source.CommitTime.Format(time.RFC3339),
+		SourceModified: source.Modified, BinaryModified: source.Modified,
+		FixtureVersion: performanceFixture, HarnessVersion: performanceHarness,
+		Environment:   currentPerformanceEnvironment(t),
+		LoadAdmission: performanceLoadAdmission{Policy: loadPolicy},
+		Samples:       map[string][]float64{},
+		P50:           map[string]float64{},
+		P95:           map[string]float64{},
+		Max:           map[string]float64{},
+	}
+	if source.Modified {
+		return report
+	}
 	fixture := newReferenceProgramFixture(t)
 	binary := os.Getenv("RELAY_PERF_BINARY")
 	if binary == "" {
-		binary = buildRelayForPerformance(t)
+		binary = buildRelayForPerformance(t, repositoryDir, source)
 	}
+	binaryMetadata := readBinaryProvenance(t, binary)
 	commandDir := performanceCommandDir(t)
 	chrome := chromeExecutable(t)
-	report := performanceReport{
-		Mode: mode, GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		BinarySHA256:   fileSHA256(t, binary),
-		FixtureVersion: performanceFixture, HarnessVersion: performanceHarness,
-		ChromiumVersion: chromeVersion(t, chrome),
-		Environment:     currentPerformanceEnvironment(t),
-		Samples:         map[string][]float64{},
-		P50:             map[string]float64{},
-		P95:             map[string]float64{},
-		Max:             map[string]float64{},
+	report.BinaryRevision = binaryMetadata.Commit
+	report.BinaryVersion = binaryMetadata.Version
+	report.BinaryBuildDate = binaryMetadata.BuildDate
+	report.BinaryBuildMethod = performanceBuildProvenance
+	report.BinarySHA256 = fileSHA256(t, binary)
+	report.ChromiumVersion = chromeVersion(t, chrome)
+	for sequence := 0; sequence < loadPolicy.ObservationCount; sequence++ {
+		if sequence > 0 {
+			time.Sleep(performanceLoadObservationDelay)
+		}
+		report.LoadAdmission.Observations = append(
+			report.LoadAdmission.Observations,
+			observePerformanceLoad(t, sequence),
+		)
 	}
-	report.BinaryRevision, report.BinaryModified = binaryVCS(t, binary)
-	report.SourceCommit = report.BinaryRevision
+	report.LoadAdmission = evaluatePerformanceLoad(
+		loadPolicy,
+		report.LoadAdmission.Observations,
+	)
+	if report.LoadAdmission.Status != performanceLoadValid {
+		return report
+	}
 	for run := 0; run <= performanceRuns; run++ {
 		sample := measureIsolatedBrowserRun(
 			t, chrome, binary, commandDir, fixture.program.Slug, mode,
@@ -561,19 +646,39 @@ func waitForBrowserCondition(expression string) chromedp.Action {
 	})
 }
 
-func buildRelayForPerformance(t *testing.T) string {
+func buildRelayForPerformance(
+	t *testing.T,
+	repositoryDir string,
+	provenance repositoryProvenance,
+) string {
 	t.Helper()
 	binary := filepath.Join(t.TempDir(), "relay")
-	command := exec.Command(
-		"go", "build", "-buildvcs=true", "-trimpath", "-ldflags=-s -w",
-		"-o", binary, "./cmd/relay",
-	)
-	command.Dir = filepath.Join("..", "..")
+	command := exec.Command("go", performanceBuildArguments(binary, provenance)...)
+	command.Dir = repositoryDir
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("build relay for performance test: %v\n%s", err, output)
 	}
 	return binary
+}
+
+func performanceBuildArguments(output string, provenance repositoryProvenance) []string {
+	ldflags := strings.Join([]string{
+		"-s",
+		"-w",
+		"-X github.com/ronaknnathani/relay/internal/cli.version=performance",
+		"-X github.com/ronaknnathani/relay/internal/cli.commit=" + provenance.Commit,
+		"-X github.com/ronaknnathani/relay/internal/cli.date=" +
+			provenance.CommitTime.UTC().Format(time.RFC3339),
+	}, " ")
+	return []string{
+		"build",
+		"-buildvcs=false",
+		"-trimpath",
+		"-ldflags=" + ldflags,
+		"-o", output,
+		"./cmd/relay",
+	}
 }
 
 func performanceCommandDir(t *testing.T) string {
@@ -786,6 +891,9 @@ func validatePerformanceMetadata(
 	currentCommit string,
 	baselineCommit string,
 ) error {
+	if err := validatePerformanceLoadAdmission(report); err != nil {
+		return err
+	}
 	switch {
 	case report.Mode != "verify":
 		return fmt.Errorf("performance report mode = %q, want verify", report.Mode)
@@ -793,6 +901,8 @@ func validatePerformanceMetadata(
 		return fmt.Errorf("baseline report mode = %q, want baseline", baseline.Mode)
 	case report.SourceCommit != currentCommit:
 		return fmt.Errorf("performance source commit = %q, want current HEAD %q", report.SourceCommit, currentCommit)
+	case report.SourceModified:
+		return errors.New("performance source worktree was modified")
 	case baseline.SourceCommit != baselineCommit:
 		return fmt.Errorf("baseline source commit = %q, want origin/main %q", baseline.SourceCommit, baselineCommit)
 	case report.BinaryRevision != report.SourceCommit:
@@ -809,6 +919,20 @@ func validatePerformanceMetadata(
 		return errors.New("performance binary was built from a dirty worktree")
 	case baseline.BinaryModified:
 		return errors.New("baseline binary was built from a dirty worktree")
+	case report.BinaryVersion != "performance":
+		return fmt.Errorf("performance binary version = %q, want performance", report.BinaryVersion)
+	case report.BinaryBuildDate != report.SourceCommitTime:
+		return fmt.Errorf(
+			"performance binary build date = %q, want source commit time %q",
+			report.BinaryBuildDate,
+			report.SourceCommitTime,
+		)
+	case report.BinaryBuildMethod != performanceBuildProvenance:
+		return fmt.Errorf(
+			"performance binary build method = %q, want %q",
+			report.BinaryBuildMethod,
+			performanceBuildProvenance,
+		)
 	case report.BinarySHA256 == "":
 		return errors.New("performance binary SHA-256 is missing")
 	case baseline.BinarySHA256 == "":
@@ -846,26 +970,233 @@ func validatePerformanceMetadata(
 	}
 }
 
-func binaryVCS(t *testing.T, path string) (string, bool) {
-	t.Helper()
-	info, err := buildinfo.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read build info from performance binary %s: %v", path, err)
+func validatePerformanceLoadAdmission(report performanceReport) error {
+	admission := report.LoadAdmission
+	switch {
+	case admission.Status != performanceLoadValid:
+		return fmt.Errorf("performance environment is invalid: %s", admission.Reason)
+	case admission.Policy.Metric != performanceLoadMetric:
+		return fmt.Errorf(
+			"performance load metric = %q, want %q",
+			admission.Policy.Metric,
+			performanceLoadMetric,
+		)
+	case admission.Policy.MaxNormalizedOneMinute != performanceMaxNormalizedOneMinute:
+		return fmt.Errorf(
+			"performance maximum normalized one-minute load = %.3f, want %.3f",
+			admission.Policy.MaxNormalizedOneMinute,
+			performanceMaxNormalizedOneMinute,
+		)
+	case admission.Policy.ObservationCount != performanceLoadObservationCount:
+		return fmt.Errorf(
+			"performance load observation count = %d, want %d",
+			admission.Policy.ObservationCount,
+			performanceLoadObservationCount,
+		)
+	case admission.Policy.ObservationIntervalMS !=
+		int(performanceLoadObservationDelay/time.Millisecond):
+		return fmt.Errorf(
+			"performance load observation interval = %d ms, want %d ms",
+			admission.Policy.ObservationIntervalMS,
+			performanceLoadObservationDelay/time.Millisecond,
+		)
+	case len(admission.Observations) != performanceLoadObservationCount:
+		return fmt.Errorf(
+			"performance load observations = %d, want %d",
+			len(admission.Observations),
+			performanceLoadObservationCount,
+		)
 	}
-	revision := ""
-	modified := false
-	for _, setting := range info.Settings {
-		switch setting.Key {
-		case "vcs.revision":
-			revision = setting.Value
-		case "vcs.modified":
-			modified = setting.Value == "true"
+	for sequence, observation := range admission.Observations {
+		switch {
+		case observation.Sequence != sequence:
+			return fmt.Errorf(
+				"performance load observation %d has sequence %d",
+				sequence,
+				observation.Sequence,
+			)
+		case observation.LogicalCPU != report.Environment.LogicalCPU:
+			return fmt.Errorf(
+				"performance load observation %d logical CPUs = %d, want environment value %d",
+				sequence,
+				observation.LogicalCPU,
+				report.Environment.LogicalCPU,
+			)
+		case math.Abs(
+			observation.NormalizedOneMinute-
+				observation.OneMinute/float64(observation.LogicalCPU),
+		) > 0.000001:
+			return fmt.Errorf(
+				"performance load observation %d normalized value %.6f does not match "+
+					"one-minute load %.6f / %d logical CPUs",
+				sequence,
+				observation.NormalizedOneMinute,
+				observation.OneMinute,
+				observation.LogicalCPU,
+			)
+		case observation.NormalizedOneMinute > admission.Policy.MaxNormalizedOneMinute:
+			return fmt.Errorf(
+				"performance load observation %d normalized value %.3f exceeds %.3f",
+				sequence,
+				observation.NormalizedOneMinute,
+				admission.Policy.MaxNormalizedOneMinute,
+			)
 		}
 	}
-	if revision == "" {
-		t.Fatalf("performance binary %s has no embedded VCS revision", path)
+	return nil
+}
+
+func readRepositoryProvenance(repositoryDir string) (repositoryProvenance, error) {
+	commit, err := runRepositoryGit(repositoryDir, "rev-parse", "HEAD")
+	if err != nil {
+		return repositoryProvenance{}, err
 	}
-	return revision, modified
+	commitTimeText, err := runRepositoryGit(repositoryDir, "show", "-s", "--format=%cI", "HEAD")
+	if err != nil {
+		return repositoryProvenance{}, err
+	}
+	commitTime, err := time.Parse(time.RFC3339, commitTimeText)
+	if err != nil {
+		return repositoryProvenance{}, fmt.Errorf(
+			"parse source commit time %q: %w",
+			commitTimeText,
+			err,
+		)
+	}
+	status, err := runRepositoryGit(
+		repositoryDir,
+		"status", "--porcelain=v1", "--untracked-files=normal",
+	)
+	if err != nil {
+		return repositoryProvenance{}, err
+	}
+	return repositoryProvenance{
+		Commit:     commit,
+		CommitTime: commitTime.UTC(),
+		Modified:   status != "",
+	}, nil
+}
+
+func runRepositoryGit(repositoryDir string, args ...string) (string, error) {
+	command := exec.Command("git", args...)
+	command.Dir = repositoryDir
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf(
+			"git %s in %s: %w\n%s",
+			strings.Join(args, " "),
+			repositoryDir,
+			err,
+			output,
+		)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func readBinaryProvenance(t *testing.T, path string) binaryProvenance {
+	t.Helper()
+	output, err := exec.Command(path, "--version").CombinedOutput()
+	if err != nil {
+		t.Fatalf("read performance binary version from %s: %v\n%s", path, err, output)
+	}
+	const prefix = "relay version "
+	versionText := strings.TrimSpace(string(output))
+	if !strings.HasPrefix(versionText, prefix) {
+		t.Fatalf("performance binary version %q does not start with %q", versionText, prefix)
+	}
+	versionText = strings.TrimPrefix(versionText, prefix)
+	version, details, ok := strings.Cut(versionText, " (commit ")
+	if !ok {
+		t.Fatalf("performance binary version %q has no commit metadata", versionText)
+	}
+	commit, buildText, ok := strings.Cut(details, ", built ")
+	if !ok || !strings.HasSuffix(buildText, ")") {
+		t.Fatalf("performance binary version %q has invalid build metadata", versionText)
+	}
+	buildDate := strings.TrimSuffix(buildText, ")")
+	if version == "" || commit == "" || buildDate == "" {
+		t.Fatalf("performance binary version %q has incomplete provenance", versionText)
+	}
+	return binaryProvenance{Version: version, Commit: commit, BuildDate: buildDate}
+}
+
+func observePerformanceLoad(t *testing.T, sequence int) performanceLoadObservation {
+	t.Helper()
+	oneMinute, err := readOneMinuteLoadAverage()
+	if err != nil {
+		t.Fatalf("read one-minute host load preflight sample %d: %v", sequence, err)
+	}
+	logicalCPU := goruntime.NumCPU()
+	if logicalCPU <= 0 {
+		t.Fatalf("logical CPU count = %d, want positive", logicalCPU)
+	}
+	return performanceLoadObservation{
+		Sequence:            sequence,
+		OneMinute:           oneMinute,
+		LogicalCPU:          logicalCPU,
+		NormalizedOneMinute: oneMinute / float64(logicalCPU),
+	}
+}
+
+func readOneMinuteLoadAverage() (float64, error) {
+	switch goruntime.GOOS {
+	case "darwin":
+		output, err := exec.Command("sysctl", "-n", "vm.loadavg").CombinedOutput()
+		if err != nil {
+			return 0, fmt.Errorf("sysctl vm.loadavg: %w: %s", err, output)
+		}
+		for _, field := range strings.Fields(string(output)) {
+			value, parseErr := strconv.ParseFloat(strings.Trim(field, "{}"), 64)
+			if parseErr == nil {
+				return value, nil
+			}
+		}
+		return 0, fmt.Errorf("parse vm.loadavg output %q", strings.TrimSpace(string(output)))
+	case "linux":
+		data, err := os.ReadFile("/proc/loadavg")
+		if err != nil {
+			return 0, fmt.Errorf("read /proc/loadavg: %w", err)
+		}
+		fields := strings.Fields(string(data))
+		if len(fields) == 0 {
+			return 0, errors.New("/proc/loadavg is empty")
+		}
+		value, err := strconv.ParseFloat(fields[0], 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse /proc/loadavg one-minute value %q: %w", fields[0], err)
+		}
+		return value, nil
+	default:
+		return 0, fmt.Errorf("one-minute load average is unsupported on %s", goruntime.GOOS)
+	}
+}
+
+func evaluatePerformanceLoad(
+	policy performanceLoadPolicy,
+	observations []performanceLoadObservation,
+) performanceLoadAdmission {
+	admission := performanceLoadAdmission{
+		Status:          performanceLoadValid,
+		InvalidSequence: -1,
+		Policy:          policy,
+		Observations:    append([]performanceLoadObservation(nil), observations...),
+	}
+	for _, observation := range observations {
+		if observation.NormalizedOneMinute <= policy.MaxNormalizedOneMinute {
+			continue
+		}
+		admission.Status = performanceLoadInvalid
+		admission.InvalidSequence = observation.Sequence
+		admission.Reason = fmt.Sprintf(
+			"normalized one-minute load %.3f in preflight sample %d exceeds %.3f; "+
+				"the entire benchmark is invalid and no measured sample is retried or omitted",
+			observation.NormalizedOneMinute,
+			observation.Sequence,
+			policy.MaxNormalizedOneMinute,
+		)
+		break
+	}
+	return admission
 }
 
 func currentPerformanceEnvironment(t *testing.T) performanceEnvironment {
@@ -897,6 +1228,15 @@ func repositoryCommit(t *testing.T, ref string) string {
 		t.Fatalf("resolve git commit %s: %v\n%s", ref, err, output)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+func performanceRepositoryDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve performance repository directory: %v", err)
+	}
+	return dir
 }
 
 func repositoryMergeBase(t *testing.T, left, right string) string {
