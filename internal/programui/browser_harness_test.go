@@ -27,7 +27,7 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v24"
+	performanceHarness = "complete-roadmap-v25"
 
 	performanceBuildProvenance = "goreleaser-ldflags-normalized-go-env-v2"
 	performanceLoadMetric      = "one_minute_load_average_per_logical_cpu"
@@ -582,20 +582,19 @@ func measureBrowserRun(
 	if err := chromedp.Run(tab, chromedp.Navigate("about:blank")); err != nil {
 		t.Fatalf("close measured page before server shutdown: %v", err)
 	}
-	if err := command.Process.Signal(os.Interrupt); err != nil {
-		t.Fatalf("stop program UI process: %v", err)
+	// Measurement is complete. Force the same post-run termination for both
+	// revisions so legacy shutdown behavior cannot invalidate or skew a sample.
+	if err := command.Process.Kill(); err != nil {
+		t.Fatalf("terminate measured program UI process: %v", err)
 	}
 	select {
 	case err := <-serverDone:
-		if err != nil {
-			t.Fatalf("stop program UI: %v: %s", err, strings.TrimSpace(stderr.String()))
+		var exitError *exec.ExitError
+		if err != nil && !errors.As(err, &exitError) {
+			t.Fatalf("wait for terminated program UI: %v: %s", err, strings.TrimSpace(stderr.String()))
 		}
 	case <-time.After(8 * time.Second):
-		if err := command.Process.Kill(); err != nil {
-			t.Fatalf("kill unresponsive program UI: %v", err)
-		}
-		<-serverDone
-		t.Fatal("program UI did not stop")
+		t.Fatal("terminated program UI process did not exit")
 	}
 	return browserSample{
 		ProcessStartToURL: processStartToURL, NavigationToUsable: navigationToUsable,
