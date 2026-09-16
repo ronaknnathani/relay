@@ -644,6 +644,30 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			secrets: []string{"x-access-token", "ghp_SECRET", "access_token", "query-secret", "fragment-secret"},
 		},
 		{
+			name:    "truncated scheme-less remote after userinfo",
+			input:   "remote: x-access-token:SECRET@",
+			want:    "remote: [redacted]@",
+			secrets: []string{"x-access-token", "SECRET"},
+		},
+		{
+			name:    "truncated scheme-less remote after host separator",
+			input:   "remote: x-access-token:SECRET@github.com:",
+			want:    "remote: [redacted]@github.com:",
+			secrets: []string{"x-access-token", "SECRET"},
+		},
+		{
+			name:    "scheme-less bracketed IPv6 remote",
+			input:   "remote: x-access-token:SECRET@[2001:db8::1]",
+			want:    "remote: [redacted]@[2001:db8::1]",
+			secrets: []string{"x-access-token", "SECRET"},
+		},
+		{
+			name:    "malformed scheme-less bracketed IPv6 remote",
+			input:   "remote: x-access-token:SECRET@[2001:db8::1",
+			want:    "remote: [redacted]@[2001:db8::1",
+			secrets: []string{"x-access-token", "SECRET"},
+		},
+		{
 			name:    "SCP remote with colon in userinfo",
 			input:   "remote: x-access-token:ghp_SECRET@git.example.com:o/r.git?access_token=query-secret#fragment-secret",
 			want:    "remote: [redacted]@git.example.com:o/r.git",
@@ -696,6 +720,12 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			secrets: []string{"x-access-token", "ghp_SECRET", "access_token", "query-secret", "fragment-secret"},
 		},
 		{
+			name:    "nested remote helpers wrapping truncated userinfo",
+			input:   "remote: trace::cache::x-access-token:SECRET@",
+			want:    "remote: trace::cache::[redacted]@",
+			secrets: []string{"x-access-token", "SECRET"},
+		},
+		{
 			name:  "nested remote helper bracketed SCP path",
 			input: "remote: trace::cache::_deploy-token@git.example.com:team/[private].git?secret=x#fragment",
 			want:  "remote: trace::cache::[redacted]@git.example.com:team/[private].git",
@@ -743,6 +773,20 @@ func TestSanitizeDiagnosticHandlesLargePunctuationAndContinues(t *testing.T) {
 
 	if got := SanitizeDiagnostic(input); got != want {
 		t.Fatalf("SanitizeDiagnostic large input did not preserve and sanitize the full diagnostic")
+	}
+}
+
+func TestSanitizeDiagnosticHandlesLargeTruncatedUserinfo(t *testing.T) {
+	userinfo := strings.Repeat("token:", maxGitDiagnosticOutput/6) + "SECRET"
+	input := "fatal: " + userinfo + "@ continuation"
+
+	got := SanitizeDiagnostic(input)
+
+	if got != "fatal: [redacted]@ continuation" {
+		t.Fatalf("SanitizeDiagnostic large truncated userinfo did not preserve surrounding prose")
+	}
+	if strings.Contains(got, "token") || strings.Contains(got, "SECRET") {
+		t.Fatalf("SanitizeDiagnostic large truncated userinfo leaked a credential: %q", got)
 	}
 }
 

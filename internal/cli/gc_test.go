@@ -1044,6 +1044,34 @@ func TestGCFetchWarningRedactsApostrophesInURLTokens(t *testing.T) {
 			},
 			wantProse: "is invalid",
 		},
+		{
+			name:       "truncated scheme-less URL",
+			diagnostic: "fatal: repository 'x-access-token:SECRET@' is invalid",
+			wantURL:    "[redacted]@",
+			secrets:    []string{"x-access-token", "SECRET"},
+			wantProse:  "is invalid",
+		},
+		{
+			name:       "truncated scheme-less URL after host separator",
+			diagnostic: "fatal: repository 'x-access-token:SECRET@github.com:' is invalid",
+			wantURL:    "[redacted]@github.com:",
+			secrets:    []string{"x-access-token", "SECRET"},
+			wantProse:  "is invalid",
+		},
+		{
+			name:       "scheme-less bracketed IPv6 URL",
+			diagnostic: "fatal: repository 'x-access-token:SECRET@[2001:db8::1]' is invalid",
+			wantURL:    "[redacted]@[2001:db8::1]",
+			secrets:    []string{"x-access-token", "SECRET"},
+			wantProse:  "is invalid",
+		},
+		{
+			name:       "nested helpers with malformed bracketed IPv6 URL",
+			diagnostic: "fatal: repository 'trace::cache::x-access-token:SECRET@[2001:db8::1' is invalid",
+			wantURL:    "trace::cache::[redacted]@[2001:db8::1",
+			secrets:    []string{"x-access-token", "SECRET"},
+			wantProse:  "is invalid",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

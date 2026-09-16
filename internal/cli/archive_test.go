@@ -1512,6 +1512,24 @@ func TestArchiveDiagnosticSanitizesRemoteHelperPullRequestRef(t *testing.T) {
 				"x-access-token", "ghp_SECRET", "access_token", "query-secret", "fragment-secret",
 			},
 		},
+		{
+			name:    "truncated userinfo",
+			ref:     "x-access-token:SECRET@",
+			wantURL: "[redacted]@",
+			secrets: []string{"x-access-token", "SECRET"},
+		},
+		{
+			name:    "truncated host separator",
+			ref:     "x-access-token:SECRET@github.com:",
+			wantURL: "[redacted]@github.com:",
+			secrets: []string{"x-access-token", "SECRET"},
+		},
+		{
+			name:    "nested helper malformed bracketed IPv6",
+			ref:     "trace::cache::x-access-token:SECRET@[2001:db8::1",
+			wantURL: "trace::cache::[redacted]@[2001:db8::1",
+			secrets: []string{"x-access-token", "SECRET"},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

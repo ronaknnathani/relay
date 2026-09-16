@@ -645,7 +645,7 @@ func SanitizeDiagnostic(output string) string {
 			index = end
 			continue
 		}
-		if end, ok := scanner.userinfoHostTokenEnd(index); ok {
+		if end, ok := scanner.userinfoTokenEnd(index); ok {
 			sanitized.WriteString(sanitizeUserinfoHost(output[index:end]))
 			index = end
 			continue
@@ -659,14 +659,15 @@ func SanitizeDiagnostic(output string) string {
 const maxRemoteHelperDepth = 8
 
 type diagnosticURLScanner struct {
-	output           string
-	nextAt           []int
-	nextColon        []int
-	nextHardBoundary []int
-	nextHostInvalid  []int
-	nextHostMarker   []int
-	nextPathSlash    []int
-	nextBracketColon []int
+	output              string
+	nextAt              []int
+	nextColon           []int
+	nextHardBoundary    []int
+	nextHostInvalid     []int
+	nextHostMarker      []int
+	nextPathSlash       []int
+	nextBracketColon    []int
+	nextUserinfoInvalid []int
 }
 
 type scpStyleURLBoundary struct {
@@ -679,18 +680,19 @@ type scpStyleURLBoundary struct {
 func newDiagnosticURLScanner(output string) diagnosticURLScanner {
 	size := len(output) + 1
 	scanner := diagnosticURLScanner{
-		output:           output,
-		nextAt:           make([]int, size),
-		nextColon:        make([]int, size),
-		nextHardBoundary: make([]int, size),
-		nextHostInvalid:  make([]int, size),
-		nextHostMarker:   make([]int, size),
-		nextPathSlash:    make([]int, size),
-		nextBracketColon: make([]int, size),
+		output:              output,
+		nextAt:              make([]int, size),
+		nextColon:           make([]int, size),
+		nextHardBoundary:    make([]int, size),
+		nextHostInvalid:     make([]int, size),
+		nextHostMarker:      make([]int, size),
+		nextPathSlash:       make([]int, size),
+		nextBracketColon:    make([]int, size),
+		nextUserinfoInvalid: make([]int, size),
 	}
 	nextAt, nextColon := -1, -1
 	nextHardBoundary, nextHostInvalid := len(output), -1
-	nextHostMarker, nextPathSlash, nextBracketColon := -1, -1, -1
+	nextHostMarker, nextPathSlash, nextBracketColon, nextUserinfoInvalid := -1, -1, -1, -1
 	for index := len(output) - 1; index >= 0; index-- {
 		character := output[index]
 		if character == '@' {
@@ -714,6 +716,9 @@ func newDiagnosticURLScanner(output string) diagnosticURLScanner {
 		if character == ']' && index+1 < len(output) && output[index+1] == ':' {
 			nextBracketColon = index + 1
 		}
+		if !isPlausibleURLUserinfoCharacter(character) {
+			nextUserinfoInvalid = index
+		}
 		scanner.nextAt[index] = nextAt
 		scanner.nextColon[index] = nextColon
 		scanner.nextHardBoundary[index] = nextHardBoundary
@@ -721,6 +726,7 @@ func newDiagnosticURLScanner(output string) diagnosticURLScanner {
 		scanner.nextHostMarker[index] = nextHostMarker
 		scanner.nextPathSlash[index] = nextPathSlash
 		scanner.nextBracketColon[index] = nextBracketColon
+		scanner.nextUserinfoInvalid[index] = nextUserinfoInvalid
 	}
 	return scanner
 }
@@ -750,7 +756,7 @@ func (s diagnosticURLScanner) remoteHelperURLTokenEnd(start int) (int, bool) {
 	if end, ok := s.scpStyleURLTokenEnd(addressStart); ok {
 		return end, true
 	}
-	return s.userinfoHostTokenEnd(addressStart)
+	return s.userinfoTokenEnd(addressStart)
 }
 
 func remoteHelperAddressStart(output string, start int) (int, bool) {
@@ -873,7 +879,7 @@ func (s diagnosticURLScanner) scpStyleURLBoundary(start int) (scpStyleURLBoundar
 	}, true
 }
 
-func (s diagnosticURLScanner) userinfoHostTokenEnd(start int) (int, bool) {
+func (s diagnosticURLScanner) userinfoTokenEnd(start int) (int, bool) {
 	output := s.output
 	if !urlTokenBoundary(output, start) || start >= len(output) ||
 		!isSCPStyleURLStart(output[start]) {
@@ -884,27 +890,15 @@ func (s diagnosticURLScanner) userinfoHostTokenEnd(start int) (int, bool) {
 	if userinfoEnd <= start || userinfoEnd >= tokenLimit {
 		return 0, false
 	}
-	hostStart := userinfoEnd + 1
-	end := scanURLTokenEnd(output, start, hostStart)
-	hostEnd := end
-	if pathStart := strings.IndexAny(output[hostStart:end], "/?#"); pathStart >= 0 {
-		hostEnd = hostStart + pathStart
-	}
-	if hostEnd <= hostStart {
+	if invalid := s.nextUserinfoInvalid[start]; invalid >= 0 && invalid < userinfoEnd {
 		return 0, false
 	}
-	if anotherAt := s.nextAt[hostStart]; anotherAt >= 0 && anotherAt < hostEnd {
-		return 0, false
-	}
-	for index := hostStart; index < hostEnd; index++ {
-		character := output[index]
-		if isASCIILetter(character) || character >= '0' && character <= '9' ||
-			strings.ContainsRune(".-_", rune(character)) {
-			continue
-		}
-		return 0, false
-	}
-	return end, true
+	return scanURLTokenEnd(output, start, userinfoEnd+1), true
+}
+
+func isPlausibleURLUserinfoCharacter(character byte) bool {
+	return isASCIILetter(character) || character >= '0' && character <= '9' ||
+		strings.ContainsRune("-._~!$&'()*+,;=:%", rune(character))
 }
 
 func isSCPStyleURLStart(character byte) bool {
