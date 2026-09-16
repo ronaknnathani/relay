@@ -2,8 +2,10 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -868,6 +870,110 @@ func TestGCSharedRefreshFailureWarnsOnceAndProtectsStaleRef(t *testing.T) {
 			!pathExists(state.worktree) ||
 			!gitx.BranchExists(fixture.repo, state.branch) {
 			t.Fatalf("GC used stale origin/main to remove %s", slug)
+		}
+	}
+}
+
+func TestGCSharedCommonDirectoryResolutionFailureWarnsOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	firstBranch, firstWorktree := addGCProject(t, fixture, "common-dir-first")
+	secondBranch, secondWorktree := addGCProject(t, fixture, "common-dir-second")
+	updateGCManifest(t, "common-dir-second", func(manifest *project.Manifest) {
+		manifest.Repo += string(filepath.Separator) + "."
+	})
+	commonDirCalls := installCommonDirFailureAfter(t, 2)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if count := strings.Count(stderr, "forced common-directory failure"); count != 1 {
+		t.Fatalf("common-directory failure count = %d, want 1\nstderr: %s", count, stderr)
+	}
+	if calls := commonDirCalls(); calls != 3 {
+		t.Fatalf("common-directory resolution calls = %d, want two ownership reads and one GC read", calls)
+	}
+	for slug, state := range map[string]struct {
+		branch   string
+		worktree string
+	}{
+		"common-dir-first":  {branch: firstBranch, worktree: firstWorktree},
+		"common-dir-second": {branch: secondBranch, worktree: secondWorktree},
+	} {
+		if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+			!pathExists(state.worktree) ||
+			!gitx.BranchExists(fixture.repo, state.branch) {
+			t.Fatalf("GC changed %s after common-directory resolution failed", slug)
+		}
+	}
+}
+
+func TestGCSharedEffectiveOriginResolutionFailureWarnsOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	firstBranch, firstWorktree := addGCProject(t, fixture, "origin-resolution-first")
+	secondBranch, secondWorktree := addGCProject(t, fixture, "origin-resolution-second")
+	updateGCManifest(t, "origin-resolution-second", func(manifest *project.Manifest) {
+		manifest.Repo += string(filepath.Separator) + "."
+	})
+	runArchiveGit(t, fixture.repo, "remote", "remove", "origin")
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if count := strings.Count(stderr, "effective origin"); count != 1 {
+		t.Fatalf("effective-origin failure count = %d, want 1\nstderr: %s", count, stderr)
+	}
+	for slug, state := range map[string]struct {
+		branch   string
+		worktree string
+	}{
+		"origin-resolution-first":  {branch: firstBranch, worktree: firstWorktree},
+		"origin-resolution-second": {branch: secondBranch, worktree: secondWorktree},
+	} {
+		if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+			!pathExists(state.worktree) ||
+			!gitx.BranchExists(fixture.repo, state.branch) {
+			t.Fatalf("GC changed %s after effective-origin resolution failed", slug)
+		}
+	}
+}
+
+func TestGCIndependentEffectiveOriginResolutionFailuresRemainSeparate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	first := newGCRepoFixture(t, "main")
+	firstBranch, firstWorktree := addGCProject(t, first, "origin-independent-first")
+	runArchiveGit(t, first.repo, "remote", "remove", "origin")
+
+	second := newGCRepoFixture(t, "main")
+	secondBranch, secondWorktree := addGCProject(t, second, "origin-independent-second")
+	runArchiveGit(t, second.repo, "remote", "remove", "origin")
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if count := strings.Count(stderr, "effective origin"); count != 2 {
+		t.Fatalf("effective-origin failure count = %d, want 2\nstderr: %s", count, stderr)
+	}
+	for slug, state := range map[string]struct {
+		repo     string
+		branch   string
+		worktree string
+	}{
+		"origin-independent-first": {
+			repo: first.repo, branch: firstBranch, worktree: firstWorktree,
+		},
+		"origin-independent-second": {
+			repo: second.repo, branch: secondBranch, worktree: secondWorktree,
+		},
+	} {
+		if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+			!pathExists(state.worktree) ||
+			!gitx.BranchExists(state.repo, state.branch) {
+			t.Fatalf("GC changed %s after effective-origin resolution failed", slug)
 		}
 	}
 }
@@ -2572,6 +2678,46 @@ func installFetchCounter(t *testing.T, repo string) func() int {
 			t.Fatal(err)
 		}
 		return strings.Count(string(data), "fetch\n")
+	}
+}
+
+func installCommonDirFailureAfter(t *testing.T, allowed int) func() int {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "common-dir-count")
+	script := "#!/bin/sh\n" +
+		"if [ \"$3\" = rev-parse ] && [ \"$4\" = --git-common-dir ]; then\n" +
+		"  count=0\n" +
+		"  if [ -f '" + countPath + "' ]; then count=$(cat '" + countPath + "'); fi\n" +
+		"  count=$((count + 1))\n" +
+		"  printf '%s\\n' \"$count\" > '" + countPath + "'\n" +
+		"  if [ \"$count\" -gt " + fmt.Sprint(allowed) + " ]; then\n" +
+		"    echo 'forced common-directory failure' >&2\n" +
+		"    exit 1\n" +
+		"  fi\n" +
+		"fi\n" +
+		"exec '" + realGit + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return func() int {
+		data, err := os.ReadFile(countPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return 0
+			}
+			t.Fatal(err)
+		}
+		count := 0
+		if _, err := fmt.Sscan(strings.TrimSpace(string(data)), &count); err != nil {
+			t.Fatal(err)
+		}
+		return count
 	}
 }
 

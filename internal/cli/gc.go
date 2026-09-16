@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/project"
@@ -27,6 +28,80 @@ type gcRefreshResult struct {
 	err        error
 }
 
+type gcPreRefreshKey struct {
+	repository string
+	base       string
+}
+
+type gcRefreshCache struct {
+	failures     map[gcPreRefreshKey]gcRefreshResult
+	canonicalKey map[gcPreRefreshKey]gcRefreshKey
+	results      map[gcRefreshKey]gcRefreshResult
+}
+
+func newGCRefreshCache() *gcRefreshCache {
+	return &gcRefreshCache{
+		failures:     make(map[gcPreRefreshKey]gcRefreshResult),
+		canonicalKey: make(map[gcPreRefreshKey]gcRefreshKey),
+		results:      make(map[gcRefreshKey]gcRefreshResult),
+	}
+}
+
+func (c *gcRefreshCache) refresh(repo, base string) (gcRefreshResult, bool) {
+	preKey, err := gcPreRefreshKeyFor(repo, base)
+	if failure, found := c.failures[preKey]; found {
+		return failure, false
+	}
+	if key, found := c.canonicalKey[preKey]; found {
+		return c.results[key], false
+	}
+	if err != nil {
+		result := gcRefreshResult{err: err}
+		c.failures[preKey] = result
+		return result, true
+	}
+
+	commonDir, err := gitx.CanonicalGitCommonDir(repo)
+	if err != nil {
+		result := gcRefreshResult{err: fmt.Errorf(
+			"resolve repository %s common directory: %w", repo, err,
+		)}
+		c.failures[preKey] = result
+		return result, true
+	}
+	origin, err := gitx.OriginURL(repo)
+	if err != nil {
+		result := gcRefreshResult{err: fmt.Errorf(
+			"resolve repository %s effective origin: %w", repo, err,
+		)}
+		c.failures[preKey] = result
+		return result, true
+	}
+
+	key := gcRefreshKey{commonDir: commonDir, origin: origin, base: base}
+	c.canonicalKey[preKey] = key
+	if result, found := c.results[key]; found {
+		return result, false
+	}
+	diagnostic, baseCommit, err := gitx.FetchBaseSnapshot(repo, base)
+	result := gcRefreshResult{baseCommit: baseCommit, err: err}
+	if result.err != nil && diagnostic != "" {
+		result.err = fmt.Errorf("%w\n%s", result.err, diagnostic)
+	}
+	c.results[key] = result
+	return result, true
+}
+
+func gcPreRefreshKeyFor(repo, base string) (gcPreRefreshKey, error) {
+	normalized, err := filepath.Abs(repo)
+	key := gcPreRefreshKey{repository: filepath.Clean(normalized), base: base}
+	if err != nil {
+		key.repository = filepath.Clean(repo)
+		return key, fmt.Errorf("normalize repository path %s: %w", repo, err)
+	}
+	return key, nil
+}
+
 func newCmdGC() *cobra.Command {
 	return &cobra.Command{
 		Use:   "gc",
@@ -44,7 +119,7 @@ func runGC() error {
 		return err
 	}
 	ownership := loadProjectResourceOwnershipIndex(loadResults)
-	refreshes := make(map[gcRefreshKey]gcRefreshResult)
+	refreshes := newGCRefreshCache()
 	hadErrors := false
 	for _, loadResult := range loadResults {
 		m := loadResult.Manifest
@@ -84,38 +159,10 @@ func runGC() error {
 		}
 		var refresh gcRefreshResult
 		if base != "" {
-			commonDir, commonDirErr := gitx.CanonicalGitCommonDir(m.Repo)
-			if commonDirErr != nil {
-				refresh.err = fmt.Errorf(
-					"resolve repository %s common directory: %w", m.Repo, commonDirErr,
-				)
+			var report bool
+			refresh, report = refreshes.refresh(m.Repo, base)
+			if report && refresh.err != nil {
 				ui.Warn("refresh repository %s base %s: %s", m.Repo, base, refresh.err)
-			} else {
-				origin, originErr := gitx.OriginURL(m.Repo)
-				if originErr != nil {
-					refresh.err = fmt.Errorf(
-						"resolve repository %s effective origin: %w", m.Repo, originErr,
-					)
-					ui.Warn("refresh repository %s base %s: %s", m.Repo, base, refresh.err)
-				} else {
-					key := gcRefreshKey{commonDir: commonDir, origin: origin, base: base}
-					var found bool
-					refresh, found = refreshes[key]
-					if !found {
-						diagnostic, baseCommit, err := gitx.FetchBaseSnapshot(m.Repo, base)
-						refresh = gcRefreshResult{baseCommit: baseCommit, err: err}
-						if refresh.err != nil && diagnostic != "" {
-							refresh.err = fmt.Errorf("%w\n%s", refresh.err, diagnostic)
-						}
-						refreshes[key] = refresh
-						if refresh.err != nil {
-							ui.Warn(
-								"refresh repository %s base %s: %s",
-								m.Repo, base, refresh.err,
-							)
-						}
-					}
-				}
 			}
 		}
 
