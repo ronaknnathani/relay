@@ -8,7 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+type fetchSnapshotResult struct {
+	commit string
+	err    error
+}
 
 // initRepo creates a throwaway git repo with one commit and returns its root.
 func initRepo(t *testing.T) string {
@@ -367,6 +373,90 @@ func TestFetchBaseSnapshotRetainsFetchedCommitAfterTrackingRefChanges(t *testing
 	reachable, err := CommitReachable(repo, upstream, snapshot)
 	if err != nil || !reachable {
 		t.Fatalf("CommitReachable(snapshot) = (%t, %v), want (true, nil)", reachable, err)
+	}
+}
+
+func TestFetchBaseSnapshotConcurrentFetchesResolveIsolatedCommits(t *testing.T) {
+	_, source, repo := initRemoteRepo(t, "main")
+	mainCommit := gitOutput(t, source, "rev-parse", "main")
+	runGit(t, source, "checkout", "-q", "-b", "topic")
+	advanceRepo(t, source, "topic.txt", "topic\n", "advance topic")
+	topicCommit := gitOutput(t, source, "rev-parse", "topic")
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapperDir := t.TempDir()
+	gateDir := filepath.Join(wrapperDir, "gate")
+	if err := os.Mkdir(gateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"if [ \"$3\" = rev-parse ] && [ \"$4\" = --verify ]; then\n" +
+		"  case \"$5\" in\n" +
+		"    'FETCH_HEAD^{commit}'|refs/relay/fetch/*'^{commit}')\n" +
+		"      if mkdir '" + gateDir + "/first' 2>/dev/null; then\n" +
+		"        printf '%s\\n' \"$5\" > '" + gateDir + "/first-ref'\n" +
+		"        : > '" + gateDir + "/first-ready'\n" +
+		"        while [ ! -f '" + gateDir + "/release' ]; do sleep 0.01; done\n" +
+		"      else\n" +
+		"        printf '%s\\n' \"$5\" > '" + gateDir + "/second-ref'\n" +
+		"      fi\n" +
+		"      ;;\n" +
+		"  esac\n" +
+		"fi\n" +
+		"exec '" + realGit + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(wrapperDir, "git"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	release := filepath.Join(gateDir, "release")
+	t.Cleanup(func() { _ = os.WriteFile(release, nil, 0644) })
+
+	fetch := func(branch string) <-chan fetchSnapshotResult {
+		result := make(chan fetchSnapshotResult, 1)
+		go func() {
+			_, commit, err := FetchBaseSnapshot(repo, branch)
+			result <- fetchSnapshotResult{commit: commit, err: err}
+		}()
+		return result
+	}
+	first := fetch("main")
+	waitForFile(t, filepath.Join(gateDir, "first-ready"))
+	second := fetch("topic")
+
+	secondResult := awaitFetchResult(t, second)
+	if err := os.WriteFile(release, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	firstResult := awaitFetchResult(t, first)
+	if firstResult.err != nil || firstResult.commit != mainCommit {
+		t.Fatalf(
+			"concurrent main snapshot = (%q, %v), want (%q, nil)",
+			firstResult.commit, firstResult.err, mainCommit,
+		)
+	}
+	if secondResult.err != nil || secondResult.commit != topicCommit {
+		t.Fatalf(
+			"concurrent topic snapshot = (%q, %v), want (%q, nil)",
+			secondResult.commit, secondResult.err, topicCommit,
+		)
+	}
+
+	firstRef := strings.TrimSpace(readTestFile(t, filepath.Join(gateDir, "first-ref")))
+	secondRef := strings.TrimSpace(readTestFile(t, filepath.Join(gateDir, "second-ref")))
+	for _, ref := range []string{firstRef, secondRef} {
+		if !strings.HasPrefix(ref, "refs/relay/fetch/") ||
+			!strings.HasSuffix(ref, "^{commit}") {
+			t.Fatalf("snapshot resolved through unsafe ref %q", ref)
+		}
+	}
+	if firstRef == secondRef {
+		t.Fatalf("concurrent snapshots shared temporary ref %q", firstRef)
+	}
+	if refs := gitOutput(t, repo, "for-each-ref", "--format=%(refname)", "refs/relay/fetch"); refs != "" {
+		t.Fatalf("temporary fetch refs remain after cleanup: %s", refs)
 	}
 }
 
@@ -1266,4 +1356,38 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git -C %s %v: %v\n%s", dir, args, err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
+}
+
+func awaitFetchResult(t *testing.T, result <-chan fetchSnapshotResult) fetchSnapshotResult {
+	t.Helper()
+	select {
+	case fetched := <-result:
+		return fetched
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for concurrent fetch")
+		return fetchSnapshotResult{}
+	}
+}
+
+func readTestFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

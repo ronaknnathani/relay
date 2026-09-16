@@ -5,6 +5,8 @@ package gitx
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -23,6 +25,8 @@ var (
 )
 
 const maxGitDiagnosticOutput = 8 * 1024
+
+const fetchTempRefPrefix = "refs/relay/fetch/"
 
 // BranchCheckedOutError reports the worktree preventing branch deletion.
 type BranchCheckedOutError struct {
@@ -629,20 +633,51 @@ func Fetch(repo, branch string) (string, error) {
 
 // FetchBaseSnapshot updates origin's remote-tracking ref for branch and
 // returns the exact fetched commit for immutable merge evaluation.
-func FetchBaseSnapshot(repo, branch string) (diagnostic, commit string, err error) {
-	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branch, branch)
-	out, err := boundedCombinedOutput(exec.Command("git", "-C", repo, "fetch", "origin", refspec))
+func FetchBaseSnapshot(repo, branch string) (diagnostic, commit string, retErr error) {
+	tempRef, err := newFetchTempRef()
+	if err != nil {
+		return "", "", err
+	}
+	defer func() {
+		err := exec.Command("git", "-C", repo, "update-ref", "-d", tempRef).Run()
+		if err != nil {
+			retErr = errors.Join(
+				retErr,
+				gitOutputError("git update-ref -d "+tempRef, err),
+			)
+		}
+	}()
+
+	refspec := fmt.Sprintf("+refs/heads/%s:%s", branch, tempRef)
+	out, err := boundedCombinedOutput(exec.Command(
+		"git", "-C", repo, "fetch", "--no-write-fetch-head", "origin", refspec,
+	))
 	diagnostic = SanitizeDiagnostic(string(out))
 	if err != nil {
 		return diagnostic, "", fmt.Errorf("git fetch origin %s: %w", branch, err)
 	}
 	fetched, err := exec.Command(
-		"git", "-C", repo, "rev-parse", "--verify", "FETCH_HEAD^{commit}",
+		"git", "-C", repo, "rev-parse", "--verify", tempRef+"^{commit}",
 	).Output()
 	if err != nil {
-		return diagnostic, "", gitOutputError("git rev-parse --verify FETCH_HEAD^{commit}", err)
+		return diagnostic, "", gitOutputError("git rev-parse --verify "+tempRef+"^{commit}", err)
 	}
-	return diagnostic, strings.TrimSpace(string(fetched)), nil
+	commit = strings.TrimSpace(string(fetched))
+	trackingRef := "refs/remotes/origin/" + branch
+	if out, err := boundedCombinedOutput(exec.Command(
+		"git", "-C", repo, "update-ref", trackingRef, commit,
+	)); err != nil {
+		return diagnostic, "", gitCommandError("git update-ref "+trackingRef, err, out)
+	}
+	return diagnostic, commit, nil
+}
+
+func newFetchTempRef() (string, error) {
+	var identifier [16]byte
+	if _, err := rand.Read(identifier[:]); err != nil {
+		return "", fmt.Errorf("generate temporary fetch ref: %w", err)
+	}
+	return fetchTempRefPrefix + hex.EncodeToString(identifier[:]), nil
 }
 
 const redactedRemoteToken = "[redacted-remote]"
