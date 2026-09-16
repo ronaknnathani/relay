@@ -302,7 +302,7 @@ func failProgramWorkerCleanup(
 		}
 	}
 	renderErr := renderProgramWorkerCleanup(out, *result, jsonOutput)
-	return errors.Join(cause, renderErr)
+	return renderErr
 }
 
 func renderFinalProgramWorkerCleanup(
