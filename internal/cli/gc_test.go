@@ -1788,6 +1788,159 @@ func TestGCPreservesResourcesClaimedByArchivedPendingCleanup(t *testing.T) {
 	}
 }
 
+func TestGCInvalidArchivedProofPreservesManifestAndProofResourceClaims(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	manifestRepo := newGCRepoFixture(t, "main")
+	manifestSlug := "manifest-resource-owner"
+	manifestBranch, manifestWorktree := addGCProject(t, manifestRepo, manifestSlug)
+	mergeGCProjectUpstream(t, manifestRepo, manifestBranch)
+
+	proofRepo := newGCRepoFixture(t, "main")
+	proofSlug := "proof-resource-owner"
+	proofBranch, proofWorktree := addGCProject(t, proofRepo, proofSlug)
+	mergeGCProjectUpstream(t, proofRepo, proofBranch)
+	proofBranchTip, found, err := gitx.LocalBranchTip(proofRepo.repo, proofBranch)
+	if err != nil || !found {
+		t.Fatalf("proof branch tip = %q, %t, %v", proofBranchTip, found, err)
+	}
+	proofWorktreeState, found, err := gitx.RegisteredWorktreeState(proofRepo.repo, proofWorktree)
+	if err != nil || !found {
+		t.Fatalf("proof worktree state = %+v, %t, %v", proofWorktreeState, found, err)
+	}
+
+	independentRepo := newGCRepoFixture(t, "main")
+	independentSlug := "independent-resource-owner"
+	independentBranch, independentWorktree := addGCProject(t, independentRepo, independentSlug)
+	mergeGCProjectUpstream(t, independentRepo, independentBranch)
+
+	archived := project.Manifest{
+		Slug: "mismatched-archived-owner", Repo: manifestRepo.repo,
+		Branch: manifestBranch, Worktree: &manifestWorktree, Status: "archived", Merged: true,
+		ArchiveCleanup: &project.ArchiveCleanupProof{
+			Repository:             proofRepo.repo,
+			Branch:                 proofBranch,
+			Worktree:               proofWorktree,
+			BranchPresent:          true,
+			ExpectedBranchTip:      proofBranchTip,
+			BranchState:            project.ArchiveCleanupPending,
+			WorktreePresent:        true,
+			ExpectedWorktreeTip:    proofWorktreeState.Head,
+			ExpectedWorktreeBranch: proofWorktreeState.Branch,
+			WorktreeState:          project.ArchiveCleanupPending,
+			AuthoritativeCommit:    proofBranchTip,
+		},
+	}
+	archivedPath := project.ManifestPath(project.ArchivedDir(), archived.Slug)
+	if err := os.MkdirAll(filepath.Dir(archivedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(archivedPath, archived); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{archivedPath, manifestSlug, proofSlug, "does not match"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	for _, resource := range []struct {
+		slug, repo, branch, worktree string
+	}{
+		{manifestSlug, manifestRepo.repo, manifestBranch, manifestWorktree},
+		{proofSlug, proofRepo.repo, proofBranch, proofWorktree},
+	} {
+		if !pathExists(filepath.Join(project.ActiveDir(), resource.slug)) ||
+			!pathExists(resource.worktree) ||
+			!gitx.BranchExists(resource.repo, resource.branch) {
+			t.Fatalf("GC changed resources claimed by invalid archived proof: %+v", resource)
+		}
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), independentSlug)) ||
+		pathExists(independentWorktree) ||
+		gitx.BranchExists(independentRepo.repo, independentBranch) {
+		t.Fatal("GC did not clean a repository independent of both invalid archived identities")
+	}
+}
+
+func TestGCInvalidArchivedProofWithDeletedLinkedRepositoryFailsClosedGlobally(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	blockedRepo := newGCRepoFixture(t, "main")
+	blockedSlug := "deleted-linked-owner"
+	blockedBranch, blockedWorktree := addGCProject(t, blockedRepo, blockedSlug)
+	mergeGCProjectUpstream(t, blockedRepo, blockedBranch)
+	blockedTip, found, err := gitx.LocalBranchTip(blockedRepo.repo, blockedBranch)
+	if err != nil || !found {
+		t.Fatalf("blocked branch tip = %q, %t, %v", blockedTip, found, err)
+	}
+	blockedState, found, err := gitx.RegisteredWorktreeState(blockedRepo.repo, blockedWorktree)
+	if err != nil || !found {
+		t.Fatalf("blocked worktree state = %+v, %t, %v", blockedState, found, err)
+	}
+
+	deletedLinkedRepo := filepath.Join(t.TempDir(), "deleted-linked-repository")
+	runArchiveGit(
+		t, blockedRepo.repo, "worktree", "add", "-q", "--detach",
+		deletedLinkedRepo, blockedRepo.startSHA,
+	)
+	runArchiveGit(t, blockedRepo.repo, "worktree", "remove", deletedLinkedRepo)
+
+	independentRepo := newGCRepoFixture(t, "main")
+	independentSlug := "globally-preserved-owner"
+	independentBranch, independentWorktree := addGCProject(t, independentRepo, independentSlug)
+	mergeGCProjectUpstream(t, independentRepo, independentBranch)
+
+	archived := project.Manifest{
+		Slug: "deleted-linked-archived-owner", Repo: blockedRepo.repo,
+		Branch: blockedBranch, Worktree: &blockedWorktree, Status: "archived", Merged: true,
+		ArchiveCleanup: &project.ArchiveCleanupProof{
+			Repository:             deletedLinkedRepo,
+			Branch:                 blockedBranch,
+			Worktree:               blockedWorktree,
+			BranchPresent:          true,
+			ExpectedBranchTip:      blockedTip,
+			BranchState:            project.ArchiveCleanupPending,
+			WorktreePresent:        true,
+			ExpectedWorktreeTip:    blockedState.Head,
+			ExpectedWorktreeBranch: blockedState.Branch,
+			WorktreeState:          project.ArchiveCleanupPending,
+			AuthoritativeCommit:    blockedTip,
+		},
+	}
+	archivedPath := project.ManifestPath(project.ArchivedDir(), archived.Slug)
+	if err := os.MkdirAll(filepath.Dir(archivedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(archivedPath, archived); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{archivedPath, deletedLinkedRepo, blockedSlug, independentSlug} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	for _, resource := range []struct {
+		slug, repo, branch, worktree string
+	}{
+		{blockedSlug, blockedRepo.repo, blockedBranch, blockedWorktree},
+		{independentSlug, independentRepo.repo, independentBranch, independentWorktree},
+	} {
+		if !pathExists(filepath.Join(project.ActiveDir(), resource.slug)) ||
+			!pathExists(resource.worktree) ||
+			!gitx.BranchExists(resource.repo, resource.branch) {
+			t.Fatalf("GC changed resources despite global invalid-proof conflict: %+v", resource)
+		}
+	}
+}
+
 func TestGCPreservesResourcesClaimedByLegacyArchivedManifest(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")

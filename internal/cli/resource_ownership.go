@@ -22,15 +22,17 @@ type projectResourceOwner struct {
 	path string
 }
 
-type projectResourceOwnershipIssue struct {
-	owner           projectResourceOwner
+type projectResourceClaim struct {
 	identity        projectResourceIdentity
-	repositoryScope string
-	commonDirScope  string
 	branchUnknown   bool
 	worktreeUnknown bool
-	global          bool
-	err             error
+}
+
+type projectResourceOwnershipIssue struct {
+	owner  projectResourceOwner
+	claims []projectResourceClaim
+	global bool
+	err    error
 }
 
 type projectResourceOwnershipIndex struct {
@@ -65,7 +67,7 @@ func loadProjectResourceOwnershipIndex(
 	for _, result := range activeResults {
 		if result.Err != nil {
 			index.addIssue(newProjectResourceOwnershipIssue(
-				result, true, fmt.Errorf(
+				result, true, false, fmt.Errorf(
 					"load competing active project metadata %s: %w", result.Path, result.Err,
 				),
 			))
@@ -73,7 +75,7 @@ func loadProjectResourceOwnershipIndex(
 		}
 		identity, err := canonicalActiveProjectIdentity(result)
 		if err != nil {
-			index.addIssue(newProjectResourceOwnershipIssue(result, false, err))
+			index.addIssue(newProjectResourceOwnershipIssue(result, false, false, err))
 			continue
 		}
 		index.add(result.Manifest.Slug, result.Path, identity)
@@ -91,7 +93,7 @@ func loadProjectResourceOwnershipIndex(
 	for _, result := range archivedResults {
 		if result.Err != nil {
 			index.addIssue(newProjectResourceOwnershipIssue(
-				result, true, fmt.Errorf(
+				result, true, true, fmt.Errorf(
 					"load competing archived project metadata %s: %w", result.Path, result.Err,
 				),
 			))
@@ -99,7 +101,7 @@ func loadProjectResourceOwnershipIndex(
 		}
 		identity, relevant, err := canonicalArchivedProjectIdentity(result)
 		if err != nil {
-			index.addIssue(newProjectResourceOwnershipIssue(result, false, err))
+			index.addIssue(newProjectResourceOwnershipIssue(result, false, true, err))
 			continue
 		}
 		if relevant {
@@ -292,6 +294,7 @@ func canonicalProjectResourceIdentity(
 func newProjectResourceOwnershipIssue(
 	result project.ManifestLoadResult,
 	incomplete bool,
+	includeCleanupProof bool,
 	err error,
 ) projectResourceOwnershipIssue {
 	m := result.Manifest
@@ -302,33 +305,126 @@ func newProjectResourceOwnershipIssue(
 		},
 		err: err,
 	}
-	if strings.TrimSpace(m.Repo) != "" {
-		if repository, canonicalErr := gitx.CanonicalPath(m.Repo); canonicalErr == nil {
-			issue.repositoryScope = repository
-		}
-		if commonDir, commonDirErr := gitx.CanonicalGitCommonDir(m.Repo); commonDirErr == nil {
-			issue.commonDirScope = commonDir
-		}
+	candidates := []projectResourceCandidate{{
+		repository:  m.Repo,
+		branch:      m.Branch,
+		worktree:    worktreeValue(m),
+		hasBranch:   strings.TrimSpace(m.Branch) != "",
+		hasWorktree: m.Worktree != nil,
+		incomplete:  incomplete,
+	}}
+	if includeCleanupProof && m.ArchiveCleanup != nil {
+		proof := m.ArchiveCleanup
+		candidates = append(candidates, projectResourceCandidate{
+			repository: proof.Repository,
+			branch:     proof.Branch,
+			worktree:   proof.Worktree,
+			hasBranch: proof.BranchPresent ||
+				proof.BranchState == project.ArchiveCleanupPending ||
+				proof.BranchState == project.ArchiveCleanupClaimed ||
+				proof.ExpectedBranchTip != "" ||
+				strings.TrimSpace(proof.Branch) != "",
+			hasWorktree: proof.WorktreePresent ||
+				proof.WorktreeState == project.ArchiveCleanupPending ||
+				proof.WorktreeState == project.ArchiveCleanupClaimed ||
+				proof.ExpectedWorktreeTip != "" ||
+				strings.TrimSpace(proof.Worktree) != "",
+			expectedWorktreeBranch: proof.ExpectedWorktreeBranch,
+			incomplete:             true,
+		})
 	}
-	if issue.commonDirScope != "" && strings.TrimSpace(m.Branch) != "" {
-		if branchRef, branchErr := gitx.CanonicalBranchRef(m.Repo, m.Branch); branchErr == nil {
-			issue.identity.branch = issue.commonDirScope + "\x00" + branchRef
+	for _, candidate := range candidates {
+		claims, verified := plausibleProjectResourceClaims(candidate)
+		if !verified {
+			issue.global = true
+			continue
 		}
+		issue.claims = append(issue.claims, claims...)
 	}
-	if m.Worktree != nil && strings.TrimSpace(*m.Worktree) != "" {
-		if worktree, worktreeErr := gitx.CanonicalPath(*m.Worktree); worktreeErr == nil {
-			issue.identity.worktree = worktree
-		}
+	if len(issue.claims) == 0 {
+		issue.global = true
 	}
-	issue.branchUnknown = issue.identity.branch == "" &&
-		(incomplete || strings.TrimSpace(m.Branch) != "")
-	issue.worktreeUnknown = issue.identity.worktree == "" &&
-		(incomplete || m.Worktree != nil)
-	issue.global = issue.identity.branch == "" &&
-		issue.identity.worktree == "" &&
-		issue.repositoryScope == "" &&
-		issue.commonDirScope == ""
+	if includeCleanupProof && m.ArchiveCleanup != nil {
+		issue.err = fmt.Errorf(
+			"%w (manifest repository/branch/worktree %q/%q/%q; cleanup proof %q/%q/%q)",
+			err,
+			m.Repo, m.Branch, worktreeValue(m),
+			m.ArchiveCleanup.Repository, m.ArchiveCleanup.Branch, m.ArchiveCleanup.Worktree,
+		)
+	}
 	return issue
+}
+
+type projectResourceCandidate struct {
+	repository             string
+	branch                 string
+	worktree               string
+	expectedWorktreeBranch string
+	hasBranch              bool
+	hasWorktree            bool
+	incomplete             bool
+}
+
+func plausibleProjectResourceClaims(
+	candidate projectResourceCandidate,
+) ([]projectResourceClaim, bool) {
+	if strings.TrimSpace(candidate.repository) == "" {
+		return nil, false
+	}
+	repository, err := gitx.CanonicalRepositoryRoot(candidate.repository)
+	if err != nil {
+		repository, err = gitx.RepositoryRoot(candidate.repository)
+		if err != nil {
+			return nil, false
+		}
+		repository, err = gitx.CanonicalPath(repository)
+		if err != nil {
+			return nil, false
+		}
+	}
+	commonDir, err := gitx.CanonicalGitCommonDir(repository)
+	if err != nil {
+		return nil, false
+	}
+	base := projectResourceIdentity{repository: repository, commonDir: commonDir}
+	claim := projectResourceClaim{identity: base}
+	if strings.TrimSpace(candidate.branch) != "" {
+		branchRef, branchErr := gitx.CanonicalBranchRef(repository, candidate.branch)
+		if branchErr == nil {
+			claim.identity.branch = commonDir + "\x00" + branchRef
+		} else {
+			claim.branchUnknown = true
+		}
+	} else {
+		claim.branchUnknown = candidate.hasBranch || candidate.incomplete
+	}
+	if strings.TrimSpace(candidate.worktree) != "" {
+		worktree, worktreeErr := gitx.CanonicalPath(candidate.worktree)
+		if worktreeErr == nil {
+			claim.identity.worktree = worktree
+		} else {
+			claim.worktreeUnknown = true
+		}
+	} else {
+		claim.worktreeUnknown = candidate.hasWorktree || candidate.incomplete
+	}
+	claims := []projectResourceClaim{claim}
+	expectedBranch := strings.TrimSpace(candidate.expectedWorktreeBranch)
+	if expectedBranch == "" {
+		return claims, true
+	}
+	expectedBranch = strings.TrimPrefix(expectedBranch, "refs/heads/")
+	if expectedBranch == candidate.branch {
+		return claims, true
+	}
+	expectedClaim := projectResourceClaim{identity: base}
+	branchRef, branchErr := gitx.CanonicalBranchRef(repository, expectedBranch)
+	if branchErr != nil {
+		expectedClaim.branchUnknown = true
+	} else {
+		expectedClaim.identity.branch = commonDir + "\x00" + branchRef
+	}
+	return append(claims, expectedClaim), true
 }
 
 func firstNonEmpty(values ...string) string {
@@ -392,17 +488,22 @@ func (index projectResourceOwnershipIndex) requireExclusive(path string) error {
 func (issue projectResourceOwnershipIssue) couldConflict(
 	identity projectResourceIdentity,
 ) bool {
-	if issue.global ||
-		(issue.identity.branch != "" && issue.identity.branch == identity.branch) ||
-		(issue.identity.worktree != "" && issue.identity.worktree == identity.worktree) {
+	if issue.global {
 		return true
 	}
-	sameRepository := issue.repositoryScope != "" &&
-		issue.repositoryScope == identity.repository
-	sameCommonDir := issue.commonDirScope != "" &&
-		issue.commonDirScope == identity.commonDir
-	return (issue.branchUnknown || issue.worktreeUnknown) &&
-		(sameRepository || sameCommonDir)
+	for _, claim := range issue.claims {
+		if (claim.identity.branch != "" && claim.identity.branch == identity.branch) ||
+			(claim.identity.worktree != "" && claim.identity.worktree == identity.worktree) {
+			return true
+		}
+		sameRepository := claim.identity.repository == identity.repository
+		sameCommonDir := claim.identity.commonDir == identity.commonDir
+		if (claim.branchUnknown || claim.worktreeUnknown) &&
+			(sameRepository || sameCommonDir) {
+			return true
+		}
+	}
+	return false
 }
 
 func duplicateResourceOwnershipError(
