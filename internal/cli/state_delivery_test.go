@@ -1308,6 +1308,40 @@ func TestAdaptivePRRecordingRejectsMismatchedGitHubMetadata(t *testing.T) {
 	}
 }
 
+func TestPRBaseMismatchReturnsStructuredNonExecutableRepairData(t *testing.T) {
+	for _, maliciousBase := range []string{
+		"evil$(touch${IFS}injected)",
+		"evil;touch${IFS}injected",
+		"evil`touch${IFS}injected`",
+	} {
+		t.Run(maliciousBase, func(t *testing.T) {
+			err := validatePRMetadata(
+				project.Manifest{
+					Slug: "demo", BaseBranch: maliciousBase, RemoteBaseSHA: strings.Repeat("a", 40),
+				},
+				project.RepositorySnapshot{
+					HeadSHA: "head", BaseRef: maliciousBase, BaseTipSHA: strings.Repeat("a", 40),
+				},
+				prwatch.PullRequest{
+					Number: 42, HeadSHA: "head", BaseRef: maliciousBase, BaseSHA: strings.Repeat("b", 40),
+				},
+				true,
+			)
+			mismatch, ok := err.(*prBaseMismatchError)
+			if !ok {
+				t.Fatalf("error type = %T, want *prBaseMismatchError", err)
+			}
+			if mismatch.ProjectSlug != "demo" || mismatch.BaseBranch != maliciousBase ||
+				mismatch.PRBaseSHA != strings.Repeat("b", 40) {
+				t.Fatalf("repair data = %+v", mismatch)
+			}
+			if strings.Contains(err.Error(), "relay route base") {
+				t.Fatalf("error returned executable command text: %q", err)
+			}
+		})
+	}
+}
+
 func TestAdaptivePRReconcileFindsAndRecordsExistingRemotePR(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := initCLIGitRepo(t)
@@ -1448,6 +1482,77 @@ func TestAdaptiveFinalRefusesUnreconciledPendingPR(t *testing.T) {
 	if got.PendingPR.Number != 0 || got.FinalResult == nil ||
 		got.FinalResult.Status != "failed" {
 		t.Fatalf("closed pending PR final state = %+v", got)
+	}
+}
+
+func TestAdaptiveFinalPreservesRecordedPRUntilGitHubConfirmsClosedUnmerged(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state := openPRReadyState(t, "demo")
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	token := dispatchPhase(t, "demo", "open-pr")
+	state, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.PR = project.PRRef{
+		Number: 42, URL: "https://github.com/example/test/pull/42",
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runStateRaw(
+		t, "final", "demo", "failed", "--reason", "worker failed",
+		"--dispatch-token", token,
+	); err == nil || !strings.Contains(err.Error(), "recorded pull request #42 is still OPEN") {
+		t.Fatalf("open recorded PR final error = %v", err)
+	}
+	preserved, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserved.PR != state.PR || preserved.FinalResult != nil {
+		t.Fatalf("open recorded PR was erased: %+v", preserved)
+	}
+
+	original := readPRForRecording
+	remoteState := prwatch.StateMerged
+	readPRForRecording = func(
+		ctx context.Context, worktree string, number int,
+	) (prwatch.PullRequest, error) {
+		pr, err := original(ctx, worktree, number)
+		if err != nil {
+			return prwatch.PullRequest{}, err
+		}
+		pr.State = remoteState
+		return pr, nil
+	}
+	t.Cleanup(func() { readPRForRecording = original })
+	if _, err := runStateRaw(
+		t, "final", "demo", "failed", "--reason", "worker failed",
+		"--dispatch-token", token,
+	); err == nil || !strings.Contains(err.Error(), "is merged") {
+		t.Fatalf("merged recorded PR final error = %v", err)
+	}
+
+	remoteState = prwatch.StateClosed
+	if _, err := runStateRaw(
+		t, "final", "demo", "failed", "--reason", "closed without merge",
+		"--dispatch-token", token,
+	); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed.PR.Number != 0 || closed.FinalResult == nil ||
+		closed.FinalResult.Status != "failed" {
+		t.Fatalf("closed recorded PR final state = %+v", closed)
 	}
 }
 

@@ -626,6 +626,12 @@ func (ws *WorkflowState) SetPhase(name, status, artifact, task string) error {
 	if !validStatus(status) {
 		return fmt.Errorf("invalid status %q (want pending|in-progress|done|skipped|blocked|escalated)", status)
 	}
+	if err := validatePhaseStatusTransition(name, ph.Status, status); err != nil {
+		return err
+	}
+	if requiresReason(status) && strings.TrimSpace(ph.Reason) == "" {
+		return fmt.Errorf("phase %q status %q requires a reason", name, status)
+	}
 	if status == PhasePending || status == PhaseInProgress {
 		ph.Reason = ""
 		ph.Outcome = ""
@@ -647,6 +653,9 @@ func (ws *WorkflowState) SetPhase(name, status, artifact, task string) error {
 		}
 		ph.Dispatch = nil
 	}
+	if !requiresReason(status) {
+		ph.Reason = ""
+	}
 	ws.Phases[name] = ph
 	return nil
 }
@@ -662,6 +671,9 @@ func (ws *WorkflowState) SetPhaseWithDelivery(
 	if !validStatus(status) {
 		return fmt.Errorf("invalid status %q (want pending|in-progress|done|skipped|blocked|escalated)", status)
 	}
+	if err := validatePhaseStatusTransition(name, ph.Status, status); err != nil {
+		return err
+	}
 	if requiresReason(status) && strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("phase %q status %q requires a reason", name, status)
 	}
@@ -674,12 +686,6 @@ func (ws *WorkflowState) SetPhaseWithDelivery(
 	}
 	if status == PhaseSkipped && outcome != "" && outcome != PhaseOutcomeNoOp {
 		return fmt.Errorf("phase %q status %q requires outcome %q", name, status, PhaseOutcomeNoOp)
-	}
-	if (ph.Status == PhaseBlocked || ph.Status == PhaseEscalated) && status == PhaseDone {
-		return fmt.Errorf(
-			"phase %q status %q must be reopened before it can be completed",
-			name, ph.Status,
-		)
 	}
 	if status == PhasePending || status == PhaseInProgress {
 		ph.Reason = ""
@@ -721,6 +727,16 @@ func (ws *WorkflowState) SetPhaseWithDelivery(
 		ph.Dispatch = nil
 	}
 	ws.Phases[name] = ph
+	return nil
+}
+
+func validatePhaseStatusTransition(name, current, target string) error {
+	if (current == PhaseBlocked || current == PhaseEscalated) && target == PhaseDone {
+		return fmt.Errorf(
+			"phase %q status %q must be reopened before it can be completed",
+			name, current,
+		)
+	}
 	return nil
 }
 

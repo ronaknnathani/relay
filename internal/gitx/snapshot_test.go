@@ -88,6 +88,41 @@ func TestSnapshotTracksUntrackedFileTypeAndExecutableMode(t *testing.T) {
 	assertFingerprintChanged(t, executable, symlink)
 }
 
+func TestSnapshotFramesNULContainingUntrackedContentUnambiguously(t *testing.T) {
+	repo := initRepo(t)
+	base := RevParse(repo, "HEAD")
+	header := func(path string) []byte {
+		return []byte("\x00untracked\x00" + path + "\x00regular\x00")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "a"), []byte("A"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	firstB := append([]byte("B"), header("c")...)
+	firstB = append(firstB, 'C')
+	if err := os.WriteFile(filepath.Join(repo, "b"), firstB, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first := mustSnapshot(t, repo, base)
+
+	if err := os.Remove(filepath.Join(repo, "b")); err != nil {
+		t.Fatal(err)
+	}
+	secondA := append([]byte("A"), header("b")...)
+	secondA = append(secondA, 'B')
+	if err := os.WriteFile(filepath.Join(repo, "a"), secondA, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "c"), []byte("C"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := mustSnapshot(t, repo, base)
+
+	if first.FileCount != second.FileCount || first.ChangedLines != second.ChangedLines {
+		t.Fatalf("collision fixtures changed aggregate counts: first=%+v second=%+v", first, second)
+	}
+	assertFingerprintChanged(t, first, second)
+}
+
 func TestSnapshotTreatsUntrackedNestedRepositoryAsOpaqueIdentity(t *testing.T) {
 	repo := initRepo(t)
 	base := RevParse(repo, "HEAD")

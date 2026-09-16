@@ -511,14 +511,35 @@ func validatePRMetadata(
 	if requireBaseSHA &&
 		(remote.BaseSHA != manifest.RemoteBaseSHA ||
 			remote.BaseSHA != snapshot.BaseTipSHA) {
-		return fmt.Errorf(
-			"pull request #%d base SHA %s does not match reviewed remote base %s; "+
-				"rebind with `relay route base %s --base %s --sha %s` before reconciliation",
-			remote.Number, remote.BaseSHA, manifest.RemoteBaseSHA,
-			manifest.Slug, manifest.BaseBranch, remote.BaseSHA,
-		)
+		return &prBaseMismatchError{
+			PRNumber:        remote.Number,
+			ProjectSlug:     manifest.Slug,
+			BaseBranch:      manifest.BaseBranch,
+			PRBaseSHA:       remote.BaseSHA,
+			BoundBaseSHA:    manifest.RemoteBaseSHA,
+			ReviewedBaseSHA: snapshot.BaseTipSHA,
+		}
 	}
 	return nil
+}
+
+type prBaseMismatchError struct {
+	PRNumber        int
+	ProjectSlug     string
+	BaseBranch      string
+	PRBaseSHA       string
+	BoundBaseSHA    string
+	ReviewedBaseSHA string
+}
+
+func (err *prBaseMismatchError) Error() string {
+	return fmt.Sprintf(
+		"pull request #%d base SHA mismatch: project_slug=%q base_branch=%q "+
+			"pr_base_sha=%q bound_base_sha=%q reviewed_base_sha=%q; "+
+			"pass these fields as separate arguments when explicitly rebinding the route base",
+		err.PRNumber, err.ProjectSlug, err.BaseBranch, err.PRBaseSHA,
+		err.BoundBaseSHA, err.ReviewedBaseSHA,
+	)
 }
 
 func savePendingPRError(path string, state project.WorkflowState, cause error) error {
@@ -560,44 +581,20 @@ func newCmdStateFinal() *cobra.Command {
 			}
 			if ws.UsesAdaptiveDelivery() {
 				if ws.PendingPR.Number > 0 || ws.PendingPR.URL != "" {
-					manifestPath, err := project.Find(args[0])
-					if err != nil {
-						return err
-					}
-					manifest, err := project.Load(manifestPath)
-					if err != nil {
-						return err
-					}
-					if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {
-						return fmt.Errorf("project %q has no worktree", args[0])
-					}
-					remotePR, err := readPRForRecording(
-						command.Context(), *manifest.Worktree, ws.PendingPR.Number,
-					)
-					if err != nil {
-						return fmt.Errorf(
-							"verify pending pull request #%d: %w", ws.PendingPR.Number, err,
-						)
-					}
-					if err := validatePRCandidate(
-						manifest, remotePR, ws.PendingPR.Number, ws.PendingPR.URL,
+					if err := verifyTerminalFailurePR(
+						command.Context(), args[0], result.Status, "pending", ws.PendingPR,
 					); err != nil {
 						return err
 					}
-					switch remotePR.State {
-					case prwatch.StateMerged:
-						return fmt.Errorf(
-							"pending pull request #%d is merged; reconcile it instead of recording failure",
-							ws.PendingPR.Number,
-						)
-					case prwatch.StateClosed:
-						ws.PendingPR = project.PRRef{}
-					default:
-						return fmt.Errorf(
-							"record %s final result: pending pull request #%d is still %s",
-							result.Status, ws.PendingPR.Number, remotePR.State,
-						)
+					ws.PendingPR = project.PRRef{}
+				}
+				if ws.PR.Number > 0 || ws.PR.URL != "" {
+					if err := verifyTerminalFailurePR(
+						command.Context(), args[0], result.Status, "recorded", ws.PR,
+					); err != nil {
+						return err
 					}
+					ws.PR = project.PRRef{}
 				}
 				if err := ws.ValidateAdaptiveFinish("open-pr", project.PhaseBlocked); err != nil {
 					return fmt.Errorf("record %s final result: %w", result.Status, err)
@@ -607,7 +604,6 @@ func newCmdStateFinal() *cobra.Command {
 				); err != nil {
 					return fmt.Errorf("record %s final result: %w", result.Status, err)
 				}
-				ws.PR = project.PRRef{}
 				ws.FinalResult = &result
 				if err := ws.SetPhaseWithDelivery(
 					"open-pr", project.PhaseBlocked, reason, "", "", "", "",
@@ -624,6 +620,47 @@ func newCmdStateFinal() *cobra.Command {
 	cmd.Flags().StringVar(&reason, "reason", "", "required reason for blocked or failed delivery")
 	cmd.Flags().StringVar(&dispatchToken, "dispatch-token", "", "token returned by state dispatch")
 	return cmd
+}
+
+func verifyTerminalFailurePR(
+	ctx context.Context,
+	slug string,
+	resultStatus string,
+	kind string,
+	ref project.PRRef,
+) error {
+	manifestPath, err := project.Find(slug)
+	if err != nil {
+		return err
+	}
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		return err
+	}
+	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {
+		return fmt.Errorf("project %q has no worktree", slug)
+	}
+	remotePR, err := readPRForRecording(ctx, *manifest.Worktree, ref.Number)
+	if err != nil {
+		return fmt.Errorf("verify %s pull request #%d: %w", kind, ref.Number, err)
+	}
+	if err := validatePRCandidate(manifest, remotePR, ref.Number, ref.URL); err != nil {
+		return err
+	}
+	switch remotePR.State {
+	case prwatch.StateClosed:
+		return nil
+	case prwatch.StateMerged:
+		return fmt.Errorf(
+			"%s pull request #%d is merged; reconcile it instead of recording failure",
+			kind, ref.Number,
+		)
+	default:
+		return fmt.Errorf(
+			"record %s final result: %s pull request #%d is still %s",
+			resultStatus, kind, ref.Number, remotePR.State,
+		)
+	}
 }
 
 func newCmdStateLog() *cobra.Command {

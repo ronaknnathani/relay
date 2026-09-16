@@ -177,7 +177,20 @@ func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResu
 	if baseBranch == "" {
 		return projectCreateResult{}, fmt.Errorf("could not determine default branch (no origin/HEAD, main, or master)")
 	}
-	if gitx.RevParse(repoRoot, baseBranch) == "" {
+
+	startPoint := baseBranch
+	remoteBaseSHA := ""
+	if !explicitBase && gitx.HasOrigin(repoRoot) && gitx.ValidBranchName(repoRoot, baseBranch) {
+		if out, err := gitx.Fetch(repoRoot, baseBranch); err != nil {
+			ui.Warn("%s\n%s", err, out)
+		}
+		remoteRef := "origin/" + baseBranch
+		if remoteSHA := gitx.RevParse(repoRoot, remoteRef); remoteSHA != "" {
+			startPoint = remoteRef
+			remoteBaseSHA = remoteSHA
+		}
+	}
+	if gitx.RevParse(repoRoot, startPoint) == "" {
 		return projectCreateResult{}, fmt.Errorf("base %q does not resolve to a commit", baseBranch)
 	}
 
@@ -220,17 +233,6 @@ func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResu
 		}
 	}
 
-	startPoint := baseBranch
-	if !explicitBase && gitx.HasOrigin(repoRoot) && gitx.ValidBranchName(repoRoot, baseBranch) {
-		if out, err := gitx.Fetch(repoRoot, baseBranch); err != nil {
-			ui.Warn("%s\n%s", err, out)
-		}
-		remoteRef := "origin/" + baseBranch
-		if gitx.RevParse(repoRoot, remoteRef) != "" &&
-			gitx.IsBranchReachable(repoRoot, startPoint, remoteRef) {
-			startPoint = "origin/" + baseBranch
-		}
-	}
 	startSHA := gitx.RevParse(repoRoot, startPoint)
 
 	if err := gitx.WorktreeAdd(repoRoot, worktreeDir, branch, startPoint); err != nil {
@@ -258,6 +260,7 @@ func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResu
 		Agent:           a.Name(),
 		BaseBranch:      baseBranch,
 		StartSHA:        startSHA,
+		RemoteBaseSHA:   remoteBaseSHA,
 		Worktree:        &worktreeDir,
 		Status:          "initialized",
 		Workflow:        wf,
@@ -269,13 +272,6 @@ func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResu
 		PR:              project.PRInfo{},
 		PhasesCompleted: []string{"init"},
 		PhasesRemaining: project.AllPhases,
-	}
-	if !explicitBase && baseBranch != "" && baseBranch != "HEAD" &&
-		!strings.HasPrefix(baseBranch, "refs/") &&
-		!strings.HasPrefix(baseBranch, "origin/") &&
-		gitx.ValidBranchName(repoRoot, baseBranch) &&
-		gitx.RevParse(repoRoot, "origin/"+baseBranch) == startSHA {
-		m.RemoteBaseSHA = startSHA
 	}
 	if err := project.Save(project.ManifestPath(project.ActiveDir(), slug), m); err != nil {
 		return projectCreateResult{}, err

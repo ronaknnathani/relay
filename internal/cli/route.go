@@ -536,15 +536,33 @@ func bindRemoteBase(
 	}
 	if preserveBaseIdentity {
 		identity := manifest.RemoteBaseSHA
+		remoteIdentity := identity != ""
 		if identity == "" {
 			identity = manifest.StartSHA
 		}
-		if identity == "" || !gitx.IsBranchReachable(*manifest.Worktree, identity, remoteRef) {
-			return routeBaseOutput{
-				BaseBranch:    manifest.BaseBranch,
-				StartSHA:      manifest.StartSHA,
-				RemoteBaseSHA: manifest.RemoteBaseSHA,
-			}, nil
+		if identity == "" {
+			return routeBaseOutput{}, &remoteBaseRefreshError{
+				ProjectSlug:  slug,
+				BaseBranch:   base,
+				RemoteTipSHA: startSHA,
+				Reason:       "project has no immutable base identity",
+			}
+		}
+		if !gitx.IsBranchReachable(*manifest.Worktree, identity, remoteRef) {
+			if !remoteIdentity {
+				return routeBaseOutput{
+					BaseBranch:    manifest.BaseBranch,
+					StartSHA:      manifest.StartSHA,
+					RemoteBaseSHA: manifest.RemoteBaseSHA,
+				}, nil
+			}
+			return routeBaseOutput{}, &remoteBaseRefreshError{
+				ProjectSlug:  slug,
+				BaseBranch:   base,
+				BoundBaseSHA: identity,
+				RemoteTipSHA: startSHA,
+				Reason:       "immutable base is no longer reachable from the fetched remote branch",
+			}
 		}
 	}
 	requestedSHA = strings.TrimSpace(requestedSHA)
@@ -576,6 +594,7 @@ func bindRemoteBase(
 			BaseBranch: base, StartSHA: manifest.StartSHA, RemoteBaseSHA: startSHA,
 		}, nil
 	}
+
 	manifest.BaseBranch = base
 	if updateStartSHA {
 		manifest.StartSHA = startSHA
@@ -587,6 +606,23 @@ func bindRemoteBase(
 	return routeBaseOutput{
 		BaseBranch: base, StartSHA: manifest.StartSHA, RemoteBaseSHA: startSHA,
 	}, nil
+}
+
+type remoteBaseRefreshError struct {
+	ProjectSlug  string
+	BaseBranch   string
+	BoundBaseSHA string
+	RemoteTipSHA string
+	Reason       string
+}
+
+func (err *remoteBaseRefreshError) Error() string {
+	return fmt.Sprintf(
+		"remote base refresh cannot preserve identity: project_slug=%q base_branch=%q "+
+			"bound_base_sha=%q remote_tip_sha=%q reason=%q; explicit rebind is required "+
+			"through route base with --sha, passing each field as a separate argument",
+		err.ProjectSlug, err.BaseBranch, err.BoundBaseSHA, err.RemoteTipSHA, err.Reason,
+	)
 }
 
 func bindRouteFlags(command *cobra.Command, flags *routeFlags) {

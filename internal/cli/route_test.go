@@ -192,8 +192,10 @@ func TestRouteClassifyDoesNotRebindRemoteBaseAcrossUnrelatedHistory(t *testing.T
 		"--requested-behavior-explicit", "--no-repository-gates",
 		"--risk-assessment-complete", "--predicted-size-known",
 		"--predicted-files", "1", "--predicted-lines", "20",
-	); err != nil {
-		t.Fatal(err)
+	); err == nil || !strings.Contains(err.Error(), "no longer reachable") ||
+		!strings.Contains(err.Error(), "explicit rebind") ||
+		!strings.Contains(err.Error(), "--sha") {
+		t.Fatalf("unreachable remote base refresh error = %v", err)
 	}
 	after, err := project.Load(manifestPath)
 	if err != nil {
@@ -206,8 +208,33 @@ func TestRouteClassifyDoesNotRebindRemoteBaseAcrossUnrelatedHistory(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Route.Snapshot.BaseTipSHA != before.RemoteBaseSHA {
-		t.Fatalf("route followed unrelated remote history: %+v", got.Route.Snapshot)
+	if got.Route != nil {
+		t.Fatalf("failed refresh wrote a route decision: %+v", got.Route)
+	}
+}
+
+func TestRefreshRemoteBaseRejectsMissingImmutableIdentity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	manifestPath := project.ManifestPath(project.ActiveDir(), "demo")
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.StartSHA = ""
+	manifest.RemoteBaseSHA = ""
+	if err := project.Save(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshRemoteBaseBinding("demo", state); err == nil ||
+		!strings.Contains(err.Error(), "no immutable base identity") ||
+		!strings.Contains(err.Error(), "explicit rebind") {
+		t.Fatalf("missing identity refresh error = %v", err)
 	}
 }
 

@@ -843,6 +843,41 @@ func TestSetPhaseReopenClearsTerminalMetadata(t *testing.T) {
 	}
 }
 
+func TestSetPhaseRequiresReopenAndClearsReasons(t *testing.T) {
+	for _, status := range []string{PhaseBlocked, PhaseEscalated} {
+		t.Run(status, func(t *testing.T) {
+			state, err := NewState("demo", "deliver-pr", []string{"implement"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.Phases["implement"] = PhaseState{
+				Status: status, Reason: "needs resolution",
+			}
+			if err := state.SetPhase("implement", PhaseDone, "", ""); err == nil {
+				t.Fatalf("SetPhase accepted direct %s -> done transition", status)
+			}
+			if got := state.Phases["implement"]; got.Status != status ||
+				got.Reason != "needs resolution" {
+				t.Fatalf("rejected transition mutated phase: %+v", got)
+			}
+		})
+	}
+
+	state, err := NewState("demo", "deliver-pr", []string{"implement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Phases["implement"] = PhaseState{
+		Status: PhaseDone, Reason: "stale blocker",
+	}
+	if err := state.SetPhase("implement", PhaseDone, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := state.Phases["implement"].Reason; got != "" {
+		t.Fatalf("done phase retained reason %q", got)
+	}
+}
+
 func TestSaveStateRejectsInvalidRouteFactsBeforeWriting(t *testing.T) {
 	state := validAdaptiveState(t)
 	state.Route.Facts.RiskTriggers = []RiskTrigger{RiskAuthSecurity, RiskAuthSecurity}

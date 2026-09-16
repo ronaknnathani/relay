@@ -1389,6 +1389,7 @@ func TestPRWatchHandoffAcceptsCanonicalProtectedDispositions(t *testing.T) {
 }
 
 func TestPRWatchHandoffMarksProtectedMutationAndRejectsWithdrawnWork(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	digest := prwatch.Digest{
 		Project: "demo", Mode: prwatch.ModeManaged,
 		Fingerprint: strings.Repeat("a", 64), HeadSHA: "current-head",
@@ -1396,6 +1397,9 @@ func TestPRWatchHandoffMarksProtectedMutationAndRejectsWithdrawnWork(t *testing.
 		Items: []prwatch.Item{{
 			Reason: prwatch.ReasonFailingCheck, Key: "failing-check:42",
 		}},
+	}
+	if err := prwatch.WriteDigest(digest); err != nil {
+		t.Fatal(err)
 	}
 	originalState := prWatchReadState
 	originalTick := prWatchTickOnce
@@ -1454,8 +1458,8 @@ func TestPRWatchHandoffMarksProtectedMutationAndRejectsWithdrawnWork(t *testing.
 			prWatchTickOnce = func(context.Context, string, prwatch.Options) (prwatch.Digest, error) {
 				return test.fresh, nil
 			}
-			fresh, _, err := validatePRWatchHandoffProvenance(
-				context.Background(), "demo", digest, &prWatchModeFlags{},
+			out, err := runPRCommand(
+				t, "watch", "handoff", "demo", "--fingerprint", digest.Fingerprint, "--json",
 			)
 			if test.accepted && err != nil {
 				t.Fatalf("%s was rejected: %v", test.name, err)
@@ -1463,10 +1467,17 @@ func TestPRWatchHandoffMarksProtectedMutationAndRejectsWithdrawnWork(t *testing.
 			if !test.accepted && err == nil {
 				t.Fatalf("%s was accepted", test.name)
 			}
-			if err == nil && prWatchBranchMutationAllowed(fresh.PR) != test.branchMutationAllowed {
+			if err != nil {
+				return
+			}
+			var handoff prwatch.Digest
+			if err := json.Unmarshal([]byte(out), &handoff); err != nil {
+				t.Fatal(err)
+			}
+			if handoff.BranchMutationAllowed != test.branchMutationAllowed {
 				t.Fatalf(
 					"%s branch mutation = %t, want %t",
-					test.name, prWatchBranchMutationAllowed(fresh.PR), test.branchMutationAllowed,
+					test.name, handoff.BranchMutationAllowed, test.branchMutationAllowed,
 				)
 			}
 		})

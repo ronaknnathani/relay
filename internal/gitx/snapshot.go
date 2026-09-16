@@ -125,7 +125,8 @@ func Snapshot(repo, baseRef string) (RepoSnapshot, error) {
 		hash.Write([]byte("\x00untracked\x00" + relative + "\x00"))
 		hash.Write([]byte(file.kind))
 		hash.Write([]byte{0})
-		hash.Write(file.content)
+		contentDigest := sha256.Sum256(file.content)
+		hash.Write(contentDigest[:])
 	}
 
 	return RepoSnapshot{

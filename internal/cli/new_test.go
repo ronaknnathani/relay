@@ -248,6 +248,64 @@ func TestRunNewExplicitLocalBaseIsNotReplacedByStaleSameNameRemote(t *testing.T)
 	}
 }
 
+func TestRunNewAutomaticBaseUsesRemoteDefaultCommit(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		prepare func(t *testing.T, repo string)
+	}{
+		{
+			name: "remote-only default branch",
+			prepare: func(t *testing.T, repo string) {
+				t.Helper()
+				gitOutput(t, repo, "remote", "set-head", "origin", "main")
+				gitOutput(t, repo, "checkout", "-q", "--detach", "origin/main")
+				gitOutput(t, repo, "branch", "-D", "main")
+			},
+		},
+		{
+			name: "divergent local default branch",
+			prepare: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(repo, "local.txt"), []byte("local\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitOutput(t, repo, "add", "local.txt")
+				gitOutput(t, repo, "commit", "-q", "-m", "local only")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := initCLIGitRepo(t)
+			t.Setenv("HOME", t.TempDir())
+			t.Chdir(repo)
+			if err := config.Save(config.Config{
+				BranchPrefix: "test/", DefaultAgent: "copilot",
+				PermissionModes: map[string]string{"copilot": "allow-all"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			test.prepare(t, repo)
+			remoteMain := gitRevParse(t, repo, "origin/main")
+
+			if err := runNew(newOpts{
+				task: "remote based task", name: "remote-base", noLaunch: true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), "remote-base"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if manifest.StartSHA != remoteMain || manifest.RemoteBaseSHA != remoteMain {
+				t.Fatalf("automatic base manifest = %+v, want remote commit %q", manifest, remoteMain)
+			}
+			if got := gitRevParse(t, *manifest.Worktree, "HEAD"); got != remoteMain {
+				t.Fatalf("worktree HEAD = %q, want remote default %q", got, remoteMain)
+			}
+		})
+	}
+}
+
 func TestRunNewPersistsForcedFullDeliveryMode(t *testing.T) {
 	repo := newTestRepo(t)
 	t.Setenv("HOME", t.TempDir())

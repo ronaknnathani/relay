@@ -53,10 +53,11 @@ Open the finished change; performs no new review and reruns no passing gate.
    **superseded dispatch**. If PR creation succeeded but recording is ambiguous, do not create another PR: run
    `relay state pr "$SLUG" --reconcile --dispatch-token "$RESULT_TOKEN"` to find and verify the unique
    open PR for the recorded head/base or recover the persisted PR identity if it has already merged.
-   If the PR's creation-time base SHA differs, the coordinator must use the exact
-   `relay route base "$SLUG" --base <base> --sha <pr-base-sha> --coordinator-token
-   "$COORDINATOR_TOKEN"` command from Relay's error, refresh the route without replacing that pending
-   PR pin, rerun stale evidence, redispatch `open-pr`, and reconcile the existing PR.
+   If the PR's creation-time base SHA differs, Relay returns labeled project, base, and SHA fields
+   instead of executable command text. The coordinator must pass those values as separate arguments
+   to `relay route base`, refresh the route without replacing that pending PR pin, rerun stale
+   evidence, redispatch `open-pr`, and reconcile the existing PR. Never execute or paste an error
+   string as a shell command.
    If that pending PR closed without merging, verify the closed state and record terminal failure;
    never discard a still-open pending PR. On terminal failure before a PR exists, record
    `relay state final "$SLUG" failed --reason "<specific reason>" --dispatch-token "$RESULT_TOKEN"`.
