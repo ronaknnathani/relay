@@ -101,6 +101,27 @@ func TestHandlerRendersMergedProgressBeforeHydration(t *testing.T) {
 	}
 }
 
+func TestInitialRoadmapConnectorsSerializesSingleTaskStages(t *testing.T) {
+	graph := roadmapGraph{
+		Nodes:  []roadmapNode{{ID: "w1"}, {ID: "w2"}},
+		Edges:  []programview.GraphEdgeDTO{{From: "w1", To: "w2"}},
+		Layers: [][]string{{"w1"}, {"w2"}},
+	}
+	connectors := initialRoadmapConnectors(graph)
+	if connectors == nil {
+		t.Fatal("single-task stages must have initial connectors")
+	}
+	if connectors.Width != 1000 || connectors.Height != 290 ||
+		connectors.NormalPath != "M 500 133 V 185" || connectors.NormalCount != 1 ||
+		connectors.BackPath != "" || connectors.BackCount != 0 {
+		t.Fatalf("initial connectors = %+v", connectors)
+	}
+	graph.Layers = [][]string{{"w1", "w2"}}
+	if connectors := initialRoadmapConnectors(graph); connectors != nil {
+		t.Fatalf("parallel-stage connectors = %+v, want browser layout", connectors)
+	}
+}
+
 func TestHandlerLoadsCurrentRoadmapOutsideDocument(t *testing.T) {
 	now := time.Date(2026, 9, 15, 16, 0, 0, 0, time.UTC)
 	seed := programview.Snapshot{

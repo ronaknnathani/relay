@@ -1558,6 +1558,9 @@ function bindControls() {
       withDeferredUI(fitDetailTail);
     }
   });
+  dom.roadmapScroll.addEventListener("scroll", () => {
+    window.requestAnimationFrame(drawConnectorsForCurrentGraph);
+  });
   document.addEventListener("keydown", (event) => {
     if (globalKeyHandled(event)) {
       event.preventDefault();
@@ -1674,6 +1677,7 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
       state.signature = signature;
     } else if (roadmapUnchanged && state.tab === "roadmap") {
       renderHeader();
+      window.requestAnimationFrame(drawConnectorsForCurrentGraph);
       TABS.filter((tab) => tab !== "roadmap").forEach((tab) => state.dirtyTabs.add(tab));
       state.signature = signature;
     } else {

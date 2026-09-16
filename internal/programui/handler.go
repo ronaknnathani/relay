@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-Gl6/QnHTphJuK4RAmrUgyQ5iyIiiFOAG4Z3Rzz1C4wE='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-yh0vbCs9XipsKFVtxUNdhOLI31PxI2O1agYLD4v9XKg='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	roadmapCoreToken      = "__RELAY_ROADMAP_CORE__"
 	roadmapJSONToken      = "__RELAY_ROADMAP_JSON__"
 	programSlugToken      = "__RELAY_PROGRAM_SLUG__"
@@ -127,8 +127,18 @@ type roadmapOverview struct {
 }
 
 type roadmapBootstrap struct {
-	Schema string       `json:"schema"`
-	Graph  roadmapGraph `json:"graph"`
+	Schema            string                      `json:"schema"`
+	Graph             roadmapGraph                `json:"graph"`
+	InitialConnectors *roadmapBootstrapConnectors `json:"initial_connectors,omitempty"`
+}
+
+type roadmapBootstrapConnectors struct {
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	NormalPath  string `json:"normal_path,omitempty"`
+	NormalCount int    `json:"normal_count,omitempty"`
+	BackPath    string `json:"back_path,omitempty"`
+	BackCount   int    `json:"back_count,omitempty"`
 }
 
 func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -230,8 +240,9 @@ func renderIndex(index, encoded []byte) ([]byte, error) {
 		}
 		var err error
 		bootstrap, err = json.Marshal(roadmapBootstrap{
-			Schema: "relay.program.roadmap.bootstrap.v1",
-			Graph:  snapshot.Graph,
+			Schema:            "relay.program.roadmap.bootstrap.v1",
+			Graph:             snapshot.Graph,
+			InitialConnectors: initialRoadmapConnectors(snapshot.Graph),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("encode roadmap index bootstrap: %w", err)
@@ -267,6 +278,55 @@ func renderIndex(index, encoded []byte) ([]byte, error) {
 		index = bytes.ReplaceAll(index, []byte(token), []byte(value))
 	}
 	return index, nil
+}
+
+func initialRoadmapConnectors(graph roadmapGraph) *roadmapBootstrapConnectors {
+	if len(graph.Nodes) == 0 || len(graph.Layers) != len(graph.Nodes) {
+		return nil
+	}
+	stageByID := make(map[string]int, len(graph.Nodes))
+	for stage, layer := range graph.Layers {
+		if len(layer) != 1 {
+			return nil
+		}
+		stageByID[layer[0]] = stage
+	}
+	const (
+		width       = 1000
+		center      = width / 2
+		stageHeight = 132
+		stageGap    = 26
+		cardTop     = 34
+		cardHeight  = 98
+	)
+	var normal strings.Builder
+	var back strings.Builder
+	normalCount := 0
+	backCount := 0
+	for _, edge := range graph.Edges {
+		fromStage, fromOK := stageByID[edge.From]
+		toStage, toOK := stageByID[edge.To]
+		if !fromOK || !toOK {
+			return nil
+		}
+		fromBottom := fromStage*(stageHeight+stageGap) + cardTop + cardHeight
+		toTop := toStage*(stageHeight+stageGap) + cardTop
+		if toTop > fromBottom+4 {
+			fmt.Fprintf(&normal, "M %d %d V %d ", center, fromBottom+1, toTop-7)
+			normalCount++
+			continue
+		}
+		fmt.Fprintf(&back, "M %d %d L %d %d ", center, fromBottom+1, center, toTop-7)
+		backCount++
+	}
+	return &roadmapBootstrapConnectors{
+		Width:       width,
+		Height:      len(graph.Layers)*stageHeight + (len(graph.Layers)-1)*stageGap,
+		NormalPath:  strings.TrimSpace(normal.String()),
+		NormalCount: normalCount,
+		BackPath:    strings.TrimSpace(back.String()),
+		BackCount:   backCount,
+	}
 }
 
 func pluralSuffix(count int) string {

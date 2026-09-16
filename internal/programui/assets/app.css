@@ -702,6 +702,9 @@ pre {
   grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
   gap: 16px 18px;
   align-items: stretch;
+  contain: layout style;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 132px;
 }
 
 .stage--single {
@@ -727,9 +730,8 @@ pre {
 
 .card {
   position: relative;
-  display: grid;
-  align-content: start;
-  gap: 10px;
+  display: block;
+  contain: layout style;
   min-width: 0;
   padding: 16px 18px 16px 21px;
   border: 1px solid var(--border);

@@ -213,6 +213,7 @@ func TestRoadmapCardsKeepOneVisibleMetadataLineAndExplicitNames(t *testing.T) {
 	requireContains(t, "app.css", styles, []string{
 		".stage--single {",
 		".stage--single .card {",
+		"display: block;",
 	})
 }
 
@@ -233,13 +234,14 @@ func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
 	requireContains(t, "roadmap.js", roadmap, []string{
 		`const buildRoadmap = (snapshot) => {`,
 		`graphNodes.replaceChildren(fragment)`,
+		`const initialConnectors = snapshot && snapshot.initial_connectors`,
 		`window.__relayCoreReady = true`,
 		`themeToggle.addEventListener("click", onThemeToggle)`,
 		`refresh.addEventListener("click", onRefresh)`,
 		`document.addEventListener("DOMContentLoaded", loadFullApp, { once: true })`,
 		`window.__relayRoadmapCoreCleanup`,
 		`window.__relayRoadmapConnectorPaths = paths`,
-		`drawConnectors();`,
+		`drawInitialConnectors();`,
 	})
 	if !strings.Contains(index, `<div id="graph-nodes" class="roadmap__stages"></div>`) {
 		t.Error("the document must not duplicate roadmap cards outside the bootstrap JSON")
