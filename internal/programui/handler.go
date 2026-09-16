@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-ijNz2722AEKUrvqI8RTAsI7LvEFY57t1GqaZxMsg2QA='; style-src 'self' 'sha256-4ptMEUb9eurT1iIZ9wcZxnVMZAO/Bp8CSJ2RC2IRx5Q='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-OHu4tovBVaPk434/9gMprRjF6wZcQ27dLKKyBc4GM6w='; style-src 'self' 'sha256-4ptMEUb9eurT1iIZ9wcZxnVMZAO/Bp8CSJ2RC2IRx5Q='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	roadmapCoreToken      = "__RELAY_ROADMAP_CORE__"
 	cssTemplateToken      = "/*!__RELAY_CSS__*/"
 	roadmapMarkupToken    = "__RELAY_ROADMAP_MARKUP__"

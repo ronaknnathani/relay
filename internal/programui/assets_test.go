@@ -223,13 +223,19 @@ func TestBootstrapUsesMergedProgress(t *testing.T) {
 }
 
 func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
-	requireContains(t, "index.html", readAsset(t, "assets/index.html"), []string{
+	index := readAsset(t, "assets/index.html")
+	requireContains(t, "index.html", index, []string{
 		`<script id="app-script">__RELAY_ROADMAP_CORE__</script>`,
 	})
+	if strings.Index(index, `id="app-script"`) > strings.Index(index, `id="panel-tasks"`) {
+		t.Error("the interactive roadmap core must start before deferred panel markup is parsed")
+	}
 	roadmap := readAsset(t, "assets/roadmap.js")
 	requireContains(t, "roadmap.js", roadmap, []string{
 		`window.__relayCoreReady = true`,
-		`script.src = "/app.js"`,
+		`themeToggle.addEventListener("click", onThemeToggle)`,
+		`refresh.addEventListener("click", onRefresh)`,
+		`document.addEventListener("DOMContentLoaded", loadFullApp, { once: true })`,
 		`window.__relayRoadmapCoreCleanup`,
 		`window.__relayRoadmapConnectorPaths = paths`,
 		`drawConnectors();`,

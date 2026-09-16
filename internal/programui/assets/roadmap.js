@@ -6,6 +6,10 @@
   const graphEdges = document.getElementById("graph-edges");
   const roadmapContent = document.getElementById("roadmap-content");
   const reconnect = document.getElementById("reconnect");
+  const refresh = document.getElementById("refresh");
+  const themeToggle = document.getElementById("theme-toggle");
+  const themeGlyph = document.getElementById("theme-glyph");
+  const themeText = document.getElementById("theme-text");
   const cards = () => Array.from(graphNodes.querySelectorAll(".card"));
   const select = (card, persist) => {
     if (!card) {
@@ -39,13 +43,35 @@
           index + (event.key === "ArrowRight" ? 1 : -1)))];
     select(target, false);
   };
+  const renderThemeToggle = () => {
+    const dark = document.documentElement.dataset.theme === "dark";
+    themeGlyph.textContent = dark ? "☀" : "☾";
+    themeText.textContent = dark ? "Light" : "Dark";
+    themeToggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
+  };
+  const onThemeToggle = () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try {
+      window.localStorage.setItem("relay.program.theme", next);
+    } catch (_) {
+      // Theme switching remains available when local storage is unavailable.
+    }
+    renderThemeToggle();
+  };
+  const onRefresh = () => window.location.reload();
 
   graphNodes.addEventListener("click", onClick);
   graphNodes.addEventListener("keydown", onKeyDown);
+  themeToggle.addEventListener("click", onThemeToggle);
+  refresh.addEventListener("click", onRefresh);
   window.__relayRoadmapCoreCleanup = () => {
     graphNodes.removeEventListener("click", onClick);
     graphNodes.removeEventListener("keydown", onKeyDown);
+    themeToggle.removeEventListener("click", onThemeToggle);
+    refresh.removeEventListener("click", onRefresh);
   };
+  renderThemeToggle();
   window.__relayCoreReady = true;
   window.__relayRoadmapSelection =
     document.querySelector('.card[data-selected="true"]')?.dataset.item || "";
@@ -129,12 +155,20 @@
     window.__relayRoadmapConnectorPaths = paths;
   };
 
-  drawConnectors();
-  const script = document.createElement("script");
-  script.src = "/app.js";
-  script.onerror = () => {
-    reconnect.hidden = false;
-    reconnect.textContent = "The complete Program UI bundle failed to load. Reload the page to retry.";
+  const loadFullApp = () => {
+    const script = document.createElement("script");
+    script.src = "/app.js";
+    script.onerror = () => {
+      reconnect.hidden = false;
+      reconnect.textContent = "The complete Program UI bundle failed to load. Reload the page to retry.";
+    };
+    document.body.append(script);
   };
-  document.body.append(script);
+
+  drawConnectors();
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", loadFullApp, { once: true });
+  } else {
+    loadFullApp();
+  }
 })();
