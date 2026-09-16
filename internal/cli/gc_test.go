@@ -914,6 +914,93 @@ func TestGCLinkedRepositoryPathsShareOneRefresh(t *testing.T) {
 	}
 }
 
+func TestGCLinkedWorktreeOriginCannotReuseAnotherOriginMergeProof(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	alternateRemote := filepath.Join(t.TempDir(), "alternate.git")
+	runArchiveGit(t, fixture.repo, "clone", "-q", "--bare", fixture.remote, alternateRemote)
+
+	firstBranch, firstWorktree := addGCProject(t, fixture, "a-origin-a")
+	secondBranch, secondWorktree := addGCProject(t, fixture, "b-origin-b")
+	mergeGCProjectsUpstream(t, fixture, firstBranch, secondBranch)
+
+	linkedRepo := filepath.Join(t.TempDir(), "origin-b-worktree")
+	runArchiveGit(t, fixture.repo, "worktree", "add", "-q", "--detach", linkedRepo, fixture.startSHA)
+	setGCWorktreeOrigins(t, fixture.repo, map[string]string{
+		fixture.repo: fixture.remote,
+		linkedRepo:   alternateRemote,
+	})
+	updateGCManifest(t, "b-origin-b", func(manifest *project.Manifest) {
+		manifest.Repo = linkedRepo
+	})
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if err != nil {
+		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), "a-origin-a")) ||
+		pathExists(firstWorktree) ||
+		gitx.BranchExists(fixture.repo, firstBranch) {
+		t.Fatal("GC did not archive the project merged into origin A")
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), "b-origin-b")) ||
+		!pathExists(secondWorktree) ||
+		!gitx.BranchExists(linkedRepo, secondBranch) {
+		t.Fatal("GC reused origin A merge proof to archive the project configured for origin B")
+	}
+}
+
+func TestGCLinkedWorktreeRefreshWarningsDeduplicateByEffectiveOrigin(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	alternateRemote := filepath.Join(t.TempDir(), "alternate.git")
+	runArchiveGit(t, fixture.repo, "clone", "-q", "--bare", fixture.remote, alternateRemote)
+
+	_, _ = addGCProject(t, fixture, "a-origin-a-root")
+	_, _ = addGCProject(t, fixture, "b-origin-a-linked")
+	_, _ = addGCProject(t, fixture, "c-origin-b-linked")
+
+	linkedSameOrigin := filepath.Join(t.TempDir(), "origin-a-worktree")
+	runArchiveGit(
+		t, fixture.repo, "worktree", "add", "-q", "--detach", linkedSameOrigin, fixture.startSHA,
+	)
+	updateGCManifest(t, "b-origin-a-linked", func(manifest *project.Manifest) {
+		manifest.Repo = linkedSameOrigin
+	})
+
+	linkedAlternateOrigin := filepath.Join(t.TempDir(), "origin-b-worktree")
+	runArchiveGit(
+		t, fixture.repo, "worktree", "add", "-q", "--detach", linkedAlternateOrigin, fixture.startSHA,
+	)
+	setGCWorktreeOrigins(t, fixture.repo, map[string]string{
+		fixture.repo:          fixture.remote,
+		linkedSameOrigin:      fixture.remote,
+		linkedAlternateOrigin: alternateRemote,
+	})
+	updateGCManifest(t, "c-origin-b-linked", func(manifest *project.Manifest) {
+		manifest.Repo = linkedAlternateOrigin
+	})
+
+	runArchiveGit(t, fixture.upstream, "push", "-q", "origin", ":main")
+	runArchiveGit(t, fixture.repo, "--git-dir="+alternateRemote, "update-ref", "-d", "refs/heads/main")
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if count := strings.Count(stderr, "refresh repository "); count != 2 {
+		t.Fatalf("refresh warning count = %d, want one per effective origin\nstderr: %s", count, stderr)
+	}
+	for _, repo := range []string{fixture.repo, linkedAlternateOrigin} {
+		if !strings.Contains(stderr, "refresh repository "+repo+" base main:") {
+			t.Fatalf("stderr %q is missing refresh warning for %s", stderr, repo)
+		}
+	}
+	if strings.Contains(stderr, "refresh repository "+linkedSameOrigin+" base main:") {
+		t.Fatalf("stderr %q duplicated the shared-origin warning", stderr)
+	}
+}
+
 func TestGCIndependentRepositoriesRefreshSeparately(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	first := newGCRepoFixture(t, "main")
@@ -2485,6 +2572,22 @@ func installFetchCounter(t *testing.T, repo string) func() int {
 			t.Fatal(err)
 		}
 		return strings.Count(string(data), "fetch\n")
+	}
+}
+
+func setGCWorktreeOrigins(t *testing.T, repo string, origins map[string]string) {
+	t.Helper()
+	runArchiveGit(t, repo, "config", "extensions.worktreeConfig", "true")
+	runArchiveGit(t, repo, "config", "--unset-all", "remote.origin.url")
+	for worktree, remote := range origins {
+		runArchiveGit(t, worktree, "config", "--worktree", "remote.origin.url", remote)
+		got, err := gitx.OriginURL(worktree)
+		if err != nil {
+			t.Fatalf("OriginURL(%s): %v", worktree, err)
+		}
+		if got != remote {
+			t.Fatalf("OriginURL(%s) = %q, want %q", worktree, got, remote)
+		}
 	}
 }
 

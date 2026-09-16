@@ -347,6 +347,29 @@ func TestFetchReplacesStaleRemoteTrackingRefWithoutLocalBase(t *testing.T) {
 	}
 }
 
+func TestFetchBaseSnapshotRetainsFetchedCommitAfterTrackingRefChanges(t *testing.T) {
+	_, source, repo := initRemoteRepo(t, "main")
+	initial := gitOutput(t, repo, "rev-parse", "origin/main")
+	advanceRepo(t, source, "upstream.txt", "upstream\n", "advance upstream")
+	upstream := gitOutput(t, source, "rev-parse", "main")
+
+	_, snapshot, err := FetchBaseSnapshot(repo, "main")
+	if err != nil {
+		t.Fatalf("FetchBaseSnapshot: %v", err)
+	}
+	if snapshot != upstream {
+		t.Fatalf("FetchBaseSnapshot commit = %s, want %s", snapshot, upstream)
+	}
+	runGit(t, repo, "update-ref", "refs/remotes/origin/main", initial)
+	if got := gitOutput(t, repo, "rev-parse", "origin/main"); got != initial {
+		t.Fatalf("origin/main = %s, want overwritten %s", got, initial)
+	}
+	reachable, err := CommitReachable(repo, upstream, snapshot)
+	if err != nil || !reachable {
+		t.Fatalf("CommitReachable(snapshot) = (%t, %v), want (true, nil)", reachable, err)
+	}
+}
+
 func TestOriginURLPreservesGitDiagnostic(t *testing.T) {
 	repo := initRepo(t)
 

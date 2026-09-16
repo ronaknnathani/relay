@@ -623,13 +623,26 @@ func DetectDefaultBranchWithError(repo string) (string, error) {
 // Fetch updates origin's remote-tracking ref for branch. It returns sanitized
 // combined output alongside any error so callers can emit useful diagnostics.
 func Fetch(repo, branch string) (string, error) {
+	diagnostic, _, err := FetchBaseSnapshot(repo, branch)
+	return diagnostic, err
+}
+
+// FetchBaseSnapshot updates origin's remote-tracking ref for branch and
+// returns the exact fetched commit for immutable merge evaluation.
+func FetchBaseSnapshot(repo, branch string) (diagnostic, commit string, err error) {
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branch, branch)
 	out, err := boundedCombinedOutput(exec.Command("git", "-C", repo, "fetch", "origin", refspec))
-	diagnostic := SanitizeDiagnostic(string(out))
+	diagnostic = SanitizeDiagnostic(string(out))
 	if err != nil {
-		return diagnostic, fmt.Errorf("git fetch origin %s: %w", branch, err)
+		return diagnostic, "", fmt.Errorf("git fetch origin %s: %w", branch, err)
 	}
-	return diagnostic, nil
+	fetched, err := exec.Command(
+		"git", "-C", repo, "rev-parse", "--verify", "FETCH_HEAD^{commit}",
+	).Output()
+	if err != nil {
+		return diagnostic, "", gitOutputError("git rev-parse --verify FETCH_HEAD^{commit}", err)
+	}
+	return diagnostic, strings.TrimSpace(string(fetched)), nil
 }
 
 const redactedRemoteToken = "[redacted-remote]"

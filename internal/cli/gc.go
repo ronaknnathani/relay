@@ -18,7 +18,13 @@ var (
 
 type gcRefreshKey struct {
 	commonDir string
+	origin    string
 	base      string
+}
+
+type gcRefreshResult struct {
+	baseCommit string
+	err        error
 }
 
 func newCmdGC() *cobra.Command {
@@ -38,7 +44,7 @@ func runGC() error {
 		return err
 	}
 	ownership := loadProjectResourceOwnershipIndex(loadResults)
-	refreshErrors := make(map[gcRefreshKey]error)
+	refreshes := make(map[gcRefreshKey]gcRefreshResult)
 	hadErrors := false
 	for _, loadResult := range loadResults {
 		m := loadResult.Manifest
@@ -76,30 +82,38 @@ func runGC() error {
 		if baseErr != nil {
 			ui.Warn("evaluate project %s in %s: %s", m.Slug, m.Repo, baseErr)
 		}
-		var refreshErr error
+		var refresh gcRefreshResult
 		if base != "" {
 			commonDir, commonDirErr := gitx.CanonicalGitCommonDir(m.Repo)
 			if commonDirErr != nil {
-				refreshErr = fmt.Errorf(
+				refresh.err = fmt.Errorf(
 					"resolve repository %s common directory: %w", m.Repo, commonDirErr,
 				)
-				ui.Warn("refresh repository %s base %s: %s", m.Repo, base, refreshErr)
+				ui.Warn("refresh repository %s base %s: %s", m.Repo, base, refresh.err)
 			} else {
-				key := gcRefreshKey{commonDir: commonDir, base: base}
-				var found bool
-				refreshErr, found = refreshErrors[key]
-				if !found {
-					diagnostic, err := gitx.Fetch(m.Repo, base)
-					refreshErr = err
-					if refreshErr != nil && diagnostic != "" {
-						refreshErr = fmt.Errorf("%w\n%s", refreshErr, diagnostic)
-					}
-					refreshErrors[key] = refreshErr
-					if refreshErr != nil {
-						ui.Warn(
-							"refresh repository %s base %s: %s",
-							m.Repo, base, refreshErr,
-						)
+				origin, originErr := gitx.OriginURL(m.Repo)
+				if originErr != nil {
+					refresh.err = fmt.Errorf(
+						"resolve repository %s effective origin: %w", m.Repo, originErr,
+					)
+					ui.Warn("refresh repository %s base %s: %s", m.Repo, base, refresh.err)
+				} else {
+					key := gcRefreshKey{commonDir: commonDir, origin: origin, base: base}
+					var found bool
+					refresh, found = refreshes[key]
+					if !found {
+						diagnostic, baseCommit, err := gitx.FetchBaseSnapshot(m.Repo, base)
+						refresh = gcRefreshResult{baseCommit: baseCommit, err: err}
+						if refresh.err != nil && diagnostic != "" {
+							refresh.err = fmt.Errorf("%w\n%s", refresh.err, diagnostic)
+						}
+						refreshes[key] = refresh
+						if refresh.err != nil {
+							ui.Warn(
+								"refresh repository %s base %s: %s",
+								m.Repo, base, refresh.err,
+							)
+						}
 					}
 				}
 			}
@@ -110,13 +124,13 @@ func runGC() error {
 			proof  archiveProofSnapshot
 		)
 		var evaluationErr error
-		if base != "" && refreshErr == nil {
+		if base != "" && refresh.err == nil {
 			if m.StartSHA == "" {
 				evaluationErr = fmt.Errorf("project %s has no start_sha", m.Slug)
 			} else {
 				var branchTip string
 				branchTip, merged, evaluationErr = gitx.WorkMergedTip(
-					m.Repo, m.Branch, "refs/remotes/origin/"+base, m.StartSHA,
+					m.Repo, m.Branch, refresh.baseCommit, m.StartSHA,
 				)
 				if merged {
 					proof, evaluationErr = newMergedBranchArchiveProof(
@@ -136,7 +150,7 @@ func runGC() error {
 			}
 		}
 		if !merged {
-			if baseErr != nil || refreshErr != nil {
+			if baseErr != nil || refresh.err != nil {
 				hadErrors = true
 			}
 			for _, err := range []error{evaluationErr, prErr} {
