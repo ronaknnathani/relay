@@ -632,6 +632,11 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			want:  "remote: [redacted]@ghe.example",
 		},
 		{
+			name:  "scheme-less remote with userinfo and slash path",
+			input: "remote: token@host.example/team/repo.git?secret=x#scope",
+			want:  "remote: [redacted]@host.example/team/repo.git",
+		},
+		{
 			name:  "scp path contains at sign",
 			input: "remote: token@host:repo@mirror",
 			want:  "remote: [redacted]@host:repo@mirror",
@@ -665,6 +670,11 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			name:  "nested remote helpers",
 			input: "remote: trace::cache::https://token@git.example.com/team/repo.git?secret=x#fragment",
 			want:  "remote: trace::cache::https://[redacted]@git.example.com/team/repo.git",
+		},
+		{
+			name:  "nested remote helpers wrapping scheme-less URL",
+			input: "remote: trace::cache::token@host.example/team/repo.git?secret=x#fragment",
+			want:  "remote: trace::cache::[redacted]@host.example/team/repo.git",
 		},
 		{
 			name:  "nested remote helper bracketed SCP path",

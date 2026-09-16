@@ -740,7 +740,10 @@ func (s diagnosticURLScanner) remoteHelperURLTokenEnd(start int) (int, bool) {
 	if end, ok := s.schemeURLTokenEnd(addressStart); ok {
 		return end, true
 	}
-	return s.scpStyleURLTokenEnd(addressStart)
+	if end, ok := s.scpStyleURLTokenEnd(addressStart); ok {
+		return end, true
+	}
+	return s.userinfoHostTokenEnd(addressStart)
 }
 
 func remoteHelperAddressStart(output string, start int) (int, bool) {
@@ -857,8 +860,8 @@ func (s diagnosticURLScanner) userinfoHostTokenEnd(start int) (int, bool) {
 	hostStart := userinfoEnd + 1
 	end := scanURLTokenEnd(output, start, hostStart)
 	hostEnd := end
-	if secretStart := strings.IndexAny(output[hostStart:end], "?#"); secretStart >= 0 {
-		hostEnd = hostStart + secretStart
+	if pathStart := strings.IndexAny(output[hostStart:end], "/?#"); pathStart >= 0 {
+		hostEnd = hostStart + pathStart
 	}
 	if hostEnd <= hostStart {
 		return 0, false
@@ -975,7 +978,10 @@ func sanitizeRemoteHelperURL(rawURL string) string {
 	if _, ok := schemeURLTokenEnd(rawURL, addressStart); ok {
 		return rawURL[:addressStart] + sanitizeGitDiagnosticURL(address)
 	}
-	return rawURL[:addressStart] + sanitizeSCPStyleURL(address)
+	if _, ok := scpStyleURLTokenEnd(rawURL, addressStart); ok {
+		return rawURL[:addressStart] + sanitizeSCPStyleURL(address)
+	}
+	return rawURL[:addressStart] + sanitizeUserinfoHost(address)
 }
 
 func sanitizeSCPStyleURL(rawURL string) string {
