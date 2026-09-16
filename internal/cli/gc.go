@@ -17,8 +17,8 @@ var (
 )
 
 type gcRefreshKey struct {
-	repo string
-	base string
+	commonDir string
+	base      string
 }
 
 func newCmdGC() *cobra.Command {
@@ -78,21 +78,29 @@ func runGC() error {
 		}
 		var refreshErr error
 		if base != "" {
-			key := gcRefreshKey{repo: m.Repo, base: base}
-			var found bool
-			refreshErr, found = refreshErrors[key]
-			if !found {
-				diagnostic, err := gitx.Fetch(m.Repo, base)
-				refreshErr = err
-				if refreshErr != nil && diagnostic != "" {
-					refreshErr = fmt.Errorf("%w\n%s", refreshErr, diagnostic)
-				}
-				refreshErrors[key] = refreshErr
-				if refreshErr != nil {
-					ui.Warn(
-						"refresh repository %s base %s: %s",
-						m.Repo, base, refreshErr,
-					)
+			commonDir, commonDirErr := gitx.CanonicalGitCommonDir(m.Repo)
+			if commonDirErr != nil {
+				refreshErr = fmt.Errorf(
+					"resolve repository %s common directory: %w", m.Repo, commonDirErr,
+				)
+				ui.Warn("refresh repository %s base %s: %s", m.Repo, base, refreshErr)
+			} else {
+				key := gcRefreshKey{commonDir: commonDir, base: base}
+				var found bool
+				refreshErr, found = refreshErrors[key]
+				if !found {
+					diagnostic, err := gitx.Fetch(m.Repo, base)
+					refreshErr = err
+					if refreshErr != nil && diagnostic != "" {
+						refreshErr = fmt.Errorf("%w\n%s", refreshErr, diagnostic)
+					}
+					refreshErrors[key] = refreshErr
+					if refreshErr != nil {
+						ui.Warn(
+							"refresh repository %s base %s: %s",
+							m.Repo, base, refreshErr,
+						)
+					}
 				}
 			}
 		}

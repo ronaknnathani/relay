@@ -844,6 +844,90 @@ func TestGCSharedRefreshFailureWarnsOnceAndProtectsStaleRef(t *testing.T) {
 	}
 }
 
+func TestGCLinkedRepositoryPathsShareOneRefresh(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	firstBranch, firstWorktree := addGCProject(t, fixture, "linked-refresh-first")
+	secondBranch, secondWorktree := addGCProject(t, fixture, "linked-refresh-second")
+	mergeGCProjectUpstream(t, fixture, firstBranch)
+	mergeGCProjectUpstream(t, fixture, secondBranch)
+
+	linkedRepo := filepath.Join(t.TempDir(), "linked-repository")
+	runArchiveGit(t, fixture.repo, "worktree", "add", "-q", "--detach", linkedRepo, fixture.startSHA)
+	updateGCManifest(t, "linked-refresh-second", func(manifest *project.Manifest) {
+		manifest.Repo = linkedRepo
+	})
+	fetchCount := installFetchCounter(t, fixture.repo)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if err != nil {
+		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	}
+	if attempts := fetchCount(); attempts != 1 {
+		t.Fatalf("fetch attempts = %d, want 1 across linked repository paths", attempts)
+	}
+	for slug, state := range map[string]struct {
+		repo     string
+		branch   string
+		worktree string
+	}{
+		"linked-refresh-first": {
+			repo: fixture.repo, branch: firstBranch, worktree: firstWorktree,
+		},
+		"linked-refresh-second": {
+			repo: linkedRepo, branch: secondBranch, worktree: secondWorktree,
+		},
+	} {
+		if pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+			pathExists(state.worktree) ||
+			gitx.BranchExists(state.repo, state.branch) {
+			t.Fatalf("GC did not clean %s after the shared refresh", slug)
+		}
+	}
+}
+
+func TestGCIndependentRepositoriesRefreshSeparately(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	first := newGCRepoFixture(t, "main")
+	firstBranch, firstWorktree := addGCProject(t, first, "independent-refresh-first")
+	mergeGCProjectUpstream(t, first, firstBranch)
+	firstFetchCount := installFetchCounter(t, first.repo)
+
+	second := newGCRepoFixture(t, "main")
+	secondBranch, secondWorktree := addGCProject(t, second, "independent-refresh-second")
+	mergeGCProjectUpstream(t, second, secondBranch)
+	secondFetchCount := installFetchCounter(t, second.repo)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if err != nil {
+		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	}
+	if attempts := firstFetchCount(); attempts != 1 {
+		t.Fatalf("first repository fetch attempts = %d, want 1", attempts)
+	}
+	if attempts := secondFetchCount(); attempts != 1 {
+		t.Fatalf("second repository fetch attempts = %d, want 1", attempts)
+	}
+	for slug, state := range map[string]struct {
+		repo     string
+		branch   string
+		worktree string
+	}{
+		"independent-refresh-first": {
+			repo: first.repo, branch: firstBranch, worktree: firstWorktree,
+		},
+		"independent-refresh-second": {
+			repo: second.repo, branch: secondBranch, worktree: secondWorktree,
+		},
+	} {
+		if pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+			pathExists(state.worktree) ||
+			gitx.BranchExists(state.repo, state.branch) {
+			t.Fatalf("GC did not clean %s after its repository refresh", slug)
+		}
+	}
+}
+
 func TestGCFetchWarningRedactsCredentials(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")
