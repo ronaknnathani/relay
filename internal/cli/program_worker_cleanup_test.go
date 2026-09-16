@@ -554,6 +554,63 @@ func TestWorkerCleanupIsIdempotentForAnArchivedChild(t *testing.T) {
 	}
 }
 
+func TestWorkerCleanupRecoversInterruptedChildArchive(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installStubWatcherState(t, manifest.Slug, false)
+
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), manifest.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, manifest.Slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcDir := filepath.Join(project.ActiveDir(), manifest.Slug)
+	dstDir := filepath.Join(project.ArchivedDir(), manifest.Slug)
+	previousRename := archiveRename
+	archiveRename = func(oldPath, newPath string) error {
+		switch {
+		case strings.HasPrefix(filepath.Base(oldPath), ".manifest.archived-") &&
+			newPath == filepath.Join(dstDir, "manifest.json"):
+			return errors.New("injected child manifest install failure")
+		case oldPath == dstDir && newPath == srcDir:
+			return errors.New("injected child directory rollback failure")
+		default:
+			return os.Rename(oldPath, newPath)
+		}
+	}
+	result, archiveErr := archiveProjectWithProof(decision.proof, true)
+	archiveRename = previousRename
+	if archiveErr == nil ||
+		!strings.Contains(archiveErr.Error(), "injected child manifest install failure") ||
+		!strings.Contains(archiveErr.Error(), "injected child directory rollback failure") {
+		t.Fatalf("archiveProjectWithProof error = %v, want interrupted child archive", archiveErr)
+	}
+	if result.ProjectLocation != archiveLocationArchived ||
+		len(stagedArchivedManifestPaths(t, dstDir)) != 1 {
+		t.Fatalf("interrupted archive result = %+v, want one recoverable staged manifest", result)
+	}
+
+	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
+	if err != nil {
+		t.Fatalf("worker cleanup recovery: %v", err)
+	}
+	cleanup := decodeCleanupOutput(t, out)
+	if cleanup.Status != cleanupClean || !cleanup.AlreadyArchived {
+		t.Fatalf("cleanup result = %+v, want recovered clean archive", cleanup)
+	}
+	if pathExists(*manifest.Worktree) || gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("worker cleanup recovery left child resources behind")
+	}
+	if staged := stagedArchivedManifestPaths(t, dstDir); len(staged) != 0 {
+		t.Fatalf("staged manifests = %v, want none after worker recovery", staged)
+	}
+}
+
 func TestWorkerCleanupRetryUsesPersistedForceAuthorization(t *testing.T) {
 	p, item, manifest := createCleanupFixture(t)
 	client := &fakeHerdrClient{}

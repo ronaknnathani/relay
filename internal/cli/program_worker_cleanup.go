@@ -347,7 +347,12 @@ func loadProgramCleanupTarget(
 			"cleanup %s/%s: child project %q: %w", p.Slug, itemID, item.ProjectSlug, err,
 		)
 	}
-	manifest, err := project.Load(manifestPath)
+	var manifest project.Manifest
+	if archived {
+		manifest, err = loadRecoverableArchivedCleanupManifest(item.ProjectSlug)
+	} else {
+		manifest, err = project.Load(manifestPath)
+	}
 	if err != nil {
 		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, err
 	}
