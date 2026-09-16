@@ -171,12 +171,12 @@ function withDeferredUI(action) {
   loadFullSnapshot();
   loadDeferredUI()
     .then(loadFullSnapshot)
+    .catch(() => false)
     .then((snapshotReady) => {
       if (snapshotReady) {
         action();
       }
-    })
-    .catch(() => {});
+    });
 }
 
 function loadFullSnapshot() {

@@ -171,6 +171,67 @@ func TestBrowserHydratesAndPollsWhenDeferredBundleFails(t *testing.T) {
 	}
 }
 
+func TestBrowserDeferredActionExceptionsSurfaceAndRecover(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	snapshot := browserTestSnapshot()
+	snapshot.Warnings = []string{"fixture warning"}
+	url := startBrowserTestFeedHandler(t, snapshot)
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+
+	if err := chromedp.Run(browser,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(`
+				window.__relayActionRejections = [];
+				window.addEventListener("unhandledrejection", (event) => {
+					window.__relayActionRejections.push(String(event.reason));
+				});
+			`).Do(ctx)
+			return err
+		}),
+		chromedp.Navigate(url),
+		chromedp.Poll(`!document.querySelector("#warning-count").hidden`, nil),
+		chromedp.Evaluate(`document.querySelector('[data-tab="goal"]').click()`, nil),
+		chromedp.Poll(`Boolean(document.querySelector("#diagnostics"))`, nil),
+		chromedp.Evaluate(`
+			dom.diagnostics.scrollIntoView = () => {
+				throw new TypeError("deferred warning action failed");
+			};
+			document.querySelector("#warning-count").click();
+		`, nil),
+		chromedp.Poll(`window.__relayActionRejections.some((message) =>
+			message.includes("deferred warning action failed"))`, nil),
+		chromedp.Evaluate(`
+			delete dom.diagnostics.scrollIntoView;
+			dom.diagnostics.open = false;
+			document.querySelector("#warning-count").click();
+		`, nil),
+		chromedp.Poll(`dom.diagnostics.open === true`, nil),
+	); err != nil {
+		var diagnostic string
+		_ = chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+			rejections: window.__relayActionRejections,
+			diagnosticsOpen: dom.diagnostics?.open,
+			tab: state.tab
+		})`, &diagnostic))
+		t.Fatalf("deferred action exception telemetry and recovery: %v: %s", err, diagnostic)
+	}
+}
+
 func TestBrowserDeepLinkedDeferredTabsWaitForAssetsAndRecover(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
