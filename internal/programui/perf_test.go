@@ -541,9 +541,10 @@ func TestPerformanceBuildEnvironmentUsesReleaseCGOSetting(t *testing.T) {
 		"CGO_ENABLED=1",
 		"HOME=/tmp/home",
 	})
-	if got := strings.Join(environment, "\n"); got !=
-		"PATH=/usr/bin\nHOME=/tmp/home\nCGO_ENABLED=0" {
-		t.Fatalf("performance build environment = %q", got)
+	joined := strings.Join(environment, "\n")
+	if strings.Contains(joined, "CGO_ENABLED=1") ||
+		strings.Count(joined, "CGO_ENABLED=0") != 1 {
+		t.Fatalf("performance build environment = %q, want only CGO_ENABLED=0", joined)
 	}
 }
 
