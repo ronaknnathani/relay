@@ -157,6 +157,60 @@ func TestRouteBasePinsRemoteTipAndDetectsDrift(t *testing.T) {
 	}
 }
 
+func TestRouteClassifyDoesNotRebindRemoteBaseAcrossUnrelatedHistory(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	gitOutput(t, repo, "checkout", "-q", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", "feature.txt")
+	gitOutput(t, repo, "commit", "-q", "-m", "feature")
+	saveDeliveryProject(t, "demo", repo)
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRoute(t, "base", "demo", "--base", "main"); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := project.ManifestPath(project.ActiveDir(), "demo")
+	before, err := project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := gitRevParse(t, repo, "main^{tree}")
+	unrelated := strings.TrimSpace(gitOutput(
+		t, repo, "commit-tree", tree, "-m", "unrelated remote history",
+	))
+	gitOutput(t, repo, "push", "-q", "--force", "origin", unrelated+":refs/heads/main")
+
+	if _, err := runRoute(t, "classify", "demo",
+		"--requested-behavior-explicit", "--no-repository-gates",
+		"--risk-assessment-complete", "--predicted-size-known",
+		"--predicted-files", "1", "--predicted-lines", "20",
+	); err != nil {
+		t.Fatal(err)
+	}
+	after, err := project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RemoteBaseSHA != before.RemoteBaseSHA || after.RemoteBaseSHA == unrelated {
+		t.Fatalf("automatic rebind replaced intended base identity: before=%+v after=%+v", before, after)
+	}
+	got, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Route.Snapshot.BaseTipSHA != before.RemoteBaseSHA {
+		t.Fatalf("route followed unrelated remote history: %+v", got.Route.Snapshot)
+	}
+}
+
 func TestRouteClassifySupportsLocalBranchAndCommitBases(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -180,6 +234,9 @@ func TestRouteClassifySupportsLocalBranchAndCommitBases(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			repo := initCLIGitRepo(t)
+			if test.name == "local branch" {
+				gitOutput(t, repo, "push", "-q", "origin", "main:refs/heads/stack/parent")
+			}
 			gitOutput(t, repo, "checkout", "-q", "-b", "stack/parent")
 			if err := os.WriteFile(filepath.Join(repo, "parent.txt"), []byte("parent\n"), 0o644); err != nil {
 				t.Fatal(err)

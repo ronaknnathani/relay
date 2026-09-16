@@ -211,6 +211,43 @@ func TestRunNewWithHEADBaseDoesNotCreateRemoteBaseBinding(t *testing.T) {
 	}
 }
 
+func TestRunNewExplicitLocalBaseIsNotReplacedByStaleSameNameRemote(t *testing.T) {
+	repo := initCLIGitRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(repo)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/", DefaultAgent: "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mainSHA := gitRevParse(t, repo, "main")
+	gitOutput(t, repo, "push", "-q", "origin", mainSHA+":refs/heads/stack/parent")
+	gitOutput(t, repo, "checkout", "-q", "-b", "stack/parent")
+	if err := os.WriteFile(filepath.Join(repo, "parent.txt"), []byte("parent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", "parent.txt")
+	gitOutput(t, repo, "commit", "-q", "-m", "parent")
+	localParent := gitRevParse(t, repo, "stack/parent")
+
+	if err := runNew(newOpts{
+		task: "child task", name: "child", base: "stack/parent", noLaunch: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), "child"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.StartSHA != localParent || manifest.RemoteBaseSHA != "" {
+		t.Fatalf("explicit local base was replaced by stale remote: %+v", manifest)
+	}
+	if got := gitRevParse(t, *manifest.Worktree, "HEAD"); got != localParent {
+		t.Fatalf("child worktree HEAD = %q, want local parent %q", got, localParent)
+	}
+}
+
 func TestRunNewPersistsForcedFullDeliveryMode(t *testing.T) {
 	repo := newTestRepo(t)
 	t.Setenv("HOME", t.TempDir())

@@ -221,13 +221,13 @@ func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResu
 	}
 
 	startPoint := baseBranch
-	if gitx.HasOrigin(repoRoot) && gitx.ValidBranchName(repoRoot, baseBranch) {
+	if !explicitBase && gitx.HasOrigin(repoRoot) && gitx.ValidBranchName(repoRoot, baseBranch) {
 		if out, err := gitx.Fetch(repoRoot, baseBranch); err != nil {
-			if !explicitBase {
-				ui.Warn("%s\n%s", err, out)
-			}
+			ui.Warn("%s\n%s", err, out)
 		}
-		if gitx.RevParse(repoRoot, "origin/"+baseBranch) != "" {
+		remoteRef := "origin/" + baseBranch
+		if gitx.RevParse(repoRoot, remoteRef) != "" &&
+			gitx.IsBranchReachable(repoRoot, startPoint, remoteRef) {
 			startPoint = "origin/" + baseBranch
 		}
 	}
@@ -270,7 +270,7 @@ func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResu
 		PhasesCompleted: []string{"init"},
 		PhasesRemaining: project.AllPhases,
 	}
-	if baseBranch != "" && baseBranch != "HEAD" &&
+	if !explicitBase && baseBranch != "" && baseBranch != "HEAD" &&
 		!strings.HasPrefix(baseBranch, "refs/") &&
 		!strings.HasPrefix(baseBranch, "origin/") &&
 		gitx.ValidBranchName(repoRoot, baseBranch) &&

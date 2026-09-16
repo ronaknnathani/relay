@@ -76,7 +76,7 @@ func newCmdRouteAdvance() *cobra.Command {
 			if err := consumeStackAdvanceCapability(&state, advanceToken); err != nil {
 				return err
 			}
-			if _, err := bindRemoteBase(args[0], base, "", true); err != nil {
+			if _, err := bindRemoteBase(args[0], base, "", true, false); err != nil {
 				return err
 			}
 			snapshot, err := projectSnapshot(args[0])
@@ -123,7 +123,7 @@ func newCmdRouteBase() *cobra.Command {
 			if err := validateCoordinatorToken(state, coordinatorToken); err != nil {
 				return err
 			}
-			result, err := bindRemoteBase(args[0], base, baseSHA, baseSHA == "")
+			result, err := bindRemoteBase(args[0], base, baseSHA, baseSHA == "", false)
 			if err != nil {
 				return err
 			}
@@ -490,7 +490,7 @@ func refreshRemoteBaseBinding(slug string, state project.WorkflowState) error {
 		gitx.RevParse(*manifest.Worktree, "origin/"+manifest.BaseBranch) == "" {
 		return nil
 	}
-	_, err = bindRemoteBase(slug, manifest.BaseBranch, "", false)
+	_, err = bindRemoteBase(slug, manifest.BaseBranch, "", false, true)
 	return err
 }
 
@@ -499,6 +499,7 @@ func bindRemoteBase(
 	base string,
 	requestedSHA string,
 	updateStartSHA bool,
+	preserveBaseIdentity bool,
 ) (routeBaseOutput, error) {
 	manifestPath, err := project.FindActive(slug)
 	if err != nil {
@@ -532,6 +533,19 @@ func bindRemoteBase(
 	startSHA := gitx.RevParse(*manifest.Worktree, remoteRef)
 	if startSHA == "" {
 		return routeBaseOutput{}, fmt.Errorf("resolve remote base %q for project %q", base, slug)
+	}
+	if preserveBaseIdentity {
+		identity := manifest.RemoteBaseSHA
+		if identity == "" {
+			identity = manifest.StartSHA
+		}
+		if identity == "" || !gitx.IsBranchReachable(*manifest.Worktree, identity, remoteRef) {
+			return routeBaseOutput{
+				BaseBranch:    manifest.BaseBranch,
+				StartSHA:      manifest.StartSHA,
+				RemoteBaseSHA: manifest.RemoteBaseSHA,
+			}, nil
+		}
 	}
 	requestedSHA = strings.TrimSpace(requestedSHA)
 	if requestedSHA != "" {
