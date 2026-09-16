@@ -2,7 +2,6 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -101,7 +100,7 @@ func runDetail(slug string, jsonOutput bool) error {
 	if err != nil {
 		return err
 	}
-	m, err := project.LoadEffective(path)
+	m, state, err := project.LoadEffectiveProject(path)
 	if err != nil {
 		return err
 	}
@@ -138,11 +137,7 @@ func runDetail(slug string, jsonOutput bool) error {
 	if m.Archived != nil {
 		ui.PrintField("Archived", *m.Archived)
 	}
-	state, stateErr := project.LoadState(filepath.Join(filepath.Dir(path), "state.json"))
-	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
-		return stateErr
-	}
-	if stateErr == nil {
+	if state != nil {
 		if state.Route != nil {
 			ui.PrintField("Route", state.Route.Class)
 			ui.PrintField("Subagents", fmt.Sprintf("%d", state.SubagentCount))

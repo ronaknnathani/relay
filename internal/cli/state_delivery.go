@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -195,6 +196,50 @@ func newCmdStateWorker() *cobra.Command {
 		},
 	}
 	command.Flags().StringVar(&task, "task", "", "subagent purpose")
+	command.Flags().StringVar(
+		&coordinatorToken, "coordinator-token", "",
+		"trusted coordinator capability returned by adaptive state initialization",
+	)
+	return command
+}
+
+func newCmdStateGrant() *cobra.Command {
+	var coordinatorToken string
+	command := &cobra.Command{
+		Use:   "grant <slug> stack-advance",
+		Short: "Issue a one-time scoped workflow capability",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if args[1] != "stack-advance" {
+				return fmt.Errorf("unknown capability %q (want stack-advance)", args[1])
+			}
+			state, statePath, err := loadStateAt(args[0])
+			if err != nil {
+				return err
+			}
+			if err := validateCoordinatorToken(state, coordinatorToken); err != nil {
+				return err
+			}
+			if !state.UsesAdaptiveDelivery() || state.Route == nil {
+				return fmt.Errorf("stack advance capability requires an adaptive routed project")
+			}
+			if state.PR.Number <= 0 || state.Phases["open-pr"].Status != project.PhaseDone {
+				return fmt.Errorf("stack advance capability requires a completed open-pr phase")
+			}
+			token, err := randomToken(32)
+			if err != nil {
+				return fmt.Errorf("generate stack advance capability: %w", err)
+			}
+			sum := sha256.Sum256([]byte(token))
+			state.StackAdvanceHash = fmt.Sprintf("%x", sum)
+			if err := project.SaveState(statePath, state); err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(struct {
+				Capability string `json:"capability"`
+			}{Capability: token})
+		},
+	}
 	command.Flags().StringVar(
 		&coordinatorToken, "coordinator-token", "",
 		"trusted coordinator capability returned by adaptive state initialization",
@@ -650,6 +695,24 @@ func validateCoordinatorToken(state project.WorkflowState, token string) error {
 	if subtle.ConstantTimeCompare(sum[:], expected) != 1 {
 		return fmt.Errorf("invalid coordinator capability")
 	}
+	return removeConsumedCoordinatorHandoff(state.Slug, token)
+}
+
+func removeConsumedCoordinatorHandoff(slug, token string) error {
+	path := filepath.Join(project.ActiveDir(), slug, ".coordinator-capability")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read coordinator capability handoff %s: %w", path, err)
+	}
+	if strings.TrimSpace(string(data)) != token {
+		return nil
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove consumed coordinator capability handoff %s: %w", path, err)
+	}
 	return nil
 }
 
@@ -760,34 +823,5 @@ func projectSnapshot(slug string) (project.RepositorySnapshot, error) {
 	if err != nil {
 		return project.RepositorySnapshot{}, err
 	}
-	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {
-		return project.RepositorySnapshot{}, fmt.Errorf("project %q has no worktree", slug)
-	}
-	inputRevision, err := project.ProjectInputRevision(filepath.Dir(path))
-	if err != nil {
-		return project.RepositorySnapshot{}, fmt.Errorf("snapshot project %q inputs: %w", slug, err)
-	}
-	base := gitx.SnapshotBaseRef(*manifest.Worktree, manifest.BaseBranch, manifest.StartSHA)
-	if manifest.RemoteBaseSHA != "" {
-		if manifest.BaseBranch == "" || manifest.BaseBranch == "HEAD" ||
-			strings.HasPrefix(manifest.BaseBranch, "refs/") ||
-			strings.HasPrefix(manifest.BaseBranch, "origin/") ||
-			!gitx.ValidBranchName(*manifest.Worktree, manifest.BaseBranch) {
-			return project.RepositorySnapshot{}, fmt.Errorf(
-				"project %q has invalid remote base branch %q", slug, manifest.BaseBranch,
-			)
-		}
-		base = manifest.RemoteBaseSHA
-	}
-	snapshot, err := gitx.Snapshot(*manifest.Worktree, base)
-	if err != nil {
-		return project.RepositorySnapshot{}, fmt.Errorf("snapshot project %q: %w", slug, err)
-	}
-	return project.RepositorySnapshot{
-		BaseRef: manifest.BaseBranch,
-		BaseSHA: snapshot.BaseSHA, BaseTipSHA: snapshot.BaseTipSHA,
-		HeadSHA: snapshot.HeadSHA, Fingerprint: snapshot.Fingerprint,
-		InputRevision: inputRevision,
-		FileCount:     snapshot.FileCount, ChangedLines: snapshot.ChangedLines,
-	}, nil
+	return project.RepositorySnapshotForManifest(manifest, filepath.Dir(path))
 }

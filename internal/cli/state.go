@@ -55,6 +55,7 @@ func newCmdState() *cobra.Command {
 		newCmdStateSet(),
 		newCmdStateDispatch(),
 		newCmdStateWorker(),
+		newCmdStateGrant(),
 		newCmdStateFinish(),
 		newCmdStateEvidence(),
 		newCmdStateAdvance(),

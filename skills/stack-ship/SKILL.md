@@ -33,7 +33,9 @@ relay "<child intent and acceptance criteria>" \
 
 Relay creates and records the child branch, worktree, manifest, parent base, and start SHA. Then
 launch an adaptive `deliver-pr` worker in the manifest's worktree with that child slug, intent,
-exclusions, and acceptance criteria. The child owns its route, evidence, commits, and PR;
+exclusions, acceptance criteria, and an explicit instruction that it is a stack child. The child owns
+its route, evidence, commits, and PR, then returns the one-time `stack-advance` capability issued by
+`relay state grant <child-project-slug> stack-advance --coordinator-token <child-token>`;
 this stack orchestrator owns topology, parent/base updates, front advancement, and stack state.
 Do not create an arbitrary worktree first or copy child phase procedures here.
 
@@ -63,9 +65,8 @@ After the front merges:
    `<merged-parent-tip>` is the merged parent branch's pre-merge tip; never substitute a plain
    `git rebase`;
 3. push the next branch with `--force-with-lease` and retarget its PR to `<default-branch>`;
-4. have the trusted child coordinator run
-   `relay route base <next-project-slug> --base <default-branch> --coordinator-token <token>` and
-   `relay route refresh <next-project-slug> --coordinator-token <token>`;
+4. consume the child's returned one-time capability with
+   `relay route advance <next-project-slug> --base <default-branch> --advance-token <token>`;
 5. verify descendant base refs and intended diffs did not collapse;
 6. cascade the new parent tip through descendants with `git rebase --onto` and
    `--force-with-lease`;

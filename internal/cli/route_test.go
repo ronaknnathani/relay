@@ -157,6 +157,150 @@ func TestRouteBasePinsRemoteTipAndDetectsDrift(t *testing.T) {
 	}
 }
 
+func TestRouteClassifySupportsLocalBranchAndCommitBases(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		base func(t *testing.T, repo string) string
+	}{
+		{
+			name: "local branch",
+			base: func(t *testing.T, repo string) string {
+				t.Helper()
+				return "stack/parent"
+			},
+		},
+		{
+			name: "commit SHA",
+			base: func(t *testing.T, repo string) string {
+				t.Helper()
+				return gitRevParse(t, repo, "stack/parent")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			repo := initCLIGitRepo(t)
+			gitOutput(t, repo, "checkout", "-q", "-b", "stack/parent")
+			if err := os.WriteFile(filepath.Join(repo, "parent.txt"), []byte("parent\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitOutput(t, repo, "add", "parent.txt")
+			gitOutput(t, repo, "commit", "-q", "-m", "parent")
+			base := test.base(t, repo)
+			gitOutput(t, repo, "checkout", "-q", "-b", "feature")
+			saveDeliveryProject(t, "demo", repo)
+			manifestPath := project.ManifestPath(project.ActiveDir(), "demo")
+			manifest, err := project.Load(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest.Branch = "feature"
+			manifest.BaseBranch = base
+			manifest.StartSHA = gitRevParse(t, repo, "stack/parent")
+			manifest.RemoteBaseSHA = ""
+			if err := project.Save(manifestPath, manifest); err != nil {
+				t.Fatal(err)
+			}
+			state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runRoute(t,
+				"classify", "demo", "--requested-behavior-explicit",
+				"--no-repository-gates", "--risk-assessment-complete",
+				"--predicted-size-known", "--predicted-files", "1", "--predicted-lines", "20",
+			); err != nil {
+				t.Fatalf("classify with %s base %q: %v", test.name, base, err)
+			}
+			manifest, err = project.Load(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if manifest.RemoteBaseSHA != "" {
+				t.Fatalf("local base %q was incorrectly remote-bound to %q", base, manifest.RemoteBaseSHA)
+			}
+		})
+	}
+}
+
+func TestRouteAdvanceUsesOneTimeScopedCapabilityAfterChildExit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	baseSHA := gitRevParse(t, repo, "origin/main")
+	gitOutput(t, repo, "checkout", "-q", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", "feature.txt")
+	gitOutput(t, repo, "commit", "-q", "-m", "feature")
+	saveDeliveryProject(t, "demo", repo)
+
+	state := openPRReadyState(t, "demo")
+	state.Phases["open-pr"] = project.PhaseState{
+		Status: project.PhaseDone, CompletedDispatchID: "open-pr-dispatch",
+	}
+	state.PR = project.PRRef{Number: 42, URL: "https://github.com/example/test/pull/42"}
+	state.FinalResult = &project.FinalResult{
+		Status: "opened", PRNumber: 42, PRURL: state.PR.URL,
+		RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
+		Snapshot: state.Route.Snapshot, DispatchID: "open-pr-dispatch",
+	}
+	state.DispatchCount = 1
+	state.LastDispatch = "open-pr"
+	state.LastDispatchID = "open-pr-dispatch"
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	ensureTestCoordinator(t, "demo")
+	out, err := runState(t, "grant", "demo", "stack-advance")
+	if err != nil {
+		t.Fatalf("grant stack advance capability: %v", err)
+	}
+	var grant struct {
+		Capability string `json:"capability"`
+	}
+	if err := json.Unmarshal([]byte(out), &grant); err != nil {
+		t.Fatal(err)
+	}
+	if grant.Capability == "" {
+		t.Fatal("stack advance grant returned an empty capability")
+	}
+
+	tree := gitRevParse(t, repo, baseSHA+"^{tree}")
+	moved := strings.TrimSpace(gitOutput(
+		t, repo, "commit-tree", tree, "-p", baseSHA, "-m", "remote moved",
+	))
+	gitOutput(t, repo, "push", "-q", "origin", moved+":refs/heads/main")
+	if _, err := runRouteRaw(
+		t, "advance", "demo", "--base", "main", "--advance-token", grant.Capability,
+	); err != nil {
+		t.Fatalf("advance stack front: %v", err)
+	}
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), "demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.RemoteBaseSHA != moved || manifest.StartSHA != moved ||
+		got.Route.Snapshot.BaseTipSHA != moved {
+		t.Fatalf("advanced base manifest=%+v route=%+v", manifest, got.Route.Snapshot)
+	}
+	if got.StackAdvanceHash != "" {
+		t.Fatal("stack advance capability was not consumed")
+	}
+	if _, err := runRouteRaw(
+		t, "advance", "demo", "--base", "main", "--advance-token", grant.Capability,
+	); err == nil || !strings.Contains(err.Error(), "missing or already used") {
+		t.Fatalf("reused stack advance capability error = %v", err)
+	}
+}
+
 func TestRouteClassifyPersistsEasyDecision(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := initCLIGitRepo(t)
@@ -302,6 +446,111 @@ func TestRouteReclassifyRebindsImplementationAndKeepsEasyDeliveryAtTwoDispatches
 	dispatches, handoffs := got.DeliveryMetrics()
 	if dispatches != 1 || handoffs != 0 {
 		t.Fatalf("easy delivery metrics = dispatches:%d handoffs:%d", dispatches, handoffs)
+	}
+}
+
+func TestRouteClassifyLetsImplementWorkerReassessAndFinishEasyRoute(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	classify := []string{
+		"classify", "demo", "--requested-behavior-explicit",
+		"--no-repository-gates", "--risk-assessment-complete",
+		"--predicted-size-known", "--predicted-files", "1", "--predicted-lines", "20",
+	}
+	if _, err := runRoute(t, classify...); err != nil {
+		t.Fatal(err)
+	}
+	routeToken := dispatchPhase(t, "demo", "route")
+	finishPhase(t, "demo", "route", routeToken, "done", "--outcome", "material")
+	implementToken := dispatchPhase(t, "demo", "implement")
+	dispatch := testDispatchTokens[implementToken]
+	if err := os.WriteFile(filepath.Join(repo, "changed.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workerClassify := append(append([]string(nil), classify...),
+		"--dispatch-token", dispatch.RouteToken)
+	if _, err := runRouteRaw(t, workerClassify...); err != nil {
+		t.Fatalf("worker reassessment: %v", err)
+	}
+	if _, err := runState(t, "evidence", "record", "demo", "review",
+		"--result", "passed", "--role", "code-reviewer",
+		"--dispatch-token", dispatch.ReviewToken); err != nil {
+		t.Fatalf("record worker review evidence: %v", err)
+	}
+	if _, err := runState(t, "evidence", "record", "demo", "validation",
+		"--result", "passed", "--no-gates",
+		"--dispatch-token", dispatch.ValidationToken); err != nil {
+		t.Fatalf("record worker validation evidence: %v", err)
+	}
+	finishPhase(t, "demo", "implement", implementToken, "done", "--outcome", "material")
+}
+
+func TestRouteRefreshPreservesCompatibleStandardWorkerDispatch(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		phase         string
+		classifyFlags []string
+	}{
+		{name: "implement", phase: "implement"},
+		{name: "simplify", phase: "simplify", classifyFlags: []string{"--simplify"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			repo := initCLIGitRepo(t)
+			saveDeliveryProject(t, "demo", repo)
+			state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+				t.Fatal(err)
+			}
+			classify := []string{
+				"classify", "demo", "--requested-behavior-explicit", "--unresolved-decision",
+				"--no-repository-gates", "--risk-assessment-complete",
+				"--predicted-size-known", "--predicted-files", "1", "--predicted-lines", "20",
+			}
+			classify = append(classify, test.classifyFlags...)
+			if _, err := runRoute(t, classify...); err != nil {
+				t.Fatal(err)
+			}
+			state, err = project.LoadState(project.StatePath("demo"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepareAdaptivePhase(&state, test.phase)
+			if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+				t.Fatal(err)
+			}
+			token := dispatchPhase(t, "demo", test.phase)
+			dispatch := testDispatchTokens[token]
+			if err := os.WriteFile(filepath.Join(repo, "changed.txt"), []byte("changed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runRouteRaw(
+				t, "refresh", "demo", "--dispatch-token", dispatch.RouteToken,
+			); err != nil {
+				t.Fatalf("worker refresh: %v", err)
+			}
+			got, err := project.LoadState(project.StatePath("demo"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Phases[test.phase].Status != project.PhaseInProgress ||
+				got.Phases[test.phase].Dispatch == nil ||
+				got.Phases[test.phase].Dispatch.RouteRevision != got.Route.Revision {
+				t.Fatalf("compatible worker dispatch was not rebound: %+v", got.Phases[test.phase])
+			}
+			finishPhase(t, "demo", test.phase, token, "done", "--outcome", "material")
+		})
 	}
 }
 

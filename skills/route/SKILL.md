@@ -45,8 +45,10 @@ relay route classify "$SLUG" \
 ```
 
 Coordinator-authenticated classification and refresh fetch and pin the current `origin/<base>` SHA
-before snapshotting. A pending PR is the exception: preserve its already verified creation-time base
-pin. `relay route base "$SLUG" --base <branch> --sha <pr-base-sha>
+before snapshotting when the manifest base is a known remote branch. A valid local-only branch or
+commit SHA remains a local snapshot base and is not incorrectly fetched as an origin branch. It must
+later be rebound to a real remote PR base before `open-pr` dispatch. A pending PR is the exception:
+preserve its already verified creation-time base pin. `relay route base "$SLUG" --base <branch> --sha <pr-base-sha>
 --coordinator-token "$COORDINATOR_TOKEN"` may pin that exact SHA only when Git proves it is a commit
 contained by the intended remote base branch; arbitrary refs, `HEAD`, feature branches, and unrelated
 commits are rejected.
@@ -93,9 +95,11 @@ boundary was discovered after initial classification. Never convert a stack-cand
 `stack-ship`; report the recommendation and continue with the conservative single-PR route unless
 the caller explicitly chose stack ownership.
 
-When the active worker, rather than the coordinator, must refresh or escalate after its own mutation,
-use that dispatch's one-time `route_token` as `--dispatch-token`; never pass the reusable coordinator
-capability to a worker.
+When the active worker, rather than the coordinator, must classify, refresh, or escalate after its own
+mutation, use that dispatch's one-time `route_token` as `--dispatch-token`; never pass the reusable
+coordinator capability to a worker. Relay preserves the active dispatch only when the route class,
+selected phases, review/validation owners, gate policy, risks, and task inputs remain compatible.
+Otherwise the coordinator must redispatch the newly current phase.
 
 ## Return
 

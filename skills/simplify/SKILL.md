@@ -35,7 +35,9 @@ possible behavior correction belongs to implementation/review, not this phase.
 4. Run targeted checks covering each mutation. Do not rerun an unconditional baseline or full suite;
    final gates belong to the route's validation owner.
 5. On an adaptive project, run `relay route refresh "$SLUG" --dispatch-token "$ROUTE_TOKEN"` after
-   the final mutation. The new snapshot automatically makes
+   the final mutation. Relay preserves this worker's dispatch when the route contract remains
+   compatible, so the original finish token remains valid. If the route class, selected phases, or
+   evidence owners change, stop for coordinator redispatch. The new snapshot automatically makes
    prior review or validation evidence stale.
 6. Return changed files, the removed complexity, targeted checks, material/no-op outcome, and any
    behavior uncertainty. A no-op is valid when inspection confirms the trigger no longer applies.

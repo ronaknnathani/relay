@@ -54,12 +54,16 @@ did.
 9. **Commit before final evidence.** Finish the green slice commits first. Evidence recorded before a
    commit or any other mutation is stale by definition.
 10. **Reassess after the final mutation (adaptive only).** Content changes invalidate the prior risk
-    assessment and gate policy. Re-run the route skill against the exact final snapshot. A plain
-    `relay route refresh "$SLUG" --dispatch-token "$ROUTE_TOKEN"` without that reassessment
+    assessment and gate policy. Re-run the route skill against the exact final snapshot, passing the
+    worker's one-time route capability to `relay route classify` as
+    `--dispatch-token "$ROUTE_TOKEN"` instead of impersonating the coordinator. A plain
+    `relay route refresh "$SLUG" --dispatch-token "$ROUTE_TOKEN"` without a full reassessment
     conservatively leaves the easy path. When
     the reassessment keeps the same easy execution contract, Relay rebinds the active implementation
-    dispatch to the new route revision, so keep using the original dispatch token below. If the route
-    escalates or changes owners, stop and let the coordinator dispatch the newly selected phase.
+    dispatch to the new route revision, so keep using the original finish and evidence tokens below.
+    Compatible standard and high-risk refreshes likewise preserve the active worker dispatch. If the
+    route class, selected phases, or evidence owners change, stop and let the coordinator redispatch
+    the newly selected phase.
 11. **Honor review and validation ownership.**
     - On an unforced easy route, inspect the exact final diff yourself without a separate review worker. Cover
       the mandatory review axes: correctness, acceptance-criteria compliance, scope/minimality, and

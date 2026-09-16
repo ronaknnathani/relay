@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -51,8 +53,52 @@ func newCmdRoute() *cobra.Command {
 	}
 	command.AddCommand(
 		newCmdRouteSnapshot(), newCmdRouteClassify(), newCmdRouteRefresh(), newCmdRouteEscalate(),
-		newCmdRouteBase(),
+		newCmdRouteBase(), newCmdRouteAdvance(),
 	)
+	return command
+}
+
+func newCmdRouteAdvance() *cobra.Command {
+	var base, advanceToken string
+	command := &cobra.Command{
+		Use:   "advance <slug>",
+		Short: "Rebind and refresh a stacked project with a one-time capability",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			base = strings.TrimSpace(base)
+			if base == "" {
+				return fmt.Errorf("route advance requires --base <remote-branch>")
+			}
+			state, statePath, err := loadStateAt(args[0])
+			if err != nil {
+				return err
+			}
+			if err := consumeStackAdvanceCapability(&state, advanceToken); err != nil {
+				return err
+			}
+			if _, err := bindRemoteBase(args[0], base, "", true); err != nil {
+				return err
+			}
+			snapshot, err := projectSnapshot(args[0])
+			if err != nil {
+				return err
+			}
+			decision, err := refreshRouteState(&state, snapshot)
+			if err != nil {
+				return err
+			}
+			if err := project.SaveState(statePath, state); err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(decision)
+		},
+	}
+	command.Flags().StringVar(&base, "base", "", "new remote base branch")
+	command.Flags().StringVar(
+		&advanceToken, "advance-token", "",
+		"one-time stack advance capability issued by the child coordinator",
+	)
+	_ = command.MarkFlagRequired("advance-token")
 	return command
 }
 
@@ -113,7 +159,7 @@ func newCmdRouteSnapshot() *cobra.Command {
 
 func newCmdRouteClassify() *cobra.Command {
 	var flags routeFlags
-	var coordinatorToken string
+	var coordinatorToken, dispatchToken string
 	command := &cobra.Command{
 		Use:   "classify <slug>",
 		Short: "Classify normalized task facts and persist the route",
@@ -123,11 +169,13 @@ func newCmdRouteClassify() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := validateCoordinatorToken(state, coordinatorToken); err != nil {
+			if err := authorizeRouteUpdate(&state, coordinatorToken, dispatchToken); err != nil {
 				return err
 			}
-			if err := refreshRemoteBaseBinding(args[0], state); err != nil {
-				return err
+			if coordinatorToken != "" {
+				if err := refreshRemoteBaseBinding(args[0], state); err != nil {
+					return err
+				}
 			}
 			snapshot, err := projectSnapshot(args[0])
 			if err != nil {
@@ -171,6 +219,10 @@ func newCmdRouteClassify() *cobra.Command {
 	command.Flags().StringVar(
 		&coordinatorToken, "coordinator-token", "",
 		"trusted coordinator capability returned by adaptive state initialization",
+	)
+	command.Flags().StringVar(
+		&dispatchToken, "dispatch-token", "",
+		"one-time route-update capability returned by state dispatch",
 	)
 	return command
 }
@@ -221,50 +273,9 @@ func newCmdRouteRefresh() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			facts := project.NormalizeRiskAssessment(state.Route.Facts, snapshot.Revision())
-			facts.ActualFileCount = snapshot.FileCount
-			facts.ActualChangedLines = snapshot.ChangedLines
-			staleEasyEvidence := easyEvidenceIsStale(state, snapshot)
-			decision, err := deliveryroute.Classify(facts)
+			decision, err := refreshRouteState(&state, snapshot)
 			if err != nil {
 				return err
-			}
-			reason := ""
-			if project.RouteRank(decision.Class) != project.RouteRank(state.Route.Class) {
-				reason = "current repository facts require a more conservative route"
-			}
-			decision, err = deliveryroute.PreserveMonotonic(
-				*state.Route, decision, reason,
-			)
-			if err != nil {
-				return err
-			}
-			if staleEasyEvidence {
-				target := decision.Class
-				if project.RouteRank(target) < project.RouteRank(project.RouteStandard) {
-					target = project.RouteStandard
-				}
-				decision, err = deliveryroute.Escalate(
-					decision, target, "snapshot-bound easy-route evidence became stale", "",
-				)
-				if err != nil {
-					return err
-				}
-			}
-			decision.Snapshot = snapshot
-			if err := state.ApplyRoute(decision); err != nil {
-				return err
-			}
-			if staleEasyEvidence {
-				for _, phase := range []string{"review", "validate"} {
-					if err := state.SetPhaseWithDelivery(
-						phase, project.PhaseEscalated,
-						"snapshot-bound easy-route evidence became stale",
-						"", "", "", "", "",
-					); err != nil {
-						return fmt.Errorf("reopen independent %s: %w", phase, err)
-					}
-				}
 			}
 			return saveRouteDecision(statePath, state, decision)
 		},
@@ -278,6 +289,72 @@ func newCmdRouteRefresh() *cobra.Command {
 		"one-time route-update capability returned by state dispatch",
 	)
 	return command
+}
+
+func refreshRouteState(
+	state *project.WorkflowState,
+	snapshot project.RepositorySnapshot,
+) (project.RouteDecision, error) {
+	facts := project.NormalizeRiskAssessment(state.Route.Facts, snapshot.Revision())
+	facts.ActualFileCount = snapshot.FileCount
+	facts.ActualChangedLines = snapshot.ChangedLines
+	staleEasyEvidence := easyEvidenceIsStale(*state, snapshot)
+	decision, err := deliveryroute.Classify(facts)
+	if err != nil {
+		return project.RouteDecision{}, err
+	}
+	reason := ""
+	if project.RouteRank(decision.Class) != project.RouteRank(state.Route.Class) {
+		reason = "current repository facts require a more conservative route"
+	}
+	decision, err = deliveryroute.PreserveMonotonic(*state.Route, decision, reason)
+	if err != nil {
+		return project.RouteDecision{}, err
+	}
+	if staleEasyEvidence {
+		target := decision.Class
+		if project.RouteRank(target) < project.RouteRank(project.RouteStandard) {
+			target = project.RouteStandard
+		}
+		decision, err = deliveryroute.Escalate(
+			decision, target, "snapshot-bound easy-route evidence became stale", "",
+		)
+		if err != nil {
+			return project.RouteDecision{}, err
+		}
+	}
+	decision.Snapshot = snapshot
+	if err := state.ApplyRoute(decision); err != nil {
+		return project.RouteDecision{}, err
+	}
+	if staleEasyEvidence {
+		for _, phase := range []string{"review", "validate"} {
+			if err := state.SetPhaseWithDelivery(
+				phase, project.PhaseEscalated,
+				"snapshot-bound easy-route evidence became stale",
+				"", "", "", "", "",
+			); err != nil {
+				return project.RouteDecision{}, fmt.Errorf("reopen independent %s: %w", phase, err)
+			}
+		}
+	}
+	return decision, nil
+}
+
+func consumeStackAdvanceCapability(state *project.WorkflowState, token string) error {
+	if state.StackAdvanceHash == "" {
+		return fmt.Errorf("stack advance capability is missing or already used")
+	}
+	sum := sha256.Sum256([]byte(token))
+	expected, err := decodeSHA256(state.StackAdvanceHash)
+	if err != nil {
+		return fmt.Errorf("invalid stored stack advance capability: %w", err)
+	}
+	if subtle.ConstantTimeCompare(sum[:], expected) != 1 {
+		return fmt.Errorf("invalid stack advance capability")
+	}
+	state.StackAdvanceHash = ""
+	return nil
 }
 
 func easyEvidenceIsStale(state project.WorkflowState, snapshot project.RepositorySnapshot) bool {
@@ -401,6 +478,10 @@ func refreshRemoteBaseBinding(slug string, state project.WorkflowState) error {
 		manifest.BaseBranch == "" || manifest.BaseBranch == "HEAD" ||
 		!gitx.HasOrigin(*manifest.Worktree) ||
 		state.PendingPR.Number > 0 {
+		return nil
+	}
+	if manifest.RemoteBaseSHA == "" &&
+		gitx.RevParse(*manifest.Worktree, "origin/"+manifest.BaseBranch) == "" {
 		return nil
 	}
 	_, err = bindRemoteBase(slug, manifest.BaseBranch, "", false)

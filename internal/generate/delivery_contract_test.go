@@ -65,6 +65,8 @@ func TestRouteAndOpenPROwnershipContracts(t *testing.T) {
 		"--changes-tests", "--changes-documentation-comments", "--changes-type-design",
 		"--history-sensitive", "--changes-repository-guidelines", "normalized `task.md`",
 		"`--stack-rationale` is required whenever the target is `stack-candidate`",
+		"valid local-only branch or",
+		"rebound to a real remote PR base before `open-pr` dispatch",
 	} {
 		if !strings.Contains(route, want) {
 			t.Errorf("route missing evidence ownership contract %q", want)

@@ -21,7 +21,9 @@ This is the authoritative rebase and force-push contract.
    changes appeared, or conflict markers remain.
 6. A rewritten HEAD makes prior review and validation evidence stale. Run `relay route refresh
    "$SLUG" --dispatch-token "$ROUTE_TOKEN"` when operating as an adaptive phase worker, or use the
-   coordinator capability when rebasing inline, and require new evidence before PR delivery.
+   coordinator capability when rebasing inline. A compatible route keeps the active phase dispatch
+   and original finish token; a changed route contract requires coordinator redispatch. Require new
+   evidence before PR delivery.
    For a route-less legacy seven-phase project, skip the unavailable refresh command, retain the
    recorded legacy order, and report that downstream review and validation must rerun after the
    rewritten HEAD.

@@ -1155,7 +1155,7 @@ func (ws *WorkflowState) ApplyRoute(decision RouteDecision) error {
 	} else if ws.Route != nil && routeChanged && canRebindActiveDispatch(*ws.Route, decision) {
 		current := ws.currentSelectedPhase()
 		phase := ws.Phases[current]
-		if current == EvidenceOwnerImplement &&
+		if current != "route" && current != "open-pr" &&
 			phase.Status == PhaseInProgress && phase.Dispatch != nil {
 			reboundPhase = current
 		}
@@ -1239,10 +1239,8 @@ func (ws *WorkflowState) ApplyRoute(decision RouteDecision) error {
 }
 
 func canRebindActiveDispatch(previous, next RouteDecision) bool {
-	return previous.Class == RouteEasy &&
-		next.Class == RouteEasy &&
-		!previous.ForcedFull &&
-		!next.ForcedFull &&
+	return previous.Class == next.Class &&
+		previous.ForcedFull == next.ForcedFull &&
 		previous.Snapshot.InputRevision == next.Snapshot.InputRevision &&
 		rebindRelevantFactsEqual(previous.Facts, next.Facts) &&
 		slices.Equal(previous.SelectedPhases, next.SelectedPhases) &&

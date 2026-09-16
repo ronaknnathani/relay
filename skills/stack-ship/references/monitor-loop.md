@@ -44,13 +44,13 @@ git rebase --onto origin/<default-branch> <merged-parent-tip> <next-branch>
 git push --force-with-lease origin <next-branch>
 gh pr edit <next-pr> --base <default-branch>
 gh pr view <next-pr> --json baseRefName,mergeStateStatus
-relay route base <next-project-slug> --base <default-branch> --coordinator-token <token>
-relay route refresh <next-project-slug> --coordinator-token <token>
+relay route advance <next-project-slug> --base <default-branch> --advance-token <token>
 relay pr watch start <next-project-slug> --mode stack --owner <stack-orchestrator-slug>
 ```
 
 The base update is required after squash merges, merge commits, and deleted parent branches: it
-records the new base identity and immutable start SHA before route freshness is recomputed.
+atomically records the new base identity and immutable start SHA, recomputes route freshness, and
+consumes the child-issued capability so it cannot be reused.
 Confirm `baseRefName == "<default-branch>"`. Then verify every other descendant still targets its
 intended parent feature branch (not the default branch), and let the new front watcher wake you once
 auto-merge can be armed on the default-branch PR.

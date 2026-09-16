@@ -134,6 +134,7 @@ func TestStatusDetailDisplaysLegacyBlockedPhase(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := project.Save(filepath.Join(projectDir, "manifest.json"), project.Manifest{Slug: "legacy"}); err != nil {
 		t.Fatal(err)
 	}
@@ -160,6 +161,37 @@ func TestStatusDetailDisplaysLegacyBlockedPhase(t *testing.T) {
 	for _, want := range []string{"implement", "blocked", "author decision required"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("legacy status output %q missing %q", out, want)
+		}
+	}
+}
+
+func TestStatusDetailSupportsHistoricalStackState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	projectDir := filepath.Join(project.ActiveDir(), "legacy-stack")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(filepath.Join(projectDir, "manifest.json"), project.Manifest{
+		Slug: "legacy-stack", Title: "Historical stack", Status: "in-progress",
+		Phase: "build", PhasesCompleted: []string{"plan"}, PhasesRemaining: []string{"build"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "state.json"), []byte(
+		"{\"goalSlug\":\"legacy-stack\",\"frontPr\":42,\"prs\":[42,43]}\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := captureStdout(t, func() error {
+		return runStatus(statusOpts{slug: "legacy-stack"})
+	})
+	if err != nil {
+		t.Fatalf("historical stack status: %v", err)
+	}
+	for _, want := range []string{"Historical stack", "Phases completed", "plan", "Phases remaining", "build"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("historical stack status output %q missing %q", out, want)
 		}
 	}
 }

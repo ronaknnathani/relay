@@ -553,7 +553,7 @@ func TestFailedEvidenceRecoveryRespectsNewPrerequisiteOrder(t *testing.T) {
 	}
 }
 
-func TestRouteChangeReopensActiveSelectedPhaseForRedispatch(t *testing.T) {
+func TestRouteContractChangeReopensActiveSelectedPhaseForRedispatch(t *testing.T) {
 	state := validAdaptiveState(t)
 	for _, name := range []string{"route", "clarify", "plan"} {
 		state.Phases[name] = PhaseState{Status: PhaseDone}
@@ -568,6 +568,7 @@ func TestRouteChangeReopensActiveSelectedPhaseForRedispatch(t *testing.T) {
 	changed := *state.Route
 	changed.Snapshot.Fingerprint = "changed"
 	changed.Facts.AssessmentFingerprint = "changed"
+	changed.ForcedFull = true
 	if err := state.ApplyRoute(changed); err != nil {
 		t.Fatal(err)
 	}

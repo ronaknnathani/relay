@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/ronaknnathani/relay/internal/agent"
-	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/mailbox"
 	"github.com/ronaknnathani/relay/internal/patrollock"
@@ -958,24 +957,7 @@ func childDTO(manifest project.Manifest, childDir string, archived bool, warning
 }
 
 func childRepositorySnapshot(manifest project.Manifest, projectDir string) (project.RepositorySnapshot, error) {
-	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {
-		return project.RepositorySnapshot{}, fmt.Errorf("project has no worktree")
-	}
-	inputRevision, err := project.ProjectInputRevision(projectDir)
-	if err != nil {
-		return project.RepositorySnapshot{}, err
-	}
-	base := gitx.SnapshotBaseRef(*manifest.Worktree, manifest.BaseBranch, manifest.StartSHA)
-	snapshot, err := gitx.Snapshot(*manifest.Worktree, base)
-	if err != nil {
-		return project.RepositorySnapshot{}, err
-	}
-	return project.RepositorySnapshot{
-		BaseSHA: snapshot.BaseSHA, BaseTipSHA: snapshot.BaseTipSHA,
-		HeadSHA: snapshot.HeadSHA, Fingerprint: snapshot.Fingerprint,
-		InputRevision: inputRevision,
-		FileCount:     snapshot.FileCount, ChangedLines: snapshot.ChangedLines,
-	}, nil
+	return project.RepositorySnapshotForManifest(manifest, projectDir)
 }
 
 // worktreePresent reports whether a child's recorded checkout still exists.

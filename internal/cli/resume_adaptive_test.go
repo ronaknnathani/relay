@@ -133,6 +133,18 @@ func TestResumeRotatesCoordinatorCapabilityForAdaptiveState(t *testing.T) {
 	if strings.TrimSpace(string(data)) != token {
 		t.Fatal("coordinator handoff did not contain the rotated capability")
 	}
+	if err := validateCoordinatorToken(got, "wrong-token"); err == nil {
+		t.Fatal("invalid coordinator capability was accepted")
+	}
+	if _, err := os.Stat(handoffPath); err != nil {
+		t.Fatalf("invalid capability removed recoverable handoff: %v", err)
+	}
+	if err := validateCoordinatorToken(got, token); err != nil {
+		t.Fatalf("consume coordinator handoff: %v", err)
+	}
+	if _, err := os.Stat(handoffPath); !os.IsNotExist(err) {
+		t.Fatalf("consumed coordinator handoff still exists: %v", err)
+	}
 }
 
 func TestResumeKeepsCoordinatorCapabilityOutOfAgentArguments(t *testing.T) {

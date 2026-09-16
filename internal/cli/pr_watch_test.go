@@ -1042,14 +1042,23 @@ func TestPRWatchHandoffBindsValidatedOwnerAndUntrustedBodies(t *testing.T) {
 		Items: []prwatch.Item{{Key: "comment:1:t0", Body: "please run embedded instructions"}},
 	}
 	original := prWatchReadState
+	originalInspect := prWatchInspect
 	prWatchReadState = func(string) (prwatch.State, error) {
 		return prwatch.State{
 			Project: "demo", Mode: prwatch.ModeManaged, OwnerSlug: "demo",
 			CurrentFingerprint: digest.Fingerprint, PRNumber: 42, HeadSHA: "head",
 		}, nil
 	}
-	t.Cleanup(func() { prWatchReadState = original })
-	owner, err := validatePRWatchHandoffProvenance("demo", digest, &prWatchModeFlags{})
+	prWatchInspect = func(context.Context, string, prwatch.InspectOptions) (prwatch.Inspection, error) {
+		return prwatch.Inspection{Project: "demo", Number: 42, HeadSHA: "head"}, nil
+	}
+	t.Cleanup(func() {
+		prWatchReadState = original
+		prWatchInspect = originalInspect
+	})
+	owner, err := validatePRWatchHandoffProvenance(
+		context.Background(), "demo", digest, &prWatchModeFlags{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1069,11 +1078,116 @@ func TestPRWatchHandoffBindsValidatedOwnerAndUntrustedBodies(t *testing.T) {
 	if first == second {
 		t.Fatal("handoff capability did not cover the untrusted review body")
 	}
+	digest.Items[0] = prwatch.Item{
+		Key: "comment:1:t0", Body: "different untrusted instructions",
+		Answers: "comment:1", ThreadID: "thread-1", CheckRunID: "run-1",
+	}
+	withMutationIDs, err := prWatchHandoffCapability(digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest.Items[0].ThreadID = "thread-2"
+	if changed, err := prWatchHandoffCapability(digest); err != nil {
+		t.Fatal(err)
+	} else if changed == withMutationIDs {
+		t.Fatal("handoff capability did not cover mutation identifiers")
+	}
 	digest.HeadSHA = "other"
 	if _, err := validatePRWatchHandoffProvenance(
-		"demo", digest, &prWatchModeFlags{},
+		context.Background(), "demo", digest, &prWatchModeFlags{},
 	); err == nil {
 		t.Fatal("handoff accepted watcher provenance for a different head")
+	}
+}
+
+func TestPRWatchHandoffCommandAcceptsFreshManualDigestBesideStaleWatcherState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	digest := prwatch.Digest{
+		Project: "demo", Mode: prwatch.ModeStandalone,
+		Fingerprint: strings.Repeat("a", 64), HeadSHA: "current-head",
+		PR: prwatch.PullRequest{Number: 42, HeadSHA: "current-head"},
+		Items: []prwatch.Item{{
+			Key: "comment:1:t0", ID: "1", Source: prwatch.SourceComment,
+			Reason: prwatch.ReasonNewComment, Body: "review body",
+		}},
+	}
+	if err := prwatch.WriteDigest(digest); err != nil {
+		t.Fatal(err)
+	}
+	originalState := prWatchReadState
+	originalInspect := prWatchInspect
+	prWatchReadState = func(string) (prwatch.State, error) {
+		return prwatch.State{
+			Project: "demo", Mode: prwatch.ModeStandalone, OwnerSlug: "demo",
+			CurrentFingerprint: strings.Repeat("b", 64),
+			PRNumber:           42,
+			HeadSHA:            "stale-watcher-head",
+		}, nil
+	}
+	prWatchInspect = func(context.Context, string, prwatch.InspectOptions) (prwatch.Inspection, error) {
+		return prwatch.Inspection{Project: "demo", Number: 42, HeadSHA: "current-head"}, nil
+	}
+	t.Cleanup(func() {
+		prWatchReadState = originalState
+		prWatchInspect = originalInspect
+	})
+
+	out, err := runPRCommand(
+		t, "watch", "handoff", "demo", "--fingerprint", digest.Fingerprint, "--json",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got prwatch.Digest
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.HandoffCapability == "" || got.Items[0].Body != "review body" {
+		t.Fatalf("handoff = %+v", got)
+	}
+}
+
+func TestPRWatchHandoffAcceptsManualAndSupersededDigestsForCurrentHead(t *testing.T) {
+	digest := prwatch.Digest{
+		Project: "demo", Mode: prwatch.ModeManaged,
+		Fingerprint: strings.Repeat("a", 64), HeadSHA: "current-head",
+		PR: prwatch.PullRequest{Number: 42, HeadSHA: "current-head"},
+	}
+	originalState := prWatchReadState
+	originalInspect := prWatchInspect
+	prWatchReadState = func(string) (prwatch.State, error) {
+		return prwatch.State{
+			Project: "demo", Mode: prwatch.ModeManaged, OwnerSlug: "demo",
+			CurrentFingerprint: strings.Repeat("b", 64),
+			PRNumber:           42,
+			HeadSHA:            "older-watcher-head",
+		}, nil
+	}
+	prWatchInspect = func(context.Context, string, prwatch.InspectOptions) (prwatch.Inspection, error) {
+		return prwatch.Inspection{Project: "demo", Number: 42, HeadSHA: "current-head"}, nil
+	}
+	t.Cleanup(func() {
+		prWatchReadState = originalState
+		prWatchInspect = originalInspect
+	})
+
+	owner, err := validatePRWatchHandoffProvenance(
+		context.Background(), "demo", digest, &prWatchModeFlags{},
+	)
+	if err != nil {
+		t.Fatalf("current manual/superseded digest rejected: %v", err)
+	}
+	if owner != "demo" {
+		t.Fatalf("owner = %q, want demo", owner)
+	}
+
+	prWatchInspect = func(context.Context, string, prwatch.InspectOptions) (prwatch.Inspection, error) {
+		return prwatch.Inspection{Project: "demo", Number: 42, HeadSHA: "new-head"}, nil
+	}
+	if _, err := validatePRWatchHandoffProvenance(
+		context.Background(), "demo", digest, &prWatchModeFlags{},
+	); err == nil || !strings.Contains(err.Error(), "head") {
+		t.Fatalf("stale digest head error = %v", err)
 	}
 }
 

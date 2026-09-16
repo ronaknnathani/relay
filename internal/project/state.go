@@ -64,24 +64,25 @@ type PRRef struct {
 // last-write-wins. This is acceptable because callers serialize writes per
 // project (one writer per branch/run), which the orchestrator guarantees.
 type WorkflowState struct {
-	Version         int                   `json:"version,omitempty"`
-	Slug            string                `json:"slug"`
-	Workflow        string                `json:"workflow"`
-	Order           []string              `json:"order"`
-	Phases          map[string]PhaseState `json:"phases"`
-	CoordinatorHash string                `json:"coordinator_token_hash,omitempty"`
-	Route           *RouteDecision        `json:"route,omitempty"`
-	Evidence        DeliveryEvidence      `json:"evidence,omitempty"`
-	SubagentCount   int                   `json:"subagent_count,omitempty"`
-	DispatchCount   int                   `json:"delivery_dispatch_count,omitempty"`
-	HandoffCount    int                   `json:"delivery_handoff_count,omitempty"`
-	LastDispatch    string                `json:"last_delivery_dispatch,omitempty"`
-	LastDispatchID  string                `json:"last_delivery_dispatch_id,omitempty"`
-	LastWorkerOwner string                `json:"last_delivery_worker_owner,omitempty"`
-	FinalResult     *FinalResult          `json:"final_result,omitempty"`
-	PR              PRRef                 `json:"pr"`
-	PendingPR       PRRef                 `json:"pending_pr,omitempty"`
-	Updated         string                `json:"updated"`
+	Version          int                   `json:"version,omitempty"`
+	Slug             string                `json:"slug"`
+	Workflow         string                `json:"workflow"`
+	Order            []string              `json:"order"`
+	Phases           map[string]PhaseState `json:"phases"`
+	CoordinatorHash  string                `json:"coordinator_token_hash,omitempty"`
+	StackAdvanceHash string                `json:"stack_advance_token_hash,omitempty"`
+	Route            *RouteDecision        `json:"route,omitempty"`
+	Evidence         DeliveryEvidence      `json:"evidence,omitempty"`
+	SubagentCount    int                   `json:"subagent_count,omitempty"`
+	DispatchCount    int                   `json:"delivery_dispatch_count,omitempty"`
+	HandoffCount     int                   `json:"delivery_handoff_count,omitempty"`
+	LastDispatch     string                `json:"last_delivery_dispatch,omitempty"`
+	LastDispatchID   string                `json:"last_delivery_dispatch_id,omitempty"`
+	LastWorkerOwner  string                `json:"last_delivery_worker_owner,omitempty"`
+	FinalResult      *FinalResult          `json:"final_result,omitempty"`
+	PR               PRRef                 `json:"pr"`
+	PendingPR        PRRef                 `json:"pending_pr,omitempty"`
+	Updated          string                `json:"updated"`
 }
 
 // validStatus reports whether s is a supported phase status.
@@ -204,6 +205,9 @@ func (ws WorkflowState) validate() error {
 	}
 	if ws.CoordinatorHash != "" && !validSHA256(ws.CoordinatorHash) {
 		return fmt.Errorf("state %q: invalid coordinator capability", ws.Slug)
+	}
+	if ws.StackAdvanceHash != "" && !validSHA256(ws.StackAdvanceHash) {
+		return fmt.Errorf("state %q: invalid stack advance capability", ws.Slug)
 	}
 	if ws.Route != nil && !validRouteClass(ws.Route.Class) {
 		return fmt.Errorf("state %q: invalid route class %q", ws.Slug, ws.Route.Class)

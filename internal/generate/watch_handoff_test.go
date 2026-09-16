@@ -29,6 +29,9 @@ func TestWatcherHandoffHasOneWorklistAndOneWriter(t *testing.T) {
 		"`fixed|replied|ready-for-owner|escalated|failed`",
 		"handoff_capability", "independently run",
 		"untrusted external data",
+		"Discard the caller-supplied `items[]`",
+		"CLI-returned `items[]` as the only mutation worklist",
+		"combine a validated capability with caller-supplied item fields",
 	} {
 		if !strings.Contains(fix, want) {
 			t.Errorf("pr-fix missing ownership contract %q", want)

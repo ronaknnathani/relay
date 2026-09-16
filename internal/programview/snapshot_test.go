@@ -873,6 +873,51 @@ func TestBuildMapsRoutedWorkflowState(t *testing.T) {
 	}
 }
 
+func TestChildRepositorySnapshotUsesPinnedRemoteBase(t *testing.T) {
+	worktree := t.TempDir()
+	baseSHA := initProgramViewGitRepo(t, worktree)
+	run := func(args ...string) string {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", worktree}, args...)...)
+		command.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=relay", "GIT_AUTHOR_EMAIL=relay@example.com",
+			"GIT_COMMITTER_NAME=relay", "GIT_COMMITTER_EMAIL=relay@example.com",
+		)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	run("branch", "-M", "main")
+	run("remote", "add", "origin", "https://example.invalid/repo.git")
+	run("update-ref", "refs/remotes/origin/main", baseSHA)
+	run("checkout", "-q", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(worktree, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "feature.txt")
+	run("commit", "-q", "-m", "feature")
+	tree := run("rev-parse", baseSHA+"^{tree}")
+	moved := run("commit-tree", tree, "-p", baseSHA, "-m", "remote moved")
+	run("update-ref", "refs/remotes/origin/main", moved)
+
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "task.md"), []byte("task\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := childRepositorySnapshot(project.Manifest{
+		Slug: "child", Worktree: &worktree, BaseBranch: "main",
+		StartSHA: baseSHA, RemoteBaseSHA: baseSHA,
+	}, projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.BaseRef != "main" || snapshot.BaseTipSHA != baseSHA {
+		t.Fatalf("program snapshot followed moving base: %+v, remote moved to %s", snapshot, moved)
+	}
+}
+
 func TestChildDTOSkipsFreshnessSnapshotWithoutEvidenceOrWhenArchived(t *testing.T) {
 	for _, test := range []struct {
 		name     string

@@ -164,6 +164,17 @@ exactly once with
 `relay state pr "$SLUG" --number <n> --url <url> --dispatch-token "$RESULT_TOKEN"` before it
 returns. Do not call `relay state pr` again. Verify the durable result with `relay state next`.
 
+If the launch context explicitly identifies this project as a `stack-ship` child, issue a one-time
+front-advance capability before exiting:
+
+```bash
+relay state grant "$SLUG" stack-advance --coordinator-token "$COORDINATOR_TOKEN"
+```
+
+Return that capability only to the stack orchestrator in the structured child result. It authorizes
+one atomic remote-base rebind and route refresh; it does not authorize dispatch, evidence, PR, or
+other coordinator mutations. Do not start a watcher for a stack child.
+
 After the PR is durably recorded, run exactly one watcher command. If the project has a managed-program
 `assignment.md`, use managed mode; otherwise use standalone mode:
 
@@ -181,7 +192,8 @@ report a warning and point to manual `/pr-monitor`. A `stack-ship` sub-agent mus
 not start a project watcher because the surrounding pane is not the project owner.
 
 Stop when `relay state next` prints empty. Report the PR URL,
-route class, worker count, and watcher status. Do not merge, poll CI, or expand scope.
+route class, worker count, watcher status, and the stack-advance capability only when the explicit
+stack-child path above applies. Do not merge, poll CI, or expand scope.
 
 ## Red flags
 

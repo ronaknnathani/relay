@@ -80,7 +80,7 @@ func prepareStateTestArgs(t *testing.T, args []string) []string {
 		return args
 	}
 	switch args[0] {
-	case "dispatch", "worker":
+	case "dispatch", "worker", "grant":
 		ensureTestCoordinator(t, args[1])
 		if !slices.Contains(args, "--coordinator-token") {
 			args = append(args, "--coordinator-token", testCoordinatorToken)

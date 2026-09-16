@@ -46,13 +46,21 @@ func Load(path string) (Manifest, error) {
 // LoadEffective reads a manifest and overlays colocated adaptive state when
 // present. Legacy and route-less custom workflows are returned unchanged.
 func LoadEffective(path string) (Manifest, error) {
+	manifest, _, err := LoadEffectiveProject(path)
+	return manifest, err
+}
+
+// LoadEffectiveProject reads a manifest and its colocated workflow state.
+// Historical non-workflow stack state is recognized and returned as no
+// workflow state so every human and machine view uses the same classification.
+func LoadEffectiveProject(path string) (Manifest, *WorkflowState, error) {
 	manifest, err := Load(path)
 	if err != nil {
-		return Manifest{}, err
+		return Manifest{}, nil, err
 	}
 	directorySlug := filepath.Base(filepath.Dir(path))
 	if manifest.Slug != directorySlug {
-		return Manifest{}, fmt.Errorf(
+		return Manifest{}, nil, fmt.Errorf(
 			"manifest slug %q does not match project directory %q",
 			manifest.Slug, directorySlug,
 		)
@@ -60,24 +68,24 @@ func LoadEffective(path string) (Manifest, error) {
 	state, err := LoadState(filepath.Join(filepath.Dir(path), "state.json"))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return manifest, nil
+			return manifest, nil, nil
 		}
 		legacy, inspectErr := legacyNonWorkflowState(filepath.Join(filepath.Dir(path), "state.json"))
 		if inspectErr != nil {
-			return Manifest{}, inspectErr
+			return Manifest{}, nil, inspectErr
 		}
 		if legacy {
-			return manifest, nil
+			return manifest, nil, nil
 		}
-		return Manifest{}, err
+		return Manifest{}, nil, err
 	}
 	if state.Slug != manifest.Slug {
-		return Manifest{}, fmt.Errorf(
+		return Manifest{}, nil, fmt.Errorf(
 			"state slug %q does not match manifest slug %q",
 			state.Slug, manifest.Slug,
 		)
 	}
-	return EffectiveManifest(manifest, state), nil
+	return EffectiveManifest(manifest, state), &state, nil
 }
 
 func legacyNonWorkflowState(path string) (bool, error) {
