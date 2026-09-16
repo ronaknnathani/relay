@@ -1718,31 +1718,54 @@ func TestArchiveReportsBranchStillPresentOnlyAfterDeletionFailure(t *testing.T) 
 	worktree := addArchiveWorktree(t, repo, slug, branch)
 	missingWorktree := worktree + "-missing"
 	writeArchiveManifest(t, slug, repo, branch, missingWorktree)
-	expectedSHA := gitx.RevParse(repo, "refs/heads/"+branch)
 
 	stdout, stderr, err := captureGCOutput(t, func() error {
 		return runArchive(slug, false)
 	})
-	if err != nil {
-		t.Fatalf("runArchive: %v", err)
+	if !errors.Is(err, errArchivedCleanupIncomplete) {
+		t.Fatalf("runArchive error = %v, want %v", err, errArchivedCleanupIncomplete)
 	}
 	if !strings.Contains(stdout, "Branch still present:") ||
 		!strings.Contains(stdout, branch) {
 		t.Fatalf("stdout %q is missing the branch deletion failure", stdout)
 	}
 	for _, want := range []string{
-		"git -C " + shellQuote(repo) + " update-ref -d " + shellQuote("refs/heads/"+branch) + " " + shellQuote(expectedSHA),
-		manualBranchConfigRemoveCommand(repo, branch),
+		branch,
+		worktree,
+		"Detach or remove that specific worktree",
+		"rerun Relay cleanup",
 	} {
 		if !strings.Contains(stderr, want) {
-			t.Fatalf("stderr %q is missing safe branch cleanup guidance %q", stderr, want)
+			t.Fatalf("stderr %q is missing checked-out branch guidance %q", stderr, want)
 		}
 	}
-	if strings.Contains(stderr, "branch -D") {
-		t.Fatalf("stderr %q recommends unconditional branch deletion", stderr)
+	for _, forbidden := range []string{"branch -D", "update-ref -d", manualBranchConfigRemoveCommand(repo, branch)} {
+		if strings.Contains(stderr, forbidden) {
+			t.Fatalf("stderr %q includes unsafe checked-out branch guidance %q", stderr, forbidden)
+		}
 	}
 	if !gitx.BranchExists(repo, branch) {
 		t.Fatalf("branch %q was deleted despite being checked out", branch)
+	}
+
+	_, _, err = captureGCOutput(t, func() error {
+		return runArchive(slug, false)
+	})
+	if err == nil {
+		t.Fatal("runArchive retry accepted a claimed checked-out branch cleanup")
+	}
+	for _, want := range []string{
+		branch,
+		worktree,
+		"Detach or remove that specific worktree",
+		"rerun Relay cleanup",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("runArchive retry error %q is missing %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "update-ref -d") {
+		t.Fatalf("runArchive retry error %q recommends raw ref deletion", err)
 	}
 }
 

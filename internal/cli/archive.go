@@ -219,6 +219,9 @@ func runArchive(slug string, force bool) error {
 	result, err := archiveProject(slug, force)
 	if err == nil {
 		renderArchive(os.Stdout, result)
+		if result.BranchDeletionWarning != "" {
+			return errArchivedCleanupIncomplete
+		}
 		return nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
@@ -1346,6 +1349,18 @@ func claimedCleanupError(
 	m project.Manifest, resource, identity, expectedSHA string,
 ) error {
 	if resource == "branch" {
+		worktree, checkedOut, err := gitx.BranchCheckoutWorktree(m.Repo, identity)
+		if err != nil {
+			return fmt.Errorf(
+				"finish archived branch cleanup for %s: cleanup was already claimed and its outcome "+
+					"is ambiguous; inspect whether branch %q is checked out before taking any "+
+					"destructive action: %w",
+				m.Slug, identity, err,
+			)
+		}
+		if checkedOut {
+			return checkedOutBranchCleanupError(m.Slug, identity, worktree)
+		}
 		manual := manualBranchDeleteAtCommand(m.Repo, identity, expectedSHA)
 		return newManualCleanupError(fmt.Errorf(
 			"finish archived branch cleanup for %s: cleanup was already claimed and its outcome is ambiguous; "+
@@ -1780,6 +1795,21 @@ func setBranchDeletionRecovery(
 			deleteErr, branch, tip, expectedSHA,
 		)
 	default:
+		worktree, checkedOut, checkoutErr := gitx.BranchCheckoutWorktree(repo, branch)
+		if checkoutErr != nil {
+			result.BranchDeletionWarning = fmt.Sprintf(
+				"%s\ninspect whether branch %q is checked out before taking any destructive action: %v",
+				deleteErr, branch, checkoutErr,
+			)
+			return
+		}
+		if checkedOut {
+			result.BranchDeletionWarning = errors.Join(
+				deleteErr,
+				checkedOutBranchCleanupError(result.Slug, branch, worktree),
+			).Error()
+			return
+		}
 		result.BranchCleanupCommand = manualBranchDeleteAtCommand(repo, branch, expectedSHA)
 		result.BranchDeletionWarning = fmt.Sprintf(
 			"%s\ncleanup was already claimed and will not be retried automatically\n"+
@@ -1789,6 +1819,14 @@ func setBranchDeletionRecovery(
 			manualBranchConfigRemoveCommand(repo, branch),
 		)
 	}
+}
+
+func checkedOutBranchCleanupError(slug, branch, worktree string) error {
+	return fmt.Errorf(
+		"branch %q is checked out in worktree %s; do not delete its ref directly. "+
+			"Detach or remove that specific worktree, then rerun Relay cleanup for project %s",
+		branch, worktree, slug,
+	)
 }
 
 type archiveMetadataState struct {

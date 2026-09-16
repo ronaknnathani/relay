@@ -317,6 +317,14 @@ func ForceDeleteBranchAt(repo, branch, expectedSHA string) error {
 	return deleteErr
 }
 
+// BranchCheckoutWorktree reports the worktree currently checking out branch.
+func BranchCheckoutWorktree(repo, branch string) (string, bool, error) {
+	if err := validateBranchName(repo, branch); err != nil {
+		return "", false, err
+	}
+	return branchCheckout(repo, "refs/heads/"+branch)
+}
+
 // RemoveBranchConfig removes the local branch.<name> configuration section.
 // A branch without a section is already clean.
 func RemoveBranchConfig(repo, branch string) error {
