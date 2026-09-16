@@ -328,6 +328,18 @@ func TestPerformanceBuildArgumentsUseExplicitReproducibleProvenance(t *testing.T
 	}
 }
 
+func TestPerformanceBuildEnvironmentUsesReleaseCGOSetting(t *testing.T) {
+	environment := performanceBuildEnvironment([]string{
+		"PATH=/usr/bin",
+		"CGO_ENABLED=1",
+		"HOME=/tmp/home",
+	})
+	if got := strings.Join(environment, "\n"); got !=
+		"PATH=/usr/bin\nHOME=/tmp/home\nCGO_ENABLED=0" {
+		t.Fatalf("performance build environment = %q", got)
+	}
+}
+
 func TestEvaluatePerformanceLoadRejectsWholeRunWithoutDroppingObservations(t *testing.T) {
 	policy := performanceLoadPolicy{
 		Metric:                 "one_minute_load_average_per_logical_cpu",

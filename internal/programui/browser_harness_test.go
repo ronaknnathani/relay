@@ -29,7 +29,7 @@ const (
 	performanceFixture = "reference-program-v1"
 	performanceHarness = "complete-roadmap-v23"
 
-	performanceBuildProvenance = "relay-ldflags-v1"
+	performanceBuildProvenance = "goreleaser-ldflags-cgo0-v1"
 	performanceLoadMetric      = "one_minute_load_average_per_logical_cpu"
 	performanceLoadValid       = "valid"
 	performanceLoadInvalid     = "invalid_shared_host_contention"
@@ -173,10 +173,7 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 		return report
 	}
 	fixture := newReferenceProgramFixture(t)
-	binary := os.Getenv("RELAY_PERF_BINARY")
-	if binary == "" {
-		binary = buildRelayForPerformance(t, repositoryDir, source)
-	}
+	binary := buildRelayForPerformance(t, repositoryDir, source)
 	binaryMetadata := readBinaryProvenance(t, binary)
 	commandDir := performanceCommandDir(t)
 	report.BinaryRevision = binaryMetadata.Commit
@@ -655,6 +652,7 @@ func buildRelayForPerformance(
 	binary := filepath.Join(t.TempDir(), "relay")
 	command := exec.Command("go", performanceBuildArguments(binary, provenance)...)
 	command.Dir = repositoryDir
+	command.Env = performanceBuildEnvironment(os.Environ())
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("build relay for performance test: %v\n%s", err, output)
@@ -679,6 +677,16 @@ func performanceBuildArguments(output string, provenance repositoryProvenance) [
 		"-o", output,
 		"./cmd/relay",
 	}
+}
+
+func performanceBuildEnvironment(environment []string) []string {
+	buildEnvironment := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, "CGO_ENABLED=") {
+			buildEnvironment = append(buildEnvironment, entry)
+		}
+	}
+	return append(buildEnvironment, "CGO_ENABLED=0")
 }
 
 func performanceCommandDir(t *testing.T) string {
