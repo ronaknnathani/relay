@@ -1335,6 +1335,57 @@ func (ws *WorkflowState) InvalidateEvidenceForOwner(owner string) {
 	}
 }
 
+// PrepareAdaptiveResume invalidates lost active capabilities and reopens stale
+// terminal work so a coordinator can safely issue replacement dispatches.
+func (ws *WorkflowState) PrepareAdaptiveResume(snapshot RepositorySnapshot) {
+	if !ws.UsesAdaptiveDelivery() {
+		return
+	}
+	staleTerminal := ws.FinalResult != nil &&
+		(ws.Route == nil ||
+			ws.FinalResult.RouteRevision != ws.Route.Revision ||
+			ws.FinalResult.RouteDigest != ws.Route.Digest ||
+			ws.FinalResult.Snapshot != snapshot)
+	if staleTerminal {
+		ws.FinalResult = nil
+		ws.Evidence = DeliveryEvidence{}
+		selected := map[string]bool{}
+		if ws.Route != nil {
+			for _, name := range ws.Route.SelectedPhases {
+				selected[name] = true
+			}
+		}
+		for _, name := range []string{"route", "implement", "review", "validate", "open-pr"} {
+			phase, ok := ws.Phases[name]
+			if !ok || (!selected[name] && name != "route" && name != "open-pr") {
+				continue
+			}
+			if phase.Status != PhaseDone && phase.Status != PhaseSkipped {
+				continue
+			}
+			phase.Status = PhaseEscalated
+			phase.Reason = "completed delivery snapshot changed; resume requires fresh route and evidence"
+			phase.Outcome = ""
+			phase.EndedAt = ""
+			phase.Dispatch = nil
+			ws.Phases[name] = phase
+		}
+	}
+	for name, phase := range ws.Phases {
+		if phase.Status != PhaseInProgress || phase.Dispatch == nil {
+			continue
+		}
+		phase.Status = PhaseEscalated
+		phase.Reason = "active dispatch was interrupted; resume superseded its capabilities"
+		phase.Outcome = ""
+		phase.EndedAt = ""
+		phase.Dispatch = nil
+		ws.Phases[name] = phase
+		ws.InvalidateEvidenceForOwner(name)
+		ws.FinalResult = nil
+	}
+}
+
 func (ws *WorkflowState) reopenEvidencePhase(name, reason string) {
 	phase, ok := ws.Phases[name]
 	if !ok || !slices.Contains(ws.Route.SelectedPhases, name) {

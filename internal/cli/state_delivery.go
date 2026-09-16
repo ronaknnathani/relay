@@ -53,73 +53,75 @@ func newCmdStateDispatch() *cobra.Command {
 		Short: "Mark a phase in progress and count its worker dispatch",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
-			state, statePath, err := loadStateAt(args[0])
-			if err != nil {
-				return err
-			}
-			if err := state.ValidateAdaptiveDispatch(args[1]); err != nil {
-				return err
-			}
-			if state.UsesAdaptiveDelivery() {
-				if err := validateCoordinatorToken(state, coordinatorToken); err != nil {
+			return withLockedState(args[0], func(locked *project.WorkflowState, statePath string) error {
+				state := *locked
+				if err := state.ValidateAdaptiveDispatch(args[1]); err != nil {
 					return err
 				}
-			}
-			if state.UsesAdaptiveDelivery() && args[1] == "route" && !inline {
-				return fmt.Errorf("adaptive route phase must be dispatched inline with --inline")
-			}
-			if state.UsesAdaptiveDelivery() && args[1] == "open-pr" && !inline {
-				return fmt.Errorf("adaptive open-pr phase must be dispatched inline with --inline")
-			}
-			if state.UsesAdaptiveDelivery() && inline &&
-				args[1] != "route" && args[1] != "open-pr" {
-				return fmt.Errorf("adaptive phase %q cannot be dispatched inline", args[1])
-			}
-			if state.UsesAdaptiveDelivery() && !inline && strings.TrimSpace(owner) == "" {
-				return fmt.Errorf("adaptive worker phase %q requires --owner", args[1])
-			}
-			if args[1] == "open-pr" {
-				snapshot, err := projectSnapshot(args[0])
+				if state.UsesAdaptiveDelivery() {
+					if err := validateCoordinatorToken(state, coordinatorToken); err != nil {
+						return err
+					}
+				}
+				if state.UsesAdaptiveDelivery() && args[1] == "route" && !inline {
+					return fmt.Errorf("adaptive route phase must be dispatched inline with --inline")
+				}
+				if state.UsesAdaptiveDelivery() && args[1] == "open-pr" && !inline {
+					return fmt.Errorf("adaptive open-pr phase must be dispatched inline with --inline")
+				}
+				if state.UsesAdaptiveDelivery() && inline &&
+					args[1] != "route" && args[1] != "open-pr" {
+					return fmt.Errorf("adaptive phase %q cannot be dispatched inline", args[1])
+				}
+				if state.UsesAdaptiveDelivery() && !inline && strings.TrimSpace(owner) == "" {
+					return fmt.Errorf("adaptive worker phase %q requires --owner", args[1])
+				}
+				if args[1] == "open-pr" {
+					if err := requireCleanProjectWorktree(args[0]); err != nil {
+						return err
+					}
+					snapshot, err := projectSnapshot(args[0])
+					if err != nil {
+						return err
+					}
+					if err := validateProjectRemoteBaseBinding(args[0], state, snapshot); err != nil {
+						return err
+					}
+					if err := state.ValidateOpenPRReadiness(snapshot, false); err != nil {
+						return err
+					}
+					state.FinalResult = nil
+				}
+				startedAt := time.Now().UTC().Format(time.RFC3339)
+				if err := state.SetPhaseWithDelivery(
+					args[1], project.PhaseInProgress, "", "", task, "", startedAt, "",
+				); err != nil {
+					return err
+				}
+				if !inline {
+					incrementSubagent(&state)
+				}
+				dispatch, output, err := newPhaseDispatch(args[1], state.Route)
 				if err != nil {
 					return err
 				}
-				if err := validateProjectRemoteBaseBinding(args[0], state, snapshot); err != nil {
+				phase := state.Phases[args[1]]
+				phase.Dispatch = dispatch
+				state.Phases[args[1]] = phase
+				if !inline {
+					state.RecordDeliveryDispatch(args[1], dispatch.ID, owner)
+				} else {
+					state.RecordInlineDispatch(args[1], dispatch.ID)
+				}
+				state.InvalidateEvidenceForOwner(args[1])
+				if err := encodeDispatchOutput(output); err != nil {
+					return fmt.Errorf("publish dispatch capability: %w", err)
+				}
+				if err := project.SaveState(statePath, state); err != nil {
 					return err
 				}
-				if err := state.ValidateOpenPRReadiness(snapshot, false); err != nil {
-					return err
-				}
-				state.FinalResult = nil
-			}
-			startedAt := time.Now().UTC().Format(time.RFC3339)
-			if err := state.SetPhaseWithDelivery(
-				args[1], project.PhaseInProgress, "", "", task, "", startedAt, "",
-			); err != nil {
-				return err
-			}
-			if !inline {
-				incrementSubagent(&state)
-			}
-			dispatch, output, err := newPhaseDispatch(args[1], state.Route)
-			if err != nil {
-				return err
-			}
-			phase := state.Phases[args[1]]
-			phase.Dispatch = dispatch
-			state.Phases[args[1]] = phase
-			if !inline {
-				state.RecordDeliveryDispatch(args[1], dispatch.ID, owner)
-			} else {
-				state.RecordInlineDispatch(args[1], dispatch.ID)
-			}
-			state.InvalidateEvidenceForOwner(args[1])
-			if err := encodeDispatchOutput(output); err != nil {
-				return fmt.Errorf("publish dispatch capability: %w", err)
-			}
-			if err := project.SaveState(statePath, state); err != nil {
-				return err
-			}
-			return nil
+				return nil
+			})
 		},
 	}
 	command.Flags().BoolVar(&inline, "inline", false, "record coordinator work without incrementing the worker count")
@@ -130,6 +132,28 @@ func newCmdStateDispatch() *cobra.Command {
 		"trusted coordinator capability returned by adaptive state initialization",
 	)
 	return command
+}
+
+func requireCleanProjectWorktree(slug string) error {
+	manifestPath, err := project.Find(slug)
+	if err != nil {
+		return err
+	}
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		return err
+	}
+	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {
+		return fmt.Errorf("project %q has no worktree", slug)
+	}
+	clean, err := gitx.WorktreeClean(*manifest.Worktree)
+	if err != nil {
+		return err
+	}
+	if !clean {
+		return fmt.Errorf("open-pr requires a clean worktree containing only reviewed committed changes")
+	}
+	return nil
 }
 
 func validateProjectRemoteBaseBinding(
@@ -172,27 +196,26 @@ func newCmdStateWorker() *cobra.Command {
 		Short: "Count a delivery subagent that is not a phase dispatch",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			state, statePath, err := loadStateAt(args[0])
-			if err != nil {
-				return err
-			}
-			if strings.TrimSpace(task) == "" {
-				return fmt.Errorf("worker count requires --task")
-			}
-			if state.UsesAdaptiveDelivery() && state.Route == nil {
-				return fmt.Errorf("adaptive delivery must classify a route before dispatching helpers")
-			}
-			if state.UsesAdaptiveDelivery() {
-				if err := validateCoordinatorToken(state, coordinatorToken); err != nil {
-					return err
+			return withLockedState(args[0], func(locked *project.WorkflowState, statePath string) error {
+				state := *locked
+				if strings.TrimSpace(task) == "" {
+					return fmt.Errorf("worker count requires --task")
 				}
-			}
-			if state.Route != nil && state.Route.Class == project.RouteEasy &&
-				!state.Route.ForcedFull {
-				return fmt.Errorf("easy route cannot dispatch off-route helpers")
-			}
-			incrementSubagent(&state)
-			return project.SaveState(statePath, state)
+				if state.UsesAdaptiveDelivery() && state.Route == nil {
+					return fmt.Errorf("adaptive delivery must classify a route before dispatching helpers")
+				}
+				if state.UsesAdaptiveDelivery() {
+					if err := validateCoordinatorToken(state, coordinatorToken); err != nil {
+						return err
+					}
+				}
+				if state.Route != nil && state.Route.Class == project.RouteEasy &&
+					!state.Route.ForcedFull {
+					return fmt.Errorf("easy route cannot dispatch off-route helpers")
+				}
+				incrementSubagent(&state)
+				return project.SaveState(statePath, state)
+			})
 		},
 	}
 	command.Flags().StringVar(&task, "task", "", "subagent purpose")
@@ -213,31 +236,30 @@ func newCmdStateGrant() *cobra.Command {
 			if args[1] != "stack-advance" {
 				return fmt.Errorf("unknown capability %q (want stack-advance)", args[1])
 			}
-			state, statePath, err := loadStateAt(args[0])
-			if err != nil {
-				return err
-			}
-			if err := validateCoordinatorToken(state, coordinatorToken); err != nil {
-				return err
-			}
-			if !state.UsesAdaptiveDelivery() || state.Route == nil {
-				return fmt.Errorf("stack advance capability requires an adaptive routed project")
-			}
-			if state.PR.Number <= 0 || state.Phases["open-pr"].Status != project.PhaseDone {
-				return fmt.Errorf("stack advance capability requires a completed open-pr phase")
-			}
-			token, err := randomToken(32)
-			if err != nil {
-				return fmt.Errorf("generate stack advance capability: %w", err)
-			}
-			sum := sha256.Sum256([]byte(token))
-			state.StackAdvanceHash = fmt.Sprintf("%x", sum)
-			if err := project.SaveState(statePath, state); err != nil {
-				return err
-			}
-			return json.NewEncoder(os.Stdout).Encode(struct {
-				Capability string `json:"capability"`
-			}{Capability: token})
+			return withLockedState(args[0], func(locked *project.WorkflowState, statePath string) error {
+				state := *locked
+				if err := validateCoordinatorToken(state, coordinatorToken); err != nil {
+					return err
+				}
+				if !state.UsesAdaptiveDelivery() || state.Route == nil {
+					return fmt.Errorf("stack advance capability requires an adaptive routed project")
+				}
+				if state.PR.Number <= 0 || state.Phases["open-pr"].Status != project.PhaseDone {
+					return fmt.Errorf("stack advance capability requires a completed open-pr phase")
+				}
+				token, err := randomToken(32)
+				if err != nil {
+					return fmt.Errorf("generate stack advance capability: %w", err)
+				}
+				sum := sha256.Sum256([]byte(token))
+				state.StackAdvanceHash = fmt.Sprintf("%x", sum)
+				if err := project.SaveState(statePath, state); err != nil {
+					return err
+				}
+				return json.NewEncoder(os.Stdout).Encode(struct {
+					Capability string `json:"capability"`
+				}{Capability: token})
+			})
 		},
 	}
 	command.Flags().StringVar(
@@ -327,30 +349,28 @@ func newCmdStateFinish() *cobra.Command {
 			default:
 				return fmt.Errorf("finish status %q must be done, skipped, blocked, or escalated", status)
 			}
-			state, statePath, err := loadStateAt(args[0])
-			if err != nil {
-				return err
-			}
-			if err := state.ValidateAdaptiveFinish(args[1], status); err != nil {
-				return err
-			}
-			if state.UsesAdaptiveDelivery() && args[1] == "open-pr" {
-				return fmt.Errorf("adaptive open-pr must complete with state pr or state final")
-			}
-			if state.UsesAdaptiveDelivery() {
-				if err := consumePhaseDispatchToken(
-					&state, args[1], dispatchScopeFinish, dispatchToken,
+			return withLockedState(args[0], func(state *project.WorkflowState, statePath string) error {
+				if err := state.ValidateAdaptiveFinish(args[1], status); err != nil {
+					return err
+				}
+				if state.UsesAdaptiveDelivery() && args[1] == "open-pr" {
+					return fmt.Errorf("adaptive open-pr must complete with state pr or state final")
+				}
+				if state.UsesAdaptiveDelivery() {
+					if err := consumePhaseDispatchToken(
+						state, args[1], dispatchScopeFinish, dispatchToken,
+					); err != nil {
+						return err
+					}
+				}
+				if err := state.SetPhaseWithDelivery(
+					args[1], status, reason, artifact, task, outcome, "",
+					time.Now().UTC().Format(time.RFC3339),
 				); err != nil {
 					return err
 				}
-			}
-			if err := state.SetPhaseWithDelivery(
-				args[1], status, reason, artifact, task, outcome, "",
-				time.Now().UTC().Format(time.RFC3339),
-			); err != nil {
-				return err
-			}
-			return project.SaveState(statePath, state)
+				return project.SaveState(statePath, *state)
+			})
 		},
 	}
 	command.Flags().StringVar(&reason, "reason", "", "required reason for skipped, blocked, or escalated status")
@@ -383,8 +403,8 @@ func newCmdStateEvidence() *cobra.Command {
 }
 
 func newCmdStateEvidenceRecord() *cobra.Command {
-	var result, artifact, blockerCategory, blockerReason string
-	var gates, roles []string
+	var result, artifact, blockerCategory, blockerReason, gateFile string
+	var roles []string
 	var exitStatuses []int
 	var critical, important, suggestion int
 	var noGates bool
@@ -408,161 +428,167 @@ func newCmdStateEvidenceRecord() *cobra.Command {
 			} else if blockerCategory != "" || blockerReason != "" {
 				return fmt.Errorf("blocker metadata is only valid for blocked evidence")
 			}
-			if len(gates) != len(exitStatuses) {
-				return fmt.Errorf("--gate and --exit-status counts must match")
+			var definitions []gateDefinition
+			if strings.TrimSpace(gateFile) != "" {
+				var err error
+				definitions, err = loadGateDefinitions(gateFile)
+				if err != nil {
+					return err
+				}
+			}
+			if len(definitions) != len(exitStatuses) {
+				return fmt.Errorf("--gate-file entries and --exit-status counts must match")
 			}
 			if kind == "validation" && result != project.EvidenceBlocked &&
-				len(gates) == 0 && !noGates {
-				return fmt.Errorf("validation evidence requires at least one --gate and --exit-status or --no-gates")
+				len(definitions) == 0 && !noGates {
+				return fmt.Errorf("validation evidence requires --gate-file with matching --exit-status values or --no-gates")
 			}
 			if kind == "review" && result != project.EvidenceBlocked && len(roles) == 0 {
 				return fmt.Errorf("review evidence requires at least one --role")
 			}
-			state, statePath, err := loadStateAt(args[0])
-			if err != nil {
-				return err
-			}
-			snapshot, err := projectSnapshot(args[0])
-			if err != nil {
-				return err
-			}
-			owner, dispatch, err := validateEvidenceDispatch(
-				&state, kind, snapshot, dispatchToken,
-			)
-			if err != nil {
-				return err
-			}
-			commandEvidence := make([]project.CommandEvidence, len(gates))
-			for i := range gates {
-				id, commandText, err := parseGateFlag(gates[i], i)
+			return withLockedState(args[0], func(state *project.WorkflowState, statePath string) error {
+				snapshot, err := projectSnapshot(args[0])
 				if err != nil {
 					return err
 				}
-				commandEvidence[i] = redactCommand(id, commandText, exitStatuses[i])
-			}
-			result = evidenceResultWithFailurePrecedence(
-				kind,
-				result,
-				commandEvidence,
-				project.FindingCounts{
-					Critical: critical, Important: important, Suggestion: suggestion,
-				},
-			)
-			record := &project.EvidenceRecord{
-				Snapshot: snapshot, RouteRevision: state.Route.Revision,
-				RouteDigest: state.Route.Digest, DispatchID: dispatch.ID,
-				Result: result, Owner: owner, Artifact: artifact,
-				BlockerCategory: blockerCategory, BlockerReason: blockerReason,
-				CompletedAt: time.Now().UTC().Format(time.RFC3339),
-				Commands:    commandEvidence, NoGates: noGates, Roles: append([]string(nil), roles...),
-				Findings: project.FindingCounts{
-					Critical: critical, Important: important, Suggestion: suggestion,
-				},
-			}
-			requiredRoles := []string(nil)
-			if kind == project.EvidenceKindReview {
-				requiredRoles = state.Route.ReviewRoles
-			}
-			if kind == project.EvidenceKindValidation {
-				if err := project.ValidateValidationEvidence(*record, state.Route.Facts.GatePolicy); err != nil {
+				owner, dispatch, err := validateEvidenceDispatch(
+					state, kind, snapshot, dispatchToken,
+				)
+				if err != nil {
 					return err
 				}
-			} else if err := project.ValidateEvidence(kind, *record, requiredRoles); err != nil {
-				return err
-			}
-			if kind == "review" {
-				state.Evidence.Review = record
-			} else {
-				state.Evidence.Validation = record
-			}
-			if record.Result == project.EvidenceBlocked {
-				reason := fmt.Sprintf(
-					"%s evidence blocked (%s): %s",
-					kind, strings.TrimSpace(blockerCategory), strings.TrimSpace(blockerReason),
-				)
-				if err := state.SetPhaseWithDelivery(
-					owner, project.PhaseBlocked, reason, artifact, "", "", "", record.CompletedAt,
-				); err != nil {
-					return fmt.Errorf("block %s evidence owner %q: %w", kind, owner, err)
+				commandEvidence := make([]project.CommandEvidence, len(definitions))
+				for i := range definitions {
+					evidence, err := commandEvidenceForGate(definitions[i], exitStatuses[i])
+					if err != nil {
+						return err
+					}
+					commandEvidence[i] = evidence
 				}
-				if err := project.SaveState(statePath, state); err != nil {
+				result = evidenceResultWithFailurePrecedence(
+					kind,
+					result,
+					commandEvidence,
+					project.FindingCounts{
+						Critical: critical, Important: important, Suggestion: suggestion,
+					},
+				)
+				record := &project.EvidenceRecord{
+					Snapshot: snapshot, RouteRevision: state.Route.Revision,
+					RouteDigest: state.Route.Digest, DispatchID: dispatch.ID,
+					Result: result, Owner: owner, Artifact: artifact,
+					BlockerCategory: blockerCategory, BlockerReason: blockerReason,
+					CompletedAt: time.Now().UTC().Format(time.RFC3339),
+					Commands:    commandEvidence, NoGates: noGates, Roles: append([]string(nil), roles...),
+					Findings: project.FindingCounts{
+						Critical: critical, Important: important, Suggestion: suggestion,
+					},
+				}
+				requiredRoles := []string(nil)
+				if kind == project.EvidenceKindReview {
+					requiredRoles = state.Route.ReviewRoles
+				}
+				if kind == project.EvidenceKindValidation {
+					if err := project.ValidateValidationEvidence(*record, state.Route.Facts.GatePolicy); err != nil {
+						return err
+					}
+				} else if err := project.ValidateEvidence(kind, *record, requiredRoles); err != nil {
+					return err
+				}
+				if kind == "review" {
+					state.Evidence.Review = record
+				} else {
+					state.Evidence.Validation = record
+				}
+				if record.Result == project.EvidenceBlocked {
+					reason := fmt.Sprintf(
+						"%s evidence blocked (%s): %s",
+						kind, strings.TrimSpace(blockerCategory), strings.TrimSpace(blockerReason),
+					)
+					if err := state.SetPhaseWithDelivery(
+						owner, project.PhaseBlocked, reason, artifact, "", "", "", record.CompletedAt,
+					); err != nil {
+						return fmt.Errorf("block %s evidence owner %q: %w", kind, owner, err)
+					}
+					if err := project.SaveState(statePath, *state); err != nil {
+						return err
+					}
+					return json.NewEncoder(os.Stdout).Encode(record)
+				}
+				phase, reason, routeError, reopenError := "", "", "", ""
+				if kind == "review" {
+					if record.Result == project.EvidenceFailed || critical > 0 || important > 0 {
+						phase = "review"
+						reason = "review found Critical or Important issues"
+						routeError = "route failed review"
+						reopenError = "reopen implementation after failed review"
+					}
+				} else {
+					if record.Result == project.EvidenceFailed {
+						phase = "validate"
+						reason = "validation evidence " + result
+						routeError = "route failed validation"
+						reopenError = "reopen implementation after failed validation"
+					}
+				}
+				if reason != "" {
+					trigger := deliveryroute.RiskUnresolvedReviewCI
+					if kind == project.EvidenceKindValidation {
+						trigger = deliveryroute.RiskFailedGate
+					}
+					if state.Route != nil {
+						facts := state.Route.Facts
+						if !slices.Contains(facts.RiskTriggers, trigger) {
+							facts.RiskTriggers = append(facts.RiskTriggers, trigger)
+						}
+						decision, err := deliveryroute.Classify(facts)
+						if err != nil {
+							return fmt.Errorf("%s: %w", routeError, err)
+						}
+						decision.Snapshot = snapshot
+						decision, err = deliveryroute.PreserveMonotonic(*state.Route, decision, reason)
+						if err != nil {
+							return fmt.Errorf("%s: %w", routeError, err)
+						}
+						if err := state.ApplyRoute(decision); err != nil {
+							return fmt.Errorf("%s: %w", routeError, err)
+						}
+					}
+					if err := state.SetPhaseWithDelivery(
+						phase, project.PhaseEscalated, reason, artifact, "", "", "", record.CompletedAt,
+					); err != nil {
+						return fmt.Errorf("%s: %w", routeError, err)
+					}
+					if err := state.SetPhaseWithDelivery(
+						"implement", project.PhaseEscalated, reason, "", artifact, "", "", "",
+					); err != nil {
+						return fmt.Errorf("%s: %w", reopenError, err)
+					}
+					staleReason := "must rerun after implementation changes"
+					other := "review"
+					if kind == project.EvidenceKindReview {
+						other = "validate"
+					}
+					if otherPhase, ok := state.Phases[other]; ok && otherPhase.Status == project.PhaseDone {
+						if err := state.SetPhaseWithDelivery(
+							other, project.PhaseEscalated, staleReason, "", artifact, "", "", "",
+						); err != nil {
+							return fmt.Errorf("reopen %s after failed %s: %w", other, kind, err)
+						}
+					}
+				}
+				if err := project.SaveState(statePath, *state); err != nil {
 					return err
 				}
 				return json.NewEncoder(os.Stdout).Encode(record)
-			}
-			phase, reason, routeError, reopenError := "", "", "", ""
-			if kind == "review" {
-				if record.Result == project.EvidenceFailed || critical > 0 || important > 0 {
-					phase = "review"
-					reason = "review found Critical or Important issues"
-					routeError = "route failed review"
-					reopenError = "reopen implementation after failed review"
-				}
-			} else {
-				if record.Result == project.EvidenceFailed {
-					phase = "validate"
-					reason = "validation evidence " + result
-					routeError = "route failed validation"
-					reopenError = "reopen implementation after failed validation"
-				}
-			}
-			if reason != "" {
-				trigger := deliveryroute.RiskUnresolvedReviewCI
-				if kind == project.EvidenceKindValidation {
-					trigger = deliveryroute.RiskFailedGate
-				}
-				if state.Route != nil {
-					facts := state.Route.Facts
-					if !slices.Contains(facts.RiskTriggers, trigger) {
-						facts.RiskTriggers = append(facts.RiskTriggers, trigger)
-					}
-					decision, err := deliveryroute.Classify(facts)
-					if err != nil {
-						return fmt.Errorf("%s: %w", routeError, err)
-					}
-					decision.Snapshot = snapshot
-					decision, err = deliveryroute.PreserveMonotonic(*state.Route, decision, reason)
-					if err != nil {
-						return fmt.Errorf("%s: %w", routeError, err)
-					}
-					if err := state.ApplyRoute(decision); err != nil {
-						return fmt.Errorf("%s: %w", routeError, err)
-					}
-				}
-				if err := state.SetPhaseWithDelivery(
-					phase, project.PhaseEscalated, reason, artifact, "", "", "", record.CompletedAt,
-				); err != nil {
-					return fmt.Errorf("%s: %w", routeError, err)
-				}
-				if err := state.SetPhaseWithDelivery(
-					"implement", project.PhaseEscalated, reason, "", artifact, "", "", "",
-				); err != nil {
-					return fmt.Errorf("%s: %w", reopenError, err)
-				}
-				staleReason := "must rerun after implementation changes"
-				other := "review"
-				if kind == project.EvidenceKindReview {
-					other = "validate"
-				}
-				if otherPhase, ok := state.Phases[other]; ok && otherPhase.Status == project.PhaseDone {
-					if err := state.SetPhaseWithDelivery(
-						other, project.PhaseEscalated, staleReason, "", artifact, "", "", "",
-					); err != nil {
-						return fmt.Errorf("reopen %s after failed %s: %w", other, kind, err)
-					}
-				}
-			}
-			if err := project.SaveState(statePath, state); err != nil {
-				return err
-			}
-			return json.NewEncoder(os.Stdout).Encode(record)
+			})
 		},
 	}
 	command.Flags().StringVar(&result, "result", "", "passed, failed, or blocked")
 	command.Flags().StringVar(&artifact, "artifact", "", "evidence artifact path")
 	command.Flags().StringVar(&blockerCategory, "blocker-category", "", "blocked evidence category")
 	command.Flags().StringVar(&blockerReason, "blocker-reason", "", "blocked evidence reason")
-	command.Flags().StringArrayVar(&gates, "gate", nil, "validation gate as id=command (repeatable)")
+	command.Flags().StringVar(&gateFile, "gate-file", "", "JSON file containing validation gate argv")
 	command.Flags().IntSliceVar(&exitStatuses, "exit-status", nil, "matching validation command exit status")
 	command.Flags().StringArrayVar(&roles, "role", nil, "review role (repeatable)")
 	command.Flags().IntVar(&critical, "critical", 0, "critical finding count")
@@ -638,16 +664,11 @@ func consumePhaseDispatchToken(
 	scope string,
 	token string,
 ) error {
-	phase, ok := state.Phases[phaseName]
-	if !ok || phase.Status != project.PhaseInProgress || phase.Dispatch == nil {
-		return fmt.Errorf("canonical phase owner %q is not actively dispatched", phaseName)
+	if err := validatePhaseDispatchToken(*state, phaseName, scope, token); err != nil {
+		return err
 	}
+	phase := state.Phases[phaseName]
 	dispatch := phase.Dispatch
-	if state.Route == nil ||
-		dispatch.RouteRevision != state.Route.Revision ||
-		dispatch.RouteDigest != state.Route.Digest {
-		return fmt.Errorf("dispatch for canonical phase owner %q is stale", phaseName)
-	}
 	if err := consumeDispatchCapability(dispatch, scope, token); err != nil {
 		return fmt.Errorf("canonical phase owner %q: %w", phaseName, err)
 	}
@@ -656,7 +677,41 @@ func consumePhaseDispatchToken(
 	return nil
 }
 
+func validatePhaseDispatchToken(
+	state project.WorkflowState,
+	phaseName string,
+	scope string,
+	token string,
+) error {
+	phase, ok := state.Phases[phaseName]
+	if !ok || phase.Status != project.PhaseInProgress || phase.Dispatch == nil {
+		return fmt.Errorf("canonical phase owner %q is not actively dispatched", phaseName)
+	}
+	if state.Route == nil ||
+		phase.Dispatch.RouteRevision != state.Route.Revision ||
+		phase.Dispatch.RouteDigest != state.Route.Digest {
+		return fmt.Errorf("dispatch for canonical phase owner %q is stale", phaseName)
+	}
+	if err := validateDispatchCapability(phase.Dispatch, scope, token); err != nil {
+		return fmt.Errorf("canonical phase owner %q: %w", phaseName, err)
+	}
+	return nil
+}
+
 func consumeDispatchCapability(dispatch *project.PhaseDispatch, scope, token string) error {
+	if err := validateDispatchCapability(dispatch, scope, token); err != nil {
+		return err
+	}
+	if dispatch.TokenHashes != nil {
+		delete(dispatch.TokenHashes, scope)
+	}
+	if scope == dispatchScopeFinish {
+		dispatch.TokenHash = ""
+	}
+	return nil
+}
+
+func validateDispatchCapability(dispatch *project.PhaseDispatch, scope, token string) error {
 	hash := dispatch.TokenHashes[scope]
 	if hash == "" && scope == dispatchScopeFinish {
 		hash = dispatch.TokenHash
@@ -671,12 +726,6 @@ func consumeDispatchCapability(dispatch *project.PhaseDispatch, scope, token str
 	}
 	if subtle.ConstantTimeCompare(sum[:], expected) != 1 {
 		return fmt.Errorf("invalid dispatch token for scope %q", scope)
-	}
-	if dispatch.TokenHashes != nil {
-		delete(dispatch.TokenHashes, scope)
-	}
-	if scope == dispatchScopeFinish {
-		dispatch.TokenHash = ""
 	}
 	return nil
 }
@@ -725,41 +774,6 @@ func decodeSHA256(value string) ([]byte, error) {
 		return nil, fmt.Errorf("decode SHA-256: got %d bytes", len(decoded))
 	}
 	return decoded, nil
-}
-
-func redactCommand(gateID, command string, exitStatus int) project.CommandEvidence {
-	sum := sha256.Sum256([]byte(command))
-	fields := strings.Fields(command)
-	display := "<redacted-command>"
-	for _, field := range fields {
-		if strings.Contains(field, "=") {
-			continue
-		}
-		display = filepath.Base(field)
-		if len(fields) > 1 {
-			display += " <redacted-args>"
-		}
-		break
-	}
-	return project.CommandEvidence{
-		GateID: gateID, Display: display, Digest: fmt.Sprintf("%x", sum), ExitStatus: exitStatus,
-	}
-}
-
-func parseGateFlag(value string, index int) (string, string, error) {
-	id, command, ok := strings.Cut(value, "=")
-	if !ok {
-		return "", "", fmt.Errorf("--gate #%d must use id=command", index+1)
-	}
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return "", "", fmt.Errorf("--gate #%d has an empty id", index+1)
-	}
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return "", "", fmt.Errorf("--gate %q has an empty command", id)
-	}
-	return id, command, nil
 }
 
 func newCmdStateEvidenceFresh() *cobra.Command {

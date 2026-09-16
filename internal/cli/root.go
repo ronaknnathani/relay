@@ -103,6 +103,7 @@ func newRootCmd() *cobra.Command {
 		newCmdGenerate(),
 		newCmdState(),
 		newCmdRoute(),
+		newCmdGate(),
 		newCmdConfig(),
 		newCmdProgram(),
 		newCmdPR(),

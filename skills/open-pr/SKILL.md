@@ -10,7 +10,9 @@ Open the finished change; performs no new review and reruns no passing gate.
 ## Process
 
 1. Read repository/global `AGENTS.md` and the PR template.
-2. Detect the current branch and the repository's default branch. In standalone use from the
+2. Detect the current branch and the repository's default branch. If dynamic default-branch
+   detection fails or returns empty, stop with an actionable error; never guess `main` or `master`
+   and never continue without the default-branch guard. In standalone use from the
    dynamically detected default branch, create and switch to a feature branch before invoking
    `commit`: read the configured prefix with `relay config branch-prefix`, derive a concise task slug,
    validate the full name with `git check-ref-format --branch`, verify it does not already exist

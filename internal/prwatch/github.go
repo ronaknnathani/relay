@@ -319,19 +319,22 @@ func (c *Client) repo(ctx context.Context) (string, string, error) {
 // the rest — including failing ones. Checks are read through their own
 // paginated connection instead.
 const pullRequestFields = "number,url,title,state,isDraft,baseRefName,baseRefOid," +
-	"headRefName,headRefOid,mergeStateStatus,mergeable,reviewDecision,autoMergeRequest,author"
+	"headRefName,headRefOid,headRepository,mergeStateStatus,mergeable,reviewDecision,autoMergeRequest,author"
 
 func (c *Client) pullRequest(ctx context.Context, number int) (PullRequest, error) {
 	var response struct {
-		Number           int    `json:"number"`
-		URL              string `json:"url"`
-		Title            string `json:"title"`
-		State            string `json:"state"`
-		IsDraft          bool   `json:"isDraft"`
-		BaseRefName      string `json:"baseRefName"`
-		BaseRefOid       string `json:"baseRefOid"`
-		HeadRefName      string `json:"headRefName"`
-		HeadRefOid       string `json:"headRefOid"`
+		Number         int    `json:"number"`
+		URL            string `json:"url"`
+		Title          string `json:"title"`
+		State          string `json:"state"`
+		IsDraft        bool   `json:"isDraft"`
+		BaseRefName    string `json:"baseRefName"`
+		BaseRefOid     string `json:"baseRefOid"`
+		HeadRefName    string `json:"headRefName"`
+		HeadRefOid     string `json:"headRefOid"`
+		HeadRepository struct {
+			NameWithOwner string `json:"nameWithOwner"`
+		} `json:"headRepository"`
 		MergeStateStatus string `json:"mergeStateStatus"`
 		Mergeable        string `json:"mergeable"`
 		ReviewDecision   string `json:"reviewDecision"`
@@ -360,6 +363,7 @@ func (c *Client) pullRequest(ctx context.Context, number int) (PullRequest, erro
 		BaseSHA:          response.BaseRefOid,
 		HeadRef:          response.HeadRefName,
 		HeadSHA:          response.HeadRefOid,
+		HeadRepo:         response.HeadRepository.NameWithOwner,
 		MergeStateStatus: strings.ToUpper(response.MergeStateStatus),
 		Mergeable:        strings.ToUpper(response.Mergeable),
 		ReviewDecision:   strings.ToUpper(response.ReviewDecision),
@@ -386,15 +390,18 @@ func (c *Client) findOpenPullRequests(
 		return nil, err
 	}
 	var responses []struct {
-		Number           int    `json:"number"`
-		URL              string `json:"url"`
-		Title            string `json:"title"`
-		State            string `json:"state"`
-		IsDraft          bool   `json:"isDraft"`
-		BaseRefName      string `json:"baseRefName"`
-		BaseRefOid       string `json:"baseRefOid"`
-		HeadRefName      string `json:"headRefName"`
-		HeadRefOid       string `json:"headRefOid"`
+		Number         int    `json:"number"`
+		URL            string `json:"url"`
+		Title          string `json:"title"`
+		State          string `json:"state"`
+		IsDraft        bool   `json:"isDraft"`
+		BaseRefName    string `json:"baseRefName"`
+		BaseRefOid     string `json:"baseRefOid"`
+		HeadRefName    string `json:"headRefName"`
+		HeadRefOid     string `json:"headRefOid"`
+		HeadRepository struct {
+			NameWithOwner string `json:"nameWithOwner"`
+		} `json:"headRepository"`
 		MergeStateStatus string `json:"mergeStateStatus"`
 		Mergeable        string `json:"mergeable"`
 		ReviewDecision   string `json:"reviewDecision"`
@@ -421,6 +428,7 @@ func (c *Client) findOpenPullRequests(
 			BaseSHA:          response.BaseRefOid,
 			HeadRef:          response.HeadRefName,
 			HeadSHA:          response.HeadRefOid,
+			HeadRepo:         response.HeadRepository.NameWithOwner,
 			MergeStateStatus: strings.ToUpper(response.MergeStateStatus),
 			Mergeable:        strings.ToUpper(response.Mergeable),
 			ReviewDecision:   strings.ToUpper(response.ReviewDecision),

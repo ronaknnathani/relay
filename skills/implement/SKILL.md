@@ -74,13 +74,15 @@ did.
       `relay state evidence record "$SLUG" review --result passed --artifact implementation.md
       --role <each-route-selected-role> --critical 0 --important 0 --suggestion <count>
       --dispatch-token "$REVIEW_TOKEN"`.
-    - Then run every gate in the route's exact required gate set once and record gate IDs, commands,
-      and statuses
+    - Then run every gate in the route's exact required gate set once through
+      `relay gate run "$SLUG" <gate-id> --file "$GATE_FILE"` and record gate IDs and statuses
       with `relay state evidence record "$SLUG" validation --result passed --artifact
-      implementation.md --gate <id>="<exact command>" --exit-status 0 ...
+      implementation.md --gate-file "$GATE_FILE" --exit-status 0 ...
       --dispatch-token "$VALIDATION_TOKEN"`; use `--no-gates` only when the route records the verified
-      no-gates policy. Relay rejects missing, extra, duplicate, or changed gates and persists only the
-      ID, redacted display, exact digest, and exit status.
+      no-gates policy. Create the private JSON gate file with a file-writing tool, never a shell
+      heredoc or interpolated command string. Relay rejects shell command strings, missing, extra,
+      duplicate, or changed gates and persists only the ID, redacted display, exact digest, and exit
+      status.
     - On every other route, run only targeted checks needed to keep each slice green. Leave independent
       review and the final full gate set to `review` and `validate`.
     A Critical/Important finding or failed easy gate must be recorded immediately; Relay escalates

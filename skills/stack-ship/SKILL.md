@@ -54,8 +54,13 @@ relay pr watch start <front-project-slug> --mode stack --owner <stack-orchestrat
 There is never a watcher on a
 non-front PR. For each wake, invoke `pr-monitor` once; it reads one digest, delegates all mutations to
 `pr-fix`, and re-observes once. When its result marks `auto-merge-not-armed` as `ready-for-owner`,
-verify the watcher `owner_slug` is this orchestrator and arm approved auto-merge yourself; no worker
-may perform that mutation.
+verify the watcher `owner_slug` is this orchestrator, require fresh review and validation with
+`relay state evidence fresh <front-project-slug> review` and
+`relay state evidence fresh <front-project-slug> validation`, and verify the refreshed adaptive
+delivery has reconciled the current PR head before arming approved auto-merge. Any post-PR branch
+mutation must first complete `relay resume <front-project-slug>` and produce new route, review, and
+exact-gate validation evidence; a `ready-for-owner` result alone is never sufficient. No worker may
+perform the auto-merge mutation.
 
 After the front merges:
 

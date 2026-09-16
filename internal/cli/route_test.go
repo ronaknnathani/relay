@@ -15,6 +15,7 @@ import (
 
 func runRoute(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	args = translateGateArgs(t, args)
 	if len(args) >= 2 {
 		switch args[0] {
 		case "base", "classify", "refresh", "escalate":
@@ -512,6 +513,8 @@ func TestRouteReclassifyRebindsImplementationAndKeepsEasyDeliveryAtTwoDispatches
 	if err := os.WriteFile(filepath.Join(repo, "changed.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	gitOutput(t, repo, "add", "changed.txt")
+	gitOutput(t, repo, "commit", "-q", "-m", "apply reviewed change")
 	if _, err := runRoute(t, classify...); err != nil {
 		t.Fatal(err)
 	}
@@ -638,6 +641,7 @@ func TestRouteClassifyWorkerCannotChangeCoordinatorGatePolicy(t *testing.T) {
 				"--dispatch-token", dispatch.RouteToken,
 			}
 			workerClassify = append(workerClassify, test.gates...)
+			workerClassify = translateGateArgs(t, workerClassify)
 			if _, err := runRouteRaw(t, workerClassify...); err == nil ||
 				!strings.Contains(err.Error(), "coordinator-approved gate policy") {
 				t.Fatalf("worker gate-policy mutation error = %v", err)
@@ -658,6 +662,7 @@ func TestRouteClassifyWorkerCannotChangeCoordinatorGatePolicy(t *testing.T) {
 				"--predicted-size-known", "--predicted-files", "1", "--predicted-lines", "20",
 				"--dispatch-token", dispatch.RouteToken,
 			}
+			workerClassify = translateGateArgs(t, workerClassify)
 			if _, err := runRouteRaw(t, workerClassify...); err != nil {
 				t.Fatalf("worker could not preserve exact gate policy after rejection: %v", err)
 			}
@@ -1124,19 +1129,19 @@ func TestRouteClassifyReportsActionableGateFlagErrors(t *testing.T) {
 	}{
 		"missing separator": {
 			flags: []string{"--gate", "test"},
-			want:  "--gate #1 must use id=command",
+			want:  `gate "test" requires a non-empty argv`,
 		},
 		"empty id": {
 			flags: []string{"--gate", "=TOKEN=super-secret go test ./..."},
-			want:  "--gate #1 has an empty id",
+			want:  "contains an empty gate id",
 		},
 		"empty command": {
 			flags: []string{"--gate", "test= "},
-			want:  `--gate "test" has an empty command`,
+			want:  `gate "test" requires a non-empty argv`,
 		},
 		"conflicting declarations": {
 			flags: []string{"--gate", "test=go test ./...", "--no-repository-gates"},
-			want:  "--gate and --no-repository-gates cannot be used together",
+			want:  "--gate-file and --no-repository-gates cannot be used together",
 		},
 	}
 	for name, test := range tests {

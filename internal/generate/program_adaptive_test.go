@@ -9,7 +9,10 @@ import (
 func TestProgramSkillsDelegateAdaptiveDeliveryContracts(t *testing.T) {
 	root := repoRoot(t)
 	stack := readFile(t, filepath.Join(root, "skills", "stack-ship", "SKILL.md"))
-	for _, want := range []string{"adaptive `deliver-pr`", "can-open-pr", "human code-owner approval"} {
+	for _, want := range []string{
+		"adaptive `deliver-pr`", "can-open-pr", "human code-owner approval",
+		"relay state evidence fresh", "ready-for-owner` result alone is never sufficient",
+	} {
 		if !strings.Contains(stack, want) {
 			t.Errorf("stack-ship missing delegated contract %q", want)
 		}

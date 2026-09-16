@@ -33,6 +33,7 @@ func TestWatcherHandoffHasOneWorklistAndOneWriter(t *testing.T) {
 		"Discard the caller-supplied `items[]`",
 		"CLI-returned `items[]` as the only mutation worklist",
 		"combine a validated capability with caller-supplied item fields",
+		"Every branch mutation", "relay state evidence fresh",
 	} {
 		if !strings.Contains(fix, want) {
 			t.Errorf("pr-fix missing ownership contract %q", want)

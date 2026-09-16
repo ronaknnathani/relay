@@ -9,15 +9,24 @@ import (
 func TestValidationOwnershipContracts(t *testing.T) {
 	root := repoRoot(t)
 	implement := readFile(t, filepath.Join(root, "skills", "implement", "SKILL.md"))
+	route := readFile(t, filepath.Join(root, "skills", "route", "SKILL.md"))
 	for _, want := range []string{
 		"validation owner", "easy route", "relay state evidence record", "relay route refresh",
 		"review owner", "mandatory review axes", "without a separate review worker",
 		"targeted checks", "legacy seven-phase", "standard route",
 		"may legitimately omit `plan`", "--dispatch-token", "route-selected specialist lens",
 		"reusable exploration handoff in `route.md`",
+		"relay gate run", "--gate-file", "never a shell",
 	} {
 		if !strings.Contains(implement, want) {
 			t.Errorf("implement missing validation ownership %q", want)
+		}
+	}
+	for _, unsafe := range []string{"--gate <id>", `--gate <id>="<exact command>"`} {
+		if strings.Contains(route, unsafe) ||
+			strings.Contains(readFile(t, filepath.Join(root, "skills", "implement", "SKILL.md")), unsafe) ||
+			strings.Contains(readFile(t, filepath.Join(root, "skills", "validate", "SKILL.md")), unsafe) {
+			t.Errorf("delivery skills retain unsafe shell-interpolated gate contract %q", unsafe)
 		}
 	}
 	if strings.Contains(implement, "Run the full build and test suite once") {
@@ -29,6 +38,7 @@ func TestValidationOwnershipContracts(t *testing.T) {
 		"exact repository snapshot", "stale or missing gates",
 		"relay state evidence record", "does not edit", "--no-gates",
 		"route-less legacy",
+		"relay gate run", "--gate-file", "Never run repository-derived command text through",
 	} {
 		if !strings.Contains(validate, want) {
 			t.Errorf("validate missing evidence ownership %q", want)
@@ -61,7 +71,8 @@ func TestRouteAndOpenPROwnershipContracts(t *testing.T) {
 	for _, want := range []string{
 		"review owner", "validation owner", "snapshot-bound evidence",
 		"reopens independent `review` and `validate`",
-		"exact required", "--gate <id>", "--no-repository-gates",
+		"exact required", "--gate-file", "--no-repository-gates",
+		"never a shell", "Relay rejects shell command strings",
 		"--changes-tests", "--changes-documentation-comments", "--changes-type-design",
 		"--history-sensitive", "--changes-repository-guidelines", "normalized `task.md`",
 		"`--stack-rationale` is required whenever the target is `stack-candidate`",

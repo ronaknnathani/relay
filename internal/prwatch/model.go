@@ -146,6 +146,7 @@ type PullRequest struct {
 	BaseSHA          string `json:"base_sha,omitempty"`
 	HeadRef          string `json:"head_ref"`
 	HeadSHA          string `json:"head_sha"`
+	HeadRepo         string `json:"head_repo,omitempty"`
 	MergeStateStatus string `json:"merge_state_status"`
 	Mergeable        string `json:"mergeable"`
 	ReviewDecision   string `json:"review_decision"`

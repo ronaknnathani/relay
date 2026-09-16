@@ -17,11 +17,15 @@ commit, push, review, or ship.
    For a route-less legacy seven-phase project, `validate` owns the complete repository gate set,
    reconstructs criteria when artifacts are absent, writes the same verdict, and uses the legacy
    `relay state set`/`advance` flow without requiring route or evidence records.
-2. Read the exact gate IDs and command digests bound to the route. Confirm the repository's current
+2. Read the exact gate IDs and structured-argv digests bound to the route. Confirm the repository's current
    manifest, scripts, Makefile, and CI still define that set; reclassify if it changed. Do not invent a
-   generic gate or treat an undefined gate as passing.
+   generic gate or treat an undefined gate as passing. Write the gate definitions to a private JSON
+   file with a file-writing tool, never a shell heredoc or interpolated command string.
 3. Compare the required gate set with evidence for the exact repository snapshot. Reuse a passing
-   gate only when its ID, command digest, route revision, and snapshot are unchanged. Run stale or missing gates;
+   gate only when its ID, command digest, route revision, and snapshot are unchanged. Run stale or missing gates
+   only through `relay gate run "$SLUG" <gate-id> --file "$GATE_FILE"`; Relay executes the validated
+   argv directly and rejects shell command strings. Never run repository-derived command text through
+   `sh -c`, `bash -c`, backticks, command substitution, or `eval`;
    never rerun an unchanged passing command merely because this phase started.
 4. Check every acceptance criterion with a named test, command, or direct observation. Missing
    evidence is a failure.
@@ -31,7 +35,7 @@ commit, push, review, or ship.
 relay state evidence record "$SLUG" validation \
   --result passed \
   --artifact validation.md \
-  --gate <id>="<exact command>" --exit-status 0 \
+  --gate-file "$GATE_FILE" --exit-status 0 \
   --dispatch-token "$VALIDATION_TOKEN"
 ```
 

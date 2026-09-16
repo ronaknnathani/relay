@@ -2,6 +2,7 @@ package project
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,10 +18,14 @@ var deliveryInputFiles = []string{"task.md", "requirements.md", "assignment.md"}
 func ProjectInputRevision(projectDir string) (string, error) {
 	hash := sha256.New()
 	for _, name := range deliveryInputFiles {
+		if err := binary.Write(hash, binary.BigEndian, uint64(len(name))); err != nil {
+			return "", fmt.Errorf("hash project input name %s: %w", name, err)
+		}
+		hash.Write([]byte(name))
 		path := filepath.Join(projectDir, name)
 		info, err := os.Lstat(path)
 		if errors.Is(err, os.ErrNotExist) {
-			hash.Write([]byte(name + "\x00missing\x00"))
+			hash.Write([]byte{0})
 			continue
 		}
 		if err != nil {
@@ -35,7 +40,9 @@ func ProjectInputRevision(projectDir string) (string, error) {
 		}
 		normalized := strings.ReplaceAll(string(content), "\r\n", "\n")
 		normalized = strings.TrimSpace(normalized) + "\n"
-		hash.Write([]byte(name + "\x00present\x00" + normalized + "\x00"))
+		contentDigest := sha256.Sum256([]byte(normalized))
+		hash.Write([]byte{1})
+		hash.Write(contentDigest[:])
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }

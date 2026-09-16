@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -38,6 +39,66 @@ func runState(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	args = prepareStateTestArgs(t, args)
 	return runStateRaw(t, args...)
+}
+
+func translateGateArgs(t *testing.T, args []string) []string {
+	t.Helper()
+	if slices.Contains(args, "--gate-file") {
+		return args
+	}
+	var definitions []gateDefinition
+	translated := make([]string, 0, len(args))
+	firstGateIndex := -1
+	for index := 0; index < len(args); index++ {
+		if args[index] != "--gate" || index+1 >= len(args) {
+			translated = append(translated, args[index])
+			continue
+		}
+		if firstGateIndex < 0 {
+			firstGateIndex = len(translated)
+		}
+		value := args[index+1]
+		index++
+		id, command, _ := strings.Cut(value, "=")
+		definition := gateDefinitionForTestCommand(command)
+		definition.ID = id
+		definitions = append(definitions, definition)
+	}
+	if len(definitions) == 0 {
+		return translated
+	}
+
+	path := filepath.Join(t.TempDir(), "gates.json")
+	data, err := json.Marshal(definitions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	translated = append(translated, "", "")
+	copy(translated[firstGateIndex+2:], translated[firstGateIndex:])
+	translated[firstGateIndex] = "--gate-file"
+	translated[firstGateIndex+1] = path
+	return translated
+}
+
+func gateDefinitionForTestCommand(command string) gateDefinition {
+	fields := strings.Fields(command)
+	definition := gateDefinition{}
+	for len(fields) > 0 {
+		name, value, found := strings.Cut(fields[0], "=")
+		if !found || !environmentName.MatchString(name) {
+			break
+		}
+		if definition.Env == nil {
+			definition.Env = make(map[string]string)
+		}
+		definition.Env[name] = value
+		fields = fields[1:]
+	}
+	definition.Argv = fields
+	return definition
 }
 
 func runStateRaw(t *testing.T, args ...string) (string, error) {
@@ -76,6 +137,7 @@ var testDispatchTokens = map[string]dispatchOutput{}
 
 func prepareStateTestArgs(t *testing.T, args []string) []string {
 	t.Helper()
+	args = translateGateArgs(t, args)
 	if len(args) < 2 {
 		return args
 	}
@@ -132,7 +194,7 @@ func replaceTestDispatchToken(args []string, scope string) {
 
 func TestStateInitNextAdvance(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	out, err := runState(t, "init", "demo", "--workflow", "deliver-pr", "--phases", "clarify,plan,implement")
+	out, err := runState(t, "init", "demo", "--workflow", "wf", "--phases", "clarify,plan,implement")
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -176,6 +238,30 @@ func TestStateDoubleInitRejected(t *testing.T) {
 	_, err := runState(t, "init", "demo", "--workflow", "wf", "--phases", "a,b")
 	if err == nil || !strings.Contains(err.Error(), "already initialized") {
 		t.Errorf("double init error = %v, want an already-initialized rejection", err)
+	}
+}
+
+func TestStateInitRejectsNoncanonicalAdaptiveDeliveryOrder(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	projectDir := filepath.Join(project.ActiveDir(), "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(project.ManifestPath(project.ActiveDir(), "demo"), project.Manifest{
+		Slug: "demo", Workflow: "deliver-pr", DeliveryMode: project.DeliveryModeAdaptive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runState(
+		t,
+		"init", "demo",
+		"--workflow", "deliver-pr",
+		"--phases", "open-pr",
+	); err == nil || !strings.Contains(err.Error(), "canonical adaptive phase order") {
+		t.Fatalf("noncanonical adaptive init error = %v", err)
+	}
+	if _, err := os.Stat(project.StatePath("demo")); !os.IsNotExist(err) {
+		t.Fatalf("rejected adaptive init created state: %v", err)
 	}
 }
 

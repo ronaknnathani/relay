@@ -10,13 +10,17 @@ import (
 	neturl "net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/ronaknnathani/relay/internal/patrollock"
 	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/ronaknnathani/relay/internal/prwatch"
 	"github.com/spf13/cobra"
 )
+
+const stateMutationLockTimeout = 2 * time.Minute
 
 var (
 	readPRForRecording = func(
@@ -108,6 +112,7 @@ func loadStateAt(slug string) (project.WorkflowState, string, error) {
 		}
 		return ws, path, nil
 	}
+
 	manifest, err := project.Load(manifestPath)
 	if err != nil {
 		return project.WorkflowState{}, "", err
@@ -132,7 +137,44 @@ func loadStateAt(slug string) (project.WorkflowState, string, error) {
 			"state slug %q does not match selected project %q", ws.Slug, slug,
 		)
 	}
+	if manifest.DeliveryMode == project.DeliveryModeAdaptive ||
+		manifest.DeliveryMode == project.DeliveryModeFull {
+		if ws.Workflow != "deliver-pr" ||
+			!slices.Equal(ws.Order, project.AdaptiveDeliveryPhases) {
+			return project.WorkflowState{}, "", fmt.Errorf(
+				"adaptive project %q requires the canonical guarded delivery state",
+				slug,
+			)
+		}
+		if ws.Version == 0 {
+			ws.Version = project.WorkflowStateVersion
+		}
+	}
 	return ws, path, nil
+}
+
+func withLockedState(
+	slug string,
+	mutate func(*project.WorkflowState, string) error,
+) (err error) {
+	_, statePath, err := loadStateAt(slug)
+	if err != nil {
+		return err
+	}
+	lock, err := patrollock.AcquireWait(statePath+".lock", stateMutationLockTimeout)
+	if err != nil {
+		return fmt.Errorf("lock state for %q: %w", slug, err)
+	}
+	defer func() {
+		if releaseErr := lock.Release(); releaseErr != nil {
+			err = errors.Join(err, releaseErr)
+		}
+	}()
+	state, lockedPath, err := loadStateAt(slug)
+	if err != nil {
+		return err
+	}
+	return mutate(&state, lockedPath)
 }
 
 func newCmdStateInit() *cobra.Command {
@@ -146,7 +188,34 @@ func newCmdStateInit() *cobra.Command {
 			if err := project.ValidateSlug(slug); err != nil {
 				return err
 			}
-			ws, err := project.NewState(slug, workflow, splitPhases(phases))
+			order := splitPhases(phases)
+			adaptive := false
+			manifestPath := project.ManifestPath(project.ActiveDir(), slug)
+			if _, statErr := os.Stat(manifestPath); statErr == nil {
+				manifest, loadErr := project.Load(manifestPath)
+				if loadErr != nil {
+					return loadErr
+				}
+				if manifest.Workflow != "" && workflow != manifest.Workflow {
+					return fmt.Errorf(
+						"state workflow %q does not match project workflow %q",
+						workflow, manifest.Workflow,
+					)
+				}
+				adaptive = adaptive ||
+					manifest.DeliveryMode == project.DeliveryModeAdaptive ||
+					manifest.DeliveryMode == project.DeliveryModeFull
+			} else if !errors.Is(statErr, fs.ErrNotExist) {
+				return fmt.Errorf("inspect manifest for %q: %w", slug, statErr)
+			}
+			if adaptive &&
+				(workflow != "deliver-pr" || !slices.Equal(order, project.AdaptiveDeliveryPhases)) {
+				return fmt.Errorf(
+					"deliver-pr requires the canonical adaptive phase order %q",
+					strings.Join(project.AdaptiveDeliveryPhases, ","),
+				)
+			}
+			ws, err := project.NewState(slug, workflow, order)
 			if err != nil {
 				return err
 			}
@@ -270,26 +339,25 @@ func newCmdStateAdvance() *cobra.Command {
 		Use:   "advance <slug>",
 		Short: "Mark the current phase done and print the next phase",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(command *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			slug := args[0]
-			ws, statePath, err := loadStateAt(slug)
-			if err != nil {
-				return err
-			}
-			if ws.UsesAdaptiveDelivery() {
-				return fmt.Errorf(
-					"adaptive delivery cannot use state advance; use state finish with an outcome",
-				)
-			}
-			next, err := ws.Advance()
-			if err != nil {
-				return err
-			}
-			if err := project.SaveState(statePath, ws); err != nil {
-				return err
-			}
-			fmt.Println(next)
-			return nil
+			return withLockedState(slug, func(locked *project.WorkflowState, statePath string) error {
+				ws := *locked
+				if ws.UsesAdaptiveDelivery() {
+					return fmt.Errorf(
+						"adaptive delivery cannot use state advance; use state finish with an outcome",
+					)
+				}
+				next, err := ws.Advance()
+				if err != nil {
+					return err
+				}
+				if err := project.SaveState(statePath, ws); err != nil {
+					return err
+				}
+				fmt.Println(next)
+				return nil
+			})
 		},
 	}
 }
@@ -304,142 +372,161 @@ func newCmdStatePR() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			slug := args[0]
-			ws, statePath, err := loadStateAt(slug)
-			if err != nil {
-				return err
-			}
-			if ws.UsesAdaptiveDelivery() {
-				if reconcile && (number > 0 || strings.TrimSpace(url) != "") {
-					return fmt.Errorf("--reconcile cannot be combined with --number or --url")
-				}
-				if !reconcile && (number <= 0 || strings.TrimSpace(url) == "") {
-					return fmt.Errorf("adaptive PR recording requires --number and --url together")
-				}
-				manifestPath, err := project.Find(slug)
-				if err != nil {
-					return err
-				}
-				manifest, err := project.Load(manifestPath)
-				if err != nil {
-					return err
-				}
-				if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {
-					return fmt.Errorf("project %q has no worktree", slug)
-				}
-				var remotePR prwatch.PullRequest
-				if reconcile {
-					if ws.PendingPR.Number > 0 {
-						remotePR, err = readPRForRecording(
-							command.Context(), *manifest.Worktree, ws.PendingPR.Number,
-						)
-						if err != nil {
-							return fmt.Errorf(
-								"reconcile pending pull request #%d for project %q: %w",
-								ws.PendingPR.Number, slug, err,
-							)
-						}
-						number, url = ws.PendingPR.Number, ws.PendingPR.URL
-					} else {
-						prs, findErr := findPRsForRecording(
-							command.Context(), *manifest.Worktree, manifest.Branch, manifest.BaseBranch,
-						)
-						if findErr != nil {
-							return fmt.Errorf("reconcile pull request for project %q: %w", slug, findErr)
-						}
-						if len(prs) != 1 {
-							return fmt.Errorf(
-								"reconcile pull request for project %q: found %d open matches for %s -> %s",
-								slug, len(prs), manifest.Branch, manifest.BaseBranch,
-							)
-						}
-						remotePR = prs[0]
-						number, url = remotePR.Number, remotePR.URL
+			return withLockedState(slug, func(locked *project.WorkflowState, statePath string) error {
+				ws := *locked
+				if ws.UsesAdaptiveDelivery() {
+					if reconcile && (number > 0 || strings.TrimSpace(url) != "") {
+						return fmt.Errorf("--reconcile cannot be combined with --number or --url")
 					}
-				} else {
-					remotePR, err = readPRForRecording(command.Context(), *manifest.Worktree, number)
+					if !reconcile && (number <= 0 || strings.TrimSpace(url) == "") {
+						return fmt.Errorf("adaptive PR recording requires --number and --url together")
+					}
+					if err := validatePhaseDispatchToken(
+						ws, "open-pr", dispatchScopeResult, dispatchToken,
+					); err != nil {
+						return err
+					}
+					if !reconcile && ws.PendingPR.Number > 0 &&
+						(ws.PendingPR.Number != number || ws.PendingPR.URL != url) {
+						return fmt.Errorf(
+							"adaptive PR recording cannot replace pending PR %d at %s",
+							ws.PendingPR.Number, ws.PendingPR.URL,
+						)
+					}
+					manifestPath, err := project.Find(slug)
 					if err != nil {
-						return fmt.Errorf("verify pull request #%d for project %q: %w", number, slug, err)
+						return err
+					}
+					manifest, err := project.Load(manifestPath)
+					if err != nil {
+						return err
+					}
+					if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {
+						return fmt.Errorf("project %q has no worktree", slug)
+					}
+					if err := requireCleanProjectWorktree(slug); err != nil {
+						return err
+					}
+					var remotePR prwatch.PullRequest
+					if reconcile {
+						if ws.PendingPR.Number > 0 {
+							remotePR, err = readPRForRecording(
+								command.Context(), *manifest.Worktree, ws.PendingPR.Number,
+							)
+							if err != nil {
+								return fmt.Errorf(
+									"reconcile pending pull request #%d for project %q: %w",
+									ws.PendingPR.Number, slug, err,
+								)
+							}
+							number, url = ws.PendingPR.Number, ws.PendingPR.URL
+						} else {
+							prs, findErr := findPRsForRecording(
+								command.Context(), *manifest.Worktree, manifest.Branch, manifest.BaseBranch,
+							)
+							if findErr != nil {
+								return fmt.Errorf("reconcile pull request for project %q: %w", slug, findErr)
+							}
+							if len(prs) != 1 {
+								return fmt.Errorf(
+									"reconcile pull request for project %q: found %d open matches for %s -> %s",
+									slug, len(prs), manifest.Branch, manifest.BaseBranch,
+								)
+							}
+							remotePR = prs[0]
+							number, url = remotePR.Number, remotePR.URL
+						}
+					} else {
+						remotePR, err = readPRForRecording(command.Context(), *manifest.Worktree, number)
+						if err != nil {
+							return fmt.Errorf("verify pull request #%d for project %q: %w", number, slug, err)
+						}
+					}
+					if err := validatePRCandidate(manifest, remotePR, number, url); err != nil {
+						return err
+					}
+					if !reconcile && remotePR.State != prwatch.StateOpen {
+						return fmt.Errorf("pull request #%d is %s, want OPEN", number, remotePR.State)
+					}
+					if remotePR.State == prwatch.StateClosed {
+						return fmt.Errorf(
+							"pending pull request #%d closed without merging; record a failed final result",
+							number,
+						)
+					}
+					if remotePR.State != prwatch.StateOpen && remotePR.State != prwatch.StateMerged {
+						return fmt.Errorf(
+							"pull request #%d is %s, want OPEN or MERGED", number, remotePR.State,
+						)
+					}
+					if reconcile && ws.PendingPR.Number > 0 {
+						if err := validatePendingPRIdentity(ws.PendingPR, remotePR); err != nil {
+							return err
+						}
+					}
+					if ws.PR.Number > 0 &&
+						(ws.PR.Number != number || ws.PR.URL != url) {
+						return fmt.Errorf(
+							"adaptive PR recording cannot replace existing PR %d at %s",
+							ws.PR.Number, ws.PR.URL,
+						)
+					}
+					dispatchID := ws.Phases["open-pr"].Dispatch.ID
+					if err := consumePhaseDispatchToken(
+						&ws, "open-pr", dispatchScopeResult, dispatchToken,
+					); err != nil {
+						return err
+					}
+					ws.PendingPR = prRefFromRemote(remotePR)
+					snapshot, err := projectSnapshot(slug)
+					if err != nil {
+						return savePendingPRError(statePath, ws, err)
+					}
+					if err := ws.ValidateOpenPRReadiness(snapshot, true); err != nil {
+						return savePendingPRError(statePath, ws, err)
+					}
+					if err := validatePRMetadata(
+						manifest, snapshot, remotePR, true,
+					); err != nil {
+						return savePendingPRError(statePath, ws, err)
+					}
+					ws.PR = prRefFromRemote(remotePR)
+					ws.PendingPR = project.PRRef{}
+					result := project.FinalResult{
+						Status: "opened", PRNumber: number, PRURL: url,
+						RouteRevision: ws.Route.Revision, RouteDigest: ws.Route.Digest,
+						Snapshot: snapshot, DispatchID: dispatchID,
+					}
+					if err := project.ValidateFinalResult(result); err != nil {
+						return err
+					}
+					ws.FinalResult = &result
+					if err := ws.SetPhaseWithDelivery(
+						"open-pr", project.PhaseDone, "", "", "", project.PhaseOutcomeMaterial,
+						"", time.Now().UTC().Format(time.RFC3339),
+					); err != nil {
+						return err
+					}
+					return project.SaveState(statePath, ws)
+				} else {
+					if reconcile {
+						return fmt.Errorf("--reconcile requires an adaptive delivery state")
+					}
+					ws.SetPR(number, url)
+					if ws.PR.Number <= 0 || strings.TrimSpace(ws.PR.URL) == "" {
+						ws.FinalResult = nil
+						return project.SaveState(statePath, ws)
 					}
 				}
-				if err := validatePRCandidate(manifest, remotePR, number, url); err != nil {
-					return err
-				}
-				if !reconcile && remotePR.State != prwatch.StateOpen {
-					return fmt.Errorf("pull request #%d is %s, want OPEN", number, remotePR.State)
-				}
-				if remotePR.State == prwatch.StateClosed {
-					return fmt.Errorf(
-						"pending pull request #%d closed without merging; record a failed final result",
-						number,
-					)
-				}
-				if remotePR.State != prwatch.StateOpen && remotePR.State != prwatch.StateMerged {
-					return fmt.Errorf(
-						"pull request #%d is %s, want OPEN or MERGED", number, remotePR.State,
-					)
-				}
-				ws.PendingPR = project.PRRef{Number: number, URL: url}
-				snapshot, err := projectSnapshot(slug)
-				if err != nil {
-					return savePendingPRError(statePath, ws, err)
-				}
-				if err := ws.ValidateOpenPRReadiness(snapshot, true); err != nil {
-					return savePendingPRError(statePath, ws, err)
-				}
-				if err := validatePRMetadata(
-					manifest, snapshot, remotePR, remotePR.State == prwatch.StateOpen,
-				); err != nil {
-					return savePendingPRError(statePath, ws, err)
-				}
-				if err := consumePhaseDispatchToken(
-					&ws, "open-pr", dispatchScopeResult, dispatchToken,
-				); err != nil {
-					return err
-				}
-				if ws.PR.Number > 0 &&
-					(ws.PR.Number != number || ws.PR.URL != url) {
-					return fmt.Errorf(
-						"adaptive PR recording cannot replace existing PR %d at %s",
-						ws.PR.Number, ws.PR.URL,
-					)
-				}
-				dispatchID := ws.Phases["open-pr"].Dispatch.ID
-				ws.PR = project.PRRef{Number: number, URL: url}
-				ws.PendingPR = project.PRRef{}
 				result := project.FinalResult{
-					Status: "opened", PRNumber: number, PRURL: url,
-					RouteRevision: ws.Route.Revision, RouteDigest: ws.Route.Digest,
-					Snapshot: snapshot, DispatchID: dispatchID,
+					Status: "opened", PRNumber: ws.PR.Number, PRURL: ws.PR.URL,
 				}
 				if err := project.ValidateFinalResult(result); err != nil {
 					return err
 				}
 				ws.FinalResult = &result
-				if err := ws.SetPhaseWithDelivery(
-					"open-pr", project.PhaseDone, "", "", "", project.PhaseOutcomeMaterial,
-					"", time.Now().UTC().Format(time.RFC3339),
-				); err != nil {
-					return err
-				}
 				return project.SaveState(statePath, ws)
-			} else {
-				if reconcile {
-					return fmt.Errorf("--reconcile requires an adaptive delivery state")
-				}
-				ws.SetPR(number, url)
-				if ws.PR.Number <= 0 || strings.TrimSpace(ws.PR.URL) == "" {
-					ws.FinalResult = nil
-					return project.SaveState(statePath, ws)
-				}
-			}
-			result := project.FinalResult{
-				Status: "opened", PRNumber: ws.PR.Number, PRURL: ws.PR.URL,
-			}
-			if err := project.ValidateFinalResult(result); err != nil {
-				return err
-			}
-			ws.FinalResult = &result
-			return project.SaveState(statePath, ws)
+			})
 		},
 	}
 	cmd.Flags().IntVar(&number, "number", 0, "PR number")
@@ -483,6 +570,47 @@ func validatePRCandidate(
 			"pull request #%d head branch %q does not match project branch %q",
 			number, remote.HeadRef, manifest.Branch,
 		)
+	}
+	if remote.HeadRepo == "" {
+		return fmt.Errorf("pull request #%d has no canonical head repository identity", number)
+	}
+	if remote.HeadRepo != remote.Repo {
+		return fmt.Errorf(
+			"pull request #%d head repository %q does not match push repository %q",
+			number, remote.HeadRepo, remote.Repo,
+		)
+	}
+	return nil
+}
+
+func prRefFromRemote(remote prwatch.PullRequest) project.PRRef {
+	return project.PRRef{
+		Number: remote.Number, URL: remote.URL, Repo: remote.Repo,
+		HeadRepo: remote.HeadRepo, HeadRef: remote.HeadRef, HeadSHA: remote.HeadSHA,
+		BaseRef: remote.BaseRef, BaseSHA: remote.BaseSHA,
+	}
+}
+
+func validatePendingPRIdentity(pending project.PRRef, remote prwatch.PullRequest) error {
+	checks := []struct {
+		name      string
+		persisted string
+		remote    string
+	}{
+		{name: "repository", persisted: pending.Repo, remote: remote.Repo},
+		{name: "head repository", persisted: pending.HeadRepo, remote: remote.HeadRepo},
+		{name: "head branch", persisted: pending.HeadRef, remote: remote.HeadRef},
+		{name: "head SHA", persisted: pending.HeadSHA, remote: remote.HeadSHA},
+		{name: "base branch", persisted: pending.BaseRef, remote: remote.BaseRef},
+		{name: "base SHA", persisted: pending.BaseSHA, remote: remote.BaseSHA},
+	}
+	for _, check := range checks {
+		if check.persisted != "" && check.persisted != check.remote {
+			return fmt.Errorf(
+				"pending pull request #%d %s changed from %q to %q",
+				pending.Number, check.name, check.persisted, check.remote,
+			)
+		}
 	}
 	return nil
 }
@@ -543,6 +671,15 @@ func (err *prBaseMismatchError) Error() string {
 }
 
 func savePendingPRError(path string, state project.WorkflowState, cause error) error {
+	if state.UsesAdaptiveDelivery() {
+		if err := state.SetPhaseWithDelivery(
+			"open-pr", project.PhaseEscalated,
+			"authenticated PR result requires reconciliation",
+			"", "", "", "", time.Now().UTC().Format(time.RFC3339),
+		); err != nil {
+			return errors.Join(cause, fmt.Errorf("reopen open-pr for reconciliation: %w", err))
+		}
+	}
 	if err := project.SaveState(path, state); err != nil {
 		return errors.Join(cause, fmt.Errorf("record pending PR for reconciliation: %w", err))
 	}
@@ -559,62 +696,61 @@ func newCmdStateFinal() *cobra.Command {
 		Short: "Record the final delivery result",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(command *cobra.Command, args []string) error {
-			ws, statePath, err := loadStateAt(args[0])
-			if err != nil {
-				return err
-			}
-			if ws.UsesAdaptiveDelivery() && args[1] == "opened" {
-				return fmt.Errorf("adaptive opened results must be recorded with `relay state pr`")
-			}
-			result := project.FinalResult{Status: args[1], Reason: reason}
-			if !ws.UsesAdaptiveDelivery() {
-				result.PRNumber = ws.PR.Number
-				result.PRURL = ws.PR.URL
-			}
-			if err := project.ValidateFinalResult(result); err != nil {
-				return err
-			}
-			if result.Status == "opened" {
-				if err := validateAdaptiveOpenPRSuccess(args[0], ws); err != nil {
+			return withLockedState(args[0], func(locked *project.WorkflowState, statePath string) error {
+				ws := *locked
+				if ws.UsesAdaptiveDelivery() && args[1] == "opened" {
+					return fmt.Errorf("adaptive opened results must be recorded with `relay state pr`")
+				}
+				result := project.FinalResult{Status: args[1], Reason: reason}
+				if !ws.UsesAdaptiveDelivery() {
+					result.PRNumber = ws.PR.Number
+					result.PRURL = ws.PR.URL
+				}
+				if err := project.ValidateFinalResult(result); err != nil {
 					return err
 				}
-			}
-			if ws.UsesAdaptiveDelivery() {
-				if ws.PendingPR.Number > 0 || ws.PendingPR.URL != "" {
-					if err := verifyTerminalFailurePR(
-						command.Context(), args[0], result.Status, "pending", ws.PendingPR,
+				if result.Status == "opened" {
+					if err := validateAdaptiveOpenPRSuccess(args[0], ws); err != nil {
+						return err
+					}
+				}
+				if ws.UsesAdaptiveDelivery() {
+					if ws.PendingPR.Number > 0 || ws.PendingPR.URL != "" {
+						if err := verifyTerminalFailurePR(
+							command.Context(), args[0], result.Status, "pending", ws.PendingPR,
+						); err != nil {
+							return err
+						}
+						ws.PendingPR = project.PRRef{}
+					}
+					if ws.PR.Number > 0 || ws.PR.URL != "" {
+						if err := verifyTerminalFailurePR(
+							command.Context(), args[0], result.Status, "recorded", ws.PR,
+						); err != nil {
+							return err
+						}
+						ws.PR = project.PRRef{}
+					}
+					if err := ws.ValidateAdaptiveFinish("open-pr", project.PhaseBlocked); err != nil {
+						return fmt.Errorf("record %s final result: %w", result.Status, err)
+					}
+					if err := consumePhaseDispatchToken(
+						&ws, "open-pr", dispatchScopeResult, dispatchToken,
+					); err != nil {
+						return fmt.Errorf("record %s final result: %w", result.Status, err)
+					}
+					ws.FinalResult = &result
+					if err := ws.SetPhaseWithDelivery(
+						"open-pr", project.PhaseBlocked, reason, "", "", "", "",
+						time.Now().UTC().Format(time.RFC3339),
 					); err != nil {
 						return err
 					}
-					ws.PendingPR = project.PRRef{}
-				}
-				if ws.PR.Number > 0 || ws.PR.URL != "" {
-					if err := verifyTerminalFailurePR(
-						command.Context(), args[0], result.Status, "recorded", ws.PR,
-					); err != nil {
-						return err
-					}
-					ws.PR = project.PRRef{}
-				}
-				if err := ws.ValidateAdaptiveFinish("open-pr", project.PhaseBlocked); err != nil {
-					return fmt.Errorf("record %s final result: %w", result.Status, err)
-				}
-				if err := consumePhaseDispatchToken(
-					&ws, "open-pr", dispatchScopeResult, dispatchToken,
-				); err != nil {
-					return fmt.Errorf("record %s final result: %w", result.Status, err)
+					return project.SaveState(statePath, ws)
 				}
 				ws.FinalResult = &result
-				if err := ws.SetPhaseWithDelivery(
-					"open-pr", project.PhaseBlocked, reason, "", "", "", "",
-					time.Now().UTC().Format(time.RFC3339),
-				); err != nil {
-					return err
-				}
 				return project.SaveState(statePath, ws)
-			}
-			ws.FinalResult = &result
-			return project.SaveState(statePath, ws)
+			})
 		},
 	}
 	cmd.Flags().StringVar(&reason, "reason", "", "required reason for blocked or failed delivery")

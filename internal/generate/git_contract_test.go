@@ -19,7 +19,7 @@ func TestGitAndOpenPRContractOwnership(t *testing.T) {
 		filepath.Join("skills", "open-pr", "SKILL.md"): {
 			"`commit` contract", "`rebase` contract", "evidence fresh",
 			"performs no new review", "clean, fully committed", "after the final commit",
-			"legacy seven-phase",
+			"legacy seven-phase", "detection fails or returns empty", "never guess `main` or `master`",
 		},
 	}
 	for path, required := range checks {

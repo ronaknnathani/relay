@@ -56,6 +56,14 @@ func TestResumeReopensStaleTerminalAdaptiveState(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(projectDir, ".coordinator-capability")); err != nil {
 		t.Fatalf("stale adaptive resume did not rotate coordinator capability: %v", err)
 	}
+	state, err := project.LoadState(filepath.Join(projectDir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.FinalResult != nil || state.Next() != "route" ||
+		state.Phases["route"].Status != project.PhaseEscalated {
+		t.Fatalf("stale terminal resume state = %+v", state)
+	}
 }
 
 func saveCompletedAdaptiveResumeProject(t *testing.T, slug string) (string, string) {
@@ -104,13 +112,16 @@ func saveCompletedAdaptiveResumeProject(t *testing.T, slug string) (string, stri
 
 func TestResumeRotatesCoordinatorCapabilityForAdaptiveState(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
 	projectDir := filepath.Join(project.ActiveDir(), "demo")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	manifestPath := filepath.Join(projectDir, "manifest.json")
+	worktree := repo
 	if err := project.Save(manifestPath, project.Manifest{
-		Slug: "demo", Workflow: "deliver-pr",
+		Slug: "demo", Workflow: "deliver-pr", Worktree: &worktree,
+		BaseBranch: "main", StartSHA: gitRevParse(t, repo, "HEAD"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -167,9 +178,54 @@ func TestResumeRotatesCoordinatorCapabilityForAdaptiveState(t *testing.T) {
 	}
 }
 
+func TestResumeSupersedesInterruptedActiveDispatch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	manifestPath := project.ManifestPath(project.ActiveDir(), "demo")
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Workflow = "deliver-pr"
+	manifest.DeliveryMode = project.DeliveryModeAdaptive
+	if err := project.Save(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	state := openPRReadyState(t, "demo")
+	state.Phases["implement"] = project.PhaseState{
+		Status: project.PhaseInProgress,
+		Dispatch: &project.PhaseDispatch{
+			ID: "lost-dispatch",
+			TokenHashes: map[string]string{
+				dispatchScopeFinish: strings.Repeat("a", 64),
+			},
+			RouteRevision: state.Route.Revision,
+			RouteDigest:   state.Route.Digest,
+		},
+	}
+	state.Phases["open-pr"] = project.PhaseState{Status: project.PhasePending}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	token, err := rotateCoordinatorForResume(manifestPath, "deliver-pr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token == "" || got.Phases["implement"].Status != project.PhaseEscalated ||
+		got.Phases["implement"].Dispatch != nil || got.Next() != "implement" {
+		t.Fatalf("interrupted resume state = %+v, token=%q", got, token)
+	}
+}
+
 func TestResumeKeepsCoordinatorCapabilityOutOfAgentArguments(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	worktree := t.TempDir()
+	worktree := initCLIGitRepo(t)
 	projectDir := filepath.Join(project.ActiveDir(), "demo")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)

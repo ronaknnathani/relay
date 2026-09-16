@@ -27,11 +27,16 @@ the existing specialist lenses are reachable without adding another review phase
 
 Invoke the deterministic policy; never reproduce or override its matrix in prose:
 
+Write repository-derived gates to a private JSON file with a file-writing tool, never a shell
+heredoc or interpolated command string. Each entry has a stable `id`, an `argv` array, and optional
+`env` object, for example `[{"id":"test","argv":["go","test","./..."]}]`. Do not use `sh -c`,
+`bash -c`, backticks, command substitution, or `eval`; Relay rejects shell command strings.
+
 ```bash
 relay route classify "$SLUG" \
   --coordinator-token "$COORDINATOR_TOKEN" \
   --requested-behavior-explicit \
-  [--gate <id>="<exact command>" ... | --no-repository-gates] \
+  [--gate-file "$GATE_FILE" | --no-repository-gates] \
   --risk-assessment-complete \
   --predicted-size-known \
   --predicted-files <count> \
@@ -53,8 +58,9 @@ preserve its already verified creation-time base pin. `relay route base "$SLUG" 
 contained by the intended remote base branch; arbitrary refs, `HEAD`, feature branches, and unrelated
 commits are rejected.
 
-Use a stable, descriptive ID for each gate. Relay stores only each ID, a redacted display, and the
-SHA-256 digest of the exact command. `--no-repository-gates` is valid only after checking the
+Use a stable, descriptive ID for each gate. Relay validates the structured argv before use and
+stores only each ID, a redacted display, and the SHA-256 digest of the exact argv and environment.
+`--no-repository-gates` is valid only after checking the
 repository's manifest, scripts, Makefile, and CI and finding no relevant gate. Omit
 `--risk-assessment-complete` or `--predicted-size-known` when that work was not done. A completed
 risk assessment is bound to the repository fingerprint plus the normalized `task.md`,

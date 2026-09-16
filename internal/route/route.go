@@ -65,7 +65,7 @@ func Classify(input Input) (Decision, error) {
 	}
 	if normalizedPolicy.Mode == project.GatePolicyUnknown {
 		return Decision{}, fmt.Errorf(
-			"repository gate policy is unknown; pass --gate id=command or --no-repository-gates",
+			"repository gate policy is unknown; pass --gate-file or --no-repository-gates",
 		)
 	}
 	input.GatePolicy = normalizedPolicy

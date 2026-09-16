@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,8 +9,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/ronaknnathani/relay/internal/patrollock"
 	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/ronaknnathani/relay/internal/prwatch"
 )
@@ -106,6 +108,7 @@ func TestWorkerDispatchCapabilitiesAreScopedAndOneTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	state.Route = testRouteDecision(project.RouteEasy)
 	state.Route.Facts.GatePolicy = project.GatePolicy{Mode: project.GatePolicyNone}
 	state.Route.Snapshot, err = projectSnapshot("demo")
@@ -157,6 +160,102 @@ func TestWorkerDispatchCapabilitiesAreScopedAndOneTime(t *testing.T) {
 		t, "finish", "demo", "implement", "done", "--outcome", "material",
 		"--dispatch-token", dispatch.DispatchToken,
 	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConcurrentCapabilityConsumersCannotReplayOneToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state := openPRReadyState(t, "demo")
+	state.Phases["implement"] = project.PhaseState{Status: project.PhasePending}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	token := dispatchPhase(t, "demo", "implement")
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var workers sync.WaitGroup
+	for range 2 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			err := withLockedState("demo", func(state *project.WorkflowState, statePath string) error {
+				if err := consumePhaseDispatchToken(
+					state, "implement", dispatchScopeFinish, token,
+				); err != nil {
+					return err
+				}
+				if err := state.SetPhaseWithDelivery(
+					"implement", project.PhaseBlocked, "concurrent retry",
+					"", "", "", "", time.Now().UTC().Format(time.RFC3339),
+				); err != nil {
+					return err
+				}
+				return project.SaveState(statePath, *state)
+			})
+			errs <- err
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(errs)
+
+	successes := 0
+	for err := range errs {
+		if err == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("concurrent token consumers succeeded %d times, want exactly one", successes)
+	}
+}
+
+func TestCapabilityMutationWaitsForProjectStateLock(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state := openPRReadyState(t, "demo")
+	state.Phases["implement"] = project.PhaseState{Status: project.PhasePending}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	token := dispatchPhase(t, "demo", "implement")
+	lock, err := patrollock.Acquire(project.StatePath("demo") + ".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		err := withLockedState("demo", func(state *project.WorkflowState, statePath string) error {
+			if err := consumePhaseDispatchToken(
+				state, "implement", dispatchScopeFinish, token,
+			); err != nil {
+				return err
+			}
+			if err := state.SetPhaseWithDelivery(
+				"implement", project.PhaseBlocked, "resume later",
+				"", "", "", "", time.Now().UTC().Format(time.RFC3339),
+			); err != nil {
+				return err
+			}
+			return project.SaveState(statePath, *state)
+		})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("capability mutation bypassed the state lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 }
@@ -287,6 +386,7 @@ func TestAdaptiveOpenPRDispatchRejectsStaleLiveRemoteBase(t *testing.T) {
 	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
 		t.Fatal(err)
 	}
+
 	ensureTestCoordinator(t, "demo")
 	tree := gitRevParse(t, repo, "origin/main^{tree}")
 	moved := strings.TrimSpace(gitOutput(
@@ -298,6 +398,27 @@ func TestAdaptiveOpenPRDispatchRejectsStaleLiveRemoteBase(t *testing.T) {
 		"--coordinator-token", testCoordinatorToken,
 	); err == nil || !strings.Contains(err.Error(), "remote base binding is stale") {
 		t.Fatalf("stale remote base dispatch error = %v", err)
+	}
+}
+
+func TestAdaptiveOpenPRDispatchRejectsDirtyWorktree(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state := openPRReadyState(t, "demo")
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	ensureTestCoordinator(t, "demo")
+	if err := os.WriteFile(filepath.Join(repo, "reviewed-but-uncommitted.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runStateRaw(
+		t,
+		"dispatch", "demo", "open-pr", "--inline",
+		"--coordinator-token", testCoordinatorToken,
+	); err == nil || !strings.Contains(err.Error(), "clean worktree") {
+		t.Fatalf("dirty open-pr dispatch error = %v", err)
 	}
 }
 
@@ -338,7 +459,7 @@ func finishPhase(t *testing.T, slug, phase, token string, args ...string) {
 
 func TestStateDispatchAndFinish(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if _, err := runState(t, "init", "demo", "--workflow", "deliver-pr", "--phases", "route,implement"); err != nil {
+	if _, err := runState(t, "init", "demo", "--workflow", "wf", "--phases", "route,implement"); err != nil {
 		t.Fatal(err)
 	}
 	out, err := runState(t, "dispatch", "demo", "route", "--inline")
@@ -376,7 +497,7 @@ func TestStateDispatchAndFinish(t *testing.T) {
 
 func TestStateFinishRequiresReasonAndOutcome(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if _, err := runState(t, "init", "demo", "--workflow", "deliver-pr", "--phases", "route"); err != nil {
+	if _, err := runState(t, "init", "demo", "--workflow", "wf", "--phases", "route"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runState(t, "finish", "demo", "route", "skipped", "--outcome", "no-op"); err == nil {
@@ -444,10 +565,7 @@ func TestDeliveryEvidenceFreshnessTracksWorktree(t *testing.T) {
 	t.Setenv("HOME", home)
 	repo := initCLIGitRepo(t)
 	saveDeliveryProject(t, "demo", repo)
-	if _, err := runState(t, "init", "demo", "--workflow", "deliver-pr", "--phases", "route,implement,review,open-pr"); err != nil {
-		t.Fatal(err)
-	}
-	state, err := project.LoadState(project.StatePath("demo"))
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,10 +775,10 @@ func TestEvidenceRecordRedactsAndHashesCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256.Sum256([]byte(command))
+	digest := commandDigestForTest(command)
 	want := []project.CommandEvidence{{
 		GateID: "test", Display: "go <redacted-args>",
-		Digest: fmt.Sprintf("%x", sum), ExitStatus: 0,
+		Digest: digest, ExitStatus: 0,
 	}}
 	if got.Evidence.Validation == nil || got.Evidence.Validation.Owner != "implement" ||
 		!slices.Equal(got.Evidence.Validation.Commands, want) {
@@ -1220,6 +1338,7 @@ func TestAdaptiveOpenPRSuccessCommandsRejectPostDispatchMutation(t *testing.T) {
 	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
 		t.Fatal(err)
 	}
+
 	openPRToken := dispatchPhase(t, "demo", "open-pr")
 	if err := os.WriteFile(filepath.Join(repo, "changed-after-dispatch.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1231,23 +1350,53 @@ func TestAdaptiveOpenPRSuccessCommandsRejectPostDispatchMutation(t *testing.T) {
 	if _, err := runState(
 		t, "pr", "demo", "--number", "42", "--url", "https://github.com/example/test/pull/42",
 		"--dispatch-token", openPRToken,
-	); err == nil {
-		t.Fatal("successful open-pr transition accepted a post-dispatch repository mutation")
+	); err == nil || !strings.Contains(err.Error(), "clean worktree") {
+		t.Fatalf("dirty PR recording error = %v", err)
 	}
 	after, err := os.ReadFile(project.StatePath("demo"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if slices.Equal(before, after) {
-		t.Fatal("ambiguous PR creation did not retain a reconciliation candidate")
+	if !slices.Equal(before, after) {
+		t.Fatal("dirty PR recording mutated state")
 	}
 	got, err := project.LoadState(project.StatePath("demo"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.PendingPR.Number != 42 || got.PendingPR.URL != "https://github.com/example/test/pull/42" ||
+	if got.PendingPR.Number != 0 || got.PendingPR.URL != "" ||
 		got.PR.Number != 0 || got.FinalResult != nil {
 		t.Fatalf("post-dispatch mutation state = %+v", got)
+	}
+}
+
+func TestAdaptivePRRecordingAuthenticatesResultBeforePersistingPendingPR(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	state := openPRReadyState(t, "demo")
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	dispatchPhase(t, "demo", "open-pr")
+	if err := os.WriteFile(filepath.Join(repo, "changed-after-review.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runStateRaw(
+		t,
+		"pr", "demo",
+		"--number", "42",
+		"--url", "https://github.com/example/test/pull/42",
+		"--dispatch-token", "forged",
+	); err == nil || !strings.Contains(err.Error(), "invalid dispatch token") {
+		t.Fatalf("forged PR result error = %v", err)
+	}
+	got, err := project.LoadState(project.StatePath("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PendingPR.Number != 0 || got.PendingPR.URL != "" {
+		t.Fatalf("unauthenticated PR result persisted pending identity: %+v", got.PendingPR)
 	}
 }
 
@@ -1269,6 +1418,9 @@ func TestAdaptivePRRecordingRejectsMismatchedGitHubMetadata(t *testing.T) {
 		{name: "base drift", mutate: func(pr *prwatch.PullRequest) {
 			pr.BaseSHA = strings.Repeat("b", 40)
 		}, want: "base SHA"},
+		{name: "fork head repository", mutate: func(pr *prwatch.PullRequest) {
+			pr.HeadRepo = "attacker/test"
+		}, want: "head repository"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1290,7 +1442,7 @@ func TestAdaptivePRRecordingRejectsMismatchedGitHubMetadata(t *testing.T) {
 				}
 				pr := prwatch.PullRequest{
 					Number: number, URL: fmt.Sprintf("https://github.com/example/test/pull/%d", number),
-					State: prwatch.StateOpen, Repo: "example/test",
+					State: prwatch.StateOpen, Repo: "example/test", HeadRepo: "example/test",
 					HeadRef: manifest.Branch, HeadSHA: state.Route.Snapshot.HeadSHA,
 					BaseRef: state.Route.Snapshot.BaseRef, BaseSHA: state.Route.Snapshot.BaseTipSHA,
 				}
@@ -1392,7 +1544,7 @@ func TestAdaptivePRReconcilePrefersPersistedPendingPR(t *testing.T) {
 	}
 }
 
-func TestAdaptivePRReconcileAcceptsMergedPendingPR(t *testing.T) {
+func TestAdaptivePRReconcilePreservesMergedPendingBaseMismatch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := initCLIGitRepo(t)
 	saveDeliveryProject(t, "demo", repo)
@@ -1419,15 +1571,15 @@ func TestAdaptivePRReconcileAcceptsMergedPendingPR(t *testing.T) {
 	t.Cleanup(func() { readPRForRecording = original })
 	if _, err := runState(
 		t, "pr", "demo", "--reconcile", "--dispatch-token", token,
-	); err != nil {
-		t.Fatal(err)
+	); err == nil || !strings.Contains(err.Error(), "base SHA mismatch") {
+		t.Fatalf("merged pending base mismatch error = %v", err)
 	}
 	got, err := project.LoadState(project.StatePath("demo"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.PR.Number != 77 || got.FinalResult == nil ||
-		got.FinalResult.Status != "opened" || got.PendingPR.Number != 0 {
+	if got.PR.Number != 0 || got.FinalResult != nil ||
+		got.PendingPR.Number != 77 || got.PendingPR.BaseSHA != strings.Repeat("f", 40) {
 		t.Fatalf("merged pending PR reconciliation = %+v", got)
 	}
 }
@@ -1657,7 +1809,11 @@ func openPRReadyState(t *testing.T, slug string) project.WorkflowState {
 
 func TestStatePRAndFailureCommandsWriteFinalResult(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if _, err := runState(t, "init", "opened", "--workflow", "deliver-pr", "--phases", "open-pr"); err != nil {
+	openedState, err := project.NewState("opened", "deliver-pr", []string{"open-pr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("opened"), openedState); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runState(t, "pr", "opened", "--number", "42"); err != nil {
@@ -1696,7 +1852,11 @@ func TestStatePRAndFailureCommandsWriteFinalResult(t *testing.T) {
 		t.Fatalf("legacy number was paired with stale URL: %+v, result = %+v", replaced.PR, replaced.FinalResult)
 	}
 
-	if _, err := runState(t, "init", "failed", "--workflow", "deliver-pr", "--phases", "open-pr"); err != nil {
+	failedState, err := project.NewState("failed", "deliver-pr", []string{"open-pr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("failed"), failedState); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runState(t, "final", "failed", "failed"); err == nil {
@@ -1900,8 +2060,11 @@ func prepareAdaptivePhase(state *project.WorkflowState, target string) {
 }
 
 func commandDigestForTest(command string) string {
-	sum := sha256.Sum256([]byte(command))
-	return fmt.Sprintf("%x", sum)
+	digest, err := gateDefinitionDigest(gateDefinitionForTestCommand(command))
+	if err != nil {
+		panic(err)
+	}
+	return digest
 }
 
 func refreshRouteDigest(t *testing.T, route *project.RouteDecision) {
@@ -1971,7 +2134,7 @@ func saveDeliveryProject(t *testing.T, slug, repo string) {
 		}
 		return prwatch.PullRequest{
 			Number: number, URL: fmt.Sprintf("https://github.com/example/test/pull/%d", number),
-			State: prwatch.StateOpen, Repo: "example/test",
+			State: prwatch.StateOpen, Repo: "example/test", HeadRepo: "example/test",
 			HeadRef: branch, HeadSHA: state.Route.Snapshot.HeadSHA,
 			BaseRef: "main", BaseSHA: baseSHA,
 		}, nil

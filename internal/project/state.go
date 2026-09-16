@@ -46,8 +46,14 @@ type PhaseDispatch struct {
 
 // PRRef records the pull request a project produced.
 type PRRef struct {
-	Number int    `json:"number,omitempty"`
-	URL    string `json:"url,omitempty"`
+	Number   int    `json:"number,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Repo     string `json:"repo,omitempty"`
+	HeadRepo string `json:"head_repo,omitempty"`
+	HeadRef  string `json:"head_ref,omitempty"`
+	HeadSHA  string `json:"head_sha,omitempty"`
+	BaseRef  string `json:"base_ref,omitempty"`
+	BaseSHA  string `json:"base_sha,omitempty"`
 }
 
 // WorkflowState is the resumable, machine-owned state for one project's run
@@ -130,8 +136,12 @@ func NewState(slug, workflow string, order []string) (WorkflowState, error) {
 		}
 		phases[p] = PhaseState{Status: PhasePending}
 	}
+	version := WorkflowStateVersion
+	if workflow == "deliver-pr" && !slices.Equal(ordered, AdaptiveDeliveryPhases) {
+		version = 0
+	}
 	return WorkflowState{
-		Version: WorkflowStateVersion, Slug: slug, Workflow: workflow,
+		Version: version, Slug: slug, Workflow: workflow,
 		Order: ordered, Phases: phases,
 	}, nil
 }
@@ -465,7 +475,7 @@ func validateRouteFacts(facts RouteFacts) error {
 	}
 	if policy.Mode == GatePolicyUnknown {
 		return fmt.Errorf(
-			"route gate policy is unknown; classify with --gate id=command or --no-repository-gates",
+			"route gate policy is unknown; classify with --gate-file or --no-repository-gates",
 		)
 	}
 	seen := make(map[RiskTrigger]bool, len(facts.RiskTriggers))

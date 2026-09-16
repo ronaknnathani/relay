@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/ronaknnathani/relay/internal/agent"
 	"github.com/ronaknnathani/relay/internal/config"
@@ -147,27 +148,49 @@ func rotateCoordinatorForResume(manifestPath, workflow string) (string, error) {
 	if workflow != "deliver-pr" {
 		return "", nil
 	}
-	statePath := filepath.Join(filepath.Dir(manifestPath), "state.json")
-	state, err := project.LoadState(statePath)
-	if errors.Is(err, fs.ErrNotExist) {
-		return "", nil
-	}
+	manifest, err := project.Load(manifestPath)
 	if err != nil {
 		return "", err
 	}
-	if !state.UsesAdaptiveDelivery() {
+	statePath := filepath.Join(filepath.Dir(manifestPath), "state.json")
+	if _, err := os.Stat(statePath); errors.Is(err, fs.ErrNotExist) {
 		return "", nil
+	} else if err != nil {
+		return "", fmt.Errorf("inspect workflow state %s: %w", statePath, err)
 	}
-	token, err := randomToken(32)
-	if err != nil {
-		return "", fmt.Errorf("rotate coordinator capability for %q: %w", state.Slug, err)
-	}
-	sum := sha256.Sum256([]byte(token))
-	state.CoordinatorHash = fmt.Sprintf("%x", sum)
-	if err := project.SaveState(statePath, state); err != nil {
-		return "", fmt.Errorf("persist coordinator capability for %q: %w", state.Slug, err)
-	}
-	return token, nil
+	var token string
+	err = withLockedState(manifest.Slug, func(state *project.WorkflowState, lockedPath string) error {
+		adaptiveManifest := manifest.DeliveryMode == project.DeliveryModeAdaptive ||
+			manifest.DeliveryMode == project.DeliveryModeFull
+		if adaptiveManifest && !slices.Equal(state.Order, project.AdaptiveDeliveryPhases) {
+			return fmt.Errorf(
+				"adaptive project %q has noncanonical phase order; refusing unguarded resume",
+				state.Slug,
+			)
+		}
+		if adaptiveManifest && state.Workflow == "deliver-pr" && state.Version == 0 {
+			state.Version = project.WorkflowStateVersion
+		}
+		if !state.UsesAdaptiveDelivery() {
+			return nil
+		}
+		snapshot, err := project.RepositorySnapshotForManifest(manifest, filepath.Dir(manifestPath))
+		if err != nil {
+			return err
+		}
+		state.PrepareAdaptiveResume(snapshot)
+		token, err = randomToken(32)
+		if err != nil {
+			return fmt.Errorf("rotate coordinator capability for %q: %w", state.Slug, err)
+		}
+		sum := sha256.Sum256([]byte(token))
+		state.CoordinatorHash = fmt.Sprintf("%x", sum)
+		if err := project.SaveState(lockedPath, *state); err != nil {
+			return fmt.Errorf("persist coordinator capability for %q: %w", state.Slug, err)
+		}
+		return nil
+	})
+	return token, err
 }
 
 func deliveryModeForPrompt(mode string) string {

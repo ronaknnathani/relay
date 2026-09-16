@@ -18,7 +18,7 @@ import (
 type routeFlags struct {
 	requestedExplicit  bool
 	unresolved         bool
-	gates              []string
+	gateFile           string
 	noRepositoryGates  bool
 	risksEvaluated     bool
 	predictedSizeKnown bool
@@ -69,28 +69,26 @@ func newCmdRouteAdvance() *cobra.Command {
 			if base == "" {
 				return fmt.Errorf("route advance requires --base <remote-branch>")
 			}
-			state, statePath, err := loadStateAt(args[0])
-			if err != nil {
-				return err
-			}
-			if err := consumeStackAdvanceCapability(&state, advanceToken); err != nil {
-				return err
-			}
-			if _, err := bindRemoteBase(args[0], base, "", true, false); err != nil {
-				return err
-			}
-			snapshot, err := projectSnapshot(args[0])
-			if err != nil {
-				return err
-			}
-			decision, err := refreshRouteState(&state, snapshot)
-			if err != nil {
-				return err
-			}
-			if err := project.SaveState(statePath, state); err != nil {
-				return err
-			}
-			return json.NewEncoder(os.Stdout).Encode(decision)
+			return withLockedState(args[0], func(state *project.WorkflowState, statePath string) error {
+				if err := consumeStackAdvanceCapability(state, advanceToken); err != nil {
+					return err
+				}
+				if _, err := bindRemoteBase(args[0], base, "", true, false); err != nil {
+					return err
+				}
+				snapshot, err := projectSnapshot(args[0])
+				if err != nil {
+					return err
+				}
+				decision, err := refreshRouteState(state, snapshot)
+				if err != nil {
+					return err
+				}
+				if err := project.SaveState(statePath, *state); err != nil {
+					return err
+				}
+				return json.NewEncoder(os.Stdout).Encode(decision)
+			})
 		},
 	}
 	command.Flags().StringVar(&base, "base", "", "new remote base branch")
@@ -165,60 +163,58 @@ func newCmdRouteClassify() *cobra.Command {
 		Short: "Classify normalized task facts and persist the route",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			state, statePath, err := loadStateAt(args[0])
-			if err != nil {
-				return err
-			}
-			if err := authorizeRouteUpdate(&state, coordinatorToken, dispatchToken); err != nil {
-				return err
-			}
-			if coordinatorToken != "" {
-				if err := refreshRemoteBaseBinding(args[0], state); err != nil {
+			return withLockedState(args[0], func(state *project.WorkflowState, statePath string) error {
+				if err := authorizeRouteUpdate(state, coordinatorToken, dispatchToken); err != nil {
 					return err
 				}
-			}
-			snapshot, err := projectSnapshot(args[0])
-			if err != nil {
-				return err
-			}
-			manifestPath, err := project.Find(args[0])
-			if err != nil {
-				return err
-			}
-			manifest, err := project.Load(manifestPath)
-			if err != nil {
-				return err
-			}
-			flags.full = flags.full || manifest.DeliveryMode == project.DeliveryModeFull
-			facts, err := flags.input(snapshot)
-			if err != nil {
-				return err
-			}
-			if state.Route != nil && strings.TrimSpace(coordinatorToken) == "" {
-				facts, err = preserveWorkerGatePolicy(state.Route.Facts.GatePolicy, facts)
+				if coordinatorToken != "" {
+					if err := refreshRemoteBaseBinding(args[0], *state); err != nil {
+						return err
+					}
+				}
+				snapshot, err := projectSnapshot(args[0])
 				if err != nil {
 					return err
 				}
-			}
-			decision, err := deliveryroute.Classify(facts)
-			if err != nil {
-				return err
-			}
-			decision.Snapshot = snapshot
-			if state.Route != nil {
-				reason := routeTransitionReason(*state.Route, decision)
-				decision, err = deliveryroute.PreserveMonotonic(
-					*state.Route, decision, reason,
-				)
+				manifestPath, err := project.Find(args[0])
+				if err != nil {
+					return err
+				}
+				manifest, err := project.Load(manifestPath)
+				if err != nil {
+					return err
+				}
+				flags.full = flags.full || manifest.DeliveryMode == project.DeliveryModeFull
+				facts, err := flags.input(snapshot)
+				if err != nil {
+					return err
+				}
+				if state.Route != nil && strings.TrimSpace(coordinatorToken) == "" {
+					facts, err = preserveWorkerGatePolicy(state.Route.Facts.GatePolicy, facts)
+					if err != nil {
+						return err
+					}
+				}
+				decision, err := deliveryroute.Classify(facts)
 				if err != nil {
 					return err
 				}
 				decision.Snapshot = snapshot
-			}
-			if err := state.ApplyRoute(decision); err != nil {
-				return err
-			}
-			return saveRouteDecision(statePath, state, decision)
+				if state.Route != nil {
+					reason := routeTransitionReason(*state.Route, decision)
+					decision, err = deliveryroute.PreserveMonotonic(
+						*state.Route, decision, reason,
+					)
+					if err != nil {
+						return err
+					}
+					decision.Snapshot = snapshot
+				}
+				if err := state.ApplyRoute(decision); err != nil {
+					return err
+				}
+				return saveRouteDecision(statePath, *state, decision)
+			})
 		},
 	}
 	bindRouteFlags(command, &flags)
@@ -260,30 +256,28 @@ func newCmdRouteRefresh() *cobra.Command {
 		Short: "Refresh actual diff facts and conservatively reclassify",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			state, statePath, err := loadStateAt(args[0])
-			if err != nil {
-				return err
-			}
-			if state.Route == nil {
-				return fmt.Errorf("project %q has no route decision", args[0])
-			}
-			if err := authorizeRouteUpdate(&state, coordinatorToken, dispatchToken); err != nil {
-				return err
-			}
-			if coordinatorToken != "" {
-				if err := refreshRemoteBaseBinding(args[0], state); err != nil {
+			return withLockedState(args[0], func(state *project.WorkflowState, statePath string) error {
+				if state.Route == nil {
+					return fmt.Errorf("project %q has no route decision", args[0])
+				}
+				if err := authorizeRouteUpdate(state, coordinatorToken, dispatchToken); err != nil {
 					return err
 				}
-			}
-			snapshot, err := projectSnapshot(args[0])
-			if err != nil {
-				return err
-			}
-			decision, err := refreshRouteState(&state, snapshot)
-			if err != nil {
-				return err
-			}
-			return saveRouteDecision(statePath, state, decision)
+				if coordinatorToken != "" {
+					if err := refreshRemoteBaseBinding(args[0], *state); err != nil {
+						return err
+					}
+				}
+				snapshot, err := projectSnapshot(args[0])
+				if err != nil {
+					return err
+				}
+				decision, err := refreshRouteState(state, snapshot)
+				if err != nil {
+					return err
+				}
+				return saveRouteDecision(statePath, *state, decision)
+			})
 		},
 	}
 	command.Flags().StringVar(
@@ -387,53 +381,51 @@ func newCmdRouteEscalate() *cobra.Command {
 		Short: "Explicitly escalate a persisted route",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
-			state, statePath, err := loadStateAt(args[0])
-			if err != nil {
-				return err
-			}
-			if state.Route == nil {
-				return fmt.Errorf("project %q has no route decision", args[0])
-			}
-			if err := authorizeRouteUpdate(&state, coordinatorToken, dispatchToken); err != nil {
-				return err
-			}
-			current := *state.Route
-			snapshot, err := projectSnapshot(args[0])
-			if err != nil {
-				return err
-			}
-			current.Facts = project.NormalizeRiskAssessment(
-				current.Facts,
-				snapshot.Revision(),
-			)
-			current.Facts.ActualFileCount = snapshot.FileCount
-			current.Facts.ActualChangedLines = snapshot.ChangedLines
-			if stackRationale != "" {
-				current.Facts.StackRationale = stackRationale
-				current.StackRationale = stackRationale
-			}
-			if args[1] == deliveryroute.ClassStackCandidate {
-				current.Facts.StackDecomposition = true
-			}
-			if args[1] == deliveryroute.ClassStackCandidate &&
-				current.Facts.StackRationale == "" {
-				return fmt.Errorf("stack-candidate escalation requires --stack-rationale")
-			}
-			decision, err := deliveryroute.Escalate(
-				current, args[1], reason, deliveryroute.RiskTrigger(risk),
-			)
-			if err != nil {
-				return err
-			}
-			decision.Snapshot = snapshot
-			riskTrigger := project.RiskTrigger(risk)
-			if risk != "" && !slices.Contains(decision.Facts.RiskTriggers, riskTrigger) {
-				decision.Facts.RiskTriggers = append(decision.Facts.RiskTriggers, riskTrigger)
-			}
-			if err := state.ApplyRoute(decision); err != nil {
-				return err
-			}
-			return saveRouteDecision(statePath, state, decision)
+			return withLockedState(args[0], func(state *project.WorkflowState, statePath string) error {
+				if state.Route == nil {
+					return fmt.Errorf("project %q has no route decision", args[0])
+				}
+				if err := authorizeRouteUpdate(state, coordinatorToken, dispatchToken); err != nil {
+					return err
+				}
+				current := *state.Route
+				snapshot, err := projectSnapshot(args[0])
+				if err != nil {
+					return err
+				}
+				current.Facts = project.NormalizeRiskAssessment(
+					current.Facts,
+					snapshot.Revision(),
+				)
+				current.Facts.ActualFileCount = snapshot.FileCount
+				current.Facts.ActualChangedLines = snapshot.ChangedLines
+				if stackRationale != "" {
+					current.Facts.StackRationale = stackRationale
+					current.StackRationale = stackRationale
+				}
+				if args[1] == deliveryroute.ClassStackCandidate {
+					current.Facts.StackDecomposition = true
+				}
+				if args[1] == deliveryroute.ClassStackCandidate &&
+					current.Facts.StackRationale == "" {
+					return fmt.Errorf("stack-candidate escalation requires --stack-rationale")
+				}
+				decision, err := deliveryroute.Escalate(
+					current, args[1], reason, deliveryroute.RiskTrigger(risk),
+				)
+				if err != nil {
+					return err
+				}
+				decision.Snapshot = snapshot
+				riskTrigger := project.RiskTrigger(risk)
+				if risk != "" && !slices.Contains(decision.Facts.RiskTriggers, riskTrigger) {
+					decision.Facts.RiskTriggers = append(decision.Facts.RiskTriggers, riskTrigger)
+				}
+				if err := state.ApplyRoute(decision); err != nil {
+					return err
+				}
+				return saveRouteDecision(statePath, *state, decision)
+			})
 		},
 	}
 	command.Flags().StringVar(&reason, "reason", "", "why a more conservative route is required")
@@ -628,7 +620,7 @@ func (err *remoteBaseRefreshError) Error() string {
 func bindRouteFlags(command *cobra.Command, flags *routeFlags) {
 	command.Flags().BoolVar(&flags.requestedExplicit, "requested-behavior-explicit", false, "the requested behavior is explicit")
 	command.Flags().BoolVar(&flags.unresolved, "unresolved-decision", false, "a product or design decision remains unresolved")
-	command.Flags().StringArrayVar(&flags.gates, "gate", nil, "required validation gate as id=command (repeatable)")
+	command.Flags().StringVar(&flags.gateFile, "gate-file", "", "JSON file containing required gate argv")
 	command.Flags().BoolVar(&flags.noRepositoryGates, "no-repository-gates", false, "the repository was verified to define no relevant gates")
 	command.Flags().BoolVar(&flags.risksEvaluated, "risk-assessment-complete", false, "all closed safety risks were explicitly evaluated")
 	command.Flags().BoolVar(&flags.predictedSizeKnown, "predicted-size-known", false, "the predicted file and line counts were explicitly estimated")
@@ -654,27 +646,27 @@ func (flags routeFlags) input(snapshot project.RepositorySnapshot) (project.Rout
 	for index, risk := range flags.risks {
 		risks[index] = project.RiskTrigger(risk)
 	}
-	if flags.noRepositoryGates && len(flags.gates) > 0 {
+	if flags.noRepositoryGates && strings.TrimSpace(flags.gateFile) != "" {
 		return project.RouteFacts{}, fmt.Errorf(
-			"--gate and --no-repository-gates cannot be used together",
+			"--gate-file and --no-repository-gates cannot be used together",
 		)
 	}
 	gatePolicy := project.GatePolicy{Mode: project.GatePolicyUnknown}
 	if flags.noRepositoryGates {
 		gatePolicy.Mode = project.GatePolicyNone
 	}
-	if len(flags.gates) > 0 {
+	if strings.TrimSpace(flags.gateFile) != "" {
+		definitions, err := loadGateDefinitions(flags.gateFile)
+		if err != nil {
+			return project.RouteFacts{}, err
+		}
 		gatePolicy.Mode = project.GatePolicyRequired
-		for index, value := range flags.gates {
-			id, command, err := parseGateFlag(value, index)
+		for _, definition := range definitions {
+			gate, err := requiredGateForDefinition(definition)
 			if err != nil {
 				return project.RouteFacts{}, err
 			}
-			evidence := redactCommand(id, command, 0)
-			gatePolicy.Gates = append(gatePolicy.Gates, project.RequiredGate{
-				ID: evidence.GateID, CommandDigest: evidence.Digest,
-				RedactedDisplay: evidence.Display,
-			})
+			gatePolicy.Gates = append(gatePolicy.Gates, gate)
 		}
 	}
 	return project.RouteFacts{
