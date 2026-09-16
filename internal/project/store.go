@@ -97,10 +97,27 @@ func LoadAllResults(dir string) ([]ManifestLoadResult, error) {
 			continue
 		}
 		path := ManifestPath(dir, e.Name())
-		m, err := Load(path)
-		if errors.Is(err, fs.ErrNotExist) {
+		info, statErr := os.Lstat(path)
+		if errors.Is(statErr, fs.ErrNotExist) {
 			continue
 		}
+		if statErr != nil {
+			results = append(results, ManifestLoadResult{
+				Name: e.Name(),
+				Path: path,
+				Err:  fmt.Errorf("inspect manifest %s: %w", path, statErr),
+			})
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			results = append(results, ManifestLoadResult{
+				Name: e.Name(),
+				Path: path,
+				Err:  fmt.Errorf("inspect manifest %s: not a regular file", path),
+			})
+			continue
+		}
+		m, err := Load(path)
 		results = append(results, ManifestLoadResult{
 			Name:     e.Name(),
 			Path:     path,

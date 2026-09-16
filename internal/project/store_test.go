@@ -62,7 +62,8 @@ func TestLoadAllResultsReportsReadableManifestPaths(t *testing.T) {
 	malformedDir := filepath.Join(dir, "b-malformed")
 	missingDir := filepath.Join(dir, "c-missing")
 	unreadableDir := filepath.Join(dir, "d-unreadable")
-	for _, path := range []string{validDir, malformedDir, missingDir, unreadableDir} {
+	danglingDir := filepath.Join(dir, "e-dangling")
+	for _, path := range []string{validDir, malformedDir, missingDir, unreadableDir, danglingDir} {
 		if err := os.MkdirAll(path, 0755); err != nil {
 			t.Fatal(err)
 		}
@@ -77,13 +78,19 @@ func TestLoadAllResultsReportsReadableManifestPaths(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(unreadableDir, "manifest.json"), 0755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink(
+		filepath.Join(danglingDir, "missing-target"),
+		filepath.Join(danglingDir, "manifest.json"),
+	); err != nil {
+		t.Fatal(err)
+	}
 
 	results, err := LoadAllResults(dir)
 	if err != nil {
 		t.Fatalf("LoadAllResults: %v", err)
 	}
-	if len(results) != 3 {
-		t.Fatalf("len(results) = %d, want 3", len(results))
+	if len(results) != 4 {
+		t.Fatalf("len(results) = %d, want 4", len(results))
 	}
 	for _, result := range results {
 		if result.Name == "c-missing" {
@@ -105,8 +112,14 @@ func TestLoadAllResultsReportsReadableManifestPaths(t *testing.T) {
 	if results[2].Name != "d-unreadable" ||
 		results[2].Path != filepath.Join(unreadableDir, "manifest.json") ||
 		results[2].Err == nil ||
-		!strings.Contains(results[2].Err.Error(), "read manifest") {
+		!strings.Contains(results[2].Err.Error(), "not a regular file") {
 		t.Fatalf("unreadable result = %+v", results[2])
+	}
+	if results[3].Name != "e-dangling" ||
+		results[3].Path != filepath.Join(danglingDir, "manifest.json") ||
+		results[3].Err == nil ||
+		!strings.Contains(results[3].Err.Error(), "not a regular file") {
+		t.Fatalf("dangling result = %+v", results[3])
 	}
 }
 
