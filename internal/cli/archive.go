@@ -21,8 +21,6 @@ import (
 const projectLifecycleLockTimeout = 30 * time.Second
 
 var (
-	errArchivedCleanupIncomplete = errors.New("archived cleanup incomplete")
-
 	loadArchivePullRequestProof = programview.GitHubPullRequestProof
 	loadArchiveRepository       = programview.GitHubRepository
 	saveArchiveManifest         = project.Save
@@ -219,9 +217,6 @@ func runArchive(slug string, force bool) error {
 	result, err := archiveProject(slug, force)
 	if err == nil {
 		renderArchive(os.Stdout, result)
-		if result.BranchDeletionWarning != "" {
-			return errArchivedCleanupIncomplete
-		}
 		return nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
@@ -241,9 +236,6 @@ func runArchive(slug string, force bool) error {
 		return archivedErr
 	}
 	renderArchivedCleanupRetry(os.Stdout, result)
-	if result.BranchDeletionWarning != "" {
-		return errArchivedCleanupIncomplete
-	}
 	return nil
 }
 
@@ -763,9 +755,11 @@ func archiveProjectWithProofLocked(proof archiveProofSnapshot, force bool) (arch
 		if err := archiveForceDeleteBranchAt(
 			proof.Repository, proof.Branch, proof.ExpectedBranchTip,
 		); err != nil {
-			setBranchDeletionRecovery(
-				&result, proof.Repository, proof.Branch, proof.ExpectedBranchTip, err,
-			)
+			if recoveryErr := setBranchDeletionRecovery(
+				&result, &m, proof.Repository, proof.Branch, proof.ExpectedBranchTip, err,
+			); recoveryErr != nil {
+				return result, recoveryErr
+			}
 		} else {
 			result.BranchDeleted = true
 			if err := consumeArchivedBranchProof(&m, project.ArchiveCleanupClaimed); err != nil {
@@ -1213,7 +1207,7 @@ func retryArchivedProjectCleanupLocked(
 	switch proof.WorktreeState {
 	case project.ArchiveCleanupClaimed:
 		if current.worktreePresent {
-			return result, claimedCleanupError(m, "worktree", proof.Worktree, "")
+			return result, claimedCleanupError(&m, "worktree", proof.Worktree, "")
 		}
 		if err := consumeArchivedWorktreeProof(&m, project.ArchiveCleanupClaimed); err != nil {
 			return result, fmt.Errorf(
@@ -1318,7 +1312,7 @@ func retryArchivedProjectCleanupLocked(
 	}
 	if proof.BranchState == project.ArchiveCleanupClaimed {
 		return result, claimedCleanupError(
-			m, "branch", proof.Branch, proof.ExpectedBranchTip,
+			&m, "branch", proof.Branch, proof.ExpectedBranchTip,
 		)
 	}
 	if err := claimArchivedBranchCleanup(&m); err != nil {
@@ -1329,9 +1323,11 @@ func retryArchivedProjectCleanupLocked(
 	if err := archiveForceDeleteBranchAt(
 		m.Repo, m.Branch, proof.ExpectedBranchTip,
 	); err != nil {
-		setBranchDeletionRecovery(
-			&result, m.Repo, m.Branch, proof.ExpectedBranchTip, err,
-		)
+		if recoveryErr := setBranchDeletionRecovery(
+			&result, &m, m.Repo, m.Branch, proof.ExpectedBranchTip, err,
+		); recoveryErr != nil {
+			return result, recoveryErr
+		}
 		return result, nil
 	}
 	result.BranchDeleted = true
@@ -1346,7 +1342,7 @@ func retryArchivedProjectCleanupLocked(
 }
 
 func claimedCleanupError(
-	m project.Manifest, resource, identity, expectedSHA string,
+	m *project.Manifest, resource, identity, expectedSHA string,
 ) error {
 	if resource == "branch" {
 		worktree, checkedOut, err := gitx.BranchCheckoutWorktree(m.Repo, identity)
@@ -1359,6 +1355,13 @@ func claimedCleanupError(
 			)
 		}
 		if checkedOut {
+			if err := resetArchivedBranchCleanup(m); err != nil {
+				return fmt.Errorf(
+					"finish archived branch cleanup for %s: branch %q is still checked out at its "+
+						"expected commit, but retry authorization could not be restored: %w",
+					m.Slug, identity, err,
+				)
+			}
 			return checkedOutBranchCleanupError(m.Slug, identity, worktree)
 		}
 		manual := manualBranchDeleteAtCommand(m.Repo, identity, expectedSHA)
@@ -1457,6 +1460,16 @@ func claimArchivedBranchCleanup(m *project.Manifest) error {
 			return fmt.Errorf("branch cleanup state is %q, want pending", proof.BranchState)
 		}
 		proof.BranchState = project.ArchiveCleanupClaimed
+		return nil
+	})
+}
+
+func resetArchivedBranchCleanup(m *project.Manifest) error {
+	return updateArchivedCleanupProof(m, func(proof *project.ArchiveCleanupProof) error {
+		if cleanupState(proof.BranchState, proof.BranchPresent) != project.ArchiveCleanupClaimed {
+			return fmt.Errorf("branch cleanup state is %q, want claimed", proof.BranchState)
+		}
+		proof.BranchState = project.ArchiveCleanupPending
 		return nil
 	})
 }
@@ -1792,8 +1805,11 @@ func manualBranchConfigRemoveCommand(repo, branch string) string {
 }
 
 func setBranchDeletionRecovery(
-	result *archiveResult, repo, branch, expectedSHA string, deleteErr error,
-) {
+	result *archiveResult,
+	m *project.Manifest,
+	repo, branch, expectedSHA string,
+	deleteErr error,
+) error {
 	tip, found, inspectErr := gitx.LocalBranchTip(repo, branch)
 	switch {
 	case inspectErr != nil:
@@ -1826,14 +1842,21 @@ func setBranchDeletionRecovery(
 				"%s\ninspect whether branch %q is checked out before taking any destructive action: %v",
 				deleteErr, branch, checkoutErr,
 			)
-			return
+			return nil
 		}
 		if checkedOut {
+			if err := resetArchivedBranchCleanup(m); err != nil {
+				return fmt.Errorf(
+					"branch %q deletion was blocked because it is checked out at expected commit %s, "+
+						"but reset its cleanup obligation for retry: %w",
+					branch, expectedSHA, err,
+				)
+			}
 			result.BranchDeletionWarning = errors.Join(
 				deleteErr,
 				checkedOutBranchCleanupError(result.Slug, branch, worktree),
 			).Error()
-			return
+			return nil
 		}
 		result.BranchCleanupCommand = manualBranchDeleteAtCommand(repo, branch, expectedSHA)
 		result.BranchDeletionWarning = fmt.Sprintf(
@@ -1844,6 +1867,7 @@ func setBranchDeletionRecovery(
 			manualBranchConfigRemoveCommand(repo, branch),
 		)
 	}
+	return nil
 }
 
 func checkedOutBranchCleanupError(slug, branch, worktree string) error {

@@ -1722,8 +1722,8 @@ func TestArchiveReportsBranchStillPresentOnlyAfterDeletionFailure(t *testing.T) 
 	stdout, stderr, err := captureGCOutput(t, func() error {
 		return runArchive(slug, false)
 	})
-	if !errors.Is(err, errArchivedCleanupIncomplete) {
-		t.Fatalf("runArchive error = %v, want %v", err, errArchivedCleanupIncomplete)
+	if err != nil {
+		t.Fatalf("runArchive returned an operation error for branch guidance: %v", err)
 	}
 	if !strings.Contains(stdout, "Branch still present:") ||
 		!strings.Contains(stdout, branch) {
@@ -1748,11 +1748,11 @@ func TestArchiveReportsBranchStillPresentOnlyAfterDeletionFailure(t *testing.T) 
 		t.Fatalf("branch %q was deleted despite being checked out", branch)
 	}
 
-	_, _, err = captureGCOutput(t, func() error {
+	_, retryStderr, err := captureGCOutput(t, func() error {
 		return runArchive(slug, false)
 	})
-	if err == nil {
-		t.Fatal("runArchive retry accepted a claimed checked-out branch cleanup")
+	if err != nil {
+		t.Fatalf("runArchive retry returned an operation error for checked-out guidance: %v", err)
 	}
 	for _, want := range []string{
 		branch,
@@ -1760,12 +1760,51 @@ func TestArchiveReportsBranchStillPresentOnlyAfterDeletionFailure(t *testing.T) 
 		"Detach or remove that specific worktree",
 		"rerun Relay cleanup",
 	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("runArchive retry error %q is missing %q", err, want)
+		if !strings.Contains(retryStderr, want) {
+			t.Fatalf("runArchive retry stderr %q is missing %q", retryStderr, want)
 		}
 	}
-	if strings.Contains(err.Error(), "update-ref -d") {
-		t.Fatalf("runArchive retry error %q recommends raw ref deletion", err)
+	if strings.Contains(retryStderr, "update-ref -d") {
+		t.Fatalf("runArchive retry stderr %q recommends raw ref deletion", retryStderr)
+	}
+}
+
+func TestArchivedCleanupCheckedOutBranchResetsClaimAndRetries(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "checked-out-branch-retry"
+	branch := "user/" + slug
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree+"-missing")
+
+	result, err := archiveProject(slug, false)
+	if err != nil {
+		t.Fatalf("archiveProject: %v", err)
+	}
+	if result.BranchDeletionWarning == "" || !strings.Contains(
+		result.BranchDeletionWarning, "Detach or remove that specific worktree",
+	) {
+		t.Fatalf("branch deletion warning = %q, want checked-out guidance", result.BranchDeletionWarning)
+	}
+	archived := loadArchivedManifest(t, slug)
+	if archived.ArchiveCleanup == nil ||
+		archived.ArchiveCleanup.BranchState != project.ArchiveCleanupPending {
+		t.Fatalf("cleanup proof = %+v, want retryable pending branch cleanup", archived.ArchiveCleanup)
+	}
+
+	runArchiveGit(t, worktree, "checkout", "--detach")
+	retried, err := retryArchivedProjectCleanup(archived)
+	if err != nil {
+		t.Fatalf("retryArchivedProjectCleanup: %v", err)
+	}
+	if !retried.BranchDeleted || gitx.BranchExists(repo, branch) {
+		t.Fatalf("retry result = %+v, want branch deleted after detach", retried)
+	}
+	archived = loadArchivedManifest(t, slug)
+	if archived.ArchiveCleanup == nil ||
+		archived.ArchiveCleanup.BranchState != project.ArchiveCleanupDone ||
+		archived.ArchiveCleanup.BranchPresent {
+		t.Fatalf("cleanup proof = %+v, want consumed branch cleanup", archived.ArchiveCleanup)
 	}
 }
 
@@ -1809,6 +1848,11 @@ func TestArchiveDoesNotDeleteBranchAdvancedImmediatelyBeforeDeletion(t *testing.
 	tip, found, tipErr := gitx.LocalBranchTip(repo, branch)
 	if tipErr != nil || !found || tip != advancedTip {
 		t.Fatalf("branch tip = (%q, %t, %v), want (%q, true, nil)", tip, found, tipErr, advancedTip)
+	}
+	archived := loadArchivedManifest(t, slug)
+	if archived.ArchiveCleanup == nil ||
+		archived.ArchiveCleanup.BranchState != project.ArchiveCleanupClaimed {
+		t.Fatalf("cleanup proof = %+v, want ambiguous advanced branch to remain claimed", archived.ArchiveCleanup)
 	}
 }
 
@@ -3019,8 +3063,8 @@ func TestRunArchiveReportsIncompleteArchivedCleanupWithManualGuidance(t *testing
 		return runArchive(slug, false)
 	})
 	archiveForceDeleteBranchAt = previousDelete
-	if !errors.Is(err, errArchivedCleanupIncomplete) {
-		t.Fatalf("runArchive incomplete archived retry error = %v, want %v", err, errArchivedCleanupIncomplete)
+	if err != nil {
+		t.Fatalf("runArchive returned an operation error for archived branch guidance: %v", err)
 	}
 	for _, want := range []string{
 		"Archived cleanup incomplete:", slug, "Worktree removed:", "Branch still present:",
