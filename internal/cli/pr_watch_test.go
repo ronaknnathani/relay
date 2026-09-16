@@ -653,6 +653,86 @@ func TestPRWatchStartAdoptsOnlyAMatchingRunningWatcher(t *testing.T) {
 	}
 }
 
+func TestPRWatchStartRejectsStaleStackWatcherAdoption(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "workspace-1")
+	repo := initCLIGitRepo(t)
+	gitOutput(t, repo, "checkout", "-q", "-b", "feature")
+	saveDeliveryProject(t, "demo", repo)
+	state := openPRReadyState(t, "demo")
+	state.Phases["open-pr"] = project.PhaseState{
+		Status: project.PhaseDone, CompletedDispatchID: "open-pr-dispatch",
+	}
+	state.LastDispatch = "open-pr"
+	state.LastDispatchID = "open-pr-dispatch"
+	state.PR = project.PRRef{Number: 42, URL: "https://github.com/example/test/pull/42"}
+	state.FinalResult = &project.FinalResult{
+		Status: "opened", PRNumber: 42, PRURL: state.PR.URL,
+		RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
+		Snapshot: state.Route.Snapshot, DispatchID: state.LastDispatchID,
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "post-delivery.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &fakeHerdrClient{}
+	installPRWatchFakes(t, client)
+	prWatchIsRunning = func(string) (bool, error) { return true, nil }
+	prWatchReadState = func(slug string) (prwatch.State, error) {
+		return prwatch.State{
+			Project: slug, PID: 5, Status: prwatch.StatusRunning,
+			Mode: prwatch.ModeStack, OwnerSlug: "stack-run", WorkspaceID: "workspace-1",
+		}, nil
+	}
+
+	_, err := runPRCommand(
+		t, "watch", "start", "demo", "--mode", "stack", "--owner", "stack-run", "--json",
+	)
+	if err == nil || !strings.Contains(err.Error(), "live repository snapshot") {
+		t.Fatalf("stale stack watcher adoption error = %v", err)
+	}
+}
+
+func TestStackPRWatchReadinessRejectsLivePRSnapshotDrift(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	gitOutput(t, repo, "checkout", "-q", "-b", "feature")
+	saveDeliveryProject(t, "demo", repo)
+	state := openPRReadyState(t, "demo")
+	state.Phases["open-pr"] = project.PhaseState{
+		Status: project.PhaseDone, CompletedDispatchID: "open-pr-dispatch",
+	}
+	state.LastDispatch = "open-pr"
+	state.LastDispatchID = "open-pr-dispatch"
+	state.PR = project.PRRef{Number: 42, URL: "https://github.com/example/test/pull/42"}
+	state.FinalResult = &project.FinalResult{
+		Status: "opened", PRNumber: 42, PRURL: state.PR.URL,
+		RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
+		Snapshot: state.Route.Snapshot, DispatchID: state.LastDispatchID,
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	original := readPRForRecording
+	readPRForRecording = func(
+		ctx context.Context, worktree string, number int,
+	) (prwatch.PullRequest, error) {
+		remote, err := original(ctx, worktree, number)
+		remote.HeadSHA = strings.Repeat("f", 40)
+		return remote, err
+	}
+	t.Cleanup(func() { readPRForRecording = original })
+
+	if err := validateStackPRWatchReadiness("demo"); err == nil ||
+		!strings.Contains(err.Error(), "head SHA") {
+		t.Fatalf("live PR snapshot drift error = %v", err)
+	}
+}
+
 func TestPRWatchStartRequiresHerdr(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	client := &fakeHerdrClient{}
@@ -1103,6 +1183,12 @@ func TestPRWatchHandoffBindsValidatedOwnerAndUntrustedBodies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	digest.ObservedAt = "2026-09-15T00:01:00Z"
+	if observedLater, err := prWatchHandoffCapability(digest); err != nil {
+		t.Fatal(err)
+	} else if observedLater != first {
+		t.Fatal("handoff capability changed only because observation time changed")
+	}
 	digest.Items[0].Body = "different untrusted instructions"
 	second, err := prWatchHandoffCapability(digest)
 	if err != nil {
@@ -1120,10 +1206,18 @@ func TestPRWatchHandoffBindsValidatedOwnerAndUntrustedBodies(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest.Items[0].ThreadID = "thread-2"
+	changedThread, err := prWatchHandoffCapability(digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedThread == withMutationIDs {
+		t.Fatal("handoff capability did not cover mutation identifiers")
+	}
+	digest.BranchMutationAllowed = true
 	if changed, err := prWatchHandoffCapability(digest); err != nil {
 		t.Fatal(err)
-	} else if changed == withMutationIDs {
-		t.Fatal("handoff capability did not cover mutation identifiers")
+	} else if changed == changedThread {
+		t.Fatal("handoff capability did not cover branch mutation permission")
 	}
 	digest.HeadSHA = "other"
 	if _, _, err := validatePRWatchHandoffProvenance(
@@ -1230,11 +1324,78 @@ func TestPRWatchHandoffRejectsSupersededDigestForCurrentHead(t *testing.T) {
 	}
 }
 
-func TestPRWatchHandoffRejectsTerminalAndProtectedPullRequests(t *testing.T) {
+func TestPRWatchHandoffAcceptsCanonicalProtectedDispositions(t *testing.T) {
+	digest := prwatch.Digest{
+		Project: "demo", Mode: prwatch.ModeStack,
+		Fingerprint: strings.Repeat("a", 64), HeadSHA: "current-head",
+		PR: prwatch.PullRequest{Number: 42, State: prwatch.StateOpen, HeadSHA: "current-head"},
+	}
+	originalState := prWatchReadState
+	originalTick := prWatchTickOnce
+	prWatchReadState = func(string) (prwatch.State, error) {
+		return prwatch.State{
+			Project: "demo", Mode: prwatch.ModeStack, OwnerSlug: "stack-run",
+			CurrentFingerprint: digest.Fingerprint, PRNumber: 42, HeadSHA: "current-head",
+		}, nil
+	}
+	t.Cleanup(func() {
+		prWatchReadState = originalState
+		prWatchTickOnce = originalTick
+	})
+
+	tests := []struct {
+		name   string
+		pr     prwatch.PullRequest
+		reason string
+	}{
+		{
+			name: "merged",
+			pr: prwatch.PullRequest{
+				Number: 42, State: prwatch.StateMerged, HeadSHA: "current-head",
+			},
+			reason: prwatch.ReasonStackFrontMerged,
+		},
+		{
+			name: "approved",
+			pr: prwatch.PullRequest{
+				Number: 42, State: prwatch.StateOpen,
+				ReviewDecision: prwatch.ReviewApproved, HeadSHA: "current-head",
+			},
+			reason: prwatch.ReasonAutoMergeNotArmed,
+		},
+		{
+			name: "closed",
+			pr: prwatch.PullRequest{
+				Number: 42, State: prwatch.StateClosed, HeadSHA: "current-head",
+			},
+			reason: prwatch.ReasonClosedUnmerged,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			prWatchTickOnce = func(context.Context, string, prwatch.Options) (prwatch.Digest, error) {
+				fresh := digest
+				fresh.PR = test.pr
+				fresh.Items = []prwatch.Item{{Reason: test.reason, Key: test.reason + ":42:current-head"}}
+				return fresh, nil
+			}
+			if _, _, err := validatePRWatchHandoffProvenance(
+				context.Background(), "demo", digest, &prWatchModeFlags{},
+			); err != nil {
+				t.Fatalf("%s disposition was rejected: %v", test.name, err)
+			}
+		})
+	}
+}
+
+func TestPRWatchHandoffMarksProtectedMutationAndRejectsWithdrawnWork(t *testing.T) {
 	digest := prwatch.Digest{
 		Project: "demo", Mode: prwatch.ModeManaged,
 		Fingerprint: strings.Repeat("a", 64), HeadSHA: "current-head",
 		PR: prwatch.PullRequest{Number: 42, State: prwatch.StateOpen, HeadSHA: "current-head"},
+		Items: []prwatch.Item{{
+			Reason: prwatch.ReasonFailingCheck, Key: "failing-check:42",
+		}},
 	}
 	originalState := prWatchReadState
 	originalTick := prWatchTickOnce
@@ -1249,54 +1410,64 @@ func TestPRWatchHandoffRejectsTerminalAndProtectedPullRequests(t *testing.T) {
 		prWatchTickOnce = originalTick
 	})
 
-	tests := []struct {
-		name      string
-		pr        prwatch.PullRequest
-		withdrawn bool
+	for _, test := range []struct {
+		name                  string
+		fresh                 prwatch.Digest
+		accepted              bool
+		branchMutationAllowed bool
 	}{
 		{
-			name: "merged",
-			pr: prwatch.PullRequest{
-				Number: 42, State: prwatch.StateMerged, HeadSHA: "current-head",
-			},
+			name: "approved branch mutation",
+			fresh: func() prwatch.Digest {
+				fresh := digest
+				fresh.PR.ReviewDecision = prwatch.ReviewApproved
+				return fresh
+			}(),
+			accepted: true,
 		},
 		{
-			name: "approved",
-			pr: prwatch.PullRequest{
-				Number: 42, State: prwatch.StateOpen,
-				ReviewDecision: prwatch.ReviewApproved, HeadSHA: "current-head",
-			},
-		},
-		{
-			name: "queued",
-			pr: prwatch.PullRequest{
-				Number: 42, State: prwatch.StateOpen,
-				MergeStateStatus: prwatch.MergeStateQueued, HeadSHA: "current-head",
-			},
+			name: "queued branch mutation",
+			fresh: func() prwatch.Digest {
+				fresh := digest
+				fresh.PR.MergeStateStatus = prwatch.MergeStateQueued
+				return fresh
+			}(),
+			accepted: true,
 		},
 		{
 			name: "withdrawn or resolved work",
-			pr: prwatch.PullRequest{
-				Number: 42, State: prwatch.StateOpen, HeadSHA: "current-head",
-			},
-			withdrawn: true,
+			fresh: func() prwatch.Digest {
+				fresh := digest
+				fresh.Fingerprint = ""
+				fresh.Items = nil
+				return fresh
+			}(),
 		},
-	}
-	for _, test := range tests {
+		{
+			name:                  "ordinary open pull request",
+			fresh:                 digest,
+			accepted:              true,
+			branchMutationAllowed: true,
+		},
+	} {
 		t.Run(test.name, func(t *testing.T) {
 			prWatchTickOnce = func(context.Context, string, prwatch.Options) (prwatch.Digest, error) {
-				fresh := digest
-				fresh.PR = test.pr
-				if test.withdrawn {
-					fresh.Fingerprint = ""
-					fresh.Items = nil
-				}
-				return fresh, nil
+				return test.fresh, nil
 			}
-			if _, _, err := validatePRWatchHandoffProvenance(
+			fresh, _, err := validatePRWatchHandoffProvenance(
 				context.Background(), "demo", digest, &prWatchModeFlags{},
-			); err == nil {
-				t.Fatalf("%s pull request accepted for mutation handoff", test.name)
+			)
+			if test.accepted && err != nil {
+				t.Fatalf("%s was rejected: %v", test.name, err)
+			}
+			if !test.accepted && err == nil {
+				t.Fatalf("%s was accepted", test.name)
+			}
+			if err == nil && prWatchBranchMutationAllowed(fresh.PR) != test.branchMutationAllowed {
+				t.Fatalf(
+					"%s branch mutation = %t, want %t",
+					test.name, prWatchBranchMutationAllowed(fresh.PR), test.branchMutationAllowed,
+				)
 			}
 		})
 	}

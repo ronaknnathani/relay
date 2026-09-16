@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -195,6 +196,18 @@ func startPRWatcher(
 		return prWatchStartOutput{}, err
 	}
 	if running {
+		state, err := prWatchReadState(slug)
+		if err != nil {
+			return prWatchStartOutput{}, err
+		}
+		if mismatch := adoptedWatcherWarning(slug, state, mode, owner); mismatch != "" {
+			return prWatchStartOutput{}, errors.New(mismatch)
+		}
+		if mode == prwatch.ModeStack {
+			if err := validateStackPRWatchReadiness(slug); err != nil {
+				return prWatchStartOutput{}, err
+			}
+		}
 		return adoptRunningPRWatcher(slug, mode, owner, readiness.WorkspaceID)
 	}
 	if mode == prwatch.ModeStack {
@@ -599,7 +612,7 @@ func prWatchStartTimeoutError(slug, tabID string, stateErr error) error {
 }
 
 func validateStackPRWatchReadiness(slug string) error {
-	state, _, err := loadStateAt(slug)
+	state, statePath, err := loadStateAt(slug)
 	if err != nil {
 		return err
 	}
@@ -614,6 +627,38 @@ func validateStackPRWatchReadiness(slug string) error {
 				"and open-pr reconciliation first",
 			slug,
 		)
+	}
+	manifest, err := project.Load(filepath.Join(filepath.Dir(statePath), "manifest.json"))
+	if err != nil {
+		return err
+	}
+	snapshot, err := project.RepositorySnapshotForManifest(manifest, filepath.Dir(statePath))
+	if err != nil {
+		return err
+	}
+	if state.Route == nil || state.Route.Snapshot != snapshot ||
+		state.FinalResult.RouteRevision != state.Route.Revision ||
+		state.FinalResult.RouteDigest != state.Route.Digest ||
+		state.FinalResult.Snapshot != snapshot {
+		return fmt.Errorf(
+			"stack watcher requires the live repository snapshot to match the completed delivery; "+
+				"redispatch the child with `relay resume %s` and finish review, validation, "+
+				"and open-pr reconciliation first",
+			slug,
+		)
+	}
+	if state.PR.Number <= 0 || strings.TrimSpace(state.PR.URL) == "" {
+		return fmt.Errorf("stack watcher requires a recorded pull request for project %q", slug)
+	}
+	remote, err := readPRForRecording(context.Background(), *manifest.Worktree, state.PR.Number)
+	if err != nil {
+		return fmt.Errorf("observe pull request #%d for stack watcher: %w", state.PR.Number, err)
+	}
+	if err := validatePRCandidate(manifest, remote, state.PR.Number, state.PR.URL); err != nil {
+		return err
+	}
+	if err := validatePRMetadata(manifest, snapshot, remote, true); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1143,6 +1188,7 @@ func newCmdPRWatchHandoff() *cobra.Command {
 				return err
 			}
 			digest.OwnerSlug = owner
+			digest.BranchMutationAllowed = prWatchBranchMutationAllowed(digest.PR)
 			digest.HandoffCapability, err = prWatchHandoffCapability(digest)
 			if err != nil {
 				return err
@@ -1232,17 +1278,10 @@ func validatePRWatchHandoffProvenance(
 			digest.HeadSHA, fresh.HeadSHA,
 		)
 	}
-	if fresh.PR.State != prwatch.StateOpen {
+	if !prWatchHandoffAllowsState(fresh) {
 		return prwatch.Digest{}, "", fmt.Errorf(
-			"pull request #%d is %s and cannot be handed to pr-fix",
+			"pull request #%d is %s or protected and its actionable items require branch mutation",
 			fresh.PR.Number, strings.ToLower(fresh.PR.State),
-		)
-	}
-	if fresh.PR.ReviewDecision == prwatch.ReviewApproved ||
-		fresh.PR.MergeStateStatus == prwatch.MergeStateQueued {
-		return prwatch.Digest{}, "", fmt.Errorf(
-			"pull request #%d is approved or queued and cannot be handed to pr-fix",
-			fresh.PR.Number,
 		)
 	}
 	if fresh.Fingerprint == "" {
@@ -1260,8 +1299,41 @@ func validatePRWatchHandoffProvenance(
 	return fresh, owner, nil
 }
 
+func prWatchHandoffAllowsState(digest prwatch.Digest) bool {
+	switch digest.PR.State {
+	case prwatch.StateMerged:
+		return digest.Mode == prwatch.ModeStack &&
+			prWatchItemsOnlyHaveReason(digest.Items, prwatch.ReasonStackFrontMerged)
+	case prwatch.StateClosed:
+		return prWatchItemsOnlyHaveReason(digest.Items, prwatch.ReasonClosedUnmerged)
+	case prwatch.StateOpen:
+		return true
+	default:
+		return false
+	}
+}
+
+func prWatchItemsOnlyHaveReason(items []prwatch.Item, reason string) bool {
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if item.Reason != reason {
+			return false
+		}
+	}
+	return true
+}
+
+func prWatchBranchMutationAllowed(pr prwatch.PullRequest) bool {
+	return pr.State == prwatch.StateOpen &&
+		pr.ReviewDecision != prwatch.ReviewApproved &&
+		pr.MergeStateStatus != prwatch.MergeStateQueued
+}
+
 func prWatchHandoffCapability(digest prwatch.Digest) (string, error) {
 	digest.HandoffCapability = ""
+	digest.ObservedAt = ""
 	data, err := json.Marshal(digest)
 	if err != nil {
 		return "", fmt.Errorf("encode watcher handoff: %w", err)

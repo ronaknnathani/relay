@@ -45,6 +45,7 @@ func TestExplorationArtifactIsSnapshotBoundAndReusable(t *testing.T) {
 		},
 		filepath.Join("skills", "clarify", "SKILL.md"): {
 			"fresh `exploration.md`", "Do not repeat broad discovery", "replacement exploration",
+			"`input_revision`", "`task.md`", "`requirements.md`", "`assignment.md`",
 		},
 		filepath.Join("skills", "plan", "SKILL.md"): {
 			"fresh `exploration.md`", "Do not repeat broad discovery", "replacement exploration",

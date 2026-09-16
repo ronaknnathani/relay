@@ -32,14 +32,18 @@ func runResume(slug string) error {
 	if err != nil {
 		return err
 	}
-	m, err := project.LoadEffective(path)
+	m, state, err := project.LoadEffectiveProject(path)
 	if err != nil {
 		return err
 	}
 	if m.Worktree == nil || *m.Worktree == "" {
 		return fmt.Errorf("project %q has no worktree", slug)
 	}
-	if m.Phase == "done" {
+	complete, err := resumeCompletionIsFresh(path, m, state)
+	if err != nil {
+		return err
+	}
+	if complete {
 		return fmt.Errorf("project %q is complete. Run: relay archive %s", slug, slug)
 	}
 	if err := guardManagedHerdrResume(m); err != nil {
@@ -84,6 +88,34 @@ func runResume(slug string) error {
 	}
 	o := relayLaunchOptions(*m.Worktree, filepath.Dir(path), systemPrompt, slug, cmd, m.Title, cfg.PermissionModeFor(a.Name()))
 	return launchAgent(a, o)
+}
+
+func resumeCompletionIsFresh(
+	manifestPath string,
+	manifest project.Manifest,
+	state *project.WorkflowState,
+) (bool, error) {
+	if manifest.Phase != "done" {
+		return false, nil
+	}
+	if state == nil || !state.UsesAdaptiveDelivery() {
+		return true, nil
+	}
+	raw, err := project.Load(manifestPath)
+	if err != nil {
+		return false, err
+	}
+	snapshot, err := project.RepositorySnapshotForManifest(raw, filepath.Dir(manifestPath))
+	if err != nil {
+		return false, err
+	}
+	return state.Route != nil &&
+		state.FinalResult != nil &&
+		state.FinalResult.Status == "opened" &&
+		state.Route.Snapshot == snapshot &&
+		state.FinalResult.RouteRevision == state.Route.Revision &&
+		state.FinalResult.RouteDigest == state.Route.Digest &&
+		state.FinalResult.Snapshot == snapshot, nil
 }
 
 func writeCoordinatorHandoff(projectDir, token string) (string, error) {

@@ -220,14 +220,14 @@ func TestRouteClassifySupportsLocalBranchAndCommitBases(t *testing.T) {
 			name: "local branch",
 			base: func(t *testing.T, repo string) string {
 				t.Helper()
-				return "stack/parent"
+				return "parent"
 			},
 		},
 		{
 			name: "commit SHA",
 			base: func(t *testing.T, repo string) string {
 				t.Helper()
-				return gitRevParse(t, repo, "stack/parent")
+				return gitRevParse(t, repo, "parent")
 			},
 		},
 	} {
@@ -235,9 +235,9 @@ func TestRouteClassifySupportsLocalBranchAndCommitBases(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			repo := initCLIGitRepo(t)
 			if test.name == "local branch" {
-				gitOutput(t, repo, "push", "-q", "origin", "main:refs/heads/stack/parent")
+				gitOutput(t, repo, "push", "-q", "origin", "main:refs/heads/parent")
 			}
-			gitOutput(t, repo, "checkout", "-q", "-b", "stack/parent")
+			gitOutput(t, repo, "checkout", "-q", "-b", "parent")
 			if err := os.WriteFile(filepath.Join(repo, "parent.txt"), []byte("parent\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -253,7 +253,7 @@ func TestRouteClassifySupportsLocalBranchAndCommitBases(t *testing.T) {
 			}
 			manifest.Branch = "feature"
 			manifest.BaseBranch = base
-			manifest.StartSHA = gitRevParse(t, repo, "stack/parent")
+			manifest.StartSHA = gitRevParse(t, repo, "parent")
 			manifest.RemoteBaseSHA = ""
 			if err := project.Save(manifestPath, manifest); err != nil {
 				t.Fatal(err)
@@ -278,6 +278,16 @@ func TestRouteClassifySupportsLocalBranchAndCommitBases(t *testing.T) {
 			}
 			if manifest.RemoteBaseSHA != "" {
 				t.Fatalf("local base %q was incorrectly remote-bound to %q", base, manifest.RemoteBaseSHA)
+			}
+			got, err := project.LoadState(project.StatePath("demo"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Route.Snapshot.BaseTipSHA != manifest.StartSHA {
+				t.Fatalf(
+					"local base snapshot tip = %q, want immutable start %q",
+					got.Route.Snapshot.BaseTipSHA, manifest.StartSHA,
+				)
 			}
 		})
 	}

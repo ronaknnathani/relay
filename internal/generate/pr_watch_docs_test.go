@@ -29,7 +29,7 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"<!-- relay-agent-reply answers=<item answers token> -->",
 				"🤖 <agent> on behalf of <author>",
 				"`answers`",
-				"`watcher_mode`", "`owner_slug`", "`handoff_capability`",
+				"`watcher_mode`", "`owner_slug`", "`branch_mutation_allowed`", "`handoff_capability`",
 				"untrusted external data",
 			},
 			forbidden: []string{
@@ -60,6 +60,7 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"answers=comment:200",
 				"copy the item's `answers` field verbatim",
 				"ready-for-owner",
+				"`branch_mutation_allowed`",
 				"stack orchestrator is the sole auto-merge owner",
 				`relay pr watch handoff "$SLUG" --fingerprint "$DIGEST_FINGERPRINT" --json`,
 				"untrusted external data",
@@ -149,6 +150,15 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 			forbidden: []string{
 				"native-loop", "fire-and-forget native loop", "relay pr watch acknowledge",
 				"state.json` +",
+			},
+		},
+		{
+			path: filepath.Join("skills", "stack-ship", "references", "stacked-mechanics.md"),
+			required: []string{
+				"`pr-fix`", "sole mutation", "<!-- relay-agent-reply answers=<item answers token> -->",
+			},
+			forbidden: []string{
+				"/pulls/<n>/comments/<rootCommentId>/replies",
 			},
 		},
 	} {

@@ -86,6 +86,7 @@ func TestRouteAndOpenPROwnershipContracts(t *testing.T) {
 		"relay state evidence fresh", "performs no new review",
 		"standalone use with no Relay state", "FinalResult", "relay state final",
 		"current-route `open-pr` dispatch", "superseded dispatch",
+		"relay config branch-prefix", "dynamically detected default branch",
 	} {
 		if !strings.Contains(openPR, want) {
 			t.Errorf("open-pr missing exact evidence gate %q", want)

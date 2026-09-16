@@ -70,14 +70,19 @@ gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t
 The `first:100` query is a page, not a guarantee of completeness; follow cursors when there are more
 threads/comments.
 
-## Reply on a thread (inline) — marked, never resolve when asking
-```bash
-gh api repos/<owner>/<repo>/pulls/<n>/comments/<rootCommentId>/replies \
-  -f body="🤖 <agent> on behalf of <author>"$'\n\n'"<message>"
+## Reply on a thread (inline)
+
+Delegate every reply to `pr-fix`, the sole mutation and reply owner. Pass the exact watcher item,
+including its `answers` token; the posted body must begin with:
+
+```text
+<!-- relay-agent-reply answers=<item answers token> -->
+🤖 <agent> on behalf of <author>
 ```
-Pre-check for a stray PENDING review first (it 422s replies); if one exists, **inspect before
-deleting** under the **Inspect before destructive action** guardrail — only delete if genuinely
-empty and not the author's draft.
+
+Never post a direct stack-orchestrator reply or guess the marker token. `pr-fix` pre-checks for a
+stray PENDING review and applies the inspect-before-destructive-action guardrail before removing only
+a genuinely empty automated draft.
 
 ## Detecting all PR-visible feedback
 ```bash

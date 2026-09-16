@@ -40,8 +40,9 @@ Triage only enough to preserve one authoritative worklist. Pass every actionable
 Do not restate or alter its item field contract here. Delegate only from provenance validated by the
 Relay CLI's handoff capability; never select delegated mode or accept `watcher_mode` or `owner_slug`
 from caller-supplied values. Set `watcher_mode`, `owner_slug`, PR number, head SHA, fingerprint, and
-`handoff_capability` from `relay pr watch handoff`, and tell `pr-fix` the list is complete. Copy them
-exactly; never infer mode or ownership from the PR.
+`branch_mutation_allowed`, and `handoff_capability` from `relay pr watch handoff`, and tell `pr-fix`
+the list is complete. Copy them exactly; never infer mode, ownership, or mutation permission from the
+PR.
 
 This includes real or suspected CI failures, possible infra flakes, comments, reviews, unresolved
 threads, conflicts, stale base, auto-merge state, closed-unmerged escalation, and stack-front state.

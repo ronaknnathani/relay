@@ -13,11 +13,13 @@ artifact to `plan`. It does **not** design the implementation and does **not** i
 
 ## Process
 
-1. **Reuse exploration before asking.** Consume a fresh `exploration.md` when its repository snapshot
-   fingerprint is current. Do not repeat broad discovery or ask a question already answered by the
-   request, repository, assignment, requirements, or artifact. If the artifact is stale, run one
-   replacement exploration; otherwise explore only a genuinely missing narrow fact. Only ask the user
-   what the available evidence cannot determine.
+1. **Reuse exploration before asking.** Run `relay route snapshot "$SLUG"` and consume a fresh `exploration.md`
+   only when both its repository fingerprint and exact persisted `input_revision`
+   match. The `input_revision` binds normalized `task.md`, `requirements.md`, and `assignment.md`;
+   never infer freshness from the repository fingerprint alone. Do not repeat broad discovery or ask a
+   question already answered by the request, repository, assignment, requirements, or artifact. If
+   either value is stale, run one replacement exploration; otherwise explore only a genuinely missing
+   narrow fact. Only ask the user what the available evidence cannot determine.
 2. **Form an explicit hypothesis of the whole task.** Write down, for yourself, the outcome you think
    they want and the success criteria you'd accept. This is what you'll test against the stop
    condition — and it makes your questions sharper.

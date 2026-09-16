@@ -14,62 +14,7 @@ import (
 
 func TestResumeUsesAdaptiveCompletionInsteadOfStaleManifestPhase(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	worktree := t.TempDir()
-	projectDir := filepath.Join(project.ActiveDir(), "demo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := project.Save(filepath.Join(projectDir, "manifest.json"), project.Manifest{
-		Slug: "demo", Title: "Adaptive flow", Agent: "copilot",
-		Workflow: "deliver-pr", Phase: "plan", Worktree: &worktree,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state.Route = testRouteDecision(project.RouteEasy)
-	for _, phase := range state.Order {
-		if slices.Contains(state.Route.SelectedPhases, phase) {
-			state.Phases[phase] = project.PhaseState{Status: project.PhaseDone}
-		} else {
-			state.Phases[phase] = project.PhaseState{
-				Status: project.PhaseSkipped, Reason: "not selected",
-				Outcome: project.PhaseOutcomeNoOp,
-			}
-		}
-		state.Evidence.Review = &project.EvidenceRecord{
-			Snapshot: state.Route.Snapshot, RouteRevision: state.Route.Revision,
-			RouteDigest: state.Route.Digest, DispatchID: "implement-dispatch",
-			Result: project.EvidencePassed, Owner: project.EvidenceOwnerImplement,
-			CompletedAt: "2026-09-15T00:01:00Z",
-			Roles:       append([]string(nil), state.Route.ReviewRoles...),
-		}
-		state.Evidence.Validation = &project.EvidenceRecord{
-			Snapshot: state.Route.Snapshot, RouteRevision: state.Route.Revision,
-			RouteDigest: state.Route.Digest, DispatchID: "implement-dispatch",
-			Result: project.EvidencePassed, Owner: project.EvidenceOwnerImplement,
-			CompletedAt: "2026-09-15T00:02:00Z",
-			Commands: []project.CommandEvidence{{
-				GateID: "test", Display: "go <redacted-args>",
-				Digest: commandDigestForTest("go test ./..."),
-			}},
-		}
-		state.DispatchCount = 2
-		state.HandoffCount = 1
-		state.LastDispatch = "open-pr"
-		state.LastDispatchID = "open-pr-dispatch"
-		state.PR = project.PRRef{Number: 42, URL: "https://example.test/pull/42"}
-		state.FinalResult = &project.FinalResult{
-			Status: "opened", PRNumber: 42, PRURL: state.PR.URL,
-			RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
-			Snapshot: state.Route.Snapshot, DispatchID: state.LastDispatchID,
-		}
-	}
-	if err := project.SaveState(filepath.Join(projectDir, "state.json"), state); err != nil {
-		t.Fatal(err)
-	}
+	projectDir, _ := saveCompletedAdaptiveResumeProject(t, "demo")
 	if err := runResume("demo"); err == nil || !strings.Contains(err.Error(), "is complete") {
 		t.Fatalf("resume adaptive completion error = %v", err)
 	}
@@ -80,6 +25,81 @@ func TestResumeUsesAdaptiveCompletionInsteadOfStaleManifestPhase(t *testing.T) {
 	if manifest.Phase != "plan" {
 		t.Fatalf("resume rewrote historical manifest phase to %q", manifest.Phase)
 	}
+}
+
+func TestResumeReopensStaleTerminalAdaptiveState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	projectDir, repo := saveCompletedAdaptiveResumeProject(t, "demo")
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/", DefaultAgent: "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "post-delivery.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var launched agent.LaunchOptions
+	previous := launchAgent
+	launchAgent = func(_ agent.Agent, options agent.LaunchOptions) error {
+		launched = options
+		return nil
+	}
+	t.Cleanup(func() { launchAgent = previous })
+
+	if err := runResume("demo"); err != nil {
+		t.Fatal(err)
+	}
+	if launched.Worktree != repo || !strings.Contains(launched.SystemPrompt, "Workflow: deliver-pr") {
+		t.Fatalf("stale adaptive resume launch = %+v", launched)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, ".coordinator-capability")); err != nil {
+		t.Fatalf("stale adaptive resume did not rotate coordinator capability: %v", err)
+	}
+}
+
+func saveCompletedAdaptiveResumeProject(t *testing.T, slug string) (string, string) {
+	t.Helper()
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, slug, repo)
+	projectDir := filepath.Join(project.ActiveDir(), slug)
+	manifestPath := filepath.Join(projectDir, "manifest.json")
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Title = "Adaptive flow"
+	manifest.Agent = "copilot"
+	manifest.Workflow = "deliver-pr"
+	manifest.Phase = "plan"
+	if err := project.Save(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	state := openPRReadyState(t, slug)
+	for _, phase := range state.Order {
+		if slices.Contains(state.Route.SelectedPhases, phase) {
+			state.Phases[phase] = project.PhaseState{Status: project.PhaseDone}
+		} else {
+			state.Phases[phase] = project.PhaseState{
+				Status: project.PhaseSkipped, Reason: "not selected",
+				Outcome: project.PhaseOutcomeNoOp,
+			}
+		}
+	}
+	state.DispatchCount = 2
+	state.HandoffCount = 1
+	state.LastDispatch = "open-pr"
+	state.LastDispatchID = "open-pr-dispatch"
+	state.PR = project.PRRef{Number: 42, URL: "https://example.test/pull/42"}
+	state.FinalResult = &project.FinalResult{
+		Status: "opened", PRNumber: 42, PRURL: state.PR.URL,
+		RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
+		Snapshot: state.Route.Snapshot, DispatchID: state.LastDispatchID,
+	}
+	if err := project.SaveState(filepath.Join(projectDir, "state.json"), state); err != nil {
+		t.Fatal(err)
+	}
+	return projectDir, repo
 }
 
 func TestResumeRotatesCoordinatorCapabilityForAdaptiveState(t *testing.T) {

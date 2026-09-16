@@ -17,7 +17,7 @@ func RepositorySnapshotForManifest(manifest Manifest, projectDir string) (Reposi
 	if err != nil {
 		return RepositorySnapshot{}, fmt.Errorf("snapshot project %q inputs: %w", manifest.Slug, err)
 	}
-	base := gitx.SnapshotBaseRef(*manifest.Worktree, manifest.BaseBranch, manifest.StartSHA)
+	base := strings.TrimSpace(manifest.StartSHA)
 	if manifest.RemoteBaseSHA != "" {
 		if manifest.BaseBranch == "" || manifest.BaseBranch == "HEAD" ||
 			strings.HasPrefix(manifest.BaseBranch, "refs/") ||
@@ -28,6 +28,8 @@ func RepositorySnapshotForManifest(manifest Manifest, projectDir string) (Reposi
 			)
 		}
 		base = manifest.RemoteBaseSHA
+	} else if base == "" {
+		base = gitx.SnapshotBaseRef(*manifest.Worktree, manifest.BaseBranch, manifest.StartSHA)
 	}
 	snapshot, err := gitx.Snapshot(*manifest.Worktree, base)
 	if err != nil {

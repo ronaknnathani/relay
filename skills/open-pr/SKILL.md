@@ -10,13 +10,20 @@ Open the finished change; performs no new review and reruns no passing gate.
 ## Process
 
 1. Read repository/global `AGENTS.md` and the PR template.
-2. Require a clean, fully committed feature branch. If intended changes remain, apply the standalone
+2. Detect the current branch and the repository's default branch. In standalone use from the
+   dynamically detected default branch, create and switch to a feature branch before invoking
+   `commit`: read the configured prefix with `relay config branch-prefix`, derive a concise task slug,
+   validate the full name with `git check-ref-format --branch`, verify it does not already exist
+   locally or at `origin`, then run `git switch -c <prefix><slug>`. This preserves the current working
+   changes without committing them to the default branch. Refuse a detached HEAD or a colliding branch
+   name rather than switching to unrelated existing work.
+3. Require a clean, fully committed feature branch. If intended changes remain, apply the standalone
    `commit` contract for default-branch rejection, specific staging, secret inspection, message style,
    commit separation, and automated co-authorship. In an adaptive project, return to the selected
    review/validation owners because `HEAD` changed. In standalone use with no Relay state, continue in
    this invocation: review the committed diff once, run the repository-required gates, then proceed
    only if both pass.
-3. For an adaptive project, require the coordinator to refresh the route after the final commit and
+4. For an adaptive project, require the coordinator to refresh the route after the final commit and
    before dispatching `open-pr`, then require evidence from the route's canonical owners for the
    exact current snapshot and exact required gate set:
 
@@ -29,15 +36,15 @@ Open the finished change; performs no new review and reruns no passing gate.
    evidence. A route refresh that escalates also blocks this phase. For a legacy seven-phase project
    with no route, require its recorded review and validate
    phases to be complete and do not call adaptive route/evidence commands.
-4. If the branch must be updated, apply the standalone `rebase` contract. Because rebasing changes
+5. If the branch must be updated, apply the standalone `rebase` contract. Because rebasing changes
    the snapshot, stop and obtain fresh adaptive review/validation evidence before continuing.
-5. Push the current feature branch. Ordinary first push uses `-u`; rewritten history uses only the
+6. Push the current feature branch. Ordinary first push uses `-u`; rewritten history uses only the
    `rebase` contract's force-with-lease rule.
-6. Create the PR with the repository's base branch and template. The title follows local history.
+7. Create the PR with the repository's base branch and template. The title follows local history.
    The body is one or two short prose paragraphs explaining why and what, followed by `Testing Done`
    containing only commands that actually ran. Clearly disclose automated authorship and whose behalf
    the agent acts on.
-7. For a Relay project, while the current-route `open-pr` dispatch remains active, record the
+8. For a Relay project, while the current-route `open-pr` dispatch remains active, record the
    returned PR number and URL with
    `relay state pr "$SLUG" --number <n> --url <url> --dispatch-token "$RESULT_TOKEN"`.
    The guarded command atomically completes the

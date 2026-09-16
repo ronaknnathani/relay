@@ -22,6 +22,7 @@ func TestWatcherHandoffHasOneWorklistAndOneWriter(t *testing.T) {
 	for _, want := range []string{
 		"sole mutation owner", "authoritative worklist schema", "no reassessment loop",
 		"ready-for-owner", "`watcher_mode`", "`owner_slug`",
+		"`branch_mutation_allowed`",
 		"stack orchestrator is the sole auto-merge owner",
 		"`reason`, `source`, `id`, `key`, `answers`, `updated_at`, `body`",
 		"`thread_id`, `path`, `line`",
