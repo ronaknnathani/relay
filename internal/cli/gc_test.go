@@ -2177,6 +2177,115 @@ func TestGCLegacyArchivedProbeFailureBlocksOnlyConflictingRepository(t *testing.
 	}
 }
 
+func TestGCLegacyArchivedMissingRepositoryDoesNotBlockIndependentCleanup(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	missingRepo := filepath.Join(t.TempDir(), "deleted-repository")
+	missingWorktree := filepath.Join(missingRepo, ".worktrees", "legacy-missing-owner")
+	archived := project.Manifest{
+		Slug: "legacy-missing-owner", Repo: missingRepo,
+		Branch: "user/legacy-missing-owner", Worktree: &missingWorktree,
+		Status: "archived", Merged: true,
+	}
+	archivedPath := project.ManifestPath(project.ArchivedDir(), archived.Slug)
+	if err := os.MkdirAll(filepath.Dir(archivedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(archivedPath, archived); err != nil {
+		t.Fatal(err)
+	}
+
+	eligibleRepo := newGCRepoFixture(t, "main")
+	eligibleSlug := "legacy-missing-independent"
+	eligibleBranch, eligibleWorktree := addGCProject(t, eligibleRepo, eligibleSlug)
+	mergeGCProjectUpstream(t, eligibleRepo, eligibleBranch)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if err != nil {
+		t.Fatalf("runGC error = %v, stderr = %q", err, stderr)
+	}
+	if !pathExists(archivedPath) {
+		t.Fatal("GC removed the unresolved legacy archived manifest")
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), eligibleSlug)) ||
+		pathExists(eligibleWorktree) ||
+		gitx.BranchExists(eligibleRepo.repo, eligibleBranch) {
+		t.Fatal("GC did not clean a repository independent of a missing legacy repository")
+	}
+}
+
+func TestGCLegacyArchivedMissingRepositoryPreservesSameWorktreePath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "legacy-missing-same-path"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+
+	missingRepo := filepath.Join(t.TempDir(), "deleted-repository")
+	archived := project.Manifest{
+		Slug: "legacy-missing-conflict", Repo: missingRepo,
+		Branch: "user/legacy-missing-conflict", Worktree: &worktree,
+		Status: "archived", Merged: true,
+	}
+	archivedPath := project.ManifestPath(project.ArchivedDir(), archived.Slug)
+	if err := os.MkdirAll(filepath.Dir(archivedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(archivedPath, archived); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{archivedPath, slug, worktree, "could conflict"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC changed resources matching a missing-repository archived worktree path")
+	}
+}
+
+func TestGCLegacyArchivedMissingRepositoryPreservesSameSlug(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "legacy-missing-same-slug"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+
+	missingRepo := filepath.Join(t.TempDir(), "deleted-repository")
+	archived := project.Manifest{
+		Slug: slug, Repo: missingRepo, Branch: "user/legacy-missing-archived",
+		Status: "archived", Merged: true,
+	}
+	archivedPath := project.ManifestPath(project.ArchivedDir(), archived.Slug)
+	if err := os.MkdirAll(filepath.Dir(archivedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(archivedPath, archived); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{archivedPath, slug, "could conflict"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC changed resources matching a missing-repository archived slug")
+	}
+}
+
 func TestGCPreservesAndReportsPartialProgramOwnership(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	before := make(map[string][]byte)

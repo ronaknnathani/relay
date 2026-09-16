@@ -11,6 +11,7 @@ import (
 )
 
 type projectResourceIdentity struct {
+	slug       string
 	repository string
 	commonDir  string
 	branch     string
@@ -67,7 +68,7 @@ func loadProjectResourceOwnershipIndex(
 	for _, result := range activeResults {
 		if result.Err != nil {
 			index.addIssue(newProjectResourceOwnershipIssue(
-				result, true, false, fmt.Errorf(
+				result, true, false, false, fmt.Errorf(
 					"load competing active project metadata %s: %w", result.Path, result.Err,
 				),
 			))
@@ -75,7 +76,7 @@ func loadProjectResourceOwnershipIndex(
 		}
 		identity, err := canonicalActiveProjectIdentity(result)
 		if err != nil {
-			index.addIssue(newProjectResourceOwnershipIssue(result, false, false, err))
+			index.addIssue(newProjectResourceOwnershipIssue(result, false, false, false, err))
 			continue
 		}
 		index.add(result.Manifest.Slug, result.Path, identity)
@@ -93,7 +94,7 @@ func loadProjectResourceOwnershipIndex(
 	for _, result := range archivedResults {
 		if result.Err != nil {
 			index.addIssue(newProjectResourceOwnershipIssue(
-				result, true, true, fmt.Errorf(
+				result, true, true, false, fmt.Errorf(
 					"load competing archived project metadata %s: %w", result.Path, result.Err,
 				),
 			))
@@ -101,7 +102,9 @@ func loadProjectResourceOwnershipIndex(
 		}
 		identity, relevant, err := canonicalArchivedProjectIdentity(result)
 		if err != nil {
-			index.addIssue(newProjectResourceOwnershipIssue(result, false, true, err))
+			index.addIssue(newProjectResourceOwnershipIssue(
+				result, false, true, result.Manifest.ArchiveCleanup == nil, err,
+			))
 			continue
 		}
 		if relevant {
@@ -139,7 +142,7 @@ func canonicalActiveProjectIdentity(
 		)
 	}
 	return canonicalProjectResourceIdentity(
-		m.Repo, m.Branch, worktreeValue(m), m.Worktree != nil, result.Path,
+		m.Slug, m.Repo, m.Branch, worktreeValue(m), m.Worktree != nil, result.Path,
 	)
 }
 
@@ -168,7 +171,7 @@ func canonicalArchivedProjectIdentity(
 		worktree = proof.Worktree
 	}
 	identity, err := canonicalProjectResourceIdentity(
-		proof.Repository, proof.Branch, worktree, worktreePending, result.Path,
+		m.Slug, proof.Repository, proof.Branch, worktree, worktreePending, result.Path,
 	)
 	if err != nil {
 		return projectResourceIdentity{}, false, err
@@ -223,7 +226,7 @@ func canonicalLegacyArchivedProjectIdentity(
 		return projectResourceIdentity{}, false, nil
 	}
 	identity, err := canonicalProjectResourceIdentity(
-		m.Repo, m.Branch, worktree, worktreePresent, result.Path,
+		m.Slug, m.Repo, m.Branch, worktree, worktreePresent, result.Path,
 	)
 	if err != nil {
 		return projectResourceIdentity{}, false, err
@@ -238,7 +241,7 @@ func canonicalLegacyArchivedProjectIdentity(
 }
 
 func canonicalProjectResourceIdentity(
-	repo, branch, worktree string,
+	slug, repo, branch, worktree string,
 	requireWorktree bool,
 	manifestPath string,
 ) (projectResourceIdentity, error) {
@@ -260,6 +263,7 @@ func canonicalProjectResourceIdentity(
 		)
 	}
 	identity := projectResourceIdentity{
+		slug:       slug,
 		repository: canonicalRepo,
 		commonDir:  commonDir,
 	}
@@ -295,9 +299,11 @@ func newProjectResourceOwnershipIssue(
 	result project.ManifestLoadResult,
 	incomplete bool,
 	includeCleanupProof bool,
+	allowFilesystemIdentity bool,
 	err error,
 ) projectResourceOwnershipIssue {
 	m := result.Manifest
+	slug := trustedProjectResourceSlug(result)
 	issue := projectResourceOwnershipIssue{
 		owner: projectResourceOwner{
 			slug: firstNonEmpty(m.Slug, result.Name),
@@ -306,6 +312,7 @@ func newProjectResourceOwnershipIssue(
 		err: err,
 	}
 	candidates := []projectResourceCandidate{{
+		slug:        slug,
 		repository:  m.Repo,
 		branch:      m.Branch,
 		worktree:    worktreeValue(m),
@@ -316,6 +323,7 @@ func newProjectResourceOwnershipIssue(
 	if includeCleanupProof && m.ArchiveCleanup != nil {
 		proof := m.ArchiveCleanup
 		candidates = append(candidates, projectResourceCandidate{
+			slug:       slug,
 			repository: proof.Repository,
 			branch:     proof.Branch,
 			worktree:   proof.Worktree,
@@ -334,7 +342,7 @@ func newProjectResourceOwnershipIssue(
 		})
 	}
 	for _, candidate := range candidates {
-		claims, verified := plausibleProjectResourceClaims(candidate)
+		claims, verified := plausibleProjectResourceClaims(candidate, allowFilesystemIdentity)
 		if !verified {
 			issue.global = true
 			continue
@@ -356,6 +364,7 @@ func newProjectResourceOwnershipIssue(
 }
 
 type projectResourceCandidate struct {
+	slug                   string
 	repository             string
 	branch                 string
 	worktree               string
@@ -367,33 +376,30 @@ type projectResourceCandidate struct {
 
 func plausibleProjectResourceClaims(
 	candidate projectResourceCandidate,
+	allowFilesystemIdentity bool,
 ) ([]projectResourceClaim, bool) {
-	if strings.TrimSpace(candidate.repository) == "" {
+	repository, commonDir, repositoryVerified := plausibleRepositoryIdentity(
+		candidate.repository, allowFilesystemIdentity,
+	)
+	if !repositoryVerified && !allowFilesystemIdentity {
 		return nil, false
 	}
-	repository, err := gitx.CanonicalRepositoryRoot(candidate.repository)
-	if err != nil {
-		repository, err = gitx.RepositoryRoot(candidate.repository)
-		if err != nil {
-			return nil, false
-		}
-		repository, err = gitx.CanonicalPath(repository)
-		if err != nil {
-			return nil, false
-		}
+	base := projectResourceIdentity{
+		slug:       candidate.slug,
+		repository: repository,
+		commonDir:  commonDir,
 	}
-	commonDir, err := gitx.CanonicalGitCommonDir(repository)
-	if err != nil {
-		return nil, false
-	}
-	base := projectResourceIdentity{repository: repository, commonDir: commonDir}
 	claim := projectResourceClaim{identity: base}
 	if strings.TrimSpace(candidate.branch) != "" {
-		branchRef, branchErr := gitx.CanonicalBranchRef(repository, candidate.branch)
-		if branchErr == nil {
-			claim.identity.branch = commonDir + "\x00" + branchRef
-		} else {
+		if commonDir == "" {
 			claim.branchUnknown = true
+		} else {
+			branchRef, branchErr := gitx.CanonicalBranchRef(repository, candidate.branch)
+			if branchErr == nil {
+				claim.identity.branch = commonDir + "\x00" + branchRef
+			} else {
+				claim.branchUnknown = true
+			}
 		}
 	} else {
 		claim.branchUnknown = candidate.hasBranch || candidate.incomplete
@@ -408,6 +414,9 @@ func plausibleProjectResourceClaims(
 	} else {
 		claim.worktreeUnknown = candidate.hasWorktree || candidate.incomplete
 	}
+	if !repositoryVerified && claim.identity.slug == "" && claim.identity.worktree == "" {
+		return nil, false
+	}
 	claims := []projectResourceClaim{claim}
 	expectedBranch := strings.TrimSpace(candidate.expectedWorktreeBranch)
 	if expectedBranch == "" {
@@ -418,13 +427,57 @@ func plausibleProjectResourceClaims(
 		return claims, true
 	}
 	expectedClaim := projectResourceClaim{identity: base}
-	branchRef, branchErr := gitx.CanonicalBranchRef(repository, expectedBranch)
-	if branchErr != nil {
+	if commonDir == "" {
 		expectedClaim.branchUnknown = true
 	} else {
-		expectedClaim.identity.branch = commonDir + "\x00" + branchRef
+		branchRef, branchErr := gitx.CanonicalBranchRef(repository, expectedBranch)
+		if branchErr != nil {
+			expectedClaim.branchUnknown = true
+		} else {
+			expectedClaim.identity.branch = commonDir + "\x00" + branchRef
+		}
 	}
 	return append(claims, expectedClaim), true
+}
+
+func plausibleRepositoryIdentity(
+	recorded string,
+	allowFilesystemIdentity bool,
+) (repository, commonDir string, verified bool) {
+	if strings.TrimSpace(recorded) == "" {
+		return "", "", false
+	}
+	repository, err := gitx.CanonicalRepositoryRoot(recorded)
+	if err != nil {
+		repository, err = gitx.RepositoryRoot(recorded)
+		if err == nil {
+			repository, err = gitx.CanonicalPath(repository)
+		}
+	}
+	if err == nil {
+		commonDir, err = gitx.CanonicalGitCommonDir(repository)
+		if err == nil {
+			return repository, commonDir, true
+		}
+	}
+	if !allowFilesystemIdentity {
+		return "", "", false
+	}
+	repository, err = gitx.CanonicalPath(recorded)
+	if err != nil {
+		return "", "", false
+	}
+	return repository, "", true
+}
+
+func trustedProjectResourceSlug(result project.ManifestLoadResult) string {
+	if result.Manifest.Slug != result.Name {
+		return ""
+	}
+	if err := project.ValidateSlug(result.Manifest.Slug); err != nil {
+		return ""
+	}
+	return result.Manifest.Slug
 }
 
 func firstNonEmpty(values ...string) string {
@@ -492,12 +545,16 @@ func (issue projectResourceOwnershipIssue) couldConflict(
 		return true
 	}
 	for _, claim := range issue.claims {
+		if claim.identity.slug != "" && claim.identity.slug == identity.slug {
+			return true
+		}
 		if (claim.identity.branch != "" && claim.identity.branch == identity.branch) ||
 			(claim.identity.worktree != "" && claim.identity.worktree == identity.worktree) {
 			return true
 		}
 		sameRepository := claim.identity.repository == identity.repository
-		sameCommonDir := claim.identity.commonDir == identity.commonDir
+		sameCommonDir := claim.identity.commonDir != "" &&
+			claim.identity.commonDir == identity.commonDir
 		if (claim.branchUnknown || claim.worktreeUnknown) &&
 			(sameRepository || sameCommonDir) {
 			return true
