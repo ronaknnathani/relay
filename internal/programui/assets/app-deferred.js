@@ -1128,7 +1128,7 @@ function appendArtifactContent(section, selector, metadata) {
   }
 }
 
-function loadCurrentArtifact(revalidate) {
+function loadCurrentArtifact(revalidate, revalidateAfterLoad) {
   const item = selectedItem();
   if (!item || !state.drawerOpen) {
     return;
@@ -1143,10 +1143,10 @@ function loadCurrentArtifact(revalidate) {
     selector = { kind: "task", item: item.id, name: first.name };
     state.artifactSelection.set(item.id, selector);
   }
-  loadArtifact(selector, revalidate);
+  loadArtifact(selector, revalidate, revalidateAfterLoad);
 }
 
-async function loadArtifact(selector, revalidate) {
+async function loadArtifact(selector, revalidate, revalidateAfterLoad) {
   const key = artifactCacheKey(selector);
   const existing = state.artifactCache.get(key);
   const current = existing;
@@ -1154,6 +1154,9 @@ async function loadArtifact(selector, revalidate) {
       current.controller === state.artifactController &&
       !current.controller.signal.aborted &&
       current.generation === state.artifactGeneration) {
+    if (revalidateAfterLoad) {
+      current.revalidateAfterLoad = true;
+    }
     return;
   }
   const lastValid = current && current.status === "ready"
@@ -1168,9 +1171,10 @@ async function loadArtifact(selector, revalidate) {
   const controller = new AbortController();
   const generation = ++state.artifactGeneration;
   state.artifactController = controller;
-  state.artifactCache.set(key, {
-    status: "loading", lastValid, controller, generation,
-  });
+  const requestState = {
+    status: "loading", lastValid, controller, generation, revalidateAfterLoad: false,
+  };
+  state.artifactCache.set(key, requestState);
   const headers = { Accept: "application/json" };
   if (lastValid && lastValid.etag) {
     headers["If-None-Match"] = lastValid.etag;
@@ -1221,6 +1225,11 @@ async function loadArtifact(selector, revalidate) {
     }
     if (state.artifactController === controller) {
       state.artifactController = null;
+    }
+    if (requestState.revalidateAfterLoad &&
+        generation === state.artifactGeneration &&
+        artifactMatchesSelection(selector)) {
+      loadArtifact(selector, true);
     }
   }
 }

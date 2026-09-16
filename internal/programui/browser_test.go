@@ -998,6 +998,95 @@ func TestBrowserRoadmapRebuildsWhenDependenciesChange(t *testing.T) {
 	}
 }
 
+func TestBrowserRoadmapRedrawsConnectorsWhenCardMetadataChanges(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	initial := browserTestSnapshot()
+	initial.Graph.Edges = []programview.GraphEdgeDTO{{From: "w1", To: "w2"}}
+	initial.Graph.Layers = [][]string{{"w1"}, {"w2"}}
+	initial.Graph.Nodes[0].Layer = 0
+	initial.Graph.Nodes[1].Layer = 1
+	initial.Items[0].Dependents = []string{"w2"}
+	initial.Items[1].Dependencies = []string{"w1"}
+
+	updated := initial
+	updated.Graph.Nodes = append([]programview.GraphNodeDTO(nil), initial.Graph.Nodes...)
+	updated.Items = append([]programview.ItemDTO(nil), initial.Items...)
+	updated.Graph.Nodes[0].Title = strings.Repeat("Expanded metadata changes card geometry ", 8)
+	updated.Items[0].Title = updated.Graph.Nodes[0].Title
+
+	feed := newSnapshotFeed(initial, time.Minute, time.Now, func() (programview.Snapshot, error) {
+		return updated, nil
+	})
+	url := startBrowserHTTPHandler(t, func(port int) http.Handler {
+		return newHandler(
+			initial.Program.Slug,
+			strconv.Itoa(port),
+			newSnapshotCache(time.Minute, time.Now, nil),
+			feed,
+			nil,
+		)
+	})
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+
+	if err := chromedp.Run(browser,
+		chromedp.EmulateViewport(700, 900),
+		chromedp.Navigate(url),
+		chromedp.Poll(`state.snapshot?.schema === "relay.program.v1" &&
+			document.querySelectorAll(".card").length === 2 &&
+			document.querySelector("#graph-edges .edge")?.getAttribute("d")`, nil),
+		chromedp.Evaluate(`
+			window.__relayMetadataCard = document.querySelector('.card[data-item="w1"]');
+			window.__relayMetadataHeight = window.__relayMetadataCard.getBoundingClientRect().height;
+			window.__relayMetadataPath =
+				document.querySelector("#graph-edges .edge").getAttribute("d");
+		`, nil),
+	); err != nil {
+		t.Fatalf("capture initial connector geometry: %v", err)
+	}
+
+	feed.Refresh()
+	eventually(t, time.Second, func() bool {
+		return feed.Get().Graph.Nodes[0].Title == updated.Graph.Nodes[0].Title
+	})
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+		chromedp.Poll(`
+			(() => {
+				const card = document.querySelector('.card[data-item="w1"]');
+				const path = document.querySelector("#graph-edges .edge")?.getAttribute("d");
+				return card === window.__relayMetadataCard &&
+					card.getBoundingClientRect().height > window.__relayMetadataHeight &&
+					path && path !== window.__relayMetadataPath;
+			})()
+		`, nil),
+	); err != nil {
+		var diagnostic string
+		_ = chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+			sameCard: document.querySelector('.card[data-item="w1"]') === window.__relayMetadataCard,
+			beforeHeight: window.__relayMetadataHeight,
+			afterHeight: document.querySelector('.card[data-item="w1"]')?.getBoundingClientRect().height,
+			beforePath: window.__relayMetadataPath,
+			afterPath: document.querySelector("#graph-edges .edge")?.getAttribute("d")
+		})`, &diagnostic))
+		t.Fatalf("metadata-only connector redraw: %v: %s", err, diagnostic)
+	}
+}
+
 func TestBrowserShowsSixSecondExternalRefreshProvenance(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
@@ -1197,6 +1286,105 @@ func TestBrowserRoadmapResumesAfterTabSwitch(t *testing.T) {
 	want := "Task w3: Synthetic task 3. Status Dispatched. Priority P1. Dependencies: w2."
 	if label != want {
 		t.Fatalf("task card accessible name = %q, want %q", label, want)
+	}
+}
+
+func TestBrowserBatchedRoadmapCompletionKeepsDrawerFocus(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	url := startBrowserTestFeedHandler(t, browserTestSnapshot())
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+
+	if err := chromedp.Run(browser,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(`
+				const relayAnimationFrame = window.requestAnimationFrame.bind(window);
+				window.requestAnimationFrame = (callback) =>
+					relayAnimationFrame((timestamp) => setTimeout(() => callback(timestamp), 100));
+			`).Do(ctx)
+			return err
+		}),
+		chromedp.Navigate(url),
+		chromedp.Poll(`typeof openDrawer === "function" &&
+			deferredUIReady &&
+			document.querySelectorAll(".card").length === 2`, nil),
+		chromedp.Evaluate(`
+			(() => {
+				document.querySelector('.card[data-item="w1"]').focus();
+				const nodes = [];
+				const edges = [];
+				const layers = [];
+				const items = [];
+				for (let index = 1; index <= 260; index += 1) {
+					const id = "w" + index;
+					const dependencies = index === 1 ? [] : ["w" + (index - 1)];
+					nodes.push({
+						id,
+						title: "Synthetic task " + index,
+						lane: "dispatched",
+						layer: index - 1
+					});
+					layers.push([id]);
+					items.push({
+						id,
+						title: "Synthetic task " + index,
+						status: "dispatched",
+						lane: "dispatched",
+						priority: "P1",
+						dependencies,
+						dependents: index === 260 ? [] : ["w" + (index + 1)],
+						contracts: [],
+						notes: [],
+						decisions: [],
+						artifacts: [],
+						warnings: [],
+						mailbox: {inbox_ids: [], outbox_ids: []}
+					});
+					if (index > 1) {
+						edges.push({from: "w" + (index - 1), to: id});
+					}
+				}
+				state.snapshot = {
+					...state.snapshot,
+					items,
+					graph: {nodes, edges, layers, cyclic: false},
+					progress: {...state.snapshot.progress, total: 260, dispatched: 260},
+					plan: {...state.snapshot.plan, in_flight: nodes.map((node) => node.id)}
+				};
+				state.itemsByID = new Map(items.map((item) => [item.id, item]));
+				state.dirtyTabs.add("roadmap");
+				renderActiveTab();
+				selectItem("w1");
+				openDrawer(false);
+			})()
+		`, nil),
+		chromedp.Poll(`document.querySelectorAll(".card").length === 260 &&
+			document.querySelector("#drawer").dataset.state === "open"`, nil),
+	); err != nil {
+		t.Fatalf("complete roadmap while drawer is open: %v", err)
+	}
+	var focusID string
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`document.activeElement?.id || ""`, &focusID),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if focusID != "detail-panel" {
+		t.Fatalf("focus after batched roadmap completion = %q, want detail-panel", focusID)
 	}
 }
 
@@ -1494,7 +1682,9 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 	url := "http://127.0.0.1:" + portText
 	if err := chromedp.Run(browser,
 		chromedp.Navigate(url),
-		chromedp.Poll(`document.querySelectorAll(".card").length === 2`, nil),
+		chromedp.Poll(`state.snapshot?.schema === "relay.program.v1" &&
+			programController === null &&
+			document.querySelectorAll(".card").length === 2`, nil),
 		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
 		chromedp.Poll(`document.querySelector("#drawer-title").textContent === "First task"`, nil),
 	); err != nil {
@@ -1668,6 +1858,125 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 	}
 }
 
+func TestBrowserRefreshQueuesOneArtifactRevalidationDuringInflightLoad(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	initial := browserTestSnapshot()
+	updated := initial
+	updated.Graph.Nodes = append([]programview.GraphNodeDTO(nil), initial.Graph.Nodes...)
+	updated.Items = append([]programview.ItemDTO(nil), initial.Items...)
+	updated.Graph.Nodes[0].Title = "First task after snapshot refresh"
+	updated.Items[0].Title = updated.Graph.Nodes[0].Title
+	now := time.Date(2026, 9, 15, 20, 0, 0, 0, time.UTC)
+	var nowNanos atomic.Int64
+	nowNanos.Store(now.UnixNano())
+	var builds atomic.Int32
+	url := startBrowserTestHandler(t, HandlerOptions{
+		Slug: "browser-test",
+		Now:  func() time.Time { return time.Unix(0, nowNanos.Load()).UTC() },
+		Builder: func(_ string, _ string) (programview.Snapshot, error) {
+			if builds.Add(1) == 1 {
+				return initial, nil
+			}
+			return updated, nil
+		},
+	})
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+	if err := chromedp.Run(browser,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(`
+				const relayFetch = window.fetch.bind(window);
+				window.__relayArtifactCalls = 0;
+				window.__relayReleaseFirstArtifact = null;
+				window.fetch = (input, options) => {
+					const url = new URL(typeof input === "string" ? input : input.url, window.location.href);
+					if (url.pathname !== "/api/artifact") {
+						return relayFetch(input, options);
+					}
+					window.__relayArtifactCalls += 1;
+					const call = window.__relayArtifactCalls;
+					const text = call === 1 ? "old-on-disk-content" : "new-on-disk-content";
+					const response = () => new Response(JSON.stringify({
+						state: "loaded",
+						artifact: {
+							name: "assignment.md",
+							path: "assignment.md",
+							present: true,
+							size: text.length,
+							updated_at: "",
+							truncated: false,
+							text
+						}
+					}), {
+						status: 200,
+						headers: {"Content-Type": "application/json", "ETag": '"' + call + '"'}
+					});
+					if (call !== 1) {
+						return Promise.resolve(response());
+					}
+					return new Promise((resolve) => {
+						window.__relayReleaseFirstArtifact = () => resolve(response());
+					});
+				};
+			`).Do(ctx)
+			return err
+		}),
+		chromedp.Navigate(url),
+		chromedp.Poll(`state.snapshot?.schema === "relay.program.v1" &&
+			programController === null &&
+			document.querySelectorAll(".card").length === 2`, nil),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+		chromedp.Poll(`window.__relayArtifactCalls === 1 &&
+			typeof window.__relayReleaseFirstArtifact === "function"`, nil),
+	); err != nil {
+		t.Fatalf("start delayed artifact load: %v", err)
+	}
+
+	nowNanos.Store(now.Add(3 * time.Second).UnixNano())
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+		chromedp.Poll(`document.querySelector('.card[data-item="w1"]').textContent.includes(
+			"First task after snapshot refresh")`, nil),
+		chromedp.Evaluate(`window.__relayReleaseFirstArtifact()`, nil),
+	); err != nil {
+		t.Fatalf("complete overlapping snapshot refresh: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	var result struct {
+		Calls int    `json:"calls"`
+		Text  string `json:"text"`
+	}
+	if err := chromedp.Run(browser, chromedp.Evaluate(`({
+		calls: window.__relayArtifactCalls,
+		text: document.querySelector(".artifact-text")?.textContent || ""
+	})`, &result)); err != nil {
+		t.Fatal(err)
+	}
+	if result.Calls != 2 || result.Text != "new-on-disk-content" {
+		var diagnostic string
+		_ = chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+			calls: window.__relayArtifactCalls,
+			text: document.querySelector(".artifact-text")?.textContent,
+			card: document.querySelector('.card[data-item="w1"]')?.textContent
+		})`, &diagnostic))
+		t.Fatalf("follow-up artifact revalidation = %+v: %s", result, diagnostic)
+	}
+}
+
 func TestBrowserRejectsUnabortableStaleArtifactResponses(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
@@ -1770,7 +2079,9 @@ func TestBrowserRejectsUnabortableStaleArtifactResponses(t *testing.T) {
 	url := "http://127.0.0.1:" + portText
 	if err := chromedp.Run(browser,
 		chromedp.Navigate(url),
-		chromedp.Poll(`document.querySelectorAll(".card").length === 2`, nil),
+		chromedp.Poll(`state.snapshot?.schema === "relay.program.v1" &&
+			programController === null &&
+			document.querySelectorAll(".card").length === 2`, nil),
 		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
 		chromedp.Poll(`window.__relayPendingArtifacts["w1:assignment.md"] === 1`, nil),
 		chromedp.Evaluate(

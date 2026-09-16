@@ -899,15 +899,7 @@ function renderRoadmap() {
       taskCard(node, item, index, hasSelection, card);
       state.cards.set(id, card);
     });
-    const edges = list(graph.edges);
-    const sameEdges = edges.length === state.connectorPaths.length &&
-      edges.every((edge, index) => {
-        const rendered = state.connectorPaths[index];
-        return rendered && rendered.from === edge.from && rendered.to === edge.to;
-      });
-    if (!sameEdges) {
-      drawConnectorsForCurrentGraph();
-    }
+    drawConnectorsForCurrentGraph();
     return true;
   }
   const focusedItem = dom.graphNodes.contains(document.activeElement)
@@ -973,7 +965,9 @@ function renderRoadmap() {
     }
     if (renderBatch(ROADMAP_RENDER_BATCH)) {
       state.dirtyTabs.delete("roadmap");
-      if (focusedItem && state.cards.has(focusedItem)) {
+      const focusStayedInRoadmap =
+        document.activeElement === document.body || dom.graphNodes.contains(document.activeElement);
+      if (!state.drawerOpen && focusStayedInRoadmap && focusedItem && state.cards.has(focusedItem)) {
         state.cards.get(focusedItem).focus({ preventScroll: true });
       }
       drawConnectorsForCurrentGraph();
@@ -1665,7 +1659,6 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
           withDeferredUI(() => {
             state.pendingDrawer = false;
             openDrawer(true);
-            loadCurrentArtifact(true);
           });
         }
       });
@@ -1691,10 +1684,9 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
       withDeferredUI(() => {
         state.pendingDrawer = false;
         openDrawer(true);
-        loadCurrentArtifact(true);
       });
     } else if (state.drawerOpen) {
-      withDeferredUI(() => loadCurrentArtifact(true));
+      withDeferredUI(() => loadCurrentArtifact(true, true));
     }
     schedule(POLL_INTERVAL);
     return true;
