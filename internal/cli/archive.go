@@ -1652,6 +1652,16 @@ func validateArchivedCleanupProof(m project.Manifest) (project.ArchiveCleanupPro
 			m.Slug,
 		)
 	}
+	if proof.BranchPresent &&
+		(!isCanonicalCommitID(proof.ExpectedBranchTip) ||
+			!isCanonicalCommitID(proof.AuthoritativeCommit) ||
+			proof.ExpectedBranchTip != proof.AuthoritativeCommit) {
+		return project.ArchiveCleanupProof{}, fmt.Errorf(
+			"archived project %s cleanup proof does not bind branch %q to one canonical authoritative "+
+				"commit; preserving resources for manual inspection",
+			m.Slug, proof.Branch,
+		)
+	}
 	if proof.WorktreePresent {
 		if proof.Worktree == "" || proof.ExpectedWorktreeTip == "" ||
 			(proof.ExpectedWorktreeBranch == "") == !proof.WorktreeDetached {
@@ -1683,6 +1693,21 @@ func validateArchivedCleanupProof(m project.Manifest) (project.ArchiveCleanupPro
 		)
 	}
 	return proof, nil
+}
+
+func isCanonicalCommitID(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for index := range len(value) {
+		character := value[index]
+		if character < '0' || character > '9' {
+			if character < 'a' || character > 'f' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validateArchivedCleanupResources(

@@ -2190,6 +2190,43 @@ func TestArchivedCleanupRetryRejectsRecreatedBranchAtConsumedTip(t *testing.T) {
 	}
 }
 
+func TestValidateArchivedCleanupProofRejectsInvalidBranchCommitBinding(t *testing.T) {
+	const canonical = "0123456789abcdef0123456789abcdef01234567"
+	tests := []struct {
+		name          string
+		expectedTip   string
+		authoritative string
+	}{
+		{name: "missing authoritative commit", expectedTip: canonical},
+		{name: "abbreviated expected tip", expectedTip: canonical[:12], authoritative: canonical[:12]},
+		{name: "uppercase authoritative commit", expectedTip: canonical, authoritative: strings.ToUpper(canonical)},
+		{name: "mismatched commits", expectedTip: canonical, authoritative: "1123456789012345678901234567890123456789"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manifest := project.Manifest{
+				Slug:   "corrupt-proof",
+				Repo:   "/repo",
+				Branch: "user/corrupt-proof",
+				ArchiveCleanup: &project.ArchiveCleanupProof{
+					Repository:          "/repo",
+					Branch:              "user/corrupt-proof",
+					BranchPresent:       true,
+					ExpectedBranchTip:   test.expectedTip,
+					BranchState:         project.ArchiveCleanupPending,
+					AuthoritativeCommit: test.authoritative,
+					WorktreeState:       project.ArchiveCleanupDone,
+				},
+			}
+
+			_, err := validateArchivedCleanupProof(manifest)
+			if err == nil || !strings.Contains(err.Error(), "does not bind branch") {
+				t.Fatalf("validateArchivedCleanupProof error = %v, want branch binding rejection", err)
+			}
+		})
+	}
+}
+
 func TestArchivedCleanupRetryPreservesBranchAppearingDuringWorktreeCleanup(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)

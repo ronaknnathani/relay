@@ -1872,6 +1872,58 @@ func TestGCPreservesResourcesClaimedByArchivedPendingCleanup(t *testing.T) {
 	}
 }
 
+func TestGCCorruptArchivedBranchBindingBecomesOwnershipClaim(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "active-corrupt-proof-owner"
+	branch, worktree := addGCProject(t, fixture, slug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	branchTip := gitx.RevParse(fixture.repo, "refs/heads/"+branch)
+	worktreeState, found, err := gitx.RegisteredWorktreeState(fixture.repo, worktree)
+	if err != nil || !found {
+		t.Fatalf("worktree state = %+v, %t, %v", worktreeState, found, err)
+	}
+
+	archived := project.Manifest{
+		Slug: "corrupt-proof-owner", Repo: fixture.repo, Branch: branch, Worktree: &worktree,
+		Status: "archived", Merged: true,
+		ArchiveCleanup: &project.ArchiveCleanupProof{
+			Repository:             fixture.repo,
+			Branch:                 branch,
+			Worktree:               worktree,
+			BranchPresent:          true,
+			ExpectedBranchTip:      branchTip,
+			BranchState:            project.ArchiveCleanupPending,
+			WorktreePresent:        true,
+			ExpectedWorktreeTip:    worktreeState.Head,
+			ExpectedWorktreeBranch: worktreeState.Branch,
+			WorktreeState:          project.ArchiveCleanupPending,
+		},
+	}
+	archivedPath := project.ManifestPath(project.ArchivedDir(), archived.Slug)
+	if err := os.MkdirAll(filepath.Dir(archivedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(archivedPath, archived); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	for _, want := range []string{archived.Slug, slug, "does not bind branch", "could conflict"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q is missing %q", stderr, want)
+		}
+	}
+	if !pathExists(project.ManifestPath(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC used a corrupt archived proof as deletion authority")
+	}
+}
+
 func TestGCInvalidArchivedProofPreservesManifestAndProofResourceClaims(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	manifestRepo := newGCRepoFixture(t, "main")
