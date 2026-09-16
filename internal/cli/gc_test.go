@@ -2081,7 +2081,7 @@ func TestGCInvalidArchivedProofPreservesManifestAndProofResourceClaims(t *testin
 	}
 }
 
-func TestGCInvalidArchivedProofWithDeletedLinkedRepositoryFailsClosedGlobally(t *testing.T) {
+func TestGCInvalidArchivedProofWithDeletedLinkedRepositoryScopesToRecoverableClaims(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	blockedRepo := newGCRepoFixture(t, "main")
 	blockedSlug := "deleted-linked-owner"
@@ -2104,7 +2104,7 @@ func TestGCInvalidArchivedProofWithDeletedLinkedRepositoryFailsClosedGlobally(t 
 	runArchiveGit(t, blockedRepo.repo, "worktree", "remove", deletedLinkedRepo)
 
 	independentRepo := newGCRepoFixture(t, "main")
-	independentSlug := "globally-preserved-owner"
+	independentSlug := "independent-owner"
 	independentBranch, independentWorktree := addGCProject(t, independentRepo, independentSlug)
 	mergeGCProjectUpstream(t, independentRepo, independentBranch)
 
@@ -2137,22 +2137,20 @@ func TestGCInvalidArchivedProofWithDeletedLinkedRepositoryFailsClosedGlobally(t 
 	if !errors.Is(err, errGCCompletedWithErrors) {
 		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
 	}
-	for _, want := range []string{archivedPath, deletedLinkedRepo, blockedSlug, independentSlug} {
+	for _, want := range []string{archivedPath, deletedLinkedRepo, blockedSlug} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr %q is missing %q", stderr, want)
 		}
 	}
-	for _, resource := range []struct {
-		slug, repo, branch, worktree string
-	}{
-		{blockedSlug, blockedRepo.repo, blockedBranch, blockedWorktree},
-		{independentSlug, independentRepo.repo, independentBranch, independentWorktree},
-	} {
-		if !pathExists(filepath.Join(project.ActiveDir(), resource.slug)) ||
-			!pathExists(resource.worktree) ||
-			!gitx.BranchExists(resource.repo, resource.branch) {
-			t.Fatalf("GC changed resources despite global invalid-proof conflict: %+v", resource)
-		}
+	if !pathExists(filepath.Join(project.ActiveDir(), blockedSlug)) ||
+		!pathExists(blockedWorktree) ||
+		!gitx.BranchExists(blockedRepo.repo, blockedBranch) {
+		t.Fatal("GC changed resources matching a recoverable invalid-proof claim")
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), independentSlug)) ||
+		pathExists(independentWorktree) ||
+		gitx.BranchExists(independentRepo.repo, independentBranch) {
+		t.Fatal("GC did not clean a repository independent of recoverable invalid-proof claims")
 	}
 }
 

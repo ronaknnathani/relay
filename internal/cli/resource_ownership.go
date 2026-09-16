@@ -94,7 +94,7 @@ func loadProjectResourceOwnershipIndex(
 	for _, result := range archivedResults {
 		if result.Err != nil {
 			index.addIssue(newProjectResourceOwnershipIssue(
-				result, true, true, false, fmt.Errorf(
+				result, true, true, true, fmt.Errorf(
 					"load competing archived project metadata %s: %w", result.Path, result.Err,
 				),
 			))
@@ -103,7 +103,7 @@ func loadProjectResourceOwnershipIndex(
 		identity, relevant, err := canonicalArchivedProjectIdentity(result)
 		if err != nil {
 			index.addIssue(newProjectResourceOwnershipIssue(
-				result, false, true, result.Manifest.ArchiveCleanup == nil, err,
+				result, false, true, true, err,
 			))
 			continue
 		}
@@ -343,11 +343,9 @@ func newProjectResourceOwnershipIssue(
 	}
 	for _, candidate := range candidates {
 		claims, verified := plausibleProjectResourceClaims(candidate, allowFilesystemIdentity)
-		if !verified {
-			issue.global = true
-			continue
+		if verified {
+			issue.claims = append(issue.claims, claims...)
 		}
-		issue.claims = append(issue.claims, claims...)
 	}
 	if len(issue.claims) == 0 {
 		issue.global = true
