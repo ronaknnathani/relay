@@ -29,6 +29,7 @@ Invoke the deterministic policy; never reproduce or override its matrix in prose
 
 ```bash
 relay route classify "$SLUG" \
+  --coordinator-token "$COORDINATOR_TOKEN" \
   --requested-behavior-explicit \
   [--gate <id>="<exact command>" ... | --no-repository-gates] \
   --risk-assessment-complete \
@@ -42,6 +43,13 @@ relay route classify "$SLUG" \
   [--history-sensitive] [--changes-repository-guidelines] \
   [--risk <closed-trigger> ...]
 ```
+
+Coordinator-authenticated classification and refresh fetch and pin the current `origin/<base>` SHA
+before snapshotting. A pending PR is the exception: preserve its already verified creation-time base
+pin. `relay route base "$SLUG" --base <branch> --sha <pr-base-sha>
+--coordinator-token "$COORDINATOR_TOKEN"` may pin that exact SHA only when Git proves it is a commit
+contained by the intended remote base branch; arbitrary refs, `HEAD`, feature branches, and unrelated
+commits are rejected.
 
 Use a stable, descriptive ID for each gate. Relay stores only each ID, a redacted display, and the
 SHA-256 digest of the exact command. `--no-repository-gates` is valid only after checking the
@@ -64,7 +72,7 @@ After implementation mutations, repeat the full classification against the new s
 assessment, exact gate policy, and size facts match the actual diff. If that reassessment is unavailable, run:
 
 ```bash
-relay route refresh "$SLUG"
+relay route refresh "$SLUG" --coordinator-token "$COORDINATOR_TOKEN"
 ```
 
 This measures the actual diff, invalidates the old risk assessment and snapshot-bound evidence,
@@ -75,6 +83,7 @@ record it explicitly:
 
 ```bash
 relay route escalate "$SLUG" <standard|high-risk|stack-candidate> \
+  --coordinator-token "$COORDINATOR_TOKEN" \
   --reason "<specific evidence>" [--risk <closed-trigger>] \
   [--stack-rationale "<required when target is stack-candidate>"]
 ```
@@ -83,6 +92,10 @@ relay route escalate "$SLUG" <standard|high-risk|stack-candidate> \
 boundary was discovered after initial classification. Never convert a stack-candidate to
 `stack-ship`; report the recommendation and continue with the conservative single-PR route unless
 the caller explicitly chose stack ownership.
+
+When the active worker, rather than the coordinator, must refresh or escalate after its own mutation,
+use that dispatch's one-time `route_token` as `--dispatch-token`; never pass the reusable coordinator
+capability to a worker.
 
 ## Return
 

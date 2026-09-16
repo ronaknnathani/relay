@@ -23,24 +23,25 @@ const (
 // PhaseState is the status of a single workflow phase, plus optional progress
 // detail: the artifact it produced and a free-form task marker (e.g. "3/7").
 type PhaseState struct {
-	Status    string         `json:"status"`
-	Artifact  string         `json:"artifact,omitempty"`
-	Task      string         `json:"task,omitempty"`
-	Reason    string         `json:"reason,omitempty"`
-	Outcome   string         `json:"outcome,omitempty"`
-	StartedAt string         `json:"started_at,omitempty"`
-	EndedAt   string         `json:"ended_at,omitempty"`
-	Dispatch  *PhaseDispatch `json:"dispatch,omitempty"`
+	Status              string         `json:"status"`
+	Artifact            string         `json:"artifact,omitempty"`
+	Task                string         `json:"task,omitempty"`
+	Reason              string         `json:"reason,omitempty"`
+	Outcome             string         `json:"outcome,omitempty"`
+	StartedAt           string         `json:"started_at,omitempty"`
+	EndedAt             string         `json:"ended_at,omitempty"`
+	Dispatch            *PhaseDispatch `json:"dispatch,omitempty"`
+	CompletedDispatchID string         `json:"completed_dispatch_id,omitempty"`
 }
 
-// PhaseDispatch binds phase-owned evidence to one unguessable dispatch token.
-// Only its hash is persisted; the token is returned once to the dispatched
-// worker.
+// PhaseDispatch binds phase mutations to one-time scoped capabilities. Only
+// their hashes are persisted; plaintext tokens are returned once at dispatch.
 type PhaseDispatch struct {
-	ID            string `json:"id"`
-	TokenHash     string `json:"token_hash"`
-	RouteRevision int    `json:"route_revision,omitempty"`
-	RouteDigest   string `json:"route_digest,omitempty"`
+	ID            string            `json:"id"`
+	TokenHash     string            `json:"token_hash,omitempty"`
+	TokenHashes   map[string]string `json:"token_hashes,omitempty"`
+	RouteRevision int               `json:"route_revision,omitempty"`
+	RouteDigest   string            `json:"route_digest,omitempty"`
 }
 
 // PRRef records the pull request a project produced.
@@ -68,6 +69,7 @@ type WorkflowState struct {
 	Workflow        string                `json:"workflow"`
 	Order           []string              `json:"order"`
 	Phases          map[string]PhaseState `json:"phases"`
+	CoordinatorHash string                `json:"coordinator_token_hash,omitempty"`
 	Route           *RouteDecision        `json:"route,omitempty"`
 	Evidence        DeliveryEvidence      `json:"evidence,omitempty"`
 	SubagentCount   int                   `json:"subagent_count,omitempty"`
@@ -78,6 +80,7 @@ type WorkflowState struct {
 	LastWorkerOwner string                `json:"last_delivery_worker_owner,omitempty"`
 	FinalResult     *FinalResult          `json:"final_result,omitempty"`
 	PR              PRRef                 `json:"pr"`
+	PendingPR       PRRef                 `json:"pending_pr,omitempty"`
 	Updated         string                `json:"updated"`
 }
 
@@ -180,10 +183,27 @@ func (ws WorkflowState) validate() error {
 			if ph.Status != PhaseInProgress {
 				return fmt.Errorf("state %q: phase %q has a dispatch while status is %q", ws.Slug, p, ph.Status)
 			}
-			if strings.TrimSpace(ph.Dispatch.ID) == "" || !validSHA256(ph.Dispatch.TokenHash) {
+			if strings.TrimSpace(ph.Dispatch.ID) == "" {
 				return fmt.Errorf("state %q: phase %q has an invalid dispatch", ws.Slug, p)
 			}
+			if ph.Dispatch.TokenHash != "" && !validSHA256(ph.Dispatch.TokenHash) {
+				return fmt.Errorf("state %q: phase %q has an invalid legacy dispatch token", ws.Slug, p)
+			}
+			if ph.Dispatch.TokenHash == "" && len(ph.Dispatch.TokenHashes) == 0 {
+				return fmt.Errorf("state %q: phase %q has no dispatch capabilities", ws.Slug, p)
+			}
+			for scope, tokenHash := range ph.Dispatch.TokenHashes {
+				if strings.TrimSpace(scope) == "" || !validSHA256(tokenHash) {
+					return fmt.Errorf(
+						"state %q: phase %q has an invalid %q dispatch capability",
+						ws.Slug, p, scope,
+					)
+				}
+			}
 		}
+	}
+	if ws.CoordinatorHash != "" && !validSHA256(ws.CoordinatorHash) {
+		return fmt.Errorf("state %q: invalid coordinator capability", ws.Slug)
 	}
 	if ws.Route != nil && !validRouteClass(ws.Route.Class) {
 		return fmt.Errorf("state %q: invalid route class %q", ws.Slug, ws.Route.Class)
@@ -607,6 +627,7 @@ func (ws *WorkflowState) SetPhase(name, status, artifact, task string) error {
 		ph.Outcome = ""
 		ph.StartedAt = ""
 		ph.EndedAt = ""
+		ph.CompletedDispatchID = ""
 		ph.Dispatch = nil
 	}
 	ph.Status = status
@@ -617,6 +638,9 @@ func (ws *WorkflowState) SetPhase(name, status, artifact, task string) error {
 		ph.Task = task
 	}
 	if status != PhaseInProgress {
+		if ph.Dispatch != nil {
+			ph.CompletedDispatchID = ph.Dispatch.ID
+		}
 		ph.Dispatch = nil
 	}
 	ws.Phases[name] = ph
@@ -660,6 +684,7 @@ func (ws *WorkflowState) SetPhaseWithDelivery(
 		ph.Outcome = ""
 		ph.StartedAt = ""
 		ph.EndedAt = ""
+		ph.CompletedDispatchID = ""
 	}
 	if status == PhaseBlocked || status == PhaseEscalated {
 		ph.Outcome = ""
@@ -686,6 +711,9 @@ func (ws *WorkflowState) SetPhaseWithDelivery(
 		ph.EndedAt = endedAt
 	}
 	if status != PhaseInProgress {
+		if ph.Dispatch != nil {
+			ph.CompletedDispatchID = ph.Dispatch.ID
+		}
 		ph.Dispatch = nil
 	}
 	ws.Phases[name] = ph

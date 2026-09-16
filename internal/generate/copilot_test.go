@@ -83,7 +83,7 @@ func TestCopilotPackageInvariants(t *testing.T) {
 
 	prMonitor := readFile(t, filepath.Join(out, "skills", "pr-monitor", "SKILL.md"))
 	for _, snippet := range []string{
-		`relay pr watch digest "$SLUG" --fingerprint "$FP" --json`,
+		`relay pr watch handoff "$SLUG" --fingerprint "$FP" --json`,
 		`relay pr watch tick "$SLUG" --json`,
 		"One digest, one run, one exit",
 	} {

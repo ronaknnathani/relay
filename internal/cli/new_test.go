@@ -187,6 +187,30 @@ func TestCreateProjectRejectsAnyArchivedMetadataDirectory(t *testing.T) {
 	}
 }
 
+func TestRunNewWithHEADBaseDoesNotCreateRemoteBaseBinding(t *testing.T) {
+	repo := initCLIGitRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(repo)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/", DefaultAgent: "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runNew(newOpts{
+		task: "head based task", name: "head-base", base: "HEAD", noLaunch: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), "head-base"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.BaseBranch != "HEAD" || manifest.RemoteBaseSHA != "" {
+		t.Fatalf("HEAD-based manifest has invalid remote binding: %+v", manifest)
+	}
+}
+
 func TestRunNewPersistsForcedFullDeliveryMode(t *testing.T) {
 	repo := newTestRepo(t)
 	t.Setenv("HOME", t.TempDir())

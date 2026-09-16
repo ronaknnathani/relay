@@ -12,6 +12,7 @@ type Manifest struct {
 	Agent           string               `json:"agent,omitempty"`
 	BaseBranch      string               `json:"base_branch,omitempty"`
 	StartSHA        string               `json:"start_sha,omitempty"`
+	RemoteBaseSHA   string               `json:"remote_base_sha,omitempty"`
 	Worktree        *string              `json:"worktree"`
 	Status          string               `json:"status"`
 	Workflow        string               `json:"workflow,omitempty"`

@@ -58,13 +58,18 @@ may perform that mutation.
 After the front merges:
 
 1. `relay pr watch stop <front-project-slug>`;
-2. rebase/retarget the next PR onto the dynamically detected default branch using the `rebase`
-   contract;
-3. run `relay route base <next-project-slug> --base <default-branch>` and then
-   `relay route refresh <next-project-slug>`;
-4. verify descendant base refs and intended diffs did not collapse;
-5. cascade the new parent tip through descendants with `--force-with-lease`;
-6. start the next front watcher.
+2. fetch origin, dynamically detect the default branch, and advance the next branch with
+   `git rebase --onto origin/<default-branch> <merged-parent-tip> <next-branch>`, where
+   `<merged-parent-tip>` is the merged parent branch's pre-merge tip; never substitute a plain
+   `git rebase`;
+3. push the next branch with `--force-with-lease` and retarget its PR to `<default-branch>`;
+4. have the trusted child coordinator run
+   `relay route base <next-project-slug> --base <default-branch> --coordinator-token <token>` and
+   `relay route refresh <next-project-slug> --coordinator-token <token>`;
+5. verify descendant base refs and intended diffs did not collapse;
+6. cascade the new parent tip through descendants with `git rebase --onto` and
+   `--force-with-lease`;
+7. start the next front watcher.
 
 Auto-merge is armed only on the front and fires only after genuine human code-owner approval. Never
 self-approve, merge immediately, or arm a child PR based on another feature branch.

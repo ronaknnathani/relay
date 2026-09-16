@@ -11,6 +11,10 @@ or reviewer feedback, records a necessary author decision, or performs the reque
 pull-request mutation. Restated context, unchanged clean reports, and unchanged passing checks are
 no-ops.
 
+Adaptive-delivery migration applies to newly created adaptive stack and program children. Existing
+route-less or otherwise legacy workers retain their legacy behavior when resumed; these decisions do
+not retroactively migrate them.
+
 ## Sequence decisions
 
 | Sequence | Aggregate observation | Decision |
@@ -158,7 +162,8 @@ Each record uses the same fields so additions and retirements remain reviewable.
 - Feedback relevance: Preserves small, reviewable pull-request stacks.
 - Safety role: Keeps watcher ownership, human approval, and front-only merge boundaries.
 - Decision: Simplified.
-- Migration impact: Per-pull-request workers use adaptive `deliver-pr`.
+- Migration impact: New adaptive stack children use `deliver-pr`; existing route-less or legacy
+  workers retain legacy behavior.
 
 ### `tl`
 - Observed aggregate use: Managed multi-pull-request programs.
@@ -167,7 +172,8 @@ Each record uses the same fields so additions and retirements remain reviewable.
 - Feedback relevance: Surfaces program decisions and preserves parent ownership.
 - Safety role: Keeps managed-worker boundaries, grants, approval, and cleanup.
 - Decision: Simplified.
-- Migration impact: Workers classify first and execute only route-selected delivery phases.
+- Migration impact: New adaptive program children classify first and execute only route-selected
+  delivery phases; existing route-less or legacy workers retain legacy behavior.
 
 ### `cto`
 - Observed aggregate use: Legacy program-orchestration entry point.

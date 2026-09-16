@@ -58,7 +58,7 @@ Each PR entry in `plan.md`:
 - intent: one sentence (one PR = one intent; renames are their own PR)
 - scope: files/areas; what it deliberately does NOT touch
 - depends-on: [PR ids]  (empty = independent → parallelizable)
-- branch: <prefix>/<slug>   base: <parent branch or master>
+- branch: <prefix>/<slug>   base: <parent branch or default branch>
 - acceptance: which goal.md criteria this PR satisfies
 - review-shape: prose summary (why/what, not a file list); Testing Done = commands only
 ```

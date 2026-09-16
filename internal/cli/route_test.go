@@ -15,11 +15,146 @@ import (
 
 func runRoute(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	if len(args) >= 2 {
+		switch args[0] {
+		case "base", "classify", "refresh", "escalate":
+			ensureTestCoordinator(t, args[1])
+			if !slices.Contains(args, "--coordinator-token") &&
+				!slices.Contains(args, "--dispatch-token") {
+				args = append(args, "--coordinator-token", testCoordinatorToken)
+			}
+		}
+	}
+	return runRouteRaw(t, args...)
+}
+
+func runRouteRaw(t *testing.T, args ...string) (string, error) {
+	t.Helper()
 	command := newCmdRoute()
 	command.SetArgs(args)
 	command.SetOut(io.Discard)
 	command.SetErr(io.Discard)
 	return captureStdout(t, command.Execute)
+}
+
+func TestRouteBaseRejectsTraversalArchivedAndUnsafeRefs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if _, err := runRouteRaw(t, "base", "../archived/demo", "--base", "main"); err == nil ||
+		!strings.Contains(err.Error(), "invalid slug") {
+		t.Fatalf("traversal route base error = %v", err)
+	}
+
+	repo := initCLIGitRepo(t)
+	saveDeliveryProject(t, "demo", repo)
+	gitOutput(t, repo, "checkout", "-q", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", "feature.txt")
+	gitOutput(t, repo, "commit", "-q", "-m", "feature")
+	manifestPath := project.ManifestPath(project.ActiveDir(), "demo")
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Branch = "feature"
+	if err := project.Save(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRouteRaw(t, "base", "demo", "--base", "main"); err == nil ||
+		!strings.Contains(err.Error(), "coordinator") {
+		t.Fatalf("unauthenticated route base error = %v", err)
+	}
+	for _, base := range []string{"HEAD", "feature", "refs/heads/main"} {
+		if _, err := runRoute(t, "base", "demo", "--base", base); err == nil {
+			t.Fatalf("unsafe base %q was accepted", base)
+		}
+	}
+}
+
+func TestRouteBasePinsRemoteTipAndDetectsDrift(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initCLIGitRepo(t)
+	gitOutput(t, repo, "checkout", "-q", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", "feature.txt")
+	gitOutput(t, repo, "commit", "-q", "-m", "feature")
+	saveDeliveryProject(t, "demo", repo)
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRoute(t, "base", "demo", "--base", "main"); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), "demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteMain := gitRevParse(t, repo, "origin/main")
+	if manifest.RemoteBaseSHA != remoteMain {
+		t.Fatalf("remote base SHA = %q, want %q", manifest.RemoteBaseSHA, remoteMain)
+	}
+	tree := gitRevParse(t, repo, "origin/main^{tree}")
+	moved := strings.TrimSpace(gitOutput(
+		t, repo, "commit-tree", tree, "-p", "origin/main", "-m", "remote moved",
+	))
+	gitOutput(t, repo, "push", "-q", "origin", moved+":refs/heads/main")
+	snapshot, err := projectSnapshot("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.BaseTipSHA != manifest.RemoteBaseSHA || snapshot.BaseTipSHA == moved {
+		t.Fatalf("snapshot followed moving remote base: %+v", snapshot)
+	}
+	branchPoint := manifest.StartSHA
+	if _, err := runRoute(
+		t, "classify", "demo",
+		"--requested-behavior-explicit", "--no-repository-gates",
+		"--risk-assessment-complete", "--predicted-size-known",
+		"--predicted-files", "1", "--predicted-lines", "20",
+	); err != nil {
+		t.Fatalf("classify after remote base moved: %v", err)
+	}
+	rebound, err := project.Load(project.ManifestPath(project.ActiveDir(), "demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebound.RemoteBaseSHA != moved {
+		t.Fatalf("rebound remote base = %q, want %q", rebound.RemoteBaseSHA, moved)
+	}
+	if rebound.StartSHA != branchPoint {
+		t.Fatalf("automatic remote rebind moved branch point from %q to %q", branchPoint, rebound.StartSHA)
+	}
+	if _, err := runRoute(
+		t, "base", "demo", "--base", "main", "--sha", manifest.RemoteBaseSHA,
+	); err != nil {
+		t.Fatalf("pin reviewed PR base SHA: %v", err)
+	}
+	pinned, err := project.Load(project.ManifestPath(project.ActiveDir(), "demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pinned.RemoteBaseSHA != manifest.RemoteBaseSHA || pinned.StartSHA != branchPoint {
+		t.Fatalf("explicit PR base pin changed branch point: %+v", pinned)
+	}
+	if _, err := runRoute(
+		t, "base", "demo", "--base", "main", "--sha", gitRevParse(t, repo, "HEAD"),
+	); err == nil || !strings.Contains(err.Error(), "not contained") {
+		t.Fatalf("uncontained PR base SHA error = %v", err)
+	}
 }
 
 func TestRouteClassifyPersistsEasyDecision(t *testing.T) {
@@ -156,7 +291,7 @@ func TestRouteReclassifyRebindsImplementationAndKeepsEasyDeliveryAtTwoDispatches
 	}
 	finishPhase(t, "demo", "implement", implementToken, "done", "--outcome", "material")
 	openPRToken := dispatchPhase(t, "demo", "open-pr")
-	if _, err := runState(t, "pr", "demo", "--number", "42", "--url", "https://example.test/pull/42",
+	if _, err := runState(t, "pr", "demo", "--number", "42", "--url", "https://github.com/example/test/pull/42",
 		"--dispatch-token", openPRToken); err != nil {
 		t.Fatal(err)
 	}
@@ -429,6 +564,7 @@ func TestRouteBaseUpdatesManifestBeforeRefresh(t *testing.T) {
 	repo := initCLIGitRepo(t)
 	saveDeliveryProject(t, "demo", repo)
 	gitOutput(t, repo, "branch", "-M", "main")
+	gitOutput(t, repo, "push", "-q", "-u", "origin", "main")
 	gitOutput(t, repo, "checkout", "-q", "-b", "parent")
 	if err := os.WriteFile(filepath.Join(repo, "parent.txt"), []byte("parent\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -436,23 +572,55 @@ func TestRouteBaseUpdatesManifestBeforeRefresh(t *testing.T) {
 
 	gitOutput(t, repo, "add", "parent.txt")
 	gitOutput(t, repo, "commit", "-q", "-m", "parent")
-	gitOutput(t, repo, "checkout", "-q", "main")
-	gitOutput(t, repo, "branch", "-D", "parent")
 	mainSHA := gitRevParse(t, repo, "main")
-
-	if _, err := runRoute(t, "base", "demo", "--base", "main"); err != nil {
-		t.Fatal(err)
-	}
-	manifestPath, err := project.Find("demo")
-	if err != nil {
-		t.Fatal(err)
-	}
+	manifestPath := project.ManifestPath(project.ActiveDir(), "demo")
 	manifest, err := project.Load(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.BaseBranch != "main" || manifest.StartSHA != mainSHA {
+	manifest.Branch = "parent"
+	if err := project.Save(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
+	archivedDir := filepath.Join(project.ArchivedDir(), "demo")
+	if err := os.MkdirAll(archivedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archivedWorktree := repo
+	if err := project.Save(filepath.Join(archivedDir, "manifest.json"), project.Manifest{
+		Slug: "demo", Worktree: &archivedWorktree, BaseBranch: "archived-base",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runRoute(t, "base", "demo", "--base", "main"); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath, err = project.Find("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err = project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.BaseBranch != "main" || manifest.StartSHA != mainSHA ||
+		manifest.RemoteBaseSHA != mainSHA {
 		t.Fatalf("updated manifest base = %q at %q", manifest.BaseBranch, manifest.StartSHA)
+	}
+	archived, err := project.Load(filepath.Join(archivedDir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived.BaseBranch != "archived-base" {
+		t.Fatalf("route base mutated archived project: %+v", archived)
 	}
 }
 
@@ -460,18 +628,31 @@ func TestRouteRefreshPreservesRecordedPRForStackWatcher(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := initCLIGitRepo(t)
 	gitOutput(t, repo, "branch", "-M", "main")
+	gitOutput(t, repo, "push", "-q", "-u", "origin", "main")
 	gitOutput(t, repo, "checkout", "-q", "-b", "feature")
 	saveDeliveryProject(t, "demo", repo)
+	if err := os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", "feature.txt")
+	gitOutput(t, repo, "commit", "-q", "-m", "feature")
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := runRoute(t, "base", "demo", "--base", "main"); err != nil {
 		t.Fatal(err)
 	}
-	state := openPRReadyState(t, "demo")
+	state = openPRReadyState(t, "demo")
 	if err := project.SaveState(project.StatePath("demo"), state); err != nil {
 		t.Fatal(err)
 	}
 	token := dispatchPhase(t, "demo", "open-pr")
 	if _, err := runState(t, "pr", "demo", "--number", "42",
-		"--url", "https://example.test/pull/42", "--dispatch-token", token); err != nil {
+		"--url", "https://github.com/example/test/pull/42", "--dispatch-token", token); err != nil {
 		t.Fatal(err)
 	}
 
@@ -486,7 +667,7 @@ func TestRouteRefreshPreservesRecordedPRForStackWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.PR.Number != 42 || got.PR.URL != "https://example.test/pull/42" ||
+	if got.PR.Number != 42 || got.PR.URL != "https://github.com/example/test/pull/42" ||
 		got.FinalResult != nil || got.Phases["open-pr"].Status != project.PhaseEscalated {
 		t.Fatalf("refreshed open PR state = pr:%+v final:%+v phase:%+v",
 			got.PR, got.FinalResult, got.Phases["open-pr"])

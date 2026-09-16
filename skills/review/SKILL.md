@@ -81,7 +81,7 @@ relay state evidence record "$SLUG" review \
   --artifact review.md \
   --role code-reviewer \
   --critical 0 --important 0 --suggestion 0 \
-  --dispatch-token "$DISPATCH_TOKEN"
+  --dispatch-token "$REVIEW_TOKEN"
 ```
 
 Use repeated `--role` flags for selected specialists. Use `--result failed` when Critical or Important

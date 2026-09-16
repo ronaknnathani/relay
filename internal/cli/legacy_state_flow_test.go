@@ -94,6 +94,7 @@ func TestLegacySevenPhaseStateFlowActiveAndArchived(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+
 			}
 
 			got, err := project.LoadState(statePath)
@@ -121,5 +122,33 @@ func TestLegacySevenPhaseStateFlowActiveAndArchived(t *testing.T) {
 				t.Fatalf("state was written outside resolved %s project: %v", location, err)
 			}
 		})
+	}
+}
+
+func TestStateLookupDoesNotCombineActiveManifestWithArchivedState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, root := range []string{project.ActiveDir(), project.ArchivedDir()} {
+		dir := filepath.Join(root, "demo")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := project.Save(filepath.Join(dir, "manifest.json"), project.Manifest{
+			Slug: "demo", Workflow: "deliver-pr",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, err := project.NewState("demo", "deliver-pr", []string{"clarify"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(
+		filepath.Join(project.ArchivedDir(), "demo", "state.json"), state,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runState(t, "next", "demo"); err == nil ||
+		!strings.Contains(err.Error(), "relay state init demo") {
+		t.Fatalf("active project incorrectly reused archived state: %v", err)
 	}
 }

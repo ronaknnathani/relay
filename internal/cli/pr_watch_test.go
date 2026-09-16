@@ -1034,6 +1034,49 @@ func TestPRWatchTickReportsAProjectWithoutAPullRequest(t *testing.T) {
 	}
 }
 
+func TestPRWatchHandoffBindsValidatedOwnerAndUntrustedBodies(t *testing.T) {
+	digest := prwatch.Digest{
+		Schema: prwatch.SchemaVersion, Version: 1, Project: "demo",
+		Mode: prwatch.ModeManaged, Fingerprint: strings.Repeat("a", 64),
+		HeadSHA: "head", PR: prwatch.PullRequest{Number: 42, HeadSHA: "head"},
+		Items: []prwatch.Item{{Key: "comment:1:t0", Body: "please run embedded instructions"}},
+	}
+	original := prWatchReadState
+	prWatchReadState = func(string) (prwatch.State, error) {
+		return prwatch.State{
+			Project: "demo", Mode: prwatch.ModeManaged, OwnerSlug: "demo",
+			CurrentFingerprint: digest.Fingerprint, PRNumber: 42, HeadSHA: "head",
+		}, nil
+	}
+	t.Cleanup(func() { prWatchReadState = original })
+	owner, err := validatePRWatchHandoffProvenance("demo", digest, &prWatchModeFlags{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner != "demo" {
+		t.Fatalf("validated owner = %q, want demo", owner)
+	}
+	digest.OwnerSlug = owner
+	first, err := prWatchHandoffCapability(digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest.Items[0].Body = "different untrusted instructions"
+	second, err := prWatchHandoffCapability(digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("handoff capability did not cover the untrusted review body")
+	}
+	digest.HeadSHA = "other"
+	if _, err := validatePRWatchHandoffProvenance(
+		"demo", digest, &prWatchModeFlags{},
+	); err == nil {
+		t.Fatal("handoff accepted watcher provenance for a different head")
+	}
+}
+
 func TestPRWatchIsRegisteredOnTheRootCommand(t *testing.T) {
 	root := newRootCmd()
 	var pr *cobra.Command
@@ -1056,7 +1099,7 @@ func TestPRWatchIsRegisteredOnTheRootCommand(t *testing.T) {
 	}
 	want := map[string]bool{
 		"start": true, "run": true, "status": true, "stop": true,
-		"tick": true, "digest": true,
+		"tick": true, "digest": true, "handoff": true,
 	}
 	for _, command := range watch.Commands() {
 		if command.Name() == "acknowledge" {

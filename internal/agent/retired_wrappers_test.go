@@ -72,3 +72,33 @@ func TestRetiredWrapperCleanupPreservesUserSymlinkInsideBroadManagedRoot(t *test
 		t.Fatalf("user-owned symlink under managed root changed: got %q, err %v", got, err)
 	}
 }
+
+func TestHistoricalClaudeWrapperTargetsAreRemovedExactly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	installed := filepath.Join(home, ".claude", "skills")
+	if err := os.MkdirAll(installed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	for _, name := range []string{"build-status", "build-archive"} {
+		target := filepath.Join(root, "dist", "claude", "skills", name)
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(installed, name)
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		if err := RemoveRetiredSkill(claude{}, name, SkillSyncOptions{
+			PackageDir:   filepath.Join(root, "dist", "claude"),
+			ManagedRoots: []string{root},
+			Stdout:       &bytes.Buffer{},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Lstat(link); !os.IsNotExist(err) {
+			t.Fatalf("historical Relay-managed Claude link %s survived: %v", name, err)
+		}
+	}
+}

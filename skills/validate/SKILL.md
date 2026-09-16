@@ -32,7 +32,7 @@ relay state evidence record "$SLUG" validation \
   --result passed \
   --artifact validation.md \
   --gate <id>="<exact command>" --exit-status 0 \
-  --dispatch-token "$DISPATCH_TOKEN"
+  --dispatch-token "$VALIDATION_TOKEN"
 ```
 
 Repeat `--gate` and `--exit-status` in matching order. Relay requires exact set equality with the

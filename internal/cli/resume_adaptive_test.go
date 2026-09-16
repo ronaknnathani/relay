@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ronaknnathani/relay/internal/agent"
+	"github.com/ronaknnathani/relay/internal/config"
 	"github.com/ronaknnathani/relay/internal/project"
 )
 
@@ -77,5 +79,111 @@ func TestResumeUsesAdaptiveCompletionInsteadOfStaleManifestPhase(t *testing.T) {
 	}
 	if manifest.Phase != "plan" {
 		t.Fatalf("resume rewrote historical manifest phase to %q", manifest.Phase)
+	}
+}
+
+func TestResumeRotatesCoordinatorCapabilityForAdaptiveState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	projectDir := filepath.Join(project.ActiveDir(), "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(projectDir, "manifest.json")
+	if err := project.Save(manifestPath, project.Manifest{
+		Slug: "demo", Workflow: "deliver-pr",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(filepath.Join(projectDir, "state.json"), state); err != nil {
+		t.Fatal(err)
+	}
+	token, err := rotateCoordinatorForResume(manifestPath, "deliver-pr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := project.LoadState(filepath.Join(projectDir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token == "" || got.CoordinatorHash == "" {
+		t.Fatalf("resume capability = %q, state = %+v", token, got)
+	}
+	if err := validateCoordinatorToken(got, token); err != nil {
+		t.Fatalf("rotated coordinator capability rejected: %v", err)
+	}
+	handoffPath, err := writeCoordinatorHandoff(projectDir, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(handoffPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("coordinator handoff mode = %o, want 600", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(handoffPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != token {
+		t.Fatal("coordinator handoff did not contain the rotated capability")
+	}
+}
+
+func TestResumeKeepsCoordinatorCapabilityOutOfAgentArguments(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	worktree := t.TempDir()
+	projectDir := filepath.Join(project.ActiveDir(), "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/", DefaultAgent: "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(filepath.Join(projectDir, "manifest.json"), project.Manifest{
+		Slug: "demo", Title: "Resume", Agent: "copilot", Workflow: "deliver-pr",
+		DeliveryMode: project.DeliveryModeAdaptive, Phase: "route", Worktree: &worktree,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := project.NewState("demo", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.SaveState(filepath.Join(projectDir, "state.json"), state); err != nil {
+		t.Fatal(err)
+	}
+	var launched agent.LaunchOptions
+	previous := launchAgent
+	launchAgent = func(_ agent.Agent, options agent.LaunchOptions) error {
+		launched = options
+		return nil
+	}
+	t.Cleanup(func() { launchAgent = previous })
+	if err := runResume("demo"); err != nil {
+		t.Fatal(err)
+	}
+	handoffPath := filepath.Join(projectDir, ".coordinator-capability")
+	data, err := os.ReadFile(handoffPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		t.Fatal("resume wrote an empty coordinator capability")
+	}
+	if strings.Contains(launched.SystemPrompt, token) {
+		t.Fatal("resume exposed coordinator capability in agent arguments")
+	}
+	if !strings.Contains(launched.SystemPrompt, handoffPath) {
+		t.Fatalf("resume prompt does not point to capability handoff: %q", launched.SystemPrompt)
 	}
 }

@@ -16,11 +16,11 @@ Open the finished change; performs no new review and reruns no passing gate.
    review/validation owners because `HEAD` changed. In standalone use with no Relay state, continue in
    this invocation: review the committed diff once, run the repository-required gates, then proceed
    only if both pass.
-3. For an adaptive project, require evidence from the route's canonical owners for the exact current
-   snapshot and exact required gate set, and run the hard gates only after the final commit:
+3. For an adaptive project, require the coordinator to refresh the route after the final commit and
+   before dispatching `open-pr`, then require evidence from the route's canonical owners for the
+   exact current snapshot and exact required gate set:
 
    ```bash
-   relay route refresh "$SLUG"
    relay state evidence fresh "$SLUG" review
    relay state evidence fresh "$SLUG" validation
    ```
@@ -39,11 +39,20 @@ Open the finished change; performs no new review and reruns no passing gate.
    the agent acts on.
 7. For a Relay project, while the current-route `open-pr` dispatch remains active, record the
    returned PR number and URL with
-   `relay state pr "$SLUG" --number <n> --url <url> --dispatch-token "$DISPATCH_TOKEN"`.
+   `relay state pr "$SLUG" --number <n> --url <url> --dispatch-token "$RESULT_TOKEN"`.
    The guarded command atomically completes the
-   phase, writes the production `FinalResult` telemetry, and rejects stale evidence, wrong route or gate
-   bindings, or a superseded dispatch. On terminal failure, record
-   `relay state final "$SLUG" failed --reason "<specific reason>" --dispatch-token "$DISPATCH_TOKEN"`.
+   phase, writes the production `FinalResult` telemetry, verifies the GitHub repository, URL, branch,
+   head SHA, base ref, and immutable remote base SHA, and rejects stale evidence or a
+   **superseded dispatch**. If PR creation succeeded but recording is ambiguous, do not create another PR: run
+   `relay state pr "$SLUG" --reconcile --dispatch-token "$RESULT_TOKEN"` to find and verify the unique
+   open PR for the recorded head/base or recover the persisted PR identity if it has already merged.
+   If the PR's creation-time base SHA differs, the coordinator must use the exact
+   `relay route base "$SLUG" --base <base> --sha <pr-base-sha> --coordinator-token
+   "$COORDINATOR_TOKEN"` command from Relay's error, refresh the route without replacing that pending
+   PR pin, rerun stale evidence, redispatch `open-pr`, and reconcile the existing PR.
+   If that pending PR closed without merging, verify the closed state and record terminal failure;
+   never discard a still-open pending PR. On terminal failure before a PR exists, record
+   `relay state final "$SLUG" failed --reason "<specific reason>" --dispatch-token "$RESULT_TOKEN"`.
    Then return the PR URL or failure.
 
 `--draft` is supported when the caller requests a draft. Never merge, enable auto-merge, invent test

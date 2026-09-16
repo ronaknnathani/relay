@@ -15,38 +15,47 @@ Token is only actually dead if `gh api user` also fails every retry → surface 
 A plain `git rebase` double-applies the parent's commits. Use `--onto`:
 ```bash
 git rebase --onto <new-base-tip> <old-base-tip> <descendant-branch>
-# resolve faithfully: take master's version of already-merged content, keep this PR's own additions
+# resolve faithfully: take the default branch's version of already-merged content, keep this PR's own additions
 git push --force-with-lease origin <descendant-branch>
 ```
 After every cascade: confirm each descendant's **base ref did not collapse** (e.g. D's base must
-stay the parent feature branch, not jump to master) — a collapsed base silently squashes the stack.
+stay the parent feature branch, not jump to the default branch) — a collapsed base silently
+squashes the stack.
 
 ## Advance the next front PR after its parent merges
-Do **not** rely on GitHub auto-retargeting. Once the old front PR merges to `master`, explicitly move
-the next PR onto `master`, then cascade its descendants:
+Do **not** rely on GitHub auto-retargeting. Once the old front PR merges to the dynamically detected
+default branch, explicitly move the next PR onto that branch, then cascade its descendants. Preserve
+the merged parent branch's pre-merge tip as `<merged-parent-tip>` and do not substitute a plain
+`git rebase`:
 ```bash
 git fetch origin
 git checkout <next-branch>
-git rebase --onto origin/master <merged-parent-tip> <next-branch>
+git rebase --onto origin/<default-branch> <merged-parent-tip> <next-branch>
 git push --force-with-lease origin <next-branch>
-gh pr edit <next-pr> --base master
+gh pr edit <next-pr> --base <default-branch>
 gh pr view <next-pr> --json baseRefName,headRefName,mergeStateStatus
 ```
-Confirm `baseRefName == "master"` for the new front PR. Then verify each descendant PR still targets
-its intended parent feature branch, not `master`, unless it is now the front PR.
+Confirm `baseRefName == "<default-branch>"` for the new front PR. Then verify each descendant PR
+still targets its intended parent feature branch, not the default branch, unless it is now the front
+PR.
 
 ## Freshness / staleness
 A time/distance-based freshness check (PR open too long, or N commits behind) trips even at 1 commit
-behind. Remedy: rebase the branch onto fresh `origin/master` so the **new head re-triggers** the
-check; force-push; cascade descendants. Conclusion of the stale check is typically `TIMED_OUT`.
+behind. Remedy: fetch origin and use
+`git rebase --onto origin/<default-branch> <old-default-tip> <branch>`, where
+`<old-default-tip>` is the exact default-branch commit currently beneath the branch, so the **new
+head re-triggers** the check; force-push; cascade descendants. Never use a plain `git rebase`.
+Conclusion of the stale check is typically `TIMED_OUT`.
 
 ## Auto-merge
-- Arm **only** when base is `master`: `gh pr merge <n> --auto` (NO `--squash` if a **merge queue**
-  owns the strategy — that flag is rejected; "already queued to merge" = armed, queue owns it).
+- Arm **only** when base is the repository's default branch: `gh pr merge <n> --auto` (NO `--squash`
+  if a **merge queue** owns the strategy — that flag is rejected; "already queued to merge" =
+  armed, queue owns it).
 - Auto-merge silently turns **OFF** after force-pushes and after CHANGES_REQUESTED→APPROVED.
   **Re-verify and re-arm after each relevant watcher event** when the PR is approved + clean.
-- As each PR merges to master, explicitly advance the next PR with the procedure above. Only after it
-  is verified base=`master` should auto-merge be armed and its stack watcher started.
+- As each PR merges to the default branch, explicitly advance the next PR with the procedure above.
+  Only after its base is verified as the default branch should auto-merge be armed and its stack
+  watcher started.
 - Never `gh pr merge` to merge-now, never self-approve, never dismiss a review to unblock.
 
 ## Resolve a review thread (GraphQL — REST can't)

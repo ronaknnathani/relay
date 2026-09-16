@@ -21,16 +21,32 @@ import (
 )
 
 type dispatchOutput struct {
-	Phase         string `json:"phase"`
-	DispatchID    string `json:"dispatch_id"`
-	DispatchToken string `json:"dispatch_token"`
-	RouteRevision int    `json:"route_revision,omitempty"`
-	RouteDigest   string `json:"route_digest,omitempty"`
+	Phase           string `json:"phase"`
+	DispatchID      string `json:"dispatch_id"`
+	DispatchToken   string `json:"dispatch_token"`
+	ReviewToken     string `json:"review_token,omitempty"`
+	ValidationToken string `json:"validation_token,omitempty"`
+	RouteToken      string `json:"route_token,omitempty"`
+	ResultToken     string `json:"result_token,omitempty"`
+	RouteRevision   int    `json:"route_revision,omitempty"`
+	RouteDigest     string `json:"route_digest,omitempty"`
+}
+
+const (
+	dispatchScopeFinish     = "finish"
+	dispatchScopeReview     = "evidence-review"
+	dispatchScopeValidation = "evidence-validation"
+	dispatchScopeRoute      = "route-update"
+	dispatchScopeResult     = "result"
+)
+
+var encodeDispatchOutput = func(output dispatchOutput) error {
+	return json.NewEncoder(os.Stdout).Encode(output)
 }
 
 func newCmdStateDispatch() *cobra.Command {
 	var inline bool
-	var task, owner string
+	var task, owner, coordinatorToken string
 	command := &cobra.Command{
 		Use:   "dispatch <slug> <phase>",
 		Short: "Mark a phase in progress and count its worker dispatch",
@@ -43,11 +59,20 @@ func newCmdStateDispatch() *cobra.Command {
 			if err := state.ValidateAdaptiveDispatch(args[1]); err != nil {
 				return err
 			}
+			if state.UsesAdaptiveDelivery() {
+				if err := validateCoordinatorToken(state, coordinatorToken); err != nil {
+					return err
+				}
+			}
 			if state.UsesAdaptiveDelivery() && args[1] == "route" && !inline {
 				return fmt.Errorf("adaptive route phase must be dispatched inline with --inline")
 			}
 			if state.UsesAdaptiveDelivery() && args[1] == "open-pr" && !inline {
 				return fmt.Errorf("adaptive open-pr phase must be dispatched inline with --inline")
+			}
+			if state.UsesAdaptiveDelivery() && inline &&
+				args[1] != "route" && args[1] != "open-pr" {
+				return fmt.Errorf("adaptive phase %q cannot be dispatched inline", args[1])
 			}
 			if state.UsesAdaptiveDelivery() && !inline && strings.TrimSpace(owner) == "" {
 				return fmt.Errorf("adaptive worker phase %q requires --owner", args[1])
@@ -55,6 +80,9 @@ func newCmdStateDispatch() *cobra.Command {
 			if args[1] == "open-pr" {
 				snapshot, err := projectSnapshot(args[0])
 				if err != nil {
+					return err
+				}
+				if err := validateProjectRemoteBaseBinding(args[0], state, snapshot); err != nil {
 					return err
 				}
 				if err := state.ValidateOpenPRReadiness(snapshot, false); err != nil {
@@ -84,20 +112,60 @@ func newCmdStateDispatch() *cobra.Command {
 				state.RecordInlineDispatch(args[1], dispatch.ID)
 			}
 			state.InvalidateEvidenceForOwner(args[1])
+			if err := encodeDispatchOutput(output); err != nil {
+				return fmt.Errorf("publish dispatch capability: %w", err)
+			}
 			if err := project.SaveState(statePath, state); err != nil {
 				return err
 			}
-			return json.NewEncoder(os.Stdout).Encode(output)
+			return nil
 		},
 	}
 	command.Flags().BoolVar(&inline, "inline", false, "record coordinator work without incrementing the worker count")
 	command.Flags().StringVar(&task, "task", "", "free-form progress marker")
 	command.Flags().StringVar(&owner, "owner", "", "stable worker identity for handoff telemetry")
+	command.Flags().StringVar(
+		&coordinatorToken, "coordinator-token", "",
+		"trusted coordinator capability returned by adaptive state initialization",
+	)
 	return command
 }
 
+func validateProjectRemoteBaseBinding(
+	slug string,
+	state project.WorkflowState,
+	snapshot project.RepositorySnapshot,
+) error {
+	manifestPath, err := project.FindActive(slug)
+	if err != nil {
+		return err
+	}
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		return err
+	}
+	if manifest.RemoteBaseSHA == "" || manifest.BaseBranch == "" ||
+		manifest.RemoteBaseSHA != snapshot.BaseTipSHA ||
+		manifest.BaseBranch != snapshot.BaseRef {
+		return fmt.Errorf(
+			"open-pr requires a coordinator-refreshed immutable remote base binding",
+		)
+	}
+	if state.PendingPR.Number == 0 {
+		remoteSHA := gitx.RevParse(
+			*manifest.Worktree, "origin/"+manifest.BaseBranch,
+		)
+		if remoteSHA == "" || remoteSHA != manifest.RemoteBaseSHA {
+			return fmt.Errorf(
+				"open-pr remote base binding is stale; refresh the route before dispatch",
+			)
+		}
+	}
+	return nil
+}
+
 func newCmdStateWorker() *cobra.Command {
-	var task string
+	var task, coordinatorToken string
 	command := &cobra.Command{
 		Use:   "worker <slug>",
 		Short: "Count a delivery subagent that is not a phase dispatch",
@@ -113,6 +181,11 @@ func newCmdStateWorker() *cobra.Command {
 			if state.UsesAdaptiveDelivery() && state.Route == nil {
 				return fmt.Errorf("adaptive delivery must classify a route before dispatching helpers")
 			}
+			if state.UsesAdaptiveDelivery() {
+				if err := validateCoordinatorToken(state, coordinatorToken); err != nil {
+					return err
+				}
+			}
 			if state.Route != nil && state.Route.Class == project.RouteEasy &&
 				!state.Route.ForcedFull {
 				return fmt.Errorf("easy route cannot dispatch off-route helpers")
@@ -122,6 +195,10 @@ func newCmdStateWorker() *cobra.Command {
 		},
 	}
 	command.Flags().StringVar(&task, "task", "", "subagent purpose")
+	command.Flags().StringVar(
+		&coordinatorToken, "coordinator-token", "",
+		"trusted coordinator capability returned by adaptive state initialization",
+	)
 	return command
 }
 
@@ -134,22 +211,50 @@ func newPhaseDispatch(phase string, route *project.RouteDecision) (*project.Phas
 	if err != nil {
 		return nil, dispatchOutput{}, fmt.Errorf("generate dispatch id: %w", err)
 	}
-	token, err := randomToken(32)
-	if err != nil {
-		return nil, dispatchOutput{}, fmt.Errorf("generate dispatch token: %w", err)
-	}
-	sum := sha256.Sum256([]byte(token))
 	dispatch := &project.PhaseDispatch{
-		ID: id, TokenHash: fmt.Sprintf("%x", sum),
+		ID: id, TokenHashes: make(map[string]string),
+	}
+	output := dispatchOutput{Phase: phase, DispatchID: id}
+	addCapability := func(scope string, target *string) error {
+		token, err := randomToken(32)
+		if err != nil {
+			return fmt.Errorf("generate %s dispatch token: %w", scope, err)
+		}
+		sum := sha256.Sum256([]byte(token))
+		dispatch.TokenHashes[scope] = fmt.Sprintf("%x", sum)
+		*target = token
+		return nil
+	}
+	if phase == "open-pr" {
+		if err := addCapability(dispatchScopeResult, &output.ResultToken); err != nil {
+			return nil, dispatchOutput{}, err
+		}
+		output.DispatchToken = output.ResultToken
+	} else if err := addCapability(dispatchScopeFinish, &output.DispatchToken); err != nil {
+		return nil, dispatchOutput{}, err
 	}
 	if route != nil {
 		dispatch.RouteRevision = route.Revision
 		dispatch.RouteDigest = route.Digest
+		if phase == route.EffectiveReviewOwner() {
+			if err := addCapability(dispatchScopeReview, &output.ReviewToken); err != nil {
+				return nil, dispatchOutput{}, err
+			}
+		}
+		if phase == route.ValidationOwner {
+			if err := addCapability(dispatchScopeValidation, &output.ValidationToken); err != nil {
+				return nil, dispatchOutput{}, err
+			}
+		}
+		if phase != "open-pr" {
+			if err := addCapability(dispatchScopeRoute, &output.RouteToken); err != nil {
+				return nil, dispatchOutput{}, err
+			}
+		}
 	}
-	return dispatch, dispatchOutput{
-		Phase: phase, DispatchID: id, DispatchToken: token,
-		RouteRevision: dispatch.RouteRevision, RouteDigest: dispatch.RouteDigest,
-	}, nil
+	output.RouteRevision = dispatch.RouteRevision
+	output.RouteDigest = dispatch.RouteDigest
+	return dispatch, output, nil
 }
 
 func randomToken(size int) (string, error) {
@@ -184,13 +289,13 @@ func newCmdStateFinish() *cobra.Command {
 			if err := state.ValidateAdaptiveFinish(args[1], status); err != nil {
 				return err
 			}
-			if state.UsesAdaptiveDelivery() {
-				if err := validatePhaseDispatchToken(state, args[1], dispatchToken); err != nil {
-					return err
-				}
+			if state.UsesAdaptiveDelivery() && args[1] == "open-pr" {
+				return fmt.Errorf("adaptive open-pr must complete with state pr or state final")
 			}
-			if args[1] == "open-pr" && status == project.PhaseDone {
-				if err := validateAdaptiveOpenPRCompletion(args[0], state); err != nil {
+			if state.UsesAdaptiveDelivery() {
+				if err := consumePhaseDispatchToken(
+					&state, args[1], dispatchScopeFinish, dispatchToken,
+				); err != nil {
 					return err
 				}
 			}
@@ -220,22 +325,6 @@ func validateAdaptiveOpenPRSuccess(slug string, state project.WorkflowState) err
 		return err
 	}
 	return state.ValidateOpenPRReadiness(snapshot, true)
-}
-
-func validateAdaptiveOpenPRCompletion(slug string, state project.WorkflowState) error {
-	if err := validateAdaptiveOpenPRSuccess(slug, state); err != nil {
-		return err
-	}
-	if !state.UsesAdaptiveDelivery() {
-		return nil
-	}
-	if state.FinalResult == nil || state.FinalResult.Status != "opened" ||
-		state.PR.Number <= 0 || state.PR.URL == "" ||
-		state.FinalResult.PRNumber != state.PR.Number ||
-		state.FinalResult.PRURL != state.PR.URL {
-		return fmt.Errorf("open-pr completion requires one recorded opened PR result")
-	}
-	return nil
 }
 
 func newCmdStateEvidence() *cobra.Command {
@@ -293,7 +382,7 @@ func newCmdStateEvidenceRecord() *cobra.Command {
 				return err
 			}
 			owner, dispatch, err := validateEvidenceDispatch(
-				state, kind, snapshot, dispatchToken,
+				&state, kind, snapshot, dispatchToken,
 			)
 			if err != nil {
 				return err
@@ -465,7 +554,7 @@ func evidenceResultWithFailurePrecedence(
 }
 
 func validateEvidenceDispatch(
-	state project.WorkflowState,
+	state *project.WorkflowState,
 	kind string,
 	snapshot project.RepositorySnapshot,
 	token string,
@@ -488,20 +577,20 @@ func validateEvidenceDispatch(
 	if dispatch.RouteRevision != state.Route.Revision || dispatch.RouteDigest != state.Route.Digest {
 		return "", nil, fmt.Errorf("dispatch for %q is stale for the current route revision", owner)
 	}
-	sum := sha256.Sum256([]byte(token))
-	expected, err := decodeSHA256(dispatch.TokenHash)
-	if err != nil {
-		return "", nil, fmt.Errorf("invalid stored dispatch token hash: %w", err)
+	scope := dispatchScopeValidation
+	if kind == project.EvidenceKindReview {
+		scope = dispatchScopeReview
 	}
-	if subtle.ConstantTimeCompare(sum[:], expected) != 1 {
-		return "", nil, fmt.Errorf("invalid dispatch token for canonical evidence owner %q", owner)
+	if err := consumeDispatchCapability(dispatch, scope, token); err != nil {
+		return "", nil, fmt.Errorf("canonical evidence owner %q: %w", owner, err)
 	}
 	return owner, dispatch, nil
 }
 
-func validatePhaseDispatchToken(
-	state project.WorkflowState,
+func consumePhaseDispatchToken(
+	state *project.WorkflowState,
 	phaseName string,
+	scope string,
 	token string,
 ) error {
 	phase, ok := state.Phases[phaseName]
@@ -514,13 +603,52 @@ func validatePhaseDispatchToken(
 		dispatch.RouteDigest != state.Route.Digest {
 		return fmt.Errorf("dispatch for canonical phase owner %q is stale", phaseName)
 	}
+	if err := consumeDispatchCapability(dispatch, scope, token); err != nil {
+		return fmt.Errorf("canonical phase owner %q: %w", phaseName, err)
+	}
+	phase.Dispatch = dispatch
+	state.Phases[phaseName] = phase
+	return nil
+}
+
+func consumeDispatchCapability(dispatch *project.PhaseDispatch, scope, token string) error {
+	hash := dispatch.TokenHashes[scope]
+	if hash == "" && scope == dispatchScopeFinish {
+		hash = dispatch.TokenHash
+	}
+	if hash == "" {
+		return fmt.Errorf("dispatch capability %q is missing or already used", scope)
+	}
 	sum := sha256.Sum256([]byte(token))
-	expected, err := decodeSHA256(dispatch.TokenHash)
+	expected, err := decodeSHA256(hash)
 	if err != nil {
 		return fmt.Errorf("invalid stored dispatch token hash: %w", err)
 	}
 	if subtle.ConstantTimeCompare(sum[:], expected) != 1 {
-		return fmt.Errorf("invalid dispatch token for canonical phase owner %q", phaseName)
+		return fmt.Errorf("invalid dispatch token for scope %q", scope)
+	}
+	if dispatch.TokenHashes != nil {
+		delete(dispatch.TokenHashes, scope)
+	}
+	if scope == dispatchScopeFinish {
+		dispatch.TokenHash = ""
+	}
+	return nil
+}
+
+func validateCoordinatorToken(state project.WorkflowState, token string) error {
+	if state.CoordinatorHash == "" {
+		return fmt.Errorf(
+			"adaptive state has no trusted coordinator capability; resume it through Relay before dispatch",
+		)
+	}
+	sum := sha256.Sum256([]byte(token))
+	expected, err := decodeSHA256(state.CoordinatorHash)
+	if err != nil {
+		return fmt.Errorf("invalid stored coordinator token hash: %w", err)
+	}
+	if subtle.ConstantTimeCompare(sum[:], expected) != 1 {
+		return fmt.Errorf("invalid coordinator capability")
 	}
 	return nil
 }
@@ -640,11 +768,23 @@ func projectSnapshot(slug string) (project.RepositorySnapshot, error) {
 		return project.RepositorySnapshot{}, fmt.Errorf("snapshot project %q inputs: %w", slug, err)
 	}
 	base := gitx.SnapshotBaseRef(*manifest.Worktree, manifest.BaseBranch, manifest.StartSHA)
+	if manifest.RemoteBaseSHA != "" {
+		if manifest.BaseBranch == "" || manifest.BaseBranch == "HEAD" ||
+			strings.HasPrefix(manifest.BaseBranch, "refs/") ||
+			strings.HasPrefix(manifest.BaseBranch, "origin/") ||
+			!gitx.ValidBranchName(*manifest.Worktree, manifest.BaseBranch) {
+			return project.RepositorySnapshot{}, fmt.Errorf(
+				"project %q has invalid remote base branch %q", slug, manifest.BaseBranch,
+			)
+		}
+		base = manifest.RemoteBaseSHA
+	}
 	snapshot, err := gitx.Snapshot(*manifest.Worktree, base)
 	if err != nil {
 		return project.RepositorySnapshot{}, fmt.Errorf("snapshot project %q: %w", slug, err)
 	}
 	return project.RepositorySnapshot{
+		BaseRef: manifest.BaseBranch,
 		BaseSHA: snapshot.BaseSHA, BaseTipSHA: snapshot.BaseTipSHA,
 		HeadSHA: snapshot.HeadSHA, Fingerprint: snapshot.Fingerprint,
 		InputRevision: inputRevision,

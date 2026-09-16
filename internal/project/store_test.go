@@ -205,3 +205,31 @@ func TestLoadAllEffectiveUsesDirectoryIdentityAndIsolatesInvalidProjects(t *test
 		t.Fatalf("warnings = %v, want manifest, parse, and state slug warnings", warnings)
 	}
 }
+
+func TestLoadEffectivePreservesHistoricalStackState(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "stack")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "manifest.json")
+	manifest := Manifest{
+		Slug: "stack", Title: "Historical stack", Workflow: "stack-ship", Phase: "monitor",
+	}
+	if err := Save(path, manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(dir, "state.json"),
+		[]byte(`{"goalSlug":"stack","frontPr":42,"prs":[{"number":42}]}`),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadEffective(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Slug != manifest.Slug || got.Workflow != manifest.Workflow || got.Phase != manifest.Phase {
+		t.Fatalf("historical stack manifest changed: %+v", got)
+	}
+}

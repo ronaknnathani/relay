@@ -39,11 +39,17 @@ has no Herdr requirement.
 
 ## Resume and initialize
 
-Start with `relay state next "$SLUG"`. If state exists, resume its recorded order. In particular, a
+Start with `relay state next "$SLUG"`. If state exists, resume its recorded order. `relay resume`
+rotates the trusted coordinator capability and gives the resumed coordinator a mode-0600 handoff
+file; read it once, delete it immediately, and keep the token out of worker prompts. In particular, a
 legacy seven-phase state has no `route`; do not insert phases, rewrite artifacts, or reclassify it.
 Run that legacy order with its existing `set`/`advance` contract.
 
-If state is absent, initialize the adaptive order:
+If state is absent, inspect `manifest.json` first. A manifest with no `delivery_mode` predates
+adaptive delivery: initialize and run the legacy seven-phase order
+`clarify,plan,implement,simplify,review,validate,open-pr` with `set`/`advance`. For an adaptive or
+forced-full manifest, initialize the adaptive order and capture the returned
+`coordinator_token`:
 
 ```bash
 relay state init "$SLUG" --workflow deliver-pr \
@@ -57,10 +63,10 @@ Never hand-edit `state.json` or `progress.md`.
 For a new adaptive run, mark routing inline, invoke the `route` skill once, and finish it:
 
 ```bash
-relay state dispatch "$SLUG" route --inline
+relay state dispatch "$SLUG" route --inline --coordinator-token "$COORDINATOR_TOKEN"
 # run route inline; it invokes relay route classify and writes route.md
 relay state finish "$SLUG" route done --artifact route.md --outcome material \
-  --dispatch-token "$DISPATCH_TOKEN"
+  --dispatch-token "$FINISH_TOKEN"
 ```
 
 The route command durably marks unselected phases `skipped` with reasons. A forced-full manifest
@@ -72,17 +78,21 @@ selects all eight phases. A stack-candidate remains a conservative single-PR run
 Ask `relay state next "$SLUG"` after every state change.
 
 - **Selected worker phase:** run
-  `relay state dispatch "$SLUG" "$PHASE" --owner "$WORKER_ID"` and capture its JSON
-  `dispatch_token`. Dispatch exactly that skill with the task, route revision/digest, token, and fresh
+  `relay state dispatch "$SLUG" "$PHASE" --owner "$WORKER_ID" --coordinator-token
+  "$COORDINATOR_TOKEN"` and capture its JSON capabilities. Dispatch exactly that skill with the task,
+  route revision/digest, only its one-time scoped `finish_token` (`dispatch_token`), `review_token`,
+  `validation_token`, or `route_token`, and fresh
   upstream artifact, then record its structured result with
-  `relay state finish --dispatch-token "$DISPATCH_TOKEN"`. Reuse the same stable worker identity only
+  `relay state finish --dispatch-token "$FINISH_TOKEN"`. Reuse the same stable worker identity only
   when resuming the same worker; a replacement gets a new identity. Give workers the worktree/branch and require an artifact path, material/no-op
   outcome, checks, and blocking question; never ask for file dumps.
 - **Other subagents:** only after classification, on non-easy or forced-full routes, record helpers not represented by a phase dispatch with
-  `relay state worker "$SLUG" --task "<purpose>"`. An unforced easy route launches no off-route helper; stale
+  `relay state worker "$SLUG" --task "<purpose>" --coordinator-token "$COORDINATOR_TOKEN"`.
+  An unforced easy route launches no off-route helper; stale
   inputs require route refresh and escalation before more discovery.
 - **`route`:** always inline. Reclassify from fresh facts after mutations; use
-  `relay route refresh "$SLUG"` only when the changed snapshot cannot be fully reassessed, which
+  `relay route refresh "$SLUG" --coordinator-token "$COORDINATOR_TOKEN"` only when the changed
+  snapshot cannot be fully reassessed, which
   conservatively leaves the easy path. A full reassessment that keeps the same easy execution
   contract rebinds the active implementation dispatch to the new route revision instead of
   dispatching implementation again.
@@ -123,7 +133,7 @@ can resolve authentication, tooling, or input failures without routing them to i
 code defects.
 
 If actual scope crosses the easy limit, any closed risk appears, or previously recorded easy
-evidence becomes stale, `relay route refresh` escalates and reopens independent `review` and
+evidence becomes stale, coordinator-authenticated `relay route refresh` escalates and reopens independent `review` and
 `validate`. Do not replace those owners with new implement-owned evidence after escalation.
 Every new dispatch by a canonical owner invalidates that owner's earlier evidence before work starts.
 
@@ -135,7 +145,8 @@ relay state evidence fresh "$SLUG" validation
 ```
 
 Any mutation makes old evidence stale. `open-pr` performs no second review.
-`relay state dispatch "$SLUG" open-pr --inline` independently enforces the same route, snapshot,
+`relay state dispatch "$SLUG" open-pr --inline --coordinator-token "$COORDINATOR_TOKEN"`
+independently enforces the same route, snapshot,
 selected-role, exact-gate, and canonical-owner evidence contract.
 
 ## Managed open-PR gate
@@ -148,9 +159,9 @@ passes. Acknowledge the grant only after the open PR is verified and recorded wi
 
 ## Watcher handoff and completion
 
-Pass the active `open-pr` dispatch token to the `open-pr` skill. That skill records the verified PR
+Pass the active `open-pr` `result_token` to the `open-pr` skill. That skill records the verified PR
 exactly once with
-`relay state pr "$SLUG" --number <n> --url <url> --dispatch-token "$DISPATCH_TOKEN"` before it
+`relay state pr "$SLUG" --number <n> --url <url> --dispatch-token "$RESULT_TOKEN"` before it
 returns. Do not call `relay state pr` again. Verify the durable result with `relay state next`.
 
 After the PR is durably recorded, run exactly one watcher command. If the project has a managed-program

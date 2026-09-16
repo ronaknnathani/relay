@@ -25,11 +25,12 @@ type RepoSnapshot struct {
 	ChangedLines int    `json:"changed_lines"`
 }
 
+var snapshotStat = os.Stat
+
 // SnapshotBaseRef returns the current base branch ref used for change sizing
 // and freshness. The immutable start SHA is only a fallback when no base ref
 // can be resolved.
 func SnapshotBaseRef(repo, baseBranch, startSHA string) string {
-	candidates := make([]string, 0, 2)
 	baseBranch = strings.TrimSpace(baseBranch)
 	if baseBranch == "HEAD" {
 		if strings.TrimSpace(startSHA) != "" {
@@ -39,21 +40,14 @@ func SnapshotBaseRef(repo, baseBranch, startSHA string) string {
 	}
 	if baseBranch != "" {
 		if HasOrigin(repo) && !strings.Contains(baseBranch, "/") {
-			candidates = append(candidates, "origin/"+baseBranch)
+			remote := "origin/" + baseBranch
+			if RevParse(repo, remote) != "" {
+				return remote
+			}
 		}
-		candidates = append(candidates, baseBranch)
-	}
-	selected := ""
-	for _, candidate := range candidates {
-		if RevParse(repo, candidate) == "" {
-			continue
+		if RevParse(repo, baseBranch) != "" {
+			return baseBranch
 		}
-		if selected == "" || IsBranchReachable(repo, selected, candidate) {
-			selected = candidate
-		}
-	}
-	if selected != "" {
-		return selected
 	}
 	if strings.TrimSpace(startSHA) != "" {
 		return startSHA
@@ -220,8 +214,8 @@ func readUntracked(root, relative string) (untrackedFile, error) {
 	}
 	if info.IsDir() {
 		top, err := gitOutput(path, "rev-parse", "--show-toplevel")
-		topInfo, topErr := os.Stat(strings.TrimSpace(top))
-		pathInfo, pathErr := os.Stat(path)
+		topInfo, topErr := snapshotStat(strings.TrimSpace(top))
+		pathInfo, pathErr := snapshotStat(path)
 		if err != nil || topErr != nil || pathErr != nil || !os.SameFile(topInfo, pathInfo) {
 			return untrackedFile{}, fmt.Errorf("untracked path %s is not a nested Git repository", path)
 		}
@@ -348,9 +342,15 @@ func writeTrackedGitlinkDigests(writer io.Writer, repo string, visited map[strin
 		if err != nil {
 			return fmt.Errorf("locate tracked nested Git repository %s: %w", path, err)
 		}
-		topInfo, topErr := os.Stat(strings.TrimSpace(top))
-		pathInfo, pathErr := os.Stat(path)
-		if topErr != nil || pathErr != nil || !os.SameFile(topInfo, pathInfo) {
+		topInfo, topErr := snapshotStat(strings.TrimSpace(top))
+		pathInfo, pathErr := snapshotStat(path)
+		if topErr != nil {
+			return fmt.Errorf("inspect tracked nested Git root %s: %w", strings.TrimSpace(top), topErr)
+		}
+		if pathErr != nil {
+			return fmt.Errorf("inspect tracked Git link %s: %w", path, pathErr)
+		}
+		if !os.SameFile(topInfo, pathInfo) {
 			continue
 		}
 		digest, err := nestedRepositoryDigestVisited(path, visited)

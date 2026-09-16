@@ -159,7 +159,14 @@ func promptForValidSourceDir(stdin io.Reader, stdout io.Writer) (string, error) 
 }
 
 // retiredSkills names skills Relay used to install and no longer ships.
-var retiredSkills = []string{"cto", "relay-status", "relay-archive", "todo"}
+var retiredSkills = []string{
+	"cto",
+	"build-status",
+	"build-archive",
+	"relay-status",
+	"relay-archive",
+	"todo",
+}
 
 func removeRetiredSkills(a agent.Agent, syncOpts agent.SkillSyncOptions) error {
 	for _, name := range retiredSkills {

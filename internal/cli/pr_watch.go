@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -100,6 +103,7 @@ func newCmdPRWatch() *cobra.Command {
 		newCmdPRWatchStop(),
 		newCmdPRWatchTick(),
 		newCmdPRWatchDigest(),
+		newCmdPRWatchHandoff(),
 	)
 	return command
 }
@@ -1089,6 +1093,106 @@ func newCmdPRWatchDigest() *cobra.Command {
 	command.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 	_ = command.MarkFlagRequired("fingerprint")
 	return command
+}
+
+func newCmdPRWatchHandoff() *cobra.Command {
+	var jsonOutput bool
+	var fingerprint string
+	flags := &prWatchModeFlags{}
+	command := &cobra.Command{
+		Use:   "handoff <project-slug> --fingerprint <fingerprint>",
+		Short: "Read one digest with CLI-validated watcher provenance",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			slug := args[0]
+			digest, err := prwatch.ReadDigest(slug, fingerprint)
+			if err != nil {
+				return err
+			}
+			owner, err := validatePRWatchHandoffProvenance(slug, digest, flags)
+			if err != nil {
+				return err
+			}
+			digest.OwnerSlug = owner
+			digest.HandoffCapability, err = prWatchHandoffCapability(digest)
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return writeProgramJSON(command.OutOrStdout(), digest)
+			}
+			renderPRWatchDigest(command.OutOrStdout(), digest)
+			fmt.Fprintf(command.OutOrStdout(), "Owner: %s\nCapability: %s\n",
+				digest.OwnerSlug, digest.HandoffCapability)
+			return nil
+		},
+	}
+	flags.bind(command)
+	command.Flags().StringVar(&fingerprint, "fingerprint", "", "digest fingerprint (64 lowercase hex characters)")
+	command.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
+	_ = command.MarkFlagRequired("fingerprint")
+	return command
+}
+
+func validatePRWatchHandoffProvenance(
+	slug string,
+	digest prwatch.Digest,
+	flags *prWatchModeFlags,
+) (string, error) {
+	if digest.Project != slug {
+		return "", fmt.Errorf("digest project %q does not match requested project %q", digest.Project, slug)
+	}
+	state, err := prWatchReadState(slug)
+	if err == nil {
+		if state.Project != slug || state.Mode != digest.Mode ||
+			state.CurrentFingerprint != digest.Fingerprint ||
+			state.PRNumber != digest.PR.Number ||
+			state.HeadSHA != digest.HeadSHA {
+			return "", fmt.Errorf("watcher state does not match digest %s", digest.Fingerprint)
+		}
+		if state.OwnerSlug == "" {
+			return "", fmt.Errorf("watcher state for %q has no owner", slug)
+		}
+		return state.OwnerSlug, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	mode, owner, err := flags.resolve(slug)
+	if err != nil {
+		return "", err
+	}
+	if mode == prwatch.ModeStack {
+		return "", fmt.Errorf("stack handoff requires a running watcher state")
+	}
+	if mode == prwatch.ModeManaged {
+		if err := prWatchRequireManaged(slug); err != nil {
+			return "", err
+		}
+	}
+	if digest.Mode != mode {
+		return "", fmt.Errorf("digest mode %q does not match validated mode %q", digest.Mode, mode)
+	}
+	target, err := prWatchLocate(slug)
+	if err != nil {
+		return "", err
+	}
+	if target.PRNumber != digest.PR.Number {
+		return "", fmt.Errorf(
+			"digest PR #%d does not match project PR #%d", digest.PR.Number, target.PRNumber,
+		)
+	}
+	return owner, nil
+}
+
+func prWatchHandoffCapability(digest prwatch.Digest) (string, error) {
+	digest.HandoffCapability = ""
+	data, err := json.Marshal(digest)
+	if err != nil {
+		return "", fmt.Errorf("encode watcher handoff: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // renderPRWatchDigest prints a digest summary. Bodies stay out of the terminal

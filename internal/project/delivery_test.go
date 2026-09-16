@@ -485,6 +485,74 @@ func TestAdaptiveFinishRequiresActiveCurrentSelectedPhase(t *testing.T) {
 	}
 }
 
+func TestEvidenceOwnerCannotFinishWithoutCurrentDispatchEvidence(t *testing.T) {
+	state := validAdaptiveState(t)
+	state.Route.Class = RouteEasy
+	state.Route.SelectedPhases = []string{"route", "implement", "open-pr"}
+	state.Route.ReviewOwner = EvidenceOwnerImplement
+	state.Route.ValidationOwner = EvidenceOwnerImplement
+	state.Route.ReviewRoles = []string{ReviewRoleCodeReviewer}
+	state.Route.Facts.GatePolicy = GatePolicy{Mode: GatePolicyNone}
+	digest, err := RouteDigest(*state.Route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route.Digest = digest
+	state.Phases["route"] = PhaseState{Status: PhaseDone}
+	for _, name := range []string{"clarify", "plan", "simplify", "review", "validate"} {
+		state.Phases[name] = PhaseState{
+			Status: PhaseSkipped, Reason: "not selected", Outcome: PhaseOutcomeNoOp,
+		}
+	}
+	state.Phases["implement"] = PhaseState{
+		Status: PhaseInProgress,
+		Dispatch: &PhaseDispatch{
+			ID: "current", TokenHash: strings.Repeat("a", 64),
+			RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
+		},
+	}
+	if err := state.ValidateAdaptiveFinish("implement", PhaseDone); err == nil ||
+		!strings.Contains(err.Error(), "review evidence") {
+		t.Fatalf("missing evidence finish error = %v", err)
+	}
+	state.Evidence.Review = &EvidenceRecord{
+		Snapshot: state.Route.Snapshot, RouteRevision: state.Route.Revision,
+		RouteDigest: state.Route.Digest, DispatchID: "superseded",
+		Result: EvidencePassed, Owner: EvidenceOwnerImplement,
+		CompletedAt: "2026-09-15T00:05:00Z", Roles: []string{ReviewRoleCodeReviewer},
+	}
+	state.Evidence.Validation = &EvidenceRecord{
+		Snapshot: state.Route.Snapshot, RouteRevision: state.Route.Revision,
+		RouteDigest: state.Route.Digest, DispatchID: "current",
+		Result: EvidencePassed, Owner: EvidenceOwnerImplement,
+		CompletedAt: "2026-09-15T00:06:00Z", NoGates: true,
+	}
+	if err := state.ValidateAdaptiveFinish("implement", PhaseDone); err == nil {
+		t.Fatal("evidence from a superseded dispatch completed implementation")
+	}
+	state.Evidence.Review.DispatchID = "current"
+	if err := state.ValidateAdaptiveFinish("implement", PhaseDone); err != nil {
+		t.Fatalf("current dispatch evidence rejected: %v", err)
+	}
+}
+
+func TestFailedEvidenceRecoveryRespectsNewPrerequisiteOrder(t *testing.T) {
+	state := validAdaptiveState(t)
+	state.Route.SelectedPhases = []string{"route", "plan", "implement", "review", "validate", "open-pr"}
+	state.Phases["route"] = PhaseState{Status: PhaseDone}
+	state.Phases["clarify"] = PhaseState{
+		Status: PhaseSkipped, Reason: "not selected", Outcome: PhaseOutcomeNoOp,
+	}
+	state.Phases["plan"] = PhaseState{Status: PhasePending}
+	state.Phases["implement"] = PhaseState{
+		Status: PhaseEscalated, Reason: "failed validation",
+	}
+	state.Evidence.Validation = &EvidenceRecord{Result: EvidenceFailed}
+	if got := state.Next(); got != "plan" {
+		t.Fatalf("recovery next phase = %q, want plan", got)
+	}
+}
+
 func TestRouteChangeReopensActiveSelectedPhaseForRedispatch(t *testing.T) {
 	state := validAdaptiveState(t)
 	for _, name := range []string{"route", "clarify", "plan"} {

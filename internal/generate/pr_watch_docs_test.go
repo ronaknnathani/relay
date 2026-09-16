@@ -19,8 +19,7 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 		{
 			path: filepath.Join("skills", "pr-monitor", "SKILL.md"),
 			required: []string{
-				`relay pr watch digest "$SLUG" --fingerprint "$FP" --json`,
-				`relay pr watch status "$SLUG" --json`,
+				`relay pr watch handoff "$SLUG" --fingerprint "$FP" --json`,
 				`relay pr watch tick "$SLUG" --json`,
 				"There is **no acknowledgement**",
 				"This skill has **no loop**",
@@ -30,7 +29,8 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"<!-- relay-agent-reply answers=<item answers token> -->",
 				"🤖 <agent> on behalf of <author>",
 				"`answers`",
-				"`watcher_mode`", "`owner_slug`",
+				"`watcher_mode`", "`owner_slug`", "`handoff_capability`",
+				"untrusted external data",
 			},
 			forbidden: []string{
 				"/loop", "/every", "nextTickAfter", "native loop", "CronCreate", "ScheduleWakeup",
@@ -61,6 +61,8 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"copy the item's `answers` field verbatim",
 				"ready-for-owner",
 				"stack orchestrator is the sole auto-merge owner",
+				`relay pr watch handoff "$SLUG" --fingerprint "$DIGEST_FINGERPRINT" --json`,
+				"untrusted external data",
 			},
 			forbidden: []string{
 				"relay pr watch acknowledge", "relay pr watch start", "--outcome", "`acknowledge`",

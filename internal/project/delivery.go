@@ -69,6 +69,7 @@ var AdaptiveDeliveryPhases = []string{
 // RepositorySnapshot identifies the exact repository state associated with a
 // route or evidence record.
 type RepositorySnapshot struct {
+	BaseRef       string `json:"base_ref,omitempty"`
 	BaseSHA       string `json:"base_sha"`
 	BaseTipSHA    string `json:"base_tip_sha,omitempty"`
 	HeadSHA       string `json:"head_sha"`
@@ -892,6 +893,9 @@ func (ws WorkflowState) validateAdaptiveFinalState() error {
 				*ws.Route,
 				ws.Route.ReviewRoles,
 				ws.Route.EffectiveReviewOwner(),
+			) ||
+			!ws.evidenceMatchesOwnerDispatch(
+				ws.Route.EffectiveReviewOwner(), ws.Evidence.Review.DispatchID,
 			) {
 			return fmt.Errorf("opened final result requires fresh review evidence")
 		}
@@ -900,6 +904,9 @@ func (ws WorkflowState) validateAdaptiveFinalState() error {
 				ws.Route.Snapshot,
 				*ws.Route,
 				ws.Route.ValidationOwner,
+			) ||
+			!ws.evidenceMatchesOwnerDispatch(
+				ws.Route.ValidationOwner, ws.Evidence.Validation.DispatchID,
 			) {
 			return fmt.Errorf("opened final result requires fresh validation evidence")
 		}
@@ -971,7 +978,56 @@ func (ws WorkflowState) ValidateAdaptiveFinish(name, status string) error {
 	if status == PhaseSkipped {
 		return fmt.Errorf("selected phase %q cannot be skipped", name)
 	}
+	if status == PhaseDone {
+		if err := ws.validatePhaseEvidence(name); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func (ws WorkflowState) validatePhaseEvidence(name string) error {
+	if ws.Route == nil {
+		return nil
+	}
+	if ws.Route.EffectiveReviewOwner() == name {
+		if ws.Evidence.Review == nil ||
+			!ws.Evidence.Review.FreshForReviewRoute(
+				ws.Route.Snapshot,
+				*ws.Route,
+				ws.Route.ReviewRoles,
+				name,
+			) ||
+			!ws.evidenceMatchesOwnerDispatch(name, ws.Evidence.Review.DispatchID) {
+			return fmt.Errorf("phase %q requires fresh passing review evidence before finishing", name)
+		}
+	}
+	if ws.Route.ValidationOwner == name {
+		if ws.Evidence.Validation == nil ||
+			!ws.Evidence.Validation.FreshForValidationRoute(
+				ws.Route.Snapshot,
+				*ws.Route,
+				name,
+			) ||
+			!ws.evidenceMatchesOwnerDispatch(name, ws.Evidence.Validation.DispatchID) {
+			return fmt.Errorf("phase %q requires fresh passing validation evidence before finishing", name)
+		}
+	}
+	return nil
+}
+
+func (ws WorkflowState) evidenceMatchesOwnerDispatch(name, dispatchID string) bool {
+	phase, ok := ws.Phases[name]
+	if !ok {
+		return false
+	}
+	if phase.Status == PhaseInProgress && phase.Dispatch != nil {
+		return phase.Dispatch.ID == dispatchID
+	}
+	if phase.CompletedDispatchID == "" {
+		return true
+	}
+	return phase.CompletedDispatchID == dispatchID
 }
 
 // UsesAdaptiveDelivery reports whether transition guards apply to this state.
@@ -996,11 +1052,6 @@ func (ws WorkflowState) currentSelectedPhase() string {
 	if ws.Route == nil {
 		return ""
 	}
-	if phase, ok := ws.Phases[EvidenceOwnerImplement]; ok &&
-		(phase.Status == PhaseEscalated || phase.Status == PhaseInProgress) &&
-		ws.hasFailedEvidence() {
-		return EvidenceOwnerImplement
-	}
 	for _, name := range ws.Order {
 		if slices.Contains(ws.Route.SelectedPhases, name) &&
 			!terminalPhaseStatus(ws.Phases[name].Status) {
@@ -1008,11 +1059,6 @@ func (ws WorkflowState) currentSelectedPhase() string {
 		}
 	}
 	return ""
-}
-
-func (ws WorkflowState) hasFailedEvidence() bool {
-	return ws.Evidence.Review != nil && ws.Evidence.Review.Result == EvidenceFailed ||
-		ws.Evidence.Validation != nil && ws.Evidence.Validation.Result == EvidenceFailed
 }
 
 // ValidateOpenPRReadiness requires fresh route-bound review and validation
@@ -1040,6 +1086,9 @@ func (ws WorkflowState) ValidateOpenPRReadiness(
 			*ws.Route,
 			ws.Route.ReviewRoles,
 			ws.Route.EffectiveReviewOwner(),
+		) ||
+		!ws.evidenceMatchesOwnerDispatch(
+			ws.Route.EffectiveReviewOwner(), ws.Evidence.Review.DispatchID,
 		) {
 		return fmt.Errorf("open-pr requires fresh passing review evidence for the current route")
 	}
@@ -1048,6 +1097,9 @@ func (ws WorkflowState) ValidateOpenPRReadiness(
 			snapshot,
 			*ws.Route,
 			ws.Route.ValidationOwner,
+		) ||
+		!ws.evidenceMatchesOwnerDispatch(
+			ws.Route.ValidationOwner, ws.Evidence.Validation.DispatchID,
 		) {
 		return fmt.Errorf("open-pr requires fresh passing validation evidence for the exact gate policy")
 	}

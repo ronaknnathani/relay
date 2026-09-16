@@ -286,6 +286,28 @@ func TestSnapshotBaseRefPrefersCurrentBaseOverStartSHA(t *testing.T) {
 	}
 }
 
+func TestSnapshotBaseRefPrefersRemoteWhenLocalBaseDiverges(t *testing.T) {
+	repo := initRepo(t)
+	runGit(t, repo, "branch", "-M", "main")
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	if output, err := exec.Command("git", "init", "--bare", "-q", remote).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, output)
+	}
+	runGit(t, repo, "remote", "add", "origin", remote)
+	runGit(t, repo, "push", "-q", "-u", "origin", "main")
+	remoteSHA := RevParse(repo, "origin/main")
+
+	if err := os.WriteFile(filepath.Join(repo, "local-only.txt"), []byte("local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "local-only.txt")
+	runGit(t, repo, "commit", "-q", "-m", "local main diverges")
+
+	if got := SnapshotBaseRef(repo, "main", remoteSHA); got != "origin/main" {
+		t.Fatalf("snapshot base ref = %q, want origin/main", got)
+	}
+}
+
 func TestSnapshotBaseRefResolvesHEADToStartSHA(t *testing.T) {
 	repo := initRepo(t)
 	start := RevParse(repo, "HEAD")
@@ -364,6 +386,32 @@ func TestSnapshotIgnoresConfiguredSubmoduleExclusion(t *testing.T) {
 func TestSnapshotRejectsInvalidRepository(t *testing.T) {
 	if _, err := Snapshot(t.TempDir(), "HEAD"); err == nil {
 		t.Fatal("Snapshot accepted a non-git directory")
+	}
+}
+
+func TestSnapshotPropagatesTrackedSubmoduleStatFailure(t *testing.T) {
+	repo := initRepo(t)
+	nestedSource := t.TempDir()
+	runGit(t, nestedSource, "init", "-q")
+	if err := os.WriteFile(filepath.Join(nestedSource, "tracked.txt"), []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, nestedSource, "add", "tracked.txt")
+	runGit(t, nestedSource, "commit", "-q", "-m", "initial")
+	runGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", nestedSource, "nested")
+	runGit(t, repo, "commit", "-q", "-am", "add nested")
+
+	original := snapshotStat
+	snapshotStat = func(path string) (os.FileInfo, error) {
+		if filepath.Base(path) == "nested" {
+			return nil, os.ErrPermission
+		}
+		return original(path)
+	}
+	t.Cleanup(func() { snapshotStat = original })
+	if _, err := Snapshot(repo, RevParse(repo, "HEAD")); err == nil ||
+		!strings.Contains(err.Error(), "inspect tracked") {
+		t.Fatalf("tracked submodule stat error = %v", err)
 	}
 }
 

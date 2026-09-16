@@ -43,6 +43,61 @@ func Load(path string) (Manifest, error) {
 	return m, nil
 }
 
+// LoadEffective reads a manifest and overlays colocated adaptive state when
+// present. Legacy and route-less custom workflows are returned unchanged.
+func LoadEffective(path string) (Manifest, error) {
+	manifest, err := Load(path)
+	if err != nil {
+		return Manifest{}, err
+	}
+	directorySlug := filepath.Base(filepath.Dir(path))
+	if manifest.Slug != directorySlug {
+		return Manifest{}, fmt.Errorf(
+			"manifest slug %q does not match project directory %q",
+			manifest.Slug, directorySlug,
+		)
+	}
+	state, err := LoadState(filepath.Join(filepath.Dir(path), "state.json"))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return manifest, nil
+		}
+		legacy, inspectErr := legacyNonWorkflowState(filepath.Join(filepath.Dir(path), "state.json"))
+		if inspectErr != nil {
+			return Manifest{}, inspectErr
+		}
+		if legacy {
+			return manifest, nil
+		}
+		return Manifest{}, err
+	}
+	if state.Slug != manifest.Slug {
+		return Manifest{}, fmt.Errorf(
+			"state slug %q does not match manifest slug %q",
+			state.Slug, manifest.Slug,
+		)
+	}
+	return EffectiveManifest(manifest, state), nil
+}
+
+func legacyNonWorkflowState(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read state %s: %w", path, err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return false, nil
+	}
+	if _, ok := fields["order"]; ok {
+		return false, nil
+	}
+	_, hasGoal := fields["goalSlug"]
+	_, hasFront := fields["frontPr"]
+	_, hasPRs := fields["prs"]
+	return hasGoal || hasFront || hasPRs, nil
+}
+
 // Save writes the manifest to disk, refreshing the Updated timestamp.
 func Save(path string, m Manifest) error {
 	m.Updated = time.Now().UTC().Format(time.RFC3339)
@@ -69,6 +124,20 @@ func Find(slug string) (string, error) {
 		return archived, nil
 	}
 	return "", fmt.Errorf("project not found: %s", slug)
+}
+
+// FindActive returns the manifest path for one active project only.
+func FindActive(slug string) (string, error) {
+	if err := ValidateSlug(slug); err != nil {
+		return "", err
+	}
+	active := ManifestPath(ActiveDir(), slug)
+	if _, err := os.Stat(active); err == nil {
+		return active, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("inspect active project %s: %w", active, err)
+	}
+	return "", fmt.Errorf("active project not found: %s", slug)
 }
 
 // FindState searches active then archived for an existing state file.

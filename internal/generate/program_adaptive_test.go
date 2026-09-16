@@ -28,9 +28,9 @@ func TestProgramSkillsDelegateAdaptiveDeliveryContracts(t *testing.T) {
 	if !strings.Contains(cycle, "route contract") || strings.Contains(cycle, "full single-PR pipeline") {
 		t.Error("stack build cycle does not delegate adaptive routing")
 	}
-	for _, want := range []string{"terminal child status", "digest.mode", "route base"} {
+	for _, want := range []string{"terminal child status", "handoff_capability", "route base"} {
 		switch want {
-		case "digest.mode":
+		case "handoff_capability":
 			monitor := readFile(t, filepath.Join(root, "skills", "pr-monitor", "SKILL.md"))
 			if !strings.Contains(monitor, want) {
 				t.Errorf("pr-monitor missing watcher source %q", want)

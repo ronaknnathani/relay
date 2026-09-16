@@ -20,7 +20,8 @@ This is the authoritative rebase and force-push contract.
 5. Compare the post-rebase intended diff with the recorded intent. Stop if work disappeared, unrelated
    changes appeared, or conflict markers remain.
 6. A rewritten HEAD makes prior review and validation evidence stale. Run `relay route refresh
-   "$SLUG"` when operating in a Relay project and require new evidence before PR delivery.
+   "$SLUG" --dispatch-token "$ROUTE_TOKEN"` when operating as an adaptive phase worker, or use the
+   coordinator capability when rebasing inline, and require new evidence before PR delivery.
    For a route-less legacy seven-phase project, skip the unavailable refresh command, retain the
    recorded legacy order, and report that downstream review and validation must rerun after the
    rewritten HEAD.

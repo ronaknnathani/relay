@@ -14,8 +14,9 @@ explicit task, route decision, requirements, and fresh exploration artifact inst
 **not** invent unresolved design decisions or open a PR.
 
 Read the persisted route before starting. The route's review owner and validation owner determine who
-records final evidence. The coordinator supplies the dispatch token returned by
-`relay state dispatch`; never obtain or substitute another phase's token.
+records final evidence. The coordinator supplies separate one-time capabilities returned by `relay state dispatch`:
+`dispatch_token` for finishing, `review_token` and `validation_token` when implementation owns that
+evidence, and `route_token` for one route update. Never substitute one scope for another.
 
 For a legacy seven-phase project with no persisted route, follow the recorded plan and original
 seven-phase contract. Do not call `relay route refresh` or evidence commands; run the targeted checks
@@ -54,7 +55,8 @@ did.
    commit or any other mutation is stale by definition.
 10. **Reassess after the final mutation (adaptive only).** Content changes invalidate the prior risk
     assessment and gate policy. Re-run the route skill against the exact final snapshot. A plain
-    `relay route refresh "$SLUG"` without that reassessment conservatively leaves the easy path. When
+    `relay route refresh "$SLUG" --dispatch-token "$ROUTE_TOKEN"` without that reassessment
+    conservatively leaves the easy path. When
     the reassessment keeps the same easy execution contract, Relay rebinds the active implementation
     dispatch to the new route revision, so keep using the original dispatch token below. If the route
     escalates or changes owners, stop and let the coordinator dispatch the newly selected phase.
@@ -67,12 +69,12 @@ did.
     - Record passing review evidence only after the inspection:
       `relay state evidence record "$SLUG" review --result passed --artifact implementation.md
       --role <each-route-selected-role> --critical 0 --important 0 --suggestion <count>
-      --dispatch-token "$DISPATCH_TOKEN"`.
+      --dispatch-token "$REVIEW_TOKEN"`.
     - Then run every gate in the route's exact required gate set once and record gate IDs, commands,
       and statuses
       with `relay state evidence record "$SLUG" validation --result passed --artifact
       implementation.md --gate <id>="<exact command>" --exit-status 0 ...
-      --dispatch-token "$DISPATCH_TOKEN"`; use `--no-gates` only when the route records the verified
+      --dispatch-token "$VALIDATION_TOKEN"`; use `--no-gates` only when the route records the verified
       no-gates policy. Relay rejects missing, extra, duplicate, or changed gates and persists only the
       ID, redacted display, exact digest, and exit status.
     - On every other route, run only targeted checks needed to keep each slice green. Leave independent

@@ -48,9 +48,9 @@ A program is durable governance over unchanged Relay projects, not a second exec
 
 - Program intent and coordination live under `~/.relay/programs/`.
 - Each work item executes as an ordinary child project under `~/.relay/projects/`.
-- Child projects use adaptive `deliver-pr` and `relay state`; the program preserves Herdr ownership,
-  grants, human approval, and `can-open-pr` immediately before `open-pr` without prescribing a fixed
-  phase sequence.
+- New adaptive child projects use `deliver-pr` and `relay state`; the program preserves Herdr
+  ownership, grants, human approval, and `can-open-pr` immediately before `open-pr` without
+  prescribing a fixed phase sequence.
 - Program state never depends on preserving an agent conversation.
 - The Relay binary is the only writer of `program.json`.
 - Adaptive patrol is read-only with respect to program, project, git, mailbox, and notification
@@ -68,6 +68,10 @@ relay "<task>"
 relay --workflow stack-ship "<goal>"
 relay resume <project>
 ```
+
+Across Relay, this adaptive-delivery migration applies to new adaptive stack and program children.
+Existing route-less or otherwise legacy workers retain their legacy phase behavior when resumed and
+are not retroactively migrated.
 
 ## What V1.1 implements
 
@@ -98,7 +102,7 @@ Programs store:
 The tech lead publishes an engineering contract, not an implementation recipe. It captures binding
 architecture, interfaces, constraints, scope, exclusions, acceptance criteria, and guardrails.
 
-The worker runs adaptive delivery route-first. Clarification and planning happen only when selected
+A new adaptive worker runs delivery route-first. Clarification and planning happen only when selected
 by the persisted route. When planning is selected, the worker sends the required plan-review message
 and waits before implementation; a skipped planning phase creates no synthetic handoff. Genuinely
 easy work collapses to:

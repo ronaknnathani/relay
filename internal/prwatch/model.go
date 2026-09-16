@@ -160,16 +160,18 @@ type PullRequest struct {
 // set is fixed by its fingerprint; every other field is refreshed on every
 // observation so a reader never acts on stale pull request truth.
 type Digest struct {
-	Schema      string      `json:"schema"`
-	Version     int         `json:"version"`
-	Project     string      `json:"project"`
-	Mode        Mode        `json:"mode"`
-	Fingerprint string      `json:"fingerprint"`
-	ObservedAt  string      `json:"observed_at"`
-	HeadSHA     string      `json:"head_sha"`
-	PR          PullRequest `json:"pr"`
-	Items       []Item      `json:"items"`
-	Waiting     []string    `json:"waiting"`
+	Schema            string      `json:"schema"`
+	Version           int         `json:"version"`
+	Project           string      `json:"project"`
+	Mode              Mode        `json:"mode"`
+	OwnerSlug         string      `json:"owner_slug,omitempty"`
+	HandoffCapability string      `json:"handoff_capability,omitempty"`
+	Fingerprint       string      `json:"fingerprint"`
+	ObservedAt        string      `json:"observed_at"`
+	HeadSHA           string      `json:"head_sha"`
+	PR                PullRequest `json:"pr"`
+	Items             []Item      `json:"items"`
+	Waiting           []string    `json:"waiting"`
 	// Complete reports that the pull request merged and no further attention is
 	// possible for this project.
 	Complete bool `json:"complete"`

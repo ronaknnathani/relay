@@ -37,6 +37,12 @@ type routeFlags struct {
 	risks              []string
 }
 
+type routeBaseOutput struct {
+	BaseBranch    string `json:"base_branch"`
+	StartSHA      string `json:"start_sha"`
+	RemoteBaseSHA string `json:"remote_base_sha"`
+}
+
 func newCmdRoute() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "route",
@@ -51,7 +57,7 @@ func newCmdRoute() *cobra.Command {
 }
 
 func newCmdRouteBase() *cobra.Command {
-	var base string
+	var base, baseSHA, coordinatorToken string
 	command := &cobra.Command{
 		Use:   "base <slug>",
 		Short: "Update the project base before refreshing its route",
@@ -59,41 +65,34 @@ func newCmdRouteBase() *cobra.Command {
 		RunE: func(_ *cobra.Command, args []string) error {
 			base = strings.TrimSpace(base)
 			if base == "" {
-				return fmt.Errorf("route base requires --base <branch-or-commit>")
+				return fmt.Errorf("route base requires --base <remote-branch>")
 			}
-			manifestPath, err := project.Find(args[0])
+			if err := project.ValidateSlug(args[0]); err != nil {
+				return err
+			}
+			state, _, err := loadStateAt(args[0])
 			if err != nil {
 				return err
 			}
-			manifest, err := project.Load(manifestPath)
+			if err := validateCoordinatorToken(state, coordinatorToken); err != nil {
+				return err
+			}
+			result, err := bindRemoteBase(args[0], base, baseSHA, baseSHA == "")
 			if err != nil {
 				return err
 			}
-			if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {
-				return fmt.Errorf("project %q has no worktree", args[0])
-			}
-			resolved := base
-			if base != "HEAD" && gitx.HasOrigin(*manifest.Worktree) &&
-				!strings.Contains(base, "/") &&
-				gitx.RevParse(*manifest.Worktree, "origin/"+base) != "" {
-				resolved = "origin/" + base
-			}
-			startSHA := gitx.RevParse(*manifest.Worktree, resolved)
-			if startSHA == "" {
-				return fmt.Errorf("resolve new base %q for project %q", base, args[0])
-			}
-			manifest.BaseBranch = base
-			manifest.StartSHA = startSHA
-			if err := project.Save(manifestPath, manifest); err != nil {
-				return err
-			}
-			return json.NewEncoder(os.Stdout).Encode(struct {
-				BaseBranch string `json:"base_branch"`
-				StartSHA   string `json:"start_sha"`
-			}{BaseBranch: base, StartSHA: startSHA})
+			return json.NewEncoder(os.Stdout).Encode(result)
 		},
 	}
-	command.Flags().StringVar(&base, "base", "", "new base branch or commit")
+	command.Flags().StringVar(&base, "base", "", "new remote base branch")
+	command.Flags().StringVar(
+		&baseSHA, "sha", "",
+		"immutable PR base SHA to pin after verifying it belongs to the remote base branch",
+	)
+	command.Flags().StringVar(
+		&coordinatorToken, "coordinator-token", "",
+		"trusted coordinator capability returned by adaptive state initialization",
+	)
 	return command
 }
 
@@ -114,6 +113,7 @@ func newCmdRouteSnapshot() *cobra.Command {
 
 func newCmdRouteClassify() *cobra.Command {
 	var flags routeFlags
+	var coordinatorToken string
 	command := &cobra.Command{
 		Use:   "classify <slug>",
 		Short: "Classify normalized task facts and persist the route",
@@ -121,6 +121,12 @@ func newCmdRouteClassify() *cobra.Command {
 		RunE: func(_ *cobra.Command, args []string) error {
 			state, statePath, err := loadStateAt(args[0])
 			if err != nil {
+				return err
+			}
+			if err := validateCoordinatorToken(state, coordinatorToken); err != nil {
+				return err
+			}
+			if err := refreshRemoteBaseBinding(args[0], state); err != nil {
 				return err
 			}
 			snapshot, err := projectSnapshot(args[0])
@@ -162,6 +168,10 @@ func newCmdRouteClassify() *cobra.Command {
 		},
 	}
 	bindRouteFlags(command, &flags)
+	command.Flags().StringVar(
+		&coordinatorToken, "coordinator-token", "",
+		"trusted coordinator capability returned by adaptive state initialization",
+	)
 	return command
 }
 
@@ -186,7 +196,8 @@ func routeTransitionReason(previous, next project.RouteDecision) string {
 }
 
 func newCmdRouteRefresh() *cobra.Command {
-	return &cobra.Command{
+	var coordinatorToken, dispatchToken string
+	command := &cobra.Command{
 		Use:   "refresh <slug>",
 		Short: "Refresh actual diff facts and conservatively reclassify",
 		Args:  cobra.ExactArgs(1),
@@ -197,6 +208,14 @@ func newCmdRouteRefresh() *cobra.Command {
 			}
 			if state.Route == nil {
 				return fmt.Errorf("project %q has no route decision", args[0])
+			}
+			if err := authorizeRouteUpdate(&state, coordinatorToken, dispatchToken); err != nil {
+				return err
+			}
+			if coordinatorToken != "" {
+				if err := refreshRemoteBaseBinding(args[0], state); err != nil {
+					return err
+				}
 			}
 			snapshot, err := projectSnapshot(args[0])
 			if err != nil {
@@ -250,6 +269,15 @@ func newCmdRouteRefresh() *cobra.Command {
 			return saveRouteDecision(statePath, state, decision)
 		},
 	}
+	command.Flags().StringVar(
+		&coordinatorToken, "coordinator-token", "",
+		"trusted coordinator capability returned by adaptive state initialization",
+	)
+	command.Flags().StringVar(
+		&dispatchToken, "dispatch-token", "",
+		"one-time route-update capability returned by state dispatch",
+	)
+	return command
 }
 
 func easyEvidenceIsStale(state project.WorkflowState, snapshot project.RepositorySnapshot) bool {
@@ -270,7 +298,7 @@ func easyEvidenceIsStale(state project.WorkflowState, snapshot project.Repositor
 }
 
 func newCmdRouteEscalate() *cobra.Command {
-	var reason, risk, stackRationale string
+	var reason, risk, stackRationale, coordinatorToken, dispatchToken string
 	command := &cobra.Command{
 		Use:   "escalate <slug> <standard|high-risk|stack-candidate>",
 		Short: "Explicitly escalate a persisted route",
@@ -282,6 +310,9 @@ func newCmdRouteEscalate() *cobra.Command {
 			}
 			if state.Route == nil {
 				return fmt.Errorf("project %q has no route decision", args[0])
+			}
+			if err := authorizeRouteUpdate(&state, coordinatorToken, dispatchToken); err != nil {
+				return err
 			}
 			current := *state.Route
 			snapshot, err := projectSnapshot(args[0])
@@ -325,8 +356,136 @@ func newCmdRouteEscalate() *cobra.Command {
 	command.Flags().StringVar(&reason, "reason", "", "why a more conservative route is required")
 	command.Flags().StringVar(&risk, "risk", "", "optional closed risk trigger")
 	command.Flags().StringVar(&stackRationale, "stack-rationale", "", "why the work should be decomposed into a stack")
+	command.Flags().StringVar(
+		&coordinatorToken, "coordinator-token", "",
+		"trusted coordinator capability returned by adaptive state initialization",
+	)
+	command.Flags().StringVar(
+		&dispatchToken, "dispatch-token", "",
+		"one-time route-update capability returned by state dispatch",
+	)
 	_ = command.MarkFlagRequired("reason")
 	return command
+}
+
+func authorizeRouteUpdate(
+	state *project.WorkflowState,
+	coordinatorToken string,
+	dispatchToken string,
+) error {
+	if strings.TrimSpace(coordinatorToken) != "" {
+		return validateCoordinatorToken(*state, coordinatorToken)
+	}
+	current := state.Current()
+	if current == "" {
+		return fmt.Errorf("route update requires a coordinator capability")
+	}
+	if strings.TrimSpace(dispatchToken) == "" {
+		return fmt.Errorf(
+			"route update requires --coordinator-token or the active phase --dispatch-token",
+		)
+	}
+	return consumePhaseDispatchToken(state, current, dispatchScopeRoute, dispatchToken)
+}
+
+func refreshRemoteBaseBinding(slug string, state project.WorkflowState) error {
+	manifestPath, err := project.FindActive(slug)
+	if err != nil {
+		return err
+	}
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		return err
+	}
+	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" ||
+		manifest.BaseBranch == "" || manifest.BaseBranch == "HEAD" ||
+		!gitx.HasOrigin(*manifest.Worktree) ||
+		state.PendingPR.Number > 0 {
+		return nil
+	}
+	_, err = bindRemoteBase(slug, manifest.BaseBranch, "", false)
+	return err
+}
+
+func bindRemoteBase(
+	slug string,
+	base string,
+	requestedSHA string,
+	updateStartSHA bool,
+) (routeBaseOutput, error) {
+	manifestPath, err := project.FindActive(slug)
+	if err != nil {
+		return routeBaseOutput{}, err
+	}
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		return routeBaseOutput{}, err
+	}
+	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {
+		return routeBaseOutput{}, fmt.Errorf("project %q has no worktree", slug)
+	}
+	if base == "HEAD" || strings.HasPrefix(base, "refs/") ||
+		strings.HasPrefix(base, "origin/") ||
+		!gitx.ValidBranchName(*manifest.Worktree, base) ||
+		base == manifest.Branch {
+		return routeBaseOutput{}, fmt.Errorf(
+			"route base %q must name a valid remote branch, not HEAD, a qualified ref, or the feature branch",
+			base,
+		)
+	}
+	if !gitx.HasOrigin(*manifest.Worktree) {
+		return routeBaseOutput{}, fmt.Errorf("project %q has no origin remote for base %q", slug, base)
+	}
+	if output, err := gitx.Fetch(*manifest.Worktree, base); err != nil {
+		return routeBaseOutput{}, fmt.Errorf(
+			"fetch remote base %q for project %q: %w: %s", base, slug, err, output,
+		)
+	}
+	remoteRef := "origin/" + base
+	startSHA := gitx.RevParse(*manifest.Worktree, remoteRef)
+	if startSHA == "" {
+		return routeBaseOutput{}, fmt.Errorf("resolve remote base %q for project %q", base, slug)
+	}
+	requestedSHA = strings.TrimSpace(requestedSHA)
+	if requestedSHA != "" {
+		if !gitx.CommitExists(*manifest.Worktree, requestedSHA) {
+			return routeBaseOutput{}, fmt.Errorf(
+				"route base SHA %q is not an existing commit", requestedSHA,
+			)
+		}
+		if !gitx.IsBranchReachable(*manifest.Worktree, requestedSHA, remoteRef) {
+			return routeBaseOutput{}, fmt.Errorf(
+				"route base SHA %q is not contained by remote branch %q", requestedSHA, base,
+			)
+		}
+		startSHA = gitx.RevParse(*manifest.Worktree, requestedSHA)
+	}
+	previousBase := manifest.RemoteBaseSHA
+	if previousBase == "" {
+		previousBase = manifest.StartSHA
+	}
+	headSHA := gitx.RevParse(*manifest.Worktree, "HEAD")
+	if headSHA != previousBase &&
+		gitx.IsBranchReachable(*manifest.Worktree, "HEAD", remoteRef) {
+		return routeBaseOutput{}, fmt.Errorf("remote base %q already contains the feature HEAD", base)
+	}
+	if manifest.BaseBranch == base && manifest.RemoteBaseSHA == startSHA &&
+		(!updateStartSHA || manifest.StartSHA == startSHA) {
+		return routeBaseOutput{
+			BaseBranch: base, StartSHA: manifest.StartSHA, RemoteBaseSHA: startSHA,
+		}, nil
+	}
+	manifest.BaseBranch = base
+	if updateStartSHA {
+		manifest.StartSHA = startSHA
+	}
+	manifest.RemoteBaseSHA = startSHA
+	if err := project.Save(manifestPath, manifest); err != nil {
+		return routeBaseOutput{}, err
+	}
+	return routeBaseOutput{
+		BaseBranch: base, StartSHA: manifest.StartSHA, RemoteBaseSHA: startSHA,
+	}, nil
 }
 
 func bindRouteFlags(command *cobra.Command, flags *routeFlags) {

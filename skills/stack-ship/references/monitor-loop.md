@@ -5,9 +5,8 @@ digests is owned by the read-only **`pr-monitor`** skill (triage → delegate re
 → re-observe → exit). The stack orchestrator owns any approved auto-merge mutation after the monitor
 reports readiness. This file covers only what the **stack** adds.
 
-> Throughout, `master` denotes the repository's **default branch**; substitute the real default
-> (`main`, etc.) in the commands below. Only the stack orchestrator may arm approved auto-merge, and
-> only for the default-branch front PR.
+> Resolve the repository's default branch dynamically and bind it to `<default-branch>`. Only the
+> stack orchestrator may arm approved auto-merge, and only for the default-branch front PR.
 
 ## Point the watcher at the front PR, with yourself as the owner
 
@@ -35,25 +34,26 @@ mutation back to `pr-fix`.
 
 A merged front PR is actionable in stack mode: the watcher wakes you with a `stack-front-merged` item
 instead of quietly completing. Capture the front PR's tip **before** it merges (a squash-merge drops
-that commit from `master`), so `<merged-parent-tip>` below stays valid. Do not rely on GitHub
+that commit from the default branch), so `<merged-parent-tip>` below stays valid. Do not rely on GitHub
 auto-retargeting. Once it merges:
 
 ```bash
 relay pr watch stop <front-project-slug>          # also closes the watcher's Herdr tab
 git fetch origin
-git rebase --onto origin/master <merged-parent-tip> <next-branch>
+git rebase --onto origin/<default-branch> <merged-parent-tip> <next-branch>
 git push --force-with-lease origin <next-branch>
-gh pr edit <next-pr> --base master
-gh pr view <next-pr> --json baseRefName,mergeStateStatus   # confirm baseRefName == "master"
-relay route base <next-project-slug> --base master
-relay route refresh <next-project-slug>
+gh pr edit <next-pr> --base <default-branch>
+gh pr view <next-pr> --json baseRefName,mergeStateStatus
+relay route base <next-project-slug> --base <default-branch> --coordinator-token <token>
+relay route refresh <next-project-slug> --coordinator-token <token>
 relay pr watch start <next-project-slug> --mode stack --owner <stack-orchestrator-slug>
 ```
 
 The base update is required after squash merges, merge commits, and deleted parent branches: it
 records the new base identity and immutable start SHA before route freshness is recomputed.
-Then verify every other descendant still targets its intended parent feature branch (not `master`),
-and let the new front watcher wake you once auto-merge can be armed on the `master`-based PR.
+Confirm `baseRefName == "<default-branch>"`. Then verify every other descendant still targets its
+intended parent feature branch (not the default branch), and let the new front watcher wake you once
+auto-merge can be armed on the default-branch PR.
 
 Stopping the old watcher is **your** job and it is not optional. A merged front PR stays actionable in
 stack mode — the watcher has no local record of "handled", so it re-observes the same merge and wakes
@@ -76,7 +76,7 @@ Never edit `state.json` directly. Serialize per branch under the **One writer pe
 
 ## Auto-merge across the stack
 
-Only the stack orchestrator arms auto-merge, and only on a `master`-based front PR after a read-only
+Only the stack orchestrator arms auto-merge, and only on a default-branch front PR after a read-only
 `pr-monitor` result reports readiness. Descendants wait their turn. As each PR merges, front-advance
 promotes the next one and it becomes eligible. See [stacked-mechanics.md](stacked-mechanics.md) for
 the `--onto` rebase, freshness rebases, and transient-401 retry details.

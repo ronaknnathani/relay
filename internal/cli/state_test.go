@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -32,11 +36,98 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 // returns its stdout and error.
 func runState(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	args = prepareStateTestArgs(t, args)
+	return runStateRaw(t, args...)
+}
+
+func runStateRaw(t *testing.T, args ...string) (string, error) {
+	t.Helper()
 	cmd := newCmdState()
 	cmd.SetArgs(args)
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	return captureStdout(t, cmd.Execute)
+}
+
+func initAdaptiveState(t *testing.T, slug string) string {
+	t.Helper()
+	out, err := runStateRaw(
+		t, "init", slug, "--workflow", "deliver-pr",
+		"--phases", strings.Join(project.AdaptiveDeliveryPhases, ","),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		CoordinatorToken string `json:"coordinator_token"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.CoordinatorToken == "" {
+		t.Fatal("adaptive state init returned no coordinator token")
+	}
+	return result.CoordinatorToken
+}
+
+const testCoordinatorToken = "test-coordinator-capability"
+
+var testDispatchTokens = map[string]dispatchOutput{}
+
+func prepareStateTestArgs(t *testing.T, args []string) []string {
+	t.Helper()
+	if len(args) < 2 {
+		return args
+	}
+	switch args[0] {
+	case "dispatch", "worker":
+		ensureTestCoordinator(t, args[1])
+		if !slices.Contains(args, "--coordinator-token") {
+			args = append(args, "--coordinator-token", testCoordinatorToken)
+		}
+	case "evidence":
+		if len(args) >= 4 && args[1] == "record" {
+			scope := dispatchScopeReview
+			if args[3] == "validation" {
+				scope = dispatchScopeValidation
+			}
+			replaceTestDispatchToken(args, scope)
+		}
+	}
+	return args
+}
+
+func ensureTestCoordinator(t *testing.T, slug string) {
+	t.Helper()
+	path := project.StatePath(slug)
+	state, err := project.LoadState(path)
+	if err != nil || state.CoordinatorHash != "" {
+		return
+	}
+	sum := sha256.Sum256([]byte(testCoordinatorToken))
+	state.CoordinatorHash = fmt.Sprintf("%x", sum)
+	if err := project.SaveState(path, state); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func replaceTestDispatchToken(args []string, scope string) {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] != "--dispatch-token" {
+			continue
+		}
+		output, ok := testDispatchTokens[args[i+1]]
+		if !ok {
+			return
+		}
+		switch scope {
+		case dispatchScopeReview:
+			args[i+1] = output.ReviewToken
+		case dispatchScopeValidation:
+			args[i+1] = output.ValidationToken
+		}
+		return
+	}
 }
 
 func TestStateInitNextAdvance(t *testing.T) {
