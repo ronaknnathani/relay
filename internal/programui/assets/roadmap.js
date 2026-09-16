@@ -333,11 +333,14 @@
     };
     document.body.append(script);
   };
+  const loadFullAppAfterPaint = () => {
+    requestAnimationFrame(() => setTimeout(loadFullApp, 0));
+  };
 
   drawInitialConnectors();
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", loadFullApp, { once: true });
+    document.addEventListener("DOMContentLoaded", loadFullAppAfterPaint, { once: true });
   } else {
-    loadFullApp();
+    loadFullAppAfterPaint();
   }
 })();
