@@ -95,6 +95,25 @@ func TestHandlerRendersMergedProgressBeforeHydration(t *testing.T) {
 	}
 }
 
+func TestRenderRoadmapMarkupUsesSimpleLayoutForSingleTaskStages(t *testing.T) {
+	markup := string(renderRoadmapMarkup(roadmapSnapshot{
+		Graph: roadmapGraph{
+			Nodes: []roadmapNode{
+				{ID: "w1", Title: "First", Lane: "pending", Priority: "P1"},
+				{ID: "w2", Title: "Second", Lane: "pending", Priority: "P1"},
+				{ID: "w3", Title: "Third", Lane: "pending", Priority: "P1"},
+			},
+			Layers: [][]string{{"w1"}, {"w2", "w3"}},
+		},
+	}))
+	if strings.Count(markup, `class="stage stage--single"`) != 1 {
+		t.Fatalf("single-stage markup = %s", markup)
+	}
+	if strings.Count(markup, `class="stage"`) != 1 {
+		t.Fatalf("multi-stage markup = %s", markup)
+	}
+}
+
 func TestHandlerLoadsCurrentRoadmapOutsideDocument(t *testing.T) {
 	now := time.Date(2026, 9, 15, 16, 0, 0, 0, time.UTC)
 	seed := programview.Snapshot{

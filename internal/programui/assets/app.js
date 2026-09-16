@@ -916,6 +916,7 @@ function renderRoadmap() {
   for (let index = 0; index < stages.length; index += 1) {
     const ids = stages[index];
     const stage = stageTemplate.cloneNode(false);
+    stage.classList.toggle("stage--single", ids.length === 1);
     stage.dataset.stage = String(index);
     stage.dataset.label = `Stage ${index + 1} · ${plural(ids.length, "task")}`;
     stageNodes.push(stage);

@@ -325,7 +325,11 @@ func renderRoadmapMarkup(snapshot roadmapSnapshot) []byte {
 	var markup strings.Builder
 	position := 0
 	for stageIndex, layer := range layers {
-		markup.WriteString(`<div class="stage" data-stage="`)
+		markup.WriteString(`<div class="stage`)
+		if len(layer) == 1 {
+			markup.WriteString(` stage--single`)
+		}
+		markup.WriteString(`" data-stage="`)
 		markup.WriteString(strconv.Itoa(stageIndex))
 		markup.WriteString(`" data-label="Stage `)
 		markup.WriteString(strconv.Itoa(stageIndex + 1))

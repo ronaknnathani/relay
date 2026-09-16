@@ -200,6 +200,7 @@ func TestRoadmapCardsKeepOneVisibleMetadataLineAndExplicitNames(t *testing.T) {
 	script := readAsset(t, "assets/app.js")
 	styles := readAsset(t, "assets/app.css")
 	requireContains(t, "app.js", script, []string{
+		`stage.classList.toggle("stage--single", ids.length === 1)`,
 		`card.setAttribute("aria-label", taskCardLabel(node, item, lane))`,
 		`function taskCardLabel(node, item, lane)`,
 		`Dependencies: ${dependencies.join(", ")}`,
@@ -209,6 +210,10 @@ func TestRoadmapCardsKeepOneVisibleMetadataLineAndExplicitNames(t *testing.T) {
 	})
 	requireAbsent(t, "app.css", styles, []string{
 		"content: attr(data-meta)",
+	})
+	requireContains(t, "app.css", styles, []string{
+		".stage--single {",
+		".stage--single .card {",
 	})
 }
 

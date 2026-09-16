@@ -704,12 +704,25 @@ pre {
   align-items: stretch;
 }
 
+.stage--single {
+  display: block;
+}
+
+.stage--single .card {
+  width: 100%;
+}
+
 .stage::before {
   content: attr(data-label);
   grid-column: 1 / -1;
+  display: block;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--muted);
+}
+
+.stage--single::before {
+  margin-bottom: 16px;
 }
 
 .card {
