@@ -230,28 +230,12 @@ func runArchive(slug string, force bool) error {
 	} else if !errors.Is(activeErr, os.ErrNotExist) {
 		return fmt.Errorf("inspect active project %s: %w", activeDir, activeErr)
 	}
-	archived, archivedErr := loadArchivedCleanupManifest(slug)
+	result, archivedErr := retryStandaloneArchivedProjectCleanup(slug, force)
 	if archivedErr != nil {
 		if errors.Is(archivedErr, os.ErrNotExist) {
 			return err
 		}
 		return archivedErr
-	}
-	if archived.Program != "" || archived.ProgramItem != "" {
-		if archived.Program != "" && archived.ProgramItem != "" {
-			return fmt.Errorf(
-				"archived project %q is managed by program %s/%s; retry with: relay program worker cleanup %s %s",
-				slug, archived.Program, archived.ProgramItem, archived.Program, archived.ProgramItem,
-			)
-		}
-		return fmt.Errorf(
-			"archived project %q has incomplete program ownership metadata; inspect %s and use the program worker cleanup lifecycle",
-			slug, project.ManifestPath(project.ArchivedDir(), slug),
-		)
-	}
-	result, err = retryArchivedProjectCleanupWithForce(archived, force)
-	if err != nil {
-		return err
 	}
 	renderArchivedCleanupRetry(os.Stdout, result)
 	if result.BranchDeletionWarning != "" {
@@ -1002,6 +986,172 @@ func retryArchivedProjectCleanupWithForce(
 		}
 		return retryArchivedProjectCleanupLocked(current, force)
 	})
+}
+
+func retryStandaloneArchivedProjectCleanup(
+	slug string, force bool,
+) (archiveResult, error) {
+	if err := project.ValidateSlug(slug); err != nil {
+		return archiveResult{}, err
+	}
+	return withArchiveCleanupLock(slug, func() (archiveResult, error) {
+		m, err := loadRecoverableArchivedCleanupManifest(slug)
+		if err != nil {
+			return archiveResult{}, err
+		}
+		if m.Program != "" || m.ProgramItem != "" {
+			if m.Program != "" && m.ProgramItem != "" {
+				return archiveResult{}, fmt.Errorf(
+					"archived project %q is managed by program %s/%s; retry with: relay program worker cleanup %s %s",
+					slug, m.Program, m.ProgramItem, m.Program, m.ProgramItem,
+				)
+			}
+			return archiveResult{}, fmt.Errorf(
+				"archived project %q has incomplete program ownership metadata; inspect %s and use the program worker cleanup lifecycle",
+				slug, project.ManifestPath(project.ArchivedDir(), slug),
+			)
+		}
+		return retryArchivedProjectCleanupLocked(m, force)
+	})
+}
+
+func loadRecoverableArchivedCleanupManifest(slug string) (project.Manifest, error) {
+	manifestPath := project.ManifestPath(project.ArchivedDir(), slug)
+	installed, installedErr := project.Load(manifestPath)
+	if installedErr == nil && installed.ArchiveCleanup != nil {
+		if installed.Slug != slug {
+			return project.Manifest{}, fmt.Errorf(
+				"archived project manifest slug %q does not match requested slug %q",
+				installed.Slug, slug,
+			)
+		}
+		return installed, nil
+	}
+
+	dir := filepath.Dir(manifestPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if installedErr != nil {
+			return project.Manifest{}, fmt.Errorf(
+				"load archived cleanup manifest for %s: %w", slug, installedErr,
+			)
+		}
+		return project.Manifest{}, fmt.Errorf("inspect archived project directory %s: %w", dir, err)
+	}
+	var stagedPaths []string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".manifest.archived-") {
+			stagedPaths = append(stagedPaths, filepath.Join(dir, entry.Name()))
+		}
+	}
+	if len(stagedPaths) == 0 {
+		if installedErr != nil {
+			return project.Manifest{}, fmt.Errorf(
+				"load archived cleanup manifest for %s: %w", slug, installedErr,
+			)
+		}
+		if installed.Slug != slug {
+			return project.Manifest{}, fmt.Errorf(
+				"archived project manifest slug %q does not match requested slug %q",
+				installed.Slug, slug,
+			)
+		}
+		return installed, nil
+	}
+	if len(stagedPaths) != 1 {
+		return project.Manifest{}, stagedArchiveRecoveryError(
+			slug, fmt.Sprintf("found %d staged archived manifests", len(stagedPaths)),
+		)
+	}
+	stagedPath := stagedPaths[0]
+	info, err := os.Lstat(stagedPath)
+	if err != nil {
+		return project.Manifest{}, stagedArchiveRecoveryError(slug, err.Error())
+	}
+	if !info.Mode().IsRegular() {
+		return project.Manifest{}, stagedArchiveRecoveryError(
+			slug, fmt.Sprintf("%s is not a regular file", stagedPath),
+		)
+	}
+	staged, err := project.Load(stagedPath)
+	if err != nil {
+		return project.Manifest{}, stagedArchiveRecoveryError(slug, err.Error())
+	}
+	if staged.Slug != slug || staged.Status != "archived" || staged.Archived == nil ||
+		staged.ArchiveCleanup == nil {
+		return project.Manifest{}, stagedArchiveRecoveryError(
+			slug, fmt.Sprintf("%s is not a complete archived manifest for %q", stagedPath, slug),
+		)
+	}
+	if _, err := validateArchivedCleanupProof(staged); err != nil {
+		return project.Manifest{}, stagedArchiveRecoveryError(slug, err.Error())
+	}
+
+	switch {
+	case installedErr == nil:
+		if !sameArchiveRecoveryIdentity(installed, staged) {
+			return project.Manifest{}, stagedArchiveRecoveryError(
+				slug, fmt.Sprintf(
+					"installed manifest %s does not match staged resource identity", manifestPath,
+				),
+			)
+		}
+		installedInfo, err := os.Lstat(manifestPath)
+		if err != nil {
+			return project.Manifest{}, stagedArchiveRecoveryError(slug, err.Error())
+		}
+		if !installedInfo.Mode().IsRegular() {
+			return project.Manifest{}, stagedArchiveRecoveryError(
+				slug, fmt.Sprintf("%s is not a regular file", manifestPath),
+			)
+		}
+		if err := archiveRename(stagedPath, manifestPath); err != nil {
+			return project.Manifest{}, fmt.Errorf(
+				"recover staged archived manifest %s: install over verified source manifest: %w",
+				stagedPath, err,
+			)
+		}
+	case errors.Is(installedErr, os.ErrNotExist):
+		if err := os.Link(stagedPath, manifestPath); err != nil {
+			return project.Manifest{}, fmt.Errorf(
+				"recover staged archived manifest %s without overwriting %s: %w",
+				stagedPath, manifestPath, err,
+			)
+		}
+		if err := archiveRemoveFile(stagedPath); err != nil {
+			return project.Manifest{}, fmt.Errorf(
+				"recover staged archived manifest %s: remove staged link after installation: %w",
+				stagedPath, err,
+			)
+		}
+	default:
+		return project.Manifest{}, stagedArchiveRecoveryError(slug, installedErr.Error())
+	}
+	return loadArchivedCleanupManifest(slug)
+}
+
+func sameArchiveRecoveryIdentity(installed, staged project.Manifest) bool {
+	installedWorktree, stagedWorktree := "", ""
+	if installed.Worktree != nil {
+		installedWorktree = *installed.Worktree
+	}
+	if staged.Worktree != nil {
+		stagedWorktree = *staged.Worktree
+	}
+	return installed.Slug == staged.Slug &&
+		installed.Repo == staged.Repo &&
+		installed.Branch == staged.Branch &&
+		installedWorktree == stagedWorktree &&
+		installed.Program == staged.Program &&
+		installed.ProgramItem == staged.ProgramItem
+}
+
+func stagedArchiveRecoveryError(slug, detail string) error {
+	return fmt.Errorf(
+		"archived project %q has unsafe staged archive metadata: %s; resources were preserved. "+
+			"Inspect %s, keep exactly one valid .manifest.archived-* file, and rerun: relay archive %s",
+		slug, detail, filepath.Join(project.ArchivedDir(), slug), slug,
+	)
 }
 
 func validateManifestWorktreeMetadata(m project.Manifest) error {

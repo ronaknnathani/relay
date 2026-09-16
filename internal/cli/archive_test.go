@@ -952,6 +952,179 @@ func TestArchiveReturnsArchivedPathWhenProofRevalidationRollbackFails(t *testing
 	}
 }
 
+func TestRunArchiveRecoversStagedManifestAfterInstallRollbackFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	slug := "recover-staged-archive"
+	repo, branch, worktree, dstDir := leaveStagedArchiveAfterRollbackFailure(t, slug)
+
+	stdout, stderr, err := captureGCOutput(t, func() error {
+		return runArchive(slug, false)
+	})
+	if err != nil {
+		t.Fatalf("runArchive recovery: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		"Archived cleanup complete:", slug,
+		"Worktree removed:", worktree,
+		"Branch removed:", branch,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("runArchive recovery output %q is missing %q", stdout, want)
+		}
+	}
+	if pathExists(worktree) || gitx.BranchExists(repo, branch) {
+		t.Fatal("staged manifest recovery left project resources behind")
+	}
+	archived := loadArchivedManifest(t, slug)
+	if archived.ArchiveCleanup == nil ||
+		archived.ArchiveCleanup.WorktreeState != project.ArchiveCleanupDone ||
+		archived.ArchiveCleanup.BranchState != project.ArchiveCleanupDone {
+		t.Fatalf("cleanup proof = %+v, want recovered and consumed", archived.ArchiveCleanup)
+	}
+	entries, err := os.ReadDir(dstDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".manifest.archived-") {
+			t.Fatalf("staged manifest %s remained after recovery", entry.Name())
+		}
+	}
+}
+
+func TestRunArchiveRejectsUnsafeStagedManifestRecovery(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+		want   string
+	}{
+		{
+			name: "invalid",
+			mutate: func(t *testing.T, dstDir string) {
+				t.Helper()
+				staged := stagedArchivedManifestPaths(t, dstDir)
+				if err := os.WriteFile(staged[0], []byte("{"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "parse manifest",
+		},
+		{
+			name: "multiple",
+			mutate: func(t *testing.T, dstDir string) {
+				t.Helper()
+				staged := stagedArchivedManifestPaths(t, dstDir)
+				data, err := os.ReadFile(staged[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(
+					filepath.Join(dstDir, ".manifest.archived-duplicate"), data, 0o644,
+				); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "found 2 staged archived manifests",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			slug := "unsafe-staged-" + test.name
+			repo, branch, worktree, dstDir := leaveStagedArchiveAfterRollbackFailure(t, slug)
+			test.mutate(t, dstDir)
+
+			_, _, err := captureGCOutput(t, func() error {
+				return runArchive(slug, false)
+			})
+			if err == nil {
+				t.Fatal("runArchive recovered unsafe staged metadata")
+			}
+			for _, want := range []string{
+				"unsafe staged archive metadata",
+				test.want,
+				"keep exactly one valid .manifest.archived-* file",
+				"relay archive " + slug,
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("runArchive error %q is missing %q", err, want)
+				}
+			}
+			if !pathExists(worktree) || !gitx.BranchExists(repo, branch) {
+				t.Fatal("unsafe staged recovery changed project resources")
+			}
+			installed, loadErr := project.Load(filepath.Join(dstDir, "manifest.json"))
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			if installed.ArchiveCleanup != nil || installed.Status == "archived" {
+				t.Fatalf("installed manifest = %+v, want original active metadata", installed)
+			}
+		})
+	}
+}
+
+func leaveStagedArchiveAfterRollbackFailure(
+	t *testing.T, slug string,
+) (repo, branch, worktree, dstDir string) {
+	t.Helper()
+	repo = newTestRepo(t)
+	branch = "user/" + slug
+	worktree = addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srcDir := filepath.Join(project.ActiveDir(), slug)
+	dstDir = filepath.Join(project.ArchivedDir(), slug)
+	previousRename := archiveRename
+	archiveRename = func(oldPath, newPath string) error {
+		switch {
+		case strings.HasPrefix(filepath.Base(oldPath), ".manifest.archived-") &&
+			newPath == filepath.Join(dstDir, "manifest.json"):
+			return errors.New("injected archived manifest install failure")
+		case oldPath == dstDir && newPath == srcDir:
+			return errors.New("injected directory rollback failure")
+		default:
+			return os.Rename(oldPath, newPath)
+		}
+	}
+	result, archiveErr := archiveProjectWithProof(decision.proof, true)
+	archiveRename = previousRename
+	if archiveErr == nil ||
+		!strings.Contains(archiveErr.Error(), "injected archived manifest install failure") ||
+		!strings.Contains(archiveErr.Error(), "injected directory rollback failure") {
+		t.Fatalf("archiveProjectWithProof error = %v, want install and rollback failure", archiveErr)
+	}
+	if result.ProjectLocation != archiveLocationArchived || pathExists(srcDir) || !pathExists(dstDir) {
+		t.Fatalf("archive result = %+v, want interrupted archive in %s", result, dstDir)
+	}
+	if staged := stagedArchivedManifestPaths(t, dstDir); len(staged) != 1 {
+		t.Fatalf("staged manifests = %v, want exactly one", staged)
+	}
+	return repo, branch, worktree, dstDir
+}
+
+func stagedArchivedManifestPaths(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".manifest.archived-") {
+			paths = append(paths, filepath.Join(dir, entry.Name()))
+		}
+	}
+	return paths
+}
+
 func TestArchiveRollbackIgnoresHostileFixedManifestEntry(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	slug := "rollback-hostile-entry"
