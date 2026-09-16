@@ -580,7 +580,7 @@ func TestGHPullRequestLookupSanitizesMalformedOriginParseErrors(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"custom://[redacted]@github.example/acme/%zz.git",
+		"[redacted-remote]",
 		"invalid URL",
 	} {
 		if !strings.Contains(err.Error(), want) {
