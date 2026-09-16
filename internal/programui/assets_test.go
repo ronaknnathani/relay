@@ -97,7 +97,6 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		`<svg id="graph"`,
 		`role="img"`,
 		`id="graph-nodes"`,
-		roadmapMarkupToken,
 		`id="graph-edges"`,
 		`id="ledger-rows"`,
 		`id="detail-body"`,
@@ -232,6 +231,8 @@ func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
 	}
 	roadmap := readAsset(t, "assets/roadmap.js")
 	requireContains(t, "roadmap.js", roadmap, []string{
+		`const buildRoadmap = (snapshot) => {`,
+		`graphNodes.replaceChildren(fragment)`,
 		`window.__relayCoreReady = true`,
 		`themeToggle.addEventListener("click", onThemeToggle)`,
 		`refresh.addEventListener("click", onRefresh)`,
@@ -240,6 +241,9 @@ func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
 		`window.__relayRoadmapConnectorPaths = paths`,
 		`drawConnectors();`,
 	})
+	if !strings.Contains(index, `<div id="graph-nodes" class="roadmap__stages"></div>`) {
+		t.Error("the document must not duplicate roadmap cards outside the bootstrap JSON")
+	}
 	requireContains(t, "app.js", readAsset(t, "assets/app.js"), []string{
 		`window.__relayRoadmapCoreCleanup`,
 		`requestProgram(initialProgramController, "roadmap")`,

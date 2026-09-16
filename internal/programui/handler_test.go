@@ -37,7 +37,6 @@ func TestHandlerCachesRenderedIndex(t *testing.T) {
 		t.Fatalf("Content-Length = %q, want %d", got, response.Body.Len())
 	}
 	if bytes.Contains(response.Body.Bytes(), []byte(roadmapCoreToken)) ||
-		bytes.Contains(response.Body.Bytes(), []byte(roadmapMarkupToken)) ||
 		bytes.Contains(response.Body.Bytes(), []byte("<style></style>")) ||
 		!bytes.Contains(response.Body.Bytes(), []byte(`rel="stylesheet" href="/app.css"`)) ||
 		!bytes.Contains(response.Body.Bytes(), []byte("/app.js")) {
@@ -68,7 +67,14 @@ func TestHandlerRendersMergedProgressBeforeHydration(t *testing.T) {
 		Schema:   programview.SchemaVersion,
 		Program:  programview.ProgramDTO{Title: "Progress"},
 		Progress: programview.ProgressDTO{Total: 7, Merged: 3, Canceled: 2},
-		Items:    []programview.ItemDTO{},
+		Graph: programview.GraphDTO{
+			Nodes:  []programview.GraphNodeDTO{{ID: "w1", Title: "First", Lane: "pending"}},
+			Layers: [][]string{{"w1"}},
+		},
+		Items: []programview.ItemDTO{{
+			ID: "w1", Title: "First", Status: "pending", Lane: "pending",
+			Priority: "P1", Dependencies: []string{},
+		}},
 	}
 	feed := newSnapshotFeed(seed, time.Minute, time.Now, func() (programview.Snapshot, error) {
 		return seed, nil
@@ -89,28 +95,9 @@ func TestHandlerRendersMergedProgressBeforeHydration(t *testing.T) {
 		t.Fatal("rendered index does not preserve merged progress")
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte(`"schema":"relay.program.roadmap.bootstrap.v1"`)) ||
-		bytes.Contains(response.Body.Bytes(), []byte(`"nodes"`)) ||
+		!bytes.Contains(response.Body.Bytes(), []byte(`"nodes":[{"id":"w1"`)) ||
 		bytes.Contains(response.Body.Bytes(), []byte(`"items"`)) {
-		t.Fatal("rendered index must embed only the lean roadmap bootstrap data")
-	}
-}
-
-func TestRenderRoadmapMarkupUsesSimpleLayoutForSingleTaskStages(t *testing.T) {
-	markup := string(renderRoadmapMarkup(roadmapSnapshot{
-		Graph: roadmapGraph{
-			Nodes: []roadmapNode{
-				{ID: "w1", Title: "First", Lane: "pending", Priority: "P1"},
-				{ID: "w2", Title: "Second", Lane: "pending", Priority: "P1"},
-				{ID: "w3", Title: "Third", Lane: "pending", Priority: "P1"},
-			},
-			Layers: [][]string{{"w1"}, {"w2", "w3"}},
-		},
-	}))
-	if strings.Count(markup, `class="stage stage--single"`) != 1 {
-		t.Fatalf("single-stage markup = %s", markup)
-	}
-	if strings.Count(markup, `class="stage"`) != 1 {
-		t.Fatalf("multi-stage markup = %s", markup)
+		t.Fatal("rendered index must embed the compact roadmap graph without task detail records")
 	}
 }
 

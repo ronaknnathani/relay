@@ -10,6 +10,82 @@
   const themeToggle = document.getElementById("theme-toggle");
   const themeGlyph = document.getElementById("theme-glyph");
   const themeText = document.getElementById("theme-text");
+  const initial = document.getElementById("initial-program");
+  const snapshot = initial ? JSON.parse(initial.textContent) : null;
+  const graphData = snapshot && snapshot.graph ? snapshot.graph : {};
+  const status = {
+    pending: ["○", "Pending"],
+    dispatched: ["▶", "Dispatched"],
+    "in-review": ["◆", "In review"],
+    blocked: ["✕", "Blocked"],
+    merged: ["●", "Merged"],
+    cancelled: ["⊘", "Cancelled"],
+  };
+  const buildRoadmap = (snapshot) => {
+    const graph = snapshot && snapshot.graph ? snapshot.graph : {};
+    const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+    const nodesByID = new Map(nodes.map((node) => [node.id, node]));
+    const layers = Array.isArray(graph.layers) && graph.layers.length > 0
+      ? graph.layers
+      : nodes.reduce((grouped, node) => {
+        while (grouped.length <= Number(node.layer || 0)) {
+          grouped.push([]);
+        }
+        grouped[Number(node.layer || 0)].push(node.id);
+        return grouped;
+      }, []);
+    const fragment = new DocumentFragment();
+    let position = 0;
+    layers.forEach((layer, stageIndex) => {
+      const ids = layer.filter((id) => nodesByID.has(id));
+      if (ids.length === 0) {
+        return;
+      }
+      const stage = document.createElement("div");
+      stage.className = ids.length === 1 ? "stage stage--single" : "stage";
+      stage.dataset.stage = String(stageIndex);
+      stage.dataset.label = `Stage ${stageIndex + 1} · ${ids.length} task${ids.length === 1 ? "" : "s"}`;
+      ids.forEach((id) => {
+        const node = nodesByID.get(id);
+        const meta = status[node.lane] || ["·", "Unknown"];
+        let facts = node.priority || "";
+        if (node.dependency_count > 0) {
+          facts += ` · ${node.dependency_count} dep${node.dependency_count === 1 ? "" : "s"}`;
+        }
+        if (node.pr_number > 0) {
+          facts += ` · PR #${node.pr_number}`;
+        }
+        if (node.orphaned) {
+          facts += " · orphan";
+        } else if (node.ready) {
+          facts += " · ready";
+        }
+        const dependencies = Array.isArray(node.dependencies) ? node.dependencies : [];
+        const dependencyLabel = dependencies.length > 0
+          ? `Dependencies: ${dependencies.join(", ")}`
+          : "No dependencies";
+        const card = document.createElement("button");
+        card.className = "card";
+        card.type = "button";
+        card.dataset.item = node.id;
+        card.dataset.focusKey = `card:${node.id}`;
+        card.dataset.stage = String(stageIndex);
+        card.dataset.lane = node.lane;
+        card.dataset.selected = "false";
+        card.tabIndex = position === 0 ? 0 : -1;
+        card.setAttribute(
+          "aria-label",
+          `Task ${node.id}: ${node.title}. Status ${meta[1]}. ` +
+            `Priority ${node.priority}. ${dependencyLabel}.`,
+        );
+        card.textContent = `${node.title}\n${node.id} · ${meta[0]} ${meta[1]}\n${facts}`;
+        stage.append(card);
+        position += 1;
+      });
+      fragment.append(stage);
+    });
+    graphNodes.replaceChildren(fragment);
+  };
   const cards = () => Array.from(graphNodes.querySelectorAll(".card"));
   const select = (card, persist) => {
     if (!card) {
@@ -61,6 +137,7 @@
   };
   const onRefresh = () => window.location.reload();
 
+  buildRoadmap(snapshot);
   graphNodes.addEventListener("click", onClick);
   graphNodes.addEventListener("keydown", onKeyDown);
   themeToggle.addEventListener("click", onThemeToggle);
@@ -97,9 +174,7 @@
       ` V ${round(y2)}`;
   };
   const drawConnectors = () => {
-    const initial = document.getElementById("initial-program");
-    const snapshot = initial ? JSON.parse(initial.textContent) : null;
-    const edges = snapshot && snapshot.graph ? snapshot.graph.edges || [] : [];
+    const edges = Array.isArray(graphData.edges) ? graphData.edges : [];
     const width = roadmapContent.clientWidth;
     if (width === 0 || edges.length === 0) {
       return;

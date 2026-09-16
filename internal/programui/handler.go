@@ -21,9 +21,8 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-OHu4tovBVaPk434/9gMprRjF6wZcQ27dLKKyBc4GM6w='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-Gl6/QnHTphJuK4RAmrUgyQ5iyIiiFOAG4Z3Rzz1C4wE='; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	roadmapCoreToken      = "__RELAY_ROADMAP_CORE__"
-	roadmapMarkupToken    = "__RELAY_ROADMAP_MARKUP__"
 	roadmapJSONToken      = "__RELAY_ROADMAP_JSON__"
 	programSlugToken      = "__RELAY_PROGRAM_SLUG__"
 	programTitleToken     = "__RELAY_PROGRAM_TITLE__"
@@ -128,12 +127,8 @@ type roadmapOverview struct {
 }
 
 type roadmapBootstrap struct {
-	Schema string                `json:"schema"`
-	Graph  roadmapBootstrapGraph `json:"graph"`
-}
-
-type roadmapBootstrapGraph struct {
-	Edges []programview.GraphEdgeDTO `json:"edges"`
+	Schema string       `json:"schema"`
+	Graph  roadmapGraph `json:"graph"`
 }
 
 func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -209,7 +204,6 @@ func prepareIndexTemplate() ([]byte, error) {
 func prepareIndexTemplateData(index, roadmapCore []byte) ([]byte, error) {
 	for _, token := range []string{
 		roadmapCoreToken,
-		roadmapMarkupToken,
 		roadmapJSONToken,
 		programSlugToken,
 		programTitleToken,
@@ -237,15 +231,12 @@ func renderIndex(index, encoded []byte) ([]byte, error) {
 		var err error
 		bootstrap, err = json.Marshal(roadmapBootstrap{
 			Schema: "relay.program.roadmap.bootstrap.v1",
-			Graph: roadmapBootstrapGraph{
-				Edges: snapshot.Graph.Edges,
-			},
+			Graph:  snapshot.Graph,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("encode roadmap index bootstrap: %w", err)
 		}
 	}
-	markup := renderRoadmapMarkup(snapshot)
 	title := snapshot.Program.DisplayTitle
 	if title == "" {
 		title = snapshot.Program.Title
@@ -254,7 +245,6 @@ func renderIndex(index, encoded []byte) ([]byte, error) {
 		title = "Relay Program"
 	}
 	replacements := map[string]string{
-		roadmapMarkupToken:  string(markup),
 		roadmapJSONToken:    string(bootstrap),
 		programSlugToken:    html.EscapeString(snapshot.Program.Slug),
 		programTitleToken:   html.EscapeString(title),
@@ -277,142 +267,6 @@ func renderIndex(index, encoded []byte) ([]byte, error) {
 		index = bytes.ReplaceAll(index, []byte(token), []byte(value))
 	}
 	return index, nil
-}
-
-func renderRoadmapMarkup(snapshot roadmapSnapshot) []byte {
-	nodes := make(map[string]roadmapNode, len(snapshot.Graph.Nodes))
-	for _, node := range snapshot.Graph.Nodes {
-		nodes[node.ID] = node
-	}
-	layers := make([][]string, 0, len(snapshot.Graph.Layers)+1)
-	placed := make(map[string]bool, len(snapshot.Graph.Nodes))
-	if len(snapshot.Graph.Layers) == 0 {
-		grouped := make([][]string, 0)
-		for _, node := range snapshot.Graph.Nodes {
-			for len(grouped) <= node.Layer {
-				grouped = append(grouped, []string{})
-			}
-			grouped[node.Layer] = append(grouped[node.Layer], node.ID)
-		}
-		snapshot.Graph.Layers = grouped
-	}
-	for _, layer := range snapshot.Graph.Layers {
-		current := make([]string, 0, len(layer))
-		for _, id := range layer {
-			if _, ok := nodes[id]; ok {
-				current = append(current, id)
-				placed[id] = true
-			}
-		}
-		if len(current) > 0 {
-			layers = append(layers, current)
-		}
-	}
-	loose := make([]string, 0)
-	for _, node := range snapshot.Graph.Nodes {
-		if !placed[node.ID] {
-			loose = append(loose, node.ID)
-		}
-	}
-	if len(loose) > 0 {
-		if len(layers) == 0 {
-			layers = append(layers, loose)
-		} else {
-			layers[0] = append(layers[0], loose...)
-		}
-	}
-
-	var markup strings.Builder
-	position := 0
-	for stageIndex, layer := range layers {
-		markup.WriteString(`<div class="stage`)
-		if len(layer) == 1 {
-			markup.WriteString(` stage--single`)
-		}
-		markup.WriteString(`" data-stage="`)
-		markup.WriteString(strconv.Itoa(stageIndex))
-		markup.WriteString(`" data-label="Stage `)
-		markup.WriteString(strconv.Itoa(stageIndex + 1))
-		markup.WriteString(` · `)
-		markup.WriteString(strconv.Itoa(len(layer)))
-		markup.WriteString(` task`)
-		markup.WriteString(pluralSuffix(len(layer)))
-		markup.WriteString(`">`)
-		for _, id := range layer {
-			node := nodes[id]
-			tabIndex := -1
-			if position == 0 {
-				tabIndex = 0
-			}
-			escapedID := html.EscapeString(node.ID)
-			statusGlyph, statusWord := roadmapStatus(node.Lane)
-			facts := node.Priority
-			if node.DependencyCount > 0 {
-				facts += fmt.Sprintf(" · %d dep%s", node.DependencyCount, pluralSuffix(node.DependencyCount))
-			}
-			if node.PRNumber > 0 {
-				facts += fmt.Sprintf(" · PR #%d", node.PRNumber)
-			}
-			if node.Orphaned {
-				facts += " · orphan"
-			} else if node.Ready {
-				facts += " · ready"
-			}
-			dependencyLabel := "No dependencies"
-			if len(node.Dependencies) > 0 {
-				dependencyLabel = "Dependencies: " + strings.Join(node.Dependencies, ", ")
-			}
-			accessibleName := fmt.Sprintf(
-				"Task %s: %s. Status %s. Priority %s. %s.",
-				node.ID, node.Title, statusWord, node.Priority, dependencyLabel,
-			)
-			markup.WriteString(`<button class="card" type="button" data-item="`)
-			markup.WriteString(escapedID)
-			markup.WriteString(`" data-focus-key="card:`)
-			markup.WriteString(escapedID)
-			markup.WriteString(`" data-stage="`)
-			markup.WriteString(strconv.Itoa(stageIndex))
-			markup.WriteString(`" data-lane="`)
-			markup.WriteString(html.EscapeString(node.Lane))
-			markup.WriteString(`" aria-label="`)
-			markup.WriteString(html.EscapeString(accessibleName))
-			markup.WriteString(`" tabindex="`)
-			markup.WriteString(strconv.Itoa(tabIndex))
-			markup.WriteString(`">`)
-			markup.WriteString(html.EscapeString(node.Title))
-			markup.WriteString("&#10;")
-			markup.WriteString(escapedID)
-			markup.WriteString(" · ")
-			markup.WriteString(html.EscapeString(statusGlyph))
-			markup.WriteString(" ")
-			markup.WriteString(html.EscapeString(statusWord))
-			markup.WriteString("&#10;")
-			markup.WriteString(html.EscapeString(facts))
-			markup.WriteString("</button>")
-			position++
-		}
-		markup.WriteString("</div>")
-	}
-	return []byte(markup.String())
-}
-
-func roadmapStatus(lane string) (string, string) {
-	switch lane {
-	case "pending":
-		return "○", "Pending"
-	case "dispatched":
-		return "▶", "Dispatched"
-	case "in-review":
-		return "◆", "In review"
-	case "blocked":
-		return "✕", "Blocked"
-	case "merged":
-		return "●", "Merged"
-	case "cancelled": //nolint:misspell // Persisted V1 schema spelling.
-		return "⊘", "Cancelled" //nolint:misspell // Match the existing UI vocabulary.
-	default:
-		return "·", "Unknown"
-	}
 }
 
 func pluralSuffix(count int) string {
