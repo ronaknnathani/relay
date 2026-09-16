@@ -911,9 +911,9 @@ function itemContractSection(item) {
       const selector = { kind: "contract", ref };
       state.contractByItem.set(item.id, ref);
       state.artifactSelection.set(item.id, selector);
+      loadArtifact(selector, true);
       renderDetail();
       restoreFocus(`contract:${item.id}:${ref}`);
-      loadArtifact(selector, true);
     });
     nav.append(button);
   });
@@ -1015,9 +1015,9 @@ function artifactSection(item) {
       const selector = { kind: "task", item: item.id, name: artifact.name };
       state.artifactByItem.set(item.id, artifact.name);
       state.artifactSelection.set(item.id, selector);
+      loadArtifact(selector, true);
       renderDetail();
       restoreFocus(`art:${item.id}:${artifact.name}`);
-      loadArtifact(selector, true);
     });
     nav.append(button);
   });
@@ -1154,7 +1154,7 @@ async function loadArtifact(selector, revalidate, revalidateAfterLoad) {
       current.controller === state.artifactController &&
       !current.controller.signal.aborted &&
       current.generation === state.artifactGeneration) {
-    if (revalidateAfterLoad) {
+    if (revalidate || revalidateAfterLoad) {
       current.revalidateAfterLoad = true;
     }
     return;
@@ -1273,8 +1273,8 @@ function openDrawer(instant) {
     state.detailItem = "";
   }
   state.drawerOpen = true;
-  renderDetail();
   loadCurrentArtifact(true);
+  renderDetail();
   dom.drawer.hidden = false;
   dom.drawer.dataset.instant = instant ? "true" : "false";
   /* Reading a layout value commits the closed state so the transition runs. */

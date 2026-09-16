@@ -1977,6 +1977,125 @@ func TestBrowserRefreshQueuesOneArtifactRevalidationDuringInflightLoad(t *testin
 	}
 }
 
+func TestBrowserReopenQueuesOneArtifactRevalidationDuringInflightLoad(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	initial := browserTestSnapshot()
+	updated := initial
+	updated.Graph.Nodes = append([]programview.GraphNodeDTO(nil), initial.Graph.Nodes...)
+	updated.Items = append([]programview.ItemDTO(nil), initial.Items...)
+	updated.Graph.Nodes[0].Title = "First task after closed-drawer refresh"
+	updated.Items[0].Title = updated.Graph.Nodes[0].Title
+	now := time.Date(2026, 9, 15, 20, 0, 0, 0, time.UTC)
+	var nowNanos atomic.Int64
+	nowNanos.Store(now.UnixNano())
+	var builds atomic.Int32
+	url := startBrowserTestHandler(t, HandlerOptions{
+		Slug: "browser-test",
+		Now:  func() time.Time { return time.Unix(0, nowNanos.Load()).UTC() },
+		Builder: func(_ string, _ string) (programview.Snapshot, error) {
+			if builds.Add(1) == 1 {
+				return initial, nil
+			}
+			return updated, nil
+		},
+	})
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+	if err := chromedp.Run(browser,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(`
+				const relayFetch = window.fetch.bind(window);
+				window.__relayArtifactCalls = 0;
+				window.__relayReleaseArtifacts = {};
+				window.fetch = (input, options) => {
+					const url = new URL(typeof input === "string" ? input : input.url, window.location.href);
+					if (url.pathname !== "/api/artifact") {
+						return relayFetch(input, options);
+					}
+					window.__relayArtifactCalls += 1;
+					const call = window.__relayArtifactCalls;
+					const text = call === 1 ? "old-on-disk-content" : "new-on-disk-content";
+					const response = () => new Response(JSON.stringify({
+						state: "loaded",
+						artifact: {
+							name: "assignment.md",
+							path: "assignment.md",
+							present: true,
+							size: text.length,
+							updated_at: "",
+							truncated: false,
+							text
+						}
+					}), {
+						status: 200,
+						headers: {"Content-Type": "application/json", "ETag": '"' + call + '"'}
+					});
+					return new Promise((resolve) => {
+						window.__relayReleaseArtifacts[call] = () => resolve(response());
+					});
+				};
+			`).Do(ctx)
+			return err
+		}),
+		chromedp.Navigate(url),
+		chromedp.Poll(`state.snapshot?.schema === "relay.program.v1" &&
+			programController === null &&
+			document.querySelectorAll(".card").length === 2`, nil),
+		chromedp.Evaluate(`clearTimeout(pollTimer); pollTimer = null`, nil),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+		chromedp.Poll(`window.__relayArtifactCalls === 1 &&
+			typeof window.__relayReleaseArtifacts[1] === "function"`, nil),
+		chromedp.Evaluate(
+			`document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}))`, nil,
+		),
+		chromedp.Poll(`document.querySelector("#drawer").hidden === true`, nil),
+	); err != nil {
+		t.Fatalf("start delayed artifact load and close drawer: %v", err)
+	}
+
+	nowNanos.Store(now.Add(3 * time.Second).UnixNano())
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+		chromedp.Poll(`document.querySelector('.card[data-item="w1"]').textContent.includes(
+			"First task after closed-drawer refresh")`, nil),
+		chromedp.Evaluate(`clearTimeout(pollTimer); pollTimer = null`, nil),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+		chromedp.Poll(`document.querySelector("#drawer").dataset.state === "open" &&
+			window.__relayArtifactCalls === 1`, nil),
+		chromedp.Evaluate(`window.__relayReleaseArtifacts[1]()`, nil),
+		chromedp.Poll(`window.__relayArtifactCalls === 2 &&
+			typeof window.__relayReleaseArtifacts[2] === "function"`, nil),
+		chromedp.Evaluate(`window.__relayReleaseArtifacts[2]()`, nil),
+		chromedp.Poll(`document.querySelector(".artifact-text")?.textContent ===
+			"new-on-disk-content"`, nil),
+	); err != nil {
+		t.Fatalf("revalidate artifact after reopening drawer: %v", err)
+	}
+	var calls int
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`window.__relayArtifactCalls`, &calls),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("artifact requests = %d, want exactly 2", calls)
+	}
+}
+
 func TestBrowserRejectsUnabortableStaleArtifactResponses(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
