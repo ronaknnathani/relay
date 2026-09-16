@@ -333,8 +333,8 @@ func TestWorkerCleanupLeavesABusyWorkerAlone(t *testing.T) {
 			installStubWatcherState(t, manifest.Slug, true)
 
 			out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-			if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
-				t.Fatalf("worker cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
+			if err != nil {
+				t.Fatalf("worker cleanup returned an operation error for busy status: %v", err)
 			}
 			result := decodeCleanupOutput(t, out)
 			if result.Status != cleanupWorkerBusy {
@@ -878,8 +878,8 @@ func TestWorkerCleanupRetriesAWatcherTabItCouldNotClose(t *testing.T) {
 	installCompletedWatcherState(t, manifest.Slug)
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
-		t.Fatalf("first cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
+	if err != nil {
+		t.Fatalf("first cleanup returned an operation error for a watcher warning: %v", err)
 	}
 	blocked := decodeCleanupOutput(t, out)
 	retry := "relay program worker cleanup " + p.Slug + " " + item.ID
@@ -947,8 +947,8 @@ func TestWorkerCleanupExplainsHowToCloseALegacyWatcherTab(t *testing.T) {
 	}
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
-		t.Fatalf("worker cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
+	if err != nil {
+		t.Fatalf("worker cleanup returned an operation error for legacy watcher guidance: %v", err)
 	}
 	result := decodeCleanupOutput(t, out)
 	warnings := strings.Join(result.Warnings, " ")
@@ -971,8 +971,8 @@ func TestWorkerCleanupReturnsIncompleteWhenBranchDeletionFails(t *testing.T) {
 	t.Cleanup(func() { archiveForceDeleteBranchAt = previous })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
-		t.Fatalf("worker cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
+	if err != nil {
+		t.Fatalf("worker cleanup returned an operation error for branch guidance: %v", err)
 	}
 	result := decodeCleanupOutput(t, out)
 	expectedSHA := gitx.RevParse(manifest.Repo, "refs/heads/"+manifest.Branch)
@@ -1015,8 +1015,8 @@ func TestWorkerCleanupRequiresInspectionWhenBranchAdvancedDuringDeletion(t *test
 	t.Cleanup(func() { archiveForceDeleteBranchAt = previous })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
-		t.Fatalf("worker cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
+	if err != nil {
+		t.Fatalf("worker cleanup returned an operation error for inspection guidance: %v", err)
 	}
 	result := decodeCleanupOutput(t, out)
 	warnings := strings.Join(result.Warnings, "\n")
@@ -1232,8 +1232,8 @@ func TestWorkerCleanupPreservesWatcherRetryWhenBranchDeletionAlsoFails(t *testin
 	t.Cleanup(func() { archiveForceDeleteBranchAt = previous })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
-		t.Fatalf("worker cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
+	if err != nil {
+		t.Fatalf("worker cleanup returned an operation error for combined warnings: %v", err)
 	}
 	result := decodeCleanupOutput(t, out)
 	watcherRetry := "relay program worker cleanup " + p.Slug + " " + item.ID
@@ -1767,8 +1767,8 @@ func TestWorkerCleanupDoesNotReplayClaimedBranchDeletion(t *testing.T) {
 	t.Cleanup(func() { archiveForceDeleteBranchAt = previousDelete })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
-		t.Fatalf("first cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
+	if err != nil {
+		t.Fatalf("first cleanup returned an operation error for branch guidance: %v", err)
 	}
 	first := decodeCleanupOutput(t, out)
 	retry := "relay program worker cleanup " + p.Slug + " " + item.ID
@@ -1861,8 +1861,8 @@ func TestWorkerCleanupReturnsManualBranchConfigCommandForClaimedCleanup(t *testi
 	t.Cleanup(func() { archiveForceDeleteBranchAt = previousDelete })
 
 	out, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json")
-	if !errors.Is(err, errProgramWorkerCleanupIncomplete) {
-		t.Fatalf("initial cleanup error = %v, want %v", err, errProgramWorkerCleanupIncomplete)
+	if err != nil {
+		t.Fatalf("initial cleanup returned an operation error for config guidance: %v", err)
 	}
 	command := manualBranchConfigRemoveCommand(manifest.Repo, manifest.Branch)
 	first := decodeCleanupOutput(t, out)

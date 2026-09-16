@@ -34,8 +34,6 @@ const (
 	cleanupWorkerRunning = "running"
 )
 
-var errProgramWorkerCleanupIncomplete = errors.New("program worker cleanup incomplete")
-
 var (
 	programWorkerArchiveProject = archiveProjectWithProof
 	programWorkerSaveProgram    = program.Save
@@ -225,7 +223,7 @@ func runProgramWorkerCleanup(
 	if !exited {
 		result.Status = cleanupWorkerBusy
 		result.NextCommand = fmt.Sprintf("relay program worker cleanup %s %s", p.Slug, item.ID)
-		return renderIncompleteProgramWorkerCleanup(out, result, jsonOutput)
+		return renderProgramWorkerCleanup(out, result, jsonOutput)
 	}
 
 	if archived {
@@ -310,17 +308,7 @@ func failProgramWorkerCleanup(
 func renderFinalProgramWorkerCleanup(
 	out io.Writer, result programWorkerCleanupOutput, jsonOutput bool,
 ) error {
-	if result.Status == cleanupClean {
-		return renderProgramWorkerCleanup(out, result, jsonOutput)
-	}
-	return renderIncompleteProgramWorkerCleanup(out, result, jsonOutput)
-}
-
-func renderIncompleteProgramWorkerCleanup(
-	out io.Writer, result programWorkerCleanupOutput, jsonOutput bool,
-) error {
-	renderErr := renderProgramWorkerCleanup(out, result, jsonOutput)
-	return errors.Join(errProgramWorkerCleanupIncomplete, renderErr)
+	return renderProgramWorkerCleanup(out, result, jsonOutput)
 }
 
 // loadProgramCleanupTarget admits only a merged item. Cleanup discards a
