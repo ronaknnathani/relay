@@ -35,7 +35,6 @@ var (
 	prWatchUpdateState     = prwatch.UpdateState
 	prWatchRunLoop         = prwatch.Run
 	prWatchTickOnce        = prwatch.Tick
-	prWatchInspect         = prwatch.Inspect
 	prWatchLocate          = prwatch.LoadTarget
 	prWatchRequireOwner    = prwatch.RequireLiveOwner
 	prWatchRequireManaged  = prwatch.RequireManagedProject
@@ -1111,7 +1110,9 @@ func newCmdPRWatchHandoff() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			owner, err := validatePRWatchHandoffProvenance(command.Context(), slug, digest, flags)
+			digest, owner, err := validatePRWatchHandoffProvenance(
+				command.Context(), slug, digest, flags,
+			)
 			if err != nil {
 				return err
 			}
@@ -1141,9 +1142,11 @@ func validatePRWatchHandoffProvenance(
 	slug string,
 	digest prwatch.Digest,
 	flags *prWatchModeFlags,
-) (string, error) {
+) (prwatch.Digest, string, error) {
 	if digest.Project != slug {
-		return "", fmt.Errorf("digest project %q does not match requested project %q", digest.Project, slug)
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"digest project %q does not match requested project %q", digest.Project, slug,
+		)
 	}
 	var mode prwatch.Mode
 	var owner string
@@ -1151,48 +1154,84 @@ func validatePRWatchHandoffProvenance(
 	switch {
 	case err == nil:
 		if state.Project != slug || state.Mode != digest.Mode {
-			return "", fmt.Errorf("watcher identity does not match digest %s", digest.Fingerprint)
+			return prwatch.Digest{}, "", fmt.Errorf(
+				"watcher identity does not match digest %s", digest.Fingerprint,
+			)
 		}
 		if state.OwnerSlug == "" {
-			return "", fmt.Errorf("watcher state for %q has no owner", slug)
+			return prwatch.Digest{}, "", fmt.Errorf("watcher state for %q has no owner", slug)
 		}
 		mode, owner = state.Mode, state.OwnerSlug
 	case !errors.Is(err, os.ErrNotExist):
-		return "", err
+		return prwatch.Digest{}, "", err
 	default:
 		mode, owner, err = flags.resolve(slug)
 		if err != nil {
-			return "", err
+			return prwatch.Digest{}, "", err
 		}
 		if mode == prwatch.ModeStack {
-			return "", fmt.Errorf("stack handoff requires a running watcher state")
+			return prwatch.Digest{}, "", fmt.Errorf(
+				"stack handoff requires a running watcher state",
+			)
 		}
 		if mode == prwatch.ModeManaged {
 			if err := prWatchRequireManaged(slug); err != nil {
-				return "", err
+				return prwatch.Digest{}, "", err
 			}
 		}
 	}
 	if digest.Mode != mode {
-		return "", fmt.Errorf("digest mode %q does not match validated mode %q", digest.Mode, mode)
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"digest mode %q does not match validated mode %q", digest.Mode, mode,
+		)
 	}
-	inspection, err := prWatchInspect(ctx, slug, prwatch.InspectOptions{Locate: prWatchLocate})
+	fresh, err := prWatchTickOnce(ctx, slug, prwatch.Options{Mode: mode, Locate: prWatchLocate})
 	if err != nil {
-		return "", err
+		return prwatch.Digest{}, "", err
 	}
-	if inspection.Number != digest.PR.Number {
-		return "", fmt.Errorf(
+	if fresh.Project != slug || fresh.Mode != mode {
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"fresh watcher observation identity does not match digest %s", digest.Fingerprint,
+		)
+	}
+	if fresh.PR.Number != digest.PR.Number {
+		return prwatch.Digest{}, "", fmt.Errorf(
 			"digest PR #%d does not match current project PR #%d",
-			digest.PR.Number, inspection.Number,
+			digest.PR.Number, fresh.PR.Number,
 		)
 	}
-	if inspection.HeadSHA != digest.HeadSHA {
-		return "", fmt.Errorf(
+	if fresh.HeadSHA != digest.HeadSHA {
+		return prwatch.Digest{}, "", fmt.Errorf(
 			"digest head %q does not match current pull request head %q",
-			digest.HeadSHA, inspection.HeadSHA,
+			digest.HeadSHA, fresh.HeadSHA,
 		)
 	}
-	return owner, nil
+	if fresh.PR.State != prwatch.StateOpen {
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"pull request #%d is %s and cannot be handed to pr-fix",
+			fresh.PR.Number, strings.ToLower(fresh.PR.State),
+		)
+	}
+	if fresh.PR.ReviewDecision == prwatch.ReviewApproved ||
+		fresh.PR.MergeStateStatus == prwatch.MergeStateQueued {
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"pull request #%d is approved or queued and cannot be handed to pr-fix",
+			fresh.PR.Number,
+		)
+	}
+	if fresh.Fingerprint == "" {
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"digest %s is no longer actionable in the latest watcher observation",
+			digest.Fingerprint,
+		)
+	}
+	if fresh.Fingerprint != digest.Fingerprint {
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"digest %s was superseded by the latest watcher observation %s",
+			digest.Fingerprint, fresh.Fingerprint,
+		)
+	}
+	return fresh, owner, nil
 }
 
 func prWatchHandoffCapability(digest prwatch.Digest) (string, error) {

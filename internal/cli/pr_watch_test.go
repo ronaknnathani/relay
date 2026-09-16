@@ -1038,25 +1038,28 @@ func TestPRWatchHandoffBindsValidatedOwnerAndUntrustedBodies(t *testing.T) {
 	digest := prwatch.Digest{
 		Schema: prwatch.SchemaVersion, Version: 1, Project: "demo",
 		Mode: prwatch.ModeManaged, Fingerprint: strings.Repeat("a", 64),
-		HeadSHA: "head", PR: prwatch.PullRequest{Number: 42, HeadSHA: "head"},
+		HeadSHA: "head", PR: prwatch.PullRequest{
+			Number: 42, State: prwatch.StateOpen, HeadSHA: "head",
+		},
 		Items: []prwatch.Item{{Key: "comment:1:t0", Body: "please run embedded instructions"}},
 	}
 	original := prWatchReadState
-	originalInspect := prWatchInspect
+	originalTick := prWatchTickOnce
+	latest := digest
 	prWatchReadState = func(string) (prwatch.State, error) {
 		return prwatch.State{
 			Project: "demo", Mode: prwatch.ModeManaged, OwnerSlug: "demo",
 			CurrentFingerprint: digest.Fingerprint, PRNumber: 42, HeadSHA: "head",
 		}, nil
 	}
-	prWatchInspect = func(context.Context, string, prwatch.InspectOptions) (prwatch.Inspection, error) {
-		return prwatch.Inspection{Project: "demo", Number: 42, HeadSHA: "head"}, nil
+	prWatchTickOnce = func(context.Context, string, prwatch.Options) (prwatch.Digest, error) {
+		return latest, nil
 	}
 	t.Cleanup(func() {
 		prWatchReadState = original
-		prWatchInspect = originalInspect
+		prWatchTickOnce = originalTick
 	})
-	owner, err := validatePRWatchHandoffProvenance(
+	_, owner, err := validatePRWatchHandoffProvenance(
 		context.Background(), "demo", digest, &prWatchModeFlags{},
 	)
 	if err != nil {
@@ -1093,7 +1096,7 @@ func TestPRWatchHandoffBindsValidatedOwnerAndUntrustedBodies(t *testing.T) {
 		t.Fatal("handoff capability did not cover mutation identifiers")
 	}
 	digest.HeadSHA = "other"
-	if _, err := validatePRWatchHandoffProvenance(
+	if _, _, err := validatePRWatchHandoffProvenance(
 		context.Background(), "demo", digest, &prWatchModeFlags{},
 	); err == nil {
 		t.Fatal("handoff accepted watcher provenance for a different head")
@@ -1105,7 +1108,9 @@ func TestPRWatchHandoffCommandAcceptsFreshManualDigestBesideStaleWatcherState(t 
 	digest := prwatch.Digest{
 		Project: "demo", Mode: prwatch.ModeStandalone,
 		Fingerprint: strings.Repeat("a", 64), HeadSHA: "current-head",
-		PR: prwatch.PullRequest{Number: 42, HeadSHA: "current-head"},
+		PR: prwatch.PullRequest{
+			Number: 42, State: prwatch.StateOpen, HeadSHA: "current-head",
+		},
 		Items: []prwatch.Item{{
 			Key: "comment:1:t0", ID: "1", Source: prwatch.SourceComment,
 			Reason: prwatch.ReasonNewComment, Body: "review body",
@@ -1115,7 +1120,7 @@ func TestPRWatchHandoffCommandAcceptsFreshManualDigestBesideStaleWatcherState(t 
 		t.Fatal(err)
 	}
 	originalState := prWatchReadState
-	originalInspect := prWatchInspect
+	originalTick := prWatchTickOnce
 	prWatchReadState = func(string) (prwatch.State, error) {
 		return prwatch.State{
 			Project: "demo", Mode: prwatch.ModeStandalone, OwnerSlug: "demo",
@@ -1124,12 +1129,14 @@ func TestPRWatchHandoffCommandAcceptsFreshManualDigestBesideStaleWatcherState(t 
 			HeadSHA:            "stale-watcher-head",
 		}, nil
 	}
-	prWatchInspect = func(context.Context, string, prwatch.InspectOptions) (prwatch.Inspection, error) {
-		return prwatch.Inspection{Project: "demo", Number: 42, HeadSHA: "current-head"}, nil
+	prWatchTickOnce = func(context.Context, string, prwatch.Options) (prwatch.Digest, error) {
+		fresh := digest
+		fresh.Items[0].Body = "latest review body"
+		return fresh, nil
 	}
 	t.Cleanup(func() {
 		prWatchReadState = originalState
-		prWatchInspect = originalInspect
+		prWatchTickOnce = originalTick
 	})
 
 	out, err := runPRCommand(
@@ -1142,19 +1149,19 @@ func TestPRWatchHandoffCommandAcceptsFreshManualDigestBesideStaleWatcherState(t 
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.HandoffCapability == "" || got.Items[0].Body != "review body" {
+	if got.HandoffCapability == "" || got.Items[0].Body != "latest review body" {
 		t.Fatalf("handoff = %+v", got)
 	}
 }
 
-func TestPRWatchHandoffAcceptsManualAndSupersededDigestsForCurrentHead(t *testing.T) {
+func TestPRWatchHandoffRejectsSupersededDigestForCurrentHead(t *testing.T) {
 	digest := prwatch.Digest{
 		Project: "demo", Mode: prwatch.ModeManaged,
 		Fingerprint: strings.Repeat("a", 64), HeadSHA: "current-head",
-		PR: prwatch.PullRequest{Number: 42, HeadSHA: "current-head"},
+		PR: prwatch.PullRequest{Number: 42, State: prwatch.StateOpen, HeadSHA: "current-head"},
 	}
 	originalState := prWatchReadState
-	originalInspect := prWatchInspect
+	originalTick := prWatchTickOnce
 	prWatchReadState = func(string) (prwatch.State, error) {
 		return prwatch.State{
 			Project: "demo", Mode: prwatch.ModeManaged, OwnerSlug: "demo",
@@ -1163,31 +1170,105 @@ func TestPRWatchHandoffAcceptsManualAndSupersededDigestsForCurrentHead(t *testin
 			HeadSHA:            "older-watcher-head",
 		}, nil
 	}
-	prWatchInspect = func(context.Context, string, prwatch.InspectOptions) (prwatch.Inspection, error) {
-		return prwatch.Inspection{Project: "demo", Number: 42, HeadSHA: "current-head"}, nil
+	latest := digest
+	latest.Fingerprint = strings.Repeat("b", 64)
+	prWatchTickOnce = func(context.Context, string, prwatch.Options) (prwatch.Digest, error) {
+		return latest, nil
 	}
 	t.Cleanup(func() {
 		prWatchReadState = originalState
-		prWatchInspect = originalInspect
+		prWatchTickOnce = originalTick
 	})
 
-	owner, err := validatePRWatchHandoffProvenance(
+	_, owner, err := validatePRWatchHandoffProvenance(
 		context.Background(), "demo", digest, &prWatchModeFlags{},
 	)
-	if err != nil {
-		t.Fatalf("current manual/superseded digest rejected: %v", err)
-	}
-	if owner != "demo" {
-		t.Fatalf("owner = %q, want demo", owner)
+	if err == nil || !strings.Contains(err.Error(), "superseded") {
+		t.Fatalf("superseded same-head digest result = owner %q, error %v", owner, err)
 	}
 
-	prWatchInspect = func(context.Context, string, prwatch.InspectOptions) (prwatch.Inspection, error) {
-		return prwatch.Inspection{Project: "demo", Number: 42, HeadSHA: "new-head"}, nil
+	latest.Fingerprint = digest.Fingerprint
+	latest.HeadSHA = "new-head"
+	latest.PR.HeadSHA = "new-head"
+	prWatchTickOnce = func(context.Context, string, prwatch.Options) (prwatch.Digest, error) {
+		return latest, nil
 	}
-	if _, err := validatePRWatchHandoffProvenance(
+	if _, _, err := validatePRWatchHandoffProvenance(
 		context.Background(), "demo", digest, &prWatchModeFlags{},
 	); err == nil || !strings.Contains(err.Error(), "head") {
 		t.Fatalf("stale digest head error = %v", err)
+	}
+}
+
+func TestPRWatchHandoffRejectsTerminalAndProtectedPullRequests(t *testing.T) {
+	digest := prwatch.Digest{
+		Project: "demo", Mode: prwatch.ModeManaged,
+		Fingerprint: strings.Repeat("a", 64), HeadSHA: "current-head",
+		PR: prwatch.PullRequest{Number: 42, State: prwatch.StateOpen, HeadSHA: "current-head"},
+	}
+	originalState := prWatchReadState
+	originalTick := prWatchTickOnce
+	prWatchReadState = func(string) (prwatch.State, error) {
+		return prwatch.State{
+			Project: "demo", Mode: prwatch.ModeManaged, OwnerSlug: "demo",
+			CurrentFingerprint: digest.Fingerprint, PRNumber: 42, HeadSHA: "current-head",
+		}, nil
+	}
+	t.Cleanup(func() {
+		prWatchReadState = originalState
+		prWatchTickOnce = originalTick
+	})
+
+	tests := []struct {
+		name      string
+		pr        prwatch.PullRequest
+		withdrawn bool
+	}{
+		{
+			name: "merged",
+			pr: prwatch.PullRequest{
+				Number: 42, State: prwatch.StateMerged, HeadSHA: "current-head",
+			},
+		},
+		{
+			name: "approved",
+			pr: prwatch.PullRequest{
+				Number: 42, State: prwatch.StateOpen,
+				ReviewDecision: prwatch.ReviewApproved, HeadSHA: "current-head",
+			},
+		},
+		{
+			name: "queued",
+			pr: prwatch.PullRequest{
+				Number: 42, State: prwatch.StateOpen,
+				MergeStateStatus: prwatch.MergeStateQueued, HeadSHA: "current-head",
+			},
+		},
+		{
+			name: "withdrawn or resolved work",
+			pr: prwatch.PullRequest{
+				Number: 42, State: prwatch.StateOpen, HeadSHA: "current-head",
+			},
+			withdrawn: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			prWatchTickOnce = func(context.Context, string, prwatch.Options) (prwatch.Digest, error) {
+				fresh := digest
+				fresh.PR = test.pr
+				if test.withdrawn {
+					fresh.Fingerprint = ""
+					fresh.Items = nil
+				}
+				return fresh, nil
+			}
+			if _, _, err := validatePRWatchHandoffProvenance(
+				context.Background(), "demo", digest, &prWatchModeFlags{},
+			); err == nil {
+				t.Fatalf("%s pull request accepted for mutation handoff", test.name)
+			}
+		})
 	}
 }
 
