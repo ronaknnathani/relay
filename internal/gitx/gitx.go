@@ -626,6 +626,7 @@ func Fetch(repo, branch string) (string, error) {
 // SanitizeDiagnostic removes secret-bearing URL components from subprocess
 // output while preserving the host, path, and surrounding diagnostic.
 func SanitizeDiagnostic(output string) string {
+	output = stripTerminalControlSequences(output)
 	output = strings.TrimSpace(output)
 	scanner := newDiagnosticURLScanner(output)
 	var sanitized strings.Builder
@@ -654,6 +655,55 @@ func SanitizeDiagnostic(output string) string {
 		index++
 	}
 	return sanitized.String()
+}
+
+func stripTerminalControlSequences(output string) string {
+	var sanitized strings.Builder
+	sanitized.Grow(len(output))
+	for index := 0; index < len(output); {
+		switch output[index] {
+		case '\x1b':
+			index = terminalEscapeEnd(output, index)
+		case '\n', '\t':
+			sanitized.WriteByte(output[index])
+			index++
+		default:
+			if output[index] < ' ' || output[index] == '\x7f' {
+				index++
+				continue
+			}
+			sanitized.WriteByte(output[index])
+			index++
+		}
+	}
+	return sanitized.String()
+}
+
+func terminalEscapeEnd(output string, start int) int {
+	if start+1 >= len(output) {
+		return len(output)
+	}
+	switch output[start+1] {
+	case '[':
+		for index := start + 2; index < len(output); index++ {
+			if output[index] >= 0x40 && output[index] <= 0x7e {
+				return index + 1
+			}
+		}
+		return len(output)
+	case ']', 'P', 'X', '^', '_':
+		for index := start + 2; index < len(output); index++ {
+			if output[index] == '\a' {
+				return index + 1
+			}
+			if output[index] == '\x1b' && index+1 < len(output) && output[index+1] == '\\' {
+				return index + 2
+			}
+		}
+		return len(output)
+	default:
+		return start + 2
+	}
 }
 
 const maxRemoteHelperDepth = 8
@@ -976,8 +1026,27 @@ func sanitizeGitDiagnosticURL(rawURL string) string {
 	authority := rawURL[authorityStart:authorityEnd]
 	if userinfoEnd := strings.LastIndexByte(authority, '@'); userinfoEnd >= 0 {
 		rawURL = rawURL[:authorityStart] + "[redacted]@" + authority[userinfoEnd+1:] + rawURL[authorityEnd:]
+	} else if credentialLikeAuthority(authority) {
+		rawURL = rawURL[:authorityStart] + "[redacted]" + rawURL[authorityEnd:]
 	}
 	return rawURL
+}
+
+func credentialLikeAuthority(authority string) bool {
+	if authority == "" || authority[0] == '[' {
+		return false
+	}
+	separator := strings.IndexByte(authority, ':')
+	if separator <= 0 || separator == len(authority)-1 {
+		return false
+	}
+	credential := authority[separator+1:]
+	for index := range len(credential) {
+		if credential[index] < '0' || credential[index] > '9' {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizeRemoteHelperURL(rawURL string) string {

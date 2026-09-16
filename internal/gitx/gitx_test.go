@@ -583,6 +583,17 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			want:  "remote: file:///tmp/repo.git",
 		},
 		{
+			name:  "scheme URL with numeric port",
+			input: "remote: https://example.com:443/team/repo.git",
+			want:  "remote: https://example.com:443/team/repo.git",
+		},
+		{
+			name:    "truncated scheme authority with credential pair",
+			input:   "remote: https://x-access-token:ghp_SECRET",
+			want:    "remote: https://[redacted]",
+			secrets: []string{"x-access-token", "ghp_SECRET"},
+		},
+		{
 			name:  "scp-like ssh",
 			input: "remote: git@git.example.io:team/repo.git?identity=secret#scope",
 			want:  "remote: [redacted]@git.example.io:team/repo.git",
@@ -726,9 +737,33 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			secrets: []string{"x-access-token", "SECRET"},
 		},
 		{
+			name:    "nested helpers wrapping truncated scheme authority",
+			input:   "remote: trace::cache::https://x-access-token:ghp_SECRET",
+			want:    "remote: trace::cache::https://[redacted]",
+			secrets: []string{"x-access-token", "ghp_SECRET"},
+		},
+		{
 			name:  "nested remote helper bracketed SCP path",
 			input: "remote: trace::cache::_deploy-token@git.example.com:team/[private].git?secret=x#fragment",
 			want:  "remote: trace::cache::[redacted]@git.example.com:team/[private].git",
+		},
+		{
+			name:    "colored scheme URL",
+			input:   "remote: ht\x1b[31mtps://example.com/repo.git?token=query-secret\x1b[0m",
+			want:    "remote: https://example.com/repo.git",
+			secrets: []string{"token=", "query-secret"},
+		},
+		{
+			name:    "colored SCP URL",
+			input:   "remote: deploy-secret\x1b[31m@github.com:o/r.git?token=query-secret\x1b[0m",
+			want:    "remote: [redacted]@github.com:o/r.git",
+			secrets: []string{"deploy-secret", "token=", "query-secret"},
+		},
+		{
+			name:    "colored remote helper URL",
+			input:   "remote: cache::ht\x1b[31mtps://example.com/repo.git?token=query-secret\x1b[0m",
+			want:    "remote: cache::https://example.com/repo.git",
+			secrets: []string{"token=", "query-secret"},
 		},
 	}
 	for _, test := range tests {

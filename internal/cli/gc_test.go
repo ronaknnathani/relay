@@ -1072,6 +1072,41 @@ func TestGCFetchWarningRedactsApostrophesInURLTokens(t *testing.T) {
 			secrets:    []string{"x-access-token", "SECRET"},
 			wantProse:  "is invalid",
 		},
+		{
+			name:       "truncated scheme authority",
+			diagnostic: "fatal: repository 'https://x-access-token:ghp_SECRET' is invalid",
+			wantURL:    "https://[redacted]",
+			secrets:    []string{"x-access-token", "ghp_SECRET"},
+			wantProse:  "is invalid",
+		},
+		{
+			name:       "truncated nested helper scheme authority",
+			diagnostic: "fatal: repository 'trace::cache::https://x-access-token:ghp_SECRET' is invalid",
+			wantURL:    "trace::cache::https://[redacted]",
+			secrets:    []string{"x-access-token", "ghp_SECRET"},
+			wantProse:  "is invalid",
+		},
+		{
+			name:       "colored scheme URL",
+			diagnostic: "fatal: repository 'ht\x1b[31mtps://example.com/repo.git?token=query-secret\x1b[0m' is invalid",
+			wantURL:    "https://example.com/repo.git",
+			secrets:    []string{"token=", "query-secret"},
+			wantProse:  "is invalid",
+		},
+		{
+			name:       "colored SCP URL",
+			diagnostic: "fatal: repository 'deploy-secret\x1b[31m@github.com:o/r.git?token=query-secret\x1b[0m' is invalid",
+			wantURL:    "[redacted]@github.com:o/r.git",
+			secrets:    []string{"deploy-secret", "token=", "query-secret"},
+			wantProse:  "is invalid",
+		},
+		{
+			name:       "colored remote helper URL",
+			diagnostic: "fatal: repository 'cache::ht\x1b[31mtps://example.com/repo.git?token=query-secret\x1b[0m' is invalid",
+			wantURL:    "cache::https://example.com/repo.git",
+			secrets:    []string{"token=", "query-secret"},
+			wantProse:  "is invalid",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
