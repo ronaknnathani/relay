@@ -27,9 +27,9 @@ import (
 const (
 	performanceRuns    = 40
 	performanceFixture = "reference-program-v1"
-	performanceHarness = "complete-roadmap-v23"
+	performanceHarness = "complete-roadmap-v24"
 
-	performanceBuildProvenance = "goreleaser-ldflags-cgo0-v1"
+	performanceBuildProvenance = "goreleaser-ldflags-normalized-go-env-v2"
 	performanceLoadMetric      = "one_minute_load_average_per_logical_cpu"
 	performanceLoadValid       = "valid"
 	performanceLoadInvalid     = "invalid_shared_host_contention"
@@ -40,26 +40,27 @@ const (
 )
 
 type performanceReport struct {
-	Mode              string                   `json:"mode"`
-	GeneratedAt       string                   `json:"generated_at"`
-	SourceCommit      string                   `json:"source_commit"`
-	SourceCommitTime  string                   `json:"source_commit_time"`
-	SourceModified    bool                     `json:"source_modified"`
-	BinaryRevision    string                   `json:"binary_revision"`
-	BinaryModified    bool                     `json:"binary_modified"`
-	BinaryVersion     string                   `json:"binary_version"`
-	BinaryBuildDate   string                   `json:"binary_build_date"`
-	BinaryBuildMethod string                   `json:"binary_build_method"`
-	BinarySHA256      string                   `json:"binary_sha256"`
-	FixtureVersion    string                   `json:"fixture_version"`
-	HarnessVersion    string                   `json:"harness_version"`
-	ChromiumVersion   string                   `json:"chromium_version"`
-	Environment       performanceEnvironment   `json:"environment"`
-	LoadAdmission     performanceLoadAdmission `json:"load_admission"`
-	Samples           map[string][]float64     `json:"samples"`
-	P50               map[string]float64       `json:"p50"`
-	P95               map[string]float64       `json:"p95"`
-	Max               map[string]float64       `json:"max"`
+	Mode              string                        `json:"mode"`
+	GeneratedAt       string                        `json:"generated_at"`
+	SourceCommit      string                        `json:"source_commit"`
+	SourceCommitTime  string                        `json:"source_commit_time"`
+	SourceModified    bool                          `json:"source_modified"`
+	BinaryRevision    string                        `json:"binary_revision"`
+	BinaryModified    bool                          `json:"binary_modified"`
+	BinaryVersion     string                        `json:"binary_version"`
+	BinaryBuildDate   string                        `json:"binary_build_date"`
+	BinaryBuildMethod string                        `json:"binary_build_method"`
+	BinarySHA256      string                        `json:"binary_sha256"`
+	BuildEnvironment  performanceBuildConfiguration `json:"build_environment"`
+	FixtureVersion    string                        `json:"fixture_version"`
+	HarnessVersion    string                        `json:"harness_version"`
+	ChromiumVersion   string                        `json:"chromium_version"`
+	Environment       performanceEnvironment        `json:"environment"`
+	LoadAdmission     performanceLoadAdmission      `json:"load_admission"`
+	Samples           map[string][]float64          `json:"samples"`
+	P50               map[string]float64            `json:"p50"`
+	P95               map[string]float64            `json:"p95"`
+	Max               map[string]float64            `json:"max"`
 }
 
 type performanceEnvironment struct {
@@ -69,6 +70,17 @@ type performanceEnvironment struct {
 	CPU        string `json:"cpu"`
 	LogicalCPU int    `json:"logical_cpu"`
 	GoVersion  string `json:"go_version"`
+}
+
+type performanceBuildConfiguration struct {
+	CGOEnabled   string `json:"cgo_enabled"`
+	GOENV        string `json:"goenv"`
+	GOFLAGS      string `json:"goflags"`
+	GOOS         string `json:"goos"`
+	GOARCH       string `json:"goarch"`
+	GOWORK       string `json:"gowork"`
+	GOTOOLCHAIN  string `json:"gotoolchain"`
+	GOEXPERIMENT string `json:"goexperiment"`
 }
 
 type repositoryProvenance struct {
@@ -128,7 +140,7 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 	if mode != "baseline" && mode != "verify" {
 		t.Fatalf("RELAY_BROWSER_PERF = %q, want baseline or verify", mode)
 	}
-	repositoryDir := performanceRepositoryDir(t)
+	repositoryDir := performanceRepositoryDir(t, mode)
 	source, err := readRepositoryProvenance(repositoryDir)
 	if err != nil {
 		t.Fatal(err)
@@ -144,12 +156,13 @@ func measureProgramUI(t *testing.T, mode string) performanceReport {
 		SourceCommit: source.Commit, SourceCommitTime: source.CommitTime.Format(time.RFC3339),
 		SourceModified: source.Modified, BinaryModified: source.Modified,
 		FixtureVersion: performanceFixture, HarnessVersion: performanceHarness,
-		Environment:   currentPerformanceEnvironment(t),
-		LoadAdmission: performanceLoadAdmission{Policy: loadPolicy},
-		Samples:       map[string][]float64{},
-		P50:           map[string]float64{},
-		P95:           map[string]float64{},
-		Max:           map[string]float64{},
+		Environment:      currentPerformanceEnvironment(t),
+		BuildEnvironment: normalizedPerformanceBuildConfiguration(),
+		LoadAdmission:    performanceLoadAdmission{Policy: loadPolicy},
+		Samples:          map[string][]float64{},
+		P50:              map[string]float64{},
+		P95:              map[string]float64{},
+		Max:              map[string]float64{},
 	}
 	if source.Modified {
 		return report
@@ -680,13 +693,43 @@ func performanceBuildArguments(output string, provenance repositoryProvenance) [
 }
 
 func performanceBuildEnvironment(environment []string) []string {
-	buildEnvironment := make([]string, 0, len(environment)+1)
+	allowed := map[string]bool{
+		"PATH": true, "HOME": true, "TMPDIR": true, "TMP": true, "TEMP": true,
+		"GOPATH": true, "GOMODCACHE": true, "GOCACHE": true,
+		"GOPROXY": true, "GONOPROXY": true, "GOPRIVATE": true,
+		"GONOSUMDB": true, "GOSUMDB": true,
+		"SSL_CERT_FILE": true, "SSL_CERT_DIR": true,
+	}
+	buildEnvironment := make([]string, 0, len(allowed)+7)
 	for _, entry := range environment {
-		if !strings.HasPrefix(entry, "CGO_ENABLED=") {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok && allowed[name] {
 			buildEnvironment = append(buildEnvironment, entry)
 		}
 	}
-	return append(buildEnvironment, "CGO_ENABLED=0")
+	return append(buildEnvironment,
+		"CGO_ENABLED=0",
+		"GOENV=off",
+		"GOFLAGS=",
+		"GOOS="+goruntime.GOOS,
+		"GOARCH="+goruntime.GOARCH,
+		"GOWORK=off",
+		"GOTOOLCHAIN=local",
+		"GOEXPERIMENT=",
+	)
+}
+
+func normalizedPerformanceBuildConfiguration() performanceBuildConfiguration {
+	return performanceBuildConfiguration{
+		CGOEnabled:   "0",
+		GOENV:        "off",
+		GOFLAGS:      "",
+		GOOS:         goruntime.GOOS,
+		GOARCH:       goruntime.GOARCH,
+		GOWORK:       "off",
+		GOTOOLCHAIN:  "local",
+		GOEXPERIMENT: "",
+	}
 }
 
 func performanceCommandDir(t *testing.T) string {
@@ -714,22 +757,43 @@ func environmentWithPath(path string) []string {
 
 func chromeExecutable(t *testing.T) string {
 	t.Helper()
+	return chromeExecutableWithFinder(t, findChromeExecutable)
+}
+
+func chromeExecutableWithFinder(
+	t *testing.T,
+	finder func() (string, error),
+) string {
+	t.Helper()
+	path, err := finder()
+	if err == nil {
+		return path
+	}
+	if os.Getenv("RELAY_BROWSER_PERF") != "" {
+		t.Fatalf("official performance run requires Chrome or Chromium: %v", err)
+	}
+	t.Skipf("Chrome or Chromium is required for browser tests: %v", err)
+	return ""
+}
+
+func findChromeExecutable() (string, error) {
 	candidates := []string{
 		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 		"/Applications/Chromium.app/Contents/MacOS/Chromium",
 	}
 	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate
+			return candidate, nil
 		}
 	}
 	for _, name := range []string{"google-chrome", "chromium", "chromium-browser"} {
 		if path, err := exec.LookPath(name); err == nil {
-			return path
+			return path, nil
 		}
 	}
-	t.Skip("Chrome or Chromium is required for browser performance tests")
-	return ""
+	return "", errors.New(
+		"no executable was found in the standard application paths or PATH",
+	)
 }
 
 func appendPerformanceSample(samples map[string][]float64, sample browserSample) {
@@ -798,14 +862,8 @@ func verifyPerformanceReport(t *testing.T, report performanceReport, baselinePat
 	for _, message := range validatePerformanceBudgets(report) {
 		t.Error(message)
 	}
-	baselineNavigation := baseline.P95["navigation_to_usable_ms"]
-	if baselineNavigation <= 0 {
-		t.Error("baseline navigation_to_usable_ms p95 is missing")
-	} else if got := report.P95["navigation_to_usable_ms"]; got > baselineNavigation*0.5 {
-		t.Errorf(
-			"navigation_to_usable_ms p95 = %.2f, want <= 50%% of baseline %.2f",
-			got, baselineNavigation,
-		)
+	for _, message := range validateNavigationImprovement(report, baseline) {
+		t.Error(message)
 	}
 	for _, required := range []string{
 		"document_bytes",
@@ -822,6 +880,36 @@ func verifyPerformanceReport(t *testing.T, report performanceReport, baselinePat
 			t.Errorf("%s samples = %d, want %d", name, len(samples), performanceRuns)
 		}
 	}
+}
+
+func validateNavigationImprovement(report, baseline performanceReport) []string {
+	var failures []string
+	for _, quantile := range []struct {
+		name     string
+		current  map[string]float64
+		baseline map[string]float64
+	}{
+		{name: "p50", current: report.P50, baseline: baseline.P50},
+		{name: "p95", current: report.P95, baseline: baseline.P95},
+	} {
+		baselineNavigation := quantile.baseline["navigation_to_usable_ms"]
+		if baselineNavigation <= 0 {
+			failures = append(
+				failures,
+				fmt.Sprintf("baseline navigation_to_usable_ms %s is missing", quantile.name),
+			)
+			continue
+		}
+		if got := quantile.current["navigation_to_usable_ms"]; got > baselineNavigation*0.5 {
+			failures = append(failures, fmt.Sprintf(
+				"navigation_to_usable_ms %s = %.2f, want <= 50%% of baseline %.2f",
+				quantile.name,
+				got,
+				baselineNavigation,
+			))
+		}
+	}
+	return failures
 }
 
 func validatePerformanceBudgets(report performanceReport) []string {
@@ -902,6 +990,9 @@ func validatePerformanceMetadata(
 	if err := validatePerformanceLoadAdmission(report); err != nil {
 		return err
 	}
+	if err := validatePerformanceLoadAdmission(baseline); err != nil {
+		return fmt.Errorf("baseline %w", err)
+	}
 	switch {
 	case report.Mode != "verify":
 		return fmt.Errorf("performance report mode = %q, want verify", report.Mode)
@@ -913,6 +1004,12 @@ func validatePerformanceMetadata(
 		return errors.New("performance source worktree was modified")
 	case baseline.SourceCommit != baselineCommit:
 		return fmt.Errorf("baseline source commit = %q, want origin/main %q", baseline.SourceCommit, baselineCommit)
+	case baseline.SourceModified:
+		return errors.New("baseline source worktree was modified")
+	case report.SourceCommitTime == "":
+		return errors.New("performance source commit time is missing")
+	case baseline.SourceCommitTime == "":
+		return errors.New("baseline source commit time is missing")
 	case report.BinaryRevision != report.SourceCommit:
 		return fmt.Errorf(
 			"performance binary revision = %q, want source commit %q",
@@ -929,17 +1026,43 @@ func validatePerformanceMetadata(
 		return errors.New("baseline binary was built from a dirty worktree")
 	case report.BinaryVersion != "performance":
 		return fmt.Errorf("performance binary version = %q, want performance", report.BinaryVersion)
+	case baseline.BinaryVersion != "performance":
+		return fmt.Errorf("baseline binary version = %q, want performance", baseline.BinaryVersion)
 	case report.BinaryBuildDate != report.SourceCommitTime:
 		return fmt.Errorf(
 			"performance binary build date = %q, want source commit time %q",
 			report.BinaryBuildDate,
 			report.SourceCommitTime,
 		)
+	case baseline.BinaryBuildDate != baseline.SourceCommitTime:
+		return fmt.Errorf(
+			"baseline binary build date = %q, want source commit time %q",
+			baseline.BinaryBuildDate,
+			baseline.SourceCommitTime,
+		)
 	case report.BinaryBuildMethod != performanceBuildProvenance:
 		return fmt.Errorf(
 			"performance binary build method = %q, want %q",
 			report.BinaryBuildMethod,
 			performanceBuildProvenance,
+		)
+	case baseline.BinaryBuildMethod != performanceBuildProvenance:
+		return fmt.Errorf(
+			"baseline binary build method = %q, want %q",
+			baseline.BinaryBuildMethod,
+			performanceBuildProvenance,
+		)
+	case report.BuildEnvironment != normalizedPerformanceBuildConfiguration():
+		return fmt.Errorf(
+			"performance build environment = %+v, want %+v",
+			report.BuildEnvironment,
+			normalizedPerformanceBuildConfiguration(),
+		)
+	case baseline.BuildEnvironment != normalizedPerformanceBuildConfiguration():
+		return fmt.Errorf(
+			"baseline build environment = %+v, want %+v",
+			baseline.BuildEnvironment,
+			normalizedPerformanceBuildConfiguration(),
 		)
 	case report.BinarySHA256 == "":
 		return errors.New("performance binary SHA-256 is missing")
@@ -1238,13 +1361,39 @@ func repositoryCommit(t *testing.T, ref string) string {
 	return strings.TrimSpace(string(output))
 }
 
-func performanceRepositoryDir(t *testing.T) string {
+func performanceRepositoryDir(t *testing.T, mode string) string {
 	t.Helper()
-	dir, err := filepath.Abs(filepath.Join("..", ".."))
+	dir, err := resolvePerformanceRepositoryDir(
+		mode,
+		filepath.Join("..", ".."),
+		os.Getenv("RELAY_PERF_SOURCE_DIR"),
+	)
 	if err != nil {
 		t.Fatalf("resolve performance repository directory: %v", err)
 	}
 	return dir
+}
+
+func resolvePerformanceRepositoryDir(mode, defaultDir, override string) (string, error) {
+	dir := defaultDir
+	if override != "" {
+		if mode != "baseline" {
+			return "", errors.New("RELAY_PERF_SOURCE_DIR is allowed only in baseline mode")
+		}
+		dir = override
+	}
+	absolute, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(absolute)
+	if err != nil {
+		return "", fmt.Errorf("stat %s: %w", absolute, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", absolute)
+	}
+	return absolute, nil
 }
 
 func repositoryMergeBase(t *testing.T, left, right string) string {

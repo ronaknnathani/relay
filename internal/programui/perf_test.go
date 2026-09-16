@@ -2,9 +2,11 @@ package programui
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -50,15 +52,20 @@ func TestValidatePerformanceMetadata(t *testing.T) {
 		SourceCommitTime: "2026-09-15T20:30:00Z", BinaryRevision: "after",
 		BinaryVersion: "performance", BinaryBuildDate: "2026-09-15T20:30:00Z",
 		BinaryBuildMethod: performanceBuildProvenance, BinarySHA256: "after-binary",
-		FixtureVersion: performanceFixture, HarnessVersion: performanceHarness,
+		BuildEnvironment: normalizedPerformanceBuildConfiguration(),
+		FixtureVersion:   performanceFixture, HarnessVersion: performanceHarness,
 		ChromiumVersion: "Chromium 140", Environment: environment,
 		LoadAdmission: validPerformanceLoadAdmission(environment.LogicalCPU),
 	}
 	baseline := performanceReport{
 		Mode: "baseline", SourceCommit: "main", BinaryRevision: "main",
-		BinarySHA256:   "main-binary",
-		FixtureVersion: performanceFixture, HarnessVersion: performanceHarness,
+		SourceCommitTime: "2026-09-15T20:00:00Z",
+		BinaryVersion:    "performance", BinaryBuildDate: "2026-09-15T20:00:00Z",
+		BinaryBuildMethod: performanceBuildProvenance, BinarySHA256: "main-binary",
+		BuildEnvironment: normalizedPerformanceBuildConfiguration(),
+		FixtureVersion:   performanceFixture, HarnessVersion: performanceHarness,
 		ChromiumVersion: "Chromium 140", Environment: environment,
+		LoadAdmission: validPerformanceLoadAdmission(environment.LogicalCPU),
 	}
 	if err := validatePerformanceMetadata(valid, baseline, "after", "main"); err != nil {
 		t.Fatal(err)
@@ -74,6 +81,20 @@ func TestValidatePerformanceMetadata(t *testing.T) {
 				baseline.SourceCommit = "unknown"
 			},
 			want: "baseline source commit",
+		},
+		{
+			name: "baseline dirty source",
+			mutate: func(_ *performanceReport, baseline *performanceReport) {
+				baseline.SourceModified = true
+			},
+			want: "baseline source worktree was modified",
+		},
+		{
+			name: "baseline source time",
+			mutate: func(_ *performanceReport, baseline *performanceReport) {
+				baseline.SourceCommitTime = ""
+			},
+			want: "baseline source commit time",
 		},
 		{
 			name: "binary revision",
@@ -95,6 +116,48 @@ func TestValidatePerformanceMetadata(t *testing.T) {
 				report.BinaryModified = true
 			},
 			want: "dirty worktree",
+		},
+		{
+			name: "baseline binary version",
+			mutate: func(_ *performanceReport, baseline *performanceReport) {
+				baseline.BinaryVersion = ""
+			},
+			want: "baseline binary version",
+		},
+		{
+			name: "baseline build date",
+			mutate: func(_ *performanceReport, baseline *performanceReport) {
+				baseline.BinaryBuildDate = ""
+			},
+			want: "baseline binary build date",
+		},
+		{
+			name: "baseline build method",
+			mutate: func(_ *performanceReport, baseline *performanceReport) {
+				baseline.BinaryBuildMethod = ""
+			},
+			want: "baseline binary build method",
+		},
+		{
+			name: "current build environment",
+			mutate: func(report *performanceReport, _ *performanceReport) {
+				report.BuildEnvironment.GOFLAGS = "-gcflags=all=-N"
+			},
+			want: "performance build environment",
+		},
+		{
+			name: "baseline build environment",
+			mutate: func(_ *performanceReport, baseline *performanceReport) {
+				baseline.BuildEnvironment.GOTOOLCHAIN = "auto"
+			},
+			want: "baseline build environment",
+		},
+		{
+			name: "baseline load admission",
+			mutate: func(_ *performanceReport, baseline *performanceReport) {
+				baseline.LoadAdmission = performanceLoadAdmission{}
+			},
+			want: "baseline performance environment is invalid",
 		},
 		{
 			name: "build date",
@@ -202,6 +265,42 @@ func TestValidatePerformancePercentiles(t *testing.T) {
 	}
 }
 
+func TestValidateNavigationImprovementRequiresHalfBaselineP50AndP95(t *testing.T) {
+	baseline := performanceReport{
+		P50: map[string]float64{"navigation_to_usable_ms": 80},
+		P95: map[string]float64{"navigation_to_usable_ms": 120},
+	}
+	for _, test := range []struct {
+		name   string
+		report performanceReport
+		want   string
+	}{
+		{
+			name: "p50",
+			report: performanceReport{
+				P50: map[string]float64{"navigation_to_usable_ms": 40.1},
+				P95: map[string]float64{"navigation_to_usable_ms": 60},
+			},
+			want: "p50",
+		},
+		{
+			name: "p95",
+			report: performanceReport{
+				P50: map[string]float64{"navigation_to_usable_ms": 40},
+				P95: map[string]float64{"navigation_to_usable_ms": 60.1},
+			},
+			want: "p95",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			failures := validateNavigationImprovement(test.report, baseline)
+			if len(failures) != 1 || !strings.Contains(failures[0], test.want) {
+				t.Fatalf("improvement failures = %v, want one %s failure", failures, test.want)
+			}
+		})
+	}
+}
+
 func TestAppendPerformanceSampleTracksExactProgramAndAllArtifactResponses(t *testing.T) {
 	samples := map[string][]float64{}
 	appendPerformanceSample(samples, browserSample{
@@ -256,6 +355,114 @@ func TestValidatePerformanceBudgetsEnforcesAbsoluteLimitsPerRun(t *testing.T) {
 		if !strings.Contains(strings.Join(errs, "\n"), want) {
 			t.Errorf("budget errors = %v, want %q", errs, want)
 		}
+	}
+}
+
+func TestPerformanceBuildEnvironmentNormalizesAmbientGoConfiguration(t *testing.T) {
+	environment := performanceBuildEnvironment([]string{
+		"PATH=/bin",
+		"HOME=/tmp/home",
+		"TMPDIR=/tmp/build",
+		"GOPROXY=https://proxy.example",
+		"GOFLAGS=-gcflags=all=-N",
+		"GOENV=/tmp/goenv",
+		"GOWORK=/tmp/go.work",
+		"GOTOOLCHAIN=auto",
+		"GOEXPERIMENT=arenas",
+		"GOARM64=v9.5",
+		"CGO_ENABLED=1",
+		"SOURCE_DATE_EPOCH=1",
+	})
+	values := make(map[string]string, len(environment))
+	for _, entry := range environment {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			t.Fatalf("build environment entry %q has no value", entry)
+		}
+		values[name] = value
+	}
+	for name, want := range map[string]string{
+		"PATH":         "/bin",
+		"HOME":         "/tmp/home",
+		"TMPDIR":       "/tmp/build",
+		"GOPROXY":      "https://proxy.example",
+		"CGO_ENABLED":  "0",
+		"GOENV":        "off",
+		"GOFLAGS":      "",
+		"GOOS":         runtime.GOOS,
+		"GOARCH":       runtime.GOARCH,
+		"GOWORK":       "off",
+		"GOTOOLCHAIN":  "local",
+		"GOEXPERIMENT": "",
+	} {
+		if got := values[name]; got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	for _, name := range []string{"GOARM64", "SOURCE_DATE_EPOCH"} {
+		if _, ok := values[name]; ok {
+			t.Errorf("%s must not reach the performance build", name)
+		}
+	}
+}
+
+func TestResolvePerformanceRepositoryDirRestrictsBaselineMigrationOverride(t *testing.T) {
+	defaultDir := t.TempDir()
+	baselineDir := t.TempDir()
+	got, err := resolvePerformanceRepositoryDir("baseline", defaultDir, baselineDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.Abs(baselineDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("baseline repository = %q, want %q", got, want)
+	}
+	if _, err := resolvePerformanceRepositoryDir("verify", defaultDir, baselineDir); err == nil ||
+		!strings.Contains(err.Error(), "baseline mode") {
+		t.Fatalf("verify override error = %v, want baseline-only error", err)
+	}
+}
+
+func TestPerformanceBuildDigestIgnoresAmbientGoConfiguration(t *testing.T) {
+	repositoryDir := performanceRepositoryDir(t, "verify")
+	provenance, err := readRepositoryProvenance(repositoryDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOFLAGS", "-gcflags=all=-N")
+	first := buildRelayForPerformance(t, repositoryDir, provenance)
+	t.Setenv("GOFLAGS", "-gcflags=all=-l")
+	second := buildRelayForPerformance(t, repositoryDir, provenance)
+	if firstDigest, secondDigest := fileSHA256(t, first), fileSHA256(t, second); firstDigest != secondDigest {
+		t.Fatalf("performance build digests differ: %s != %s", firstDigest, secondDigest)
+	}
+}
+
+func TestOfficialPerformanceRunFailsWhenChromiumIsMissing(t *testing.T) {
+	if os.Getenv("RELAY_TEST_MISSING_CHROMIUM") == "1" {
+		chromeExecutableWithFinder(t, func() (string, error) {
+			return "", errors.New("no Chrome or Chromium executable found")
+		})
+		return
+	}
+	command := exec.Command(os.Args[0], "-test.run=^TestOfficialPerformanceRunFailsWhenChromiumIsMissing$")
+	command.Env = append(
+		os.Environ(),
+		"RELAY_TEST_MISSING_CHROMIUM=1",
+		"RELAY_BROWSER_PERF=verify",
+	)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("official performance helper succeeded without Chromium:\n%s", output)
+	}
+	if !strings.Contains(string(output), "official performance run requires Chrome or Chromium") {
+		t.Fatalf("official performance failure = %s", output)
+	}
+	if strings.Contains(string(output), "--- SKIP:") {
+		t.Fatalf("official performance run skipped instead of failing:\n%s", output)
 	}
 }
 
