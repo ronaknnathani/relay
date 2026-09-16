@@ -161,6 +161,34 @@ func TestGCArchivesUpstreamMergedMainAndMaster(t *testing.T) {
 	}
 }
 
+func TestGCStoredBaseBranchOverridesOriginHEAD(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "stored-release-base"
+	branch, worktree := addGCProject(t, fixture, slug)
+	runArchiveGit(t, fixture.repo, "push", "-q", "origin", branch)
+	runArchiveGit(t, fixture.upstream, "checkout", "-q", "-b", "release", fixture.startSHA)
+	runArchiveGit(t, fixture.upstream, "fetch", "-q", "origin", branch)
+	runArchiveGit(t, fixture.upstream, "merge", "-q", "--no-edit", "origin/"+branch)
+	runArchiveGit(t, fixture.upstream, "push", "-q", "-u", "origin", "release")
+	updateGCManifest(t, slug, func(manifest *project.Manifest) {
+		manifest.BaseBranch = "release"
+	})
+
+	stdout, stderr, err := captureGCOutput(t, runGC)
+	if err != nil {
+		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Archiving project "+slug) {
+		t.Fatalf("stdout %q is missing archive decision for %q", stdout, slug)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		pathExists(worktree) ||
+		gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC ignored the stored base branch in favor of origin/HEAD")
+	}
+}
+
 func TestGCKeepsUnmergedBranchWhenTagShadowsRemoteBase(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")
