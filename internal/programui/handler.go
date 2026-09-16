@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-yh0vbCs9XipsKFVtxUNdhOLI31PxI2O1agYLD4v9XKg='; style-src 'self' 'sha256-R0yRQvInzI4d+IV+yVrCHgc1uV8LULmBBkAYWB0CUd4='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-EnGbh4WnZaFDV1LjmTbqrKvVuyTuf0uEwuOPb37HMd8='; style-src 'self' 'sha256-R0yRQvInzI4d+IV+yVrCHgc1uV8LULmBBkAYWB0CUd4='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	roadmapCoreToken      = "__RELAY_ROADMAP_CORE__"
 	cssTemplateToken      = "/*!__RELAY_CSS__*/"
 	roadmapJSONToken      = "__RELAY_ROADMAP_JSON__"
@@ -129,8 +129,21 @@ type roadmapOverview struct {
 
 type roadmapBootstrap struct {
 	Schema            string                      `json:"schema"`
-	Graph             roadmapGraph                `json:"graph"`
+	Stages            [][]roadmapBootstrapNode    `json:"stages"`
+	Edges             [][2]string                 `json:"edges"`
+	Cyclic            bool                        `json:"cyclic,omitempty"`
 	InitialConnectors *roadmapBootstrapConnectors `json:"initial_connectors,omitempty"`
+}
+
+type roadmapBootstrapNode struct {
+	ID           string   `json:"i"`
+	Title        string   `json:"t"`
+	Lane         string   `json:"l"`
+	Priority     string   `json:"p,omitempty"`
+	Dependencies []string `json:"d,omitempty"`
+	PRNumber     int      `json:"r,omitempty"`
+	Ready        bool     `json:"y,omitempty"`
+	Orphaned     bool     `json:"o,omitempty"`
 }
 
 type roadmapBootstrapConnectors struct {
@@ -246,11 +259,7 @@ func renderIndex(index, encoded []byte) ([]byte, error) {
 			return nil, fmt.Errorf("decode roadmap index snapshot: %w", err)
 		}
 		var err error
-		bootstrap, err = json.Marshal(roadmapBootstrap{
-			Schema:            "relay.program.roadmap.bootstrap.v1",
-			Graph:             snapshot.Graph,
-			InitialConnectors: initialRoadmapConnectors(snapshot.Graph),
-		})
+		bootstrap, err = json.Marshal(newRoadmapBootstrap(snapshot.Graph))
 		if err != nil {
 			return nil, fmt.Errorf("encode roadmap index bootstrap: %w", err)
 		}
@@ -285,6 +294,40 @@ func renderIndex(index, encoded []byte) ([]byte, error) {
 		index = bytes.ReplaceAll(index, []byte(token), []byte(value))
 	}
 	return index, nil
+}
+
+func newRoadmapBootstrap(graph roadmapGraph) roadmapBootstrap {
+	nodes := make(map[string]roadmapNode, len(graph.Nodes))
+	for _, node := range graph.Nodes {
+		nodes[node.ID] = node
+	}
+	stages := make([][]roadmapBootstrapNode, 0, len(graph.Layers))
+	for _, layer := range graph.Layers {
+		stage := make([]roadmapBootstrapNode, 0, len(layer))
+		for _, id := range layer {
+			node, ok := nodes[id]
+			if !ok {
+				continue
+			}
+			stage = append(stage, roadmapBootstrapNode{
+				ID: node.ID, Title: node.Title, Lane: node.Lane,
+				Priority: node.Priority, Dependencies: node.Dependencies,
+				PRNumber: node.PRNumber, Ready: node.Ready, Orphaned: node.Orphaned,
+			})
+		}
+		if len(stage) > 0 {
+			stages = append(stages, stage)
+		}
+	}
+	edges := make([][2]string, 0, len(graph.Edges))
+	for _, edge := range graph.Edges {
+		edges = append(edges, [2]string{edge.From, edge.To})
+	}
+	return roadmapBootstrap{
+		Schema: "relay.program.roadmap.bootstrap.v1",
+		Stages: stages, Edges: edges, Cyclic: graph.Cyclic,
+		InitialConnectors: initialRoadmapConnectors(graph),
+	}
 }
 
 func initialRoadmapConnectors(graph roadmapGraph) *roadmapBootstrapConnectors {

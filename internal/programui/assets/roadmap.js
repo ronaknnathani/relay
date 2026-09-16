@@ -13,7 +13,37 @@
   const themeText = document.getElementById("theme-text");
   const initial = document.getElementById("initial-program");
   const snapshot = initial ? JSON.parse(initial.textContent) : null;
-  const graphData = snapshot && snapshot.graph ? snapshot.graph : {};
+  const compactStages = snapshot && Array.isArray(snapshot.stages) ? snapshot.stages : [];
+  const graphData = {
+    nodes: [],
+    edges: snapshot && Array.isArray(snapshot.edges)
+      ? snapshot.edges.map((edge) => ({ from: edge[0], to: edge[1] }))
+      : [],
+    layers: [],
+    cyclic: Boolean(snapshot && snapshot.cyclic),
+  };
+  compactStages.forEach((stage, layer) => {
+    const ids = [];
+    stage.forEach((entry) => {
+      ids.push(entry.i);
+      graphData.nodes.push({
+        id: entry.i,
+        title: entry.t,
+        lane: entry.l,
+        layer,
+        priority: entry.p || "",
+        dependencies: Array.isArray(entry.d) ? entry.d : [],
+        dependency_count: Array.isArray(entry.d) ? entry.d.length : 0,
+        pr_number: Number(entry.r) || 0,
+        ready: Boolean(entry.y),
+        orphaned: Boolean(entry.o),
+      });
+    });
+    graphData.layers.push(ids);
+  });
+  if (snapshot) {
+    snapshot.graph = graphData;
+  }
   const initialConnectors = snapshot && snapshot.initial_connectors
     ? snapshot.initial_connectors
     : null;

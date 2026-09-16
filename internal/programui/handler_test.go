@@ -97,9 +97,35 @@ func TestHandlerRendersMergedProgressBeforeHydration(t *testing.T) {
 		t.Fatal("rendered index does not preserve merged progress")
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte(`"schema":"relay.program.roadmap.bootstrap.v1"`)) ||
-		!bytes.Contains(response.Body.Bytes(), []byte(`"nodes":[{"id":"w1"`)) ||
+		!bytes.Contains(response.Body.Bytes(), []byte(`"stages":[[{"i":"w1","t":"First","l":"pending","p":"P1"`)) ||
 		bytes.Contains(response.Body.Bytes(), []byte(`"items"`)) {
 		t.Fatal("rendered index must embed the compact roadmap graph without task detail records")
+	}
+}
+
+func TestNewRoadmapBootstrapPreservesCompleteGraphMetadata(t *testing.T) {
+	bootstrap := newRoadmapBootstrap(roadmapGraph{
+		Nodes: []roadmapNode{{
+			ID: "w1", Title: "First", Lane: "dispatched", Layer: 0,
+			Priority: "P1", Dependencies: []string{"w0"}, PRNumber: 42,
+			Ready: true, Orphaned: true,
+		}},
+		Edges:  []programview.GraphEdgeDTO{{From: "w0", To: "w1"}},
+		Layers: [][]string{{"w1"}},
+		Cyclic: true,
+	})
+	if bootstrap.Schema != "relay.program.roadmap.bootstrap.v1" ||
+		len(bootstrap.Stages) != 1 || len(bootstrap.Stages[0]) != 1 {
+		t.Fatalf("roadmap bootstrap = %+v", bootstrap)
+	}
+	node := bootstrap.Stages[0][0]
+	if node.ID != "w1" || node.Title != "First" || node.Lane != "dispatched" ||
+		node.Priority != "P1" || len(node.Dependencies) != 1 ||
+		node.Dependencies[0] != "w0" || node.PRNumber != 42 ||
+		!node.Ready || !node.Orphaned ||
+		len(bootstrap.Edges) != 1 || bootstrap.Edges[0] != [2]string{"w0", "w1"} ||
+		!bootstrap.Cyclic {
+		t.Fatalf("roadmap bootstrap = %+v", bootstrap)
 	}
 }
 
