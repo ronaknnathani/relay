@@ -537,9 +537,10 @@ func TestSanitizeDiagnosticRedactsGitURLUserinfo(t *testing.T) {
 
 func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 	tests := []struct {
-		name  string
-		input string
-		want  string
+		name    string
+		input   string
+		want    string
+		secrets []string
 	}{
 		{
 			name:  "https",
@@ -637,6 +638,18 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			want:  "remote: [redacted]@host.example/team/repo.git",
 		},
 		{
+			name:    "scheme-less remote with colon in userinfo",
+			input:   "remote: x-access-token:ghp_SECRET@github.com/o/r.git?access_token=query-secret#fragment-secret",
+			want:    "remote: [redacted]@github.com/o/r.git",
+			secrets: []string{"x-access-token", "ghp_SECRET", "access_token", "query-secret", "fragment-secret"},
+		},
+		{
+			name:    "SCP remote with colon in userinfo",
+			input:   "remote: x-access-token:ghp_SECRET@git.example.com:o/r.git?access_token=query-secret#fragment-secret",
+			want:    "remote: [redacted]@git.example.com:o/r.git",
+			secrets: []string{"x-access-token", "ghp_SECRET", "access_token", "query-secret", "fragment-secret"},
+		},
+		{
 			name:  "scp path contains at sign",
 			input: "remote: token@host:repo@mirror",
 			want:  "remote: [redacted]@host:repo@mirror",
@@ -677,6 +690,12 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 			want:  "remote: trace::cache::[redacted]@host.example/team/repo.git",
 		},
 		{
+			name:    "nested remote helpers wrapping colon userinfo",
+			input:   "remote: trace::cache::x-access-token:ghp_SECRET@github.com/o/r.git?access_token=query-secret#fragment-secret",
+			want:    "remote: trace::cache::[redacted]@github.com/o/r.git",
+			secrets: []string{"x-access-token", "ghp_SECRET", "access_token", "query-secret", "fragment-secret"},
+		},
+		{
 			name:  "nested remote helper bracketed SCP path",
 			input: "remote: trace::cache::_deploy-token@git.example.com:team/[private].git?secret=x#fragment",
 			want:  "remote: trace::cache::[redacted]@git.example.com:team/[private].git",
@@ -684,8 +703,14 @@ func TestSanitizeDiagnosticRedactsGitURLQueryAndFragment(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := SanitizeDiagnostic(test.input); got != test.want {
+			got := SanitizeDiagnostic(test.input)
+			if got != test.want {
 				t.Fatalf("SanitizeDiagnostic(%q) = %q, want %q", test.input, got, test.want)
+			}
+			for _, secret := range test.secrets {
+				if strings.Contains(got, secret) {
+					t.Fatalf("SanitizeDiagnostic(%q) leaked %q in %q", test.input, secret, got)
+				}
 			}
 		})
 	}

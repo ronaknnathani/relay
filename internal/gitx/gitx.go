@@ -669,6 +669,13 @@ type diagnosticURLScanner struct {
 	nextBracketColon []int
 }
 
+type scpStyleURLBoundary struct {
+	userinfoEnd int
+	hostStart   int
+	pathStart   int
+	tokenLimit  int
+}
+
 func newDiagnosticURLScanner(output string) diagnosticURLScanner {
 	size := len(output) + 1
 	scanner := diagnosticURLScanner{
@@ -796,25 +803,17 @@ func (s diagnosticURLScanner) scpStyleURLTokenEnd(start int) (int, bool) {
 		!isSCPStyleURLStart(output[start]) {
 		return 0, false
 	}
-	tokenLimit := s.nextHardBoundary[start]
-	pathStart := s.nextColon[start]
-	if pathStart < 0 || pathStart >= tokenLimit {
+	if _, remoteHelper := remoteHelperAddressStart(output, start); remoteHelper {
 		return 0, false
 	}
-	userinfoEnd := s.nextAt[start]
-	if userinfoEnd < 0 || userinfoEnd >= pathStart {
-		userinfoEnd = -1
+	boundary, ok := s.scpStyleURLBoundary(start)
+	if !ok {
+		return 0, false
 	}
-	hostStart := start
-	if userinfoEnd >= 0 {
-		hostStart = userinfoEnd + 1
-	}
-	if hostStart < tokenLimit && output[hostStart] == '[' {
-		pathStart = s.nextBracketColon[hostStart]
-		if pathStart < 0 || pathStart >= tokenLimit {
-			return 0, false
-		}
-	}
+	userinfoEnd := boundary.userinfoEnd
+	hostStart := boundary.hostStart
+	pathStart := boundary.pathStart
+	tokenLimit := boundary.tokenLimit
 	if pathStart <= start || pathStart+1 >= tokenLimit {
 		return 0, false
 	}
@@ -844,6 +843,34 @@ func (s diagnosticURLScanner) scpStyleURLTokenEnd(start int) (int, bool) {
 		return 0, false
 	}
 	return end, true
+}
+
+func (s diagnosticURLScanner) scpStyleURLBoundary(start int) (scpStyleURLBoundary, bool) {
+	if start >= len(s.output) {
+		return scpStyleURLBoundary{}, false
+	}
+	tokenLimit := s.nextHardBoundary[start]
+	userinfoEnd := s.nextAt[start]
+	if userinfoEnd < 0 || userinfoEnd >= tokenLimit {
+		userinfoEnd = -1
+	}
+	hostStart := start
+	if userinfoEnd >= 0 {
+		hostStart = userinfoEnd + 1
+	}
+	pathStart := s.nextColon[hostStart]
+	if hostStart < tokenLimit && s.output[hostStart] == '[' {
+		pathStart = s.nextBracketColon[hostStart]
+	}
+	if pathStart < 0 || pathStart >= tokenLimit {
+		return scpStyleURLBoundary{}, false
+	}
+	return scpStyleURLBoundary{
+		userinfoEnd: userinfoEnd,
+		hostStart:   hostStart,
+		pathStart:   pathStart,
+		tokenLimit:  tokenLimit,
+	}, true
 }
 
 func (s diagnosticURLScanner) userinfoHostTokenEnd(start int) (int, bool) {
@@ -985,23 +1012,22 @@ func sanitizeRemoteHelperURL(rawURL string) string {
 }
 
 func sanitizeSCPStyleURL(rawURL string) string {
-	pathStart := scpPathStart(rawURL)
-	if pathStart <= 0 || pathStart == len(rawURL)-1 {
+	boundary, ok := newDiagnosticURLScanner(rawURL).scpStyleURLBoundary(0)
+	if !ok || boundary.pathStart <= 0 || boundary.pathStart == len(rawURL)-1 {
 		return rawURL
 	}
-	userinfoEnd := strings.LastIndexByte(rawURL[:pathStart], '@')
-	path := rawURL[pathStart+1:]
+	path := rawURL[boundary.pathStart+1:]
 	if secretStart := strings.IndexAny(path, "?#"); secretStart >= 0 {
 		path = path[:secretStart]
 	}
 	if path == "" {
 		return rawURL
 	}
-	cleaned := rawURL[:pathStart+1] + path
-	if userinfoEnd < 0 {
+	cleaned := rawURL[:boundary.pathStart+1] + path
+	if boundary.userinfoEnd < 0 {
 		return cleaned
 	}
-	return "[redacted]@" + rawURL[userinfoEnd+1:pathStart+1] + path
+	return "[redacted]@" + rawURL[boundary.userinfoEnd+1:boundary.pathStart+1] + path
 }
 
 func sanitizeUserinfoHost(value string) string {
@@ -1013,24 +1039,6 @@ func sanitizeUserinfoHost(value string) string {
 		return value
 	}
 	return "[redacted]@" + value[userinfoEnd+1:]
-}
-
-func scpPathStart(value string) int {
-	hostStart := 0
-	if userinfoEnd := strings.IndexByte(value, '@'); userinfoEnd >= 0 {
-		hostStart = userinfoEnd + 1
-	}
-	if hostStart < len(value) && value[hostStart] == '[' {
-		if bracketEnd := strings.Index(value[hostStart:], "]:"); bracketEnd >= 0 {
-			return hostStart + bracketEnd + 1
-		}
-		return -1
-	}
-	pathStart := strings.IndexByte(value[hostStart:], ':')
-	if pathStart < 0 {
-		return -1
-	}
-	return hostStart + pathStart
 }
 
 // WorktreeAdd creates a new worktree at dir on a new branch, started from startPoint.

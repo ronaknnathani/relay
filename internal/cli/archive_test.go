@@ -1492,38 +1492,57 @@ func assertArchiveManifestAndResourcesUnchanged(
 }
 
 func TestArchiveDiagnosticSanitizesRemoteHelperPullRequestRef(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	repo := newTestRepo(t)
-	slug := "remote-helper-proof-error"
-	branch := "user/remote-helper-proof-error"
-	worktree := addArchiveWorktree(t, repo, slug, branch)
-	writeArchiveManifest(t, slug, repo, branch, worktree)
-	ref := "cache::deploy-token@git.example.com:team/repo.git?access_token=query-secret#fragment-secret"
-	updateGCManifest(t, slug, func(manifest *project.Manifest) {
-		manifest.PR = project.PRInfo{URL: &ref}
-	})
-	installArchivePRLookupError(t, errors.New("GitHub unavailable"))
+	tests := []struct {
+		name    string
+		ref     string
+		wantURL string
+		secrets []string
+	}{
+		{
+			name:    "SCP remote",
+			ref:     "cache::deploy-token@git.example.com:team/repo.git?access_token=query-secret#fragment-secret",
+			wantURL: "cache::[redacted]@git.example.com:team/repo.git",
+			secrets: []string{"deploy-token", "access_token", "query-secret", "fragment-secret"},
+		},
+		{
+			name:    "nested helpers with colon userinfo",
+			ref:     "trace::cache::x-access-token:ghp_SECRET@github.com/o/r.git?access_token=query-secret#fragment-secret",
+			wantURL: "trace::cache::[redacted]@github.com/o/r.git",
+			secrets: []string{
+				"x-access-token", "ghp_SECRET", "access_token", "query-secret", "fragment-secret",
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			repo := newTestRepo(t)
+			slug := "remote-helper-proof-error"
+			branch := "user/remote-helper-proof-error"
+			worktree := addArchiveWorktree(t, repo, slug, branch)
+			writeArchiveManifest(t, slug, repo, branch, worktree)
+			updateGCManifest(t, slug, func(manifest *project.Manifest) {
+				manifest.PR = project.PRInfo{URL: &test.ref}
+			})
+			installArchivePRLookupError(t, errors.New("GitHub unavailable"))
 
-	_, stderr, err := captureGCOutput(t, func() error {
-		return runArchive(slug, true)
-	})
-	if err != nil {
-		t.Fatalf("runArchive with unavailable proof lookup: %v", err)
-	}
-	for _, secret := range []string{
-		"deploy-token", "access_token", "query-secret", "fragment-secret",
-	} {
-		if strings.Contains(stderr, secret) {
-			t.Fatalf("stderr %q leaked %q", stderr, secret)
-		}
-	}
-	for _, want := range []string{
-		"GitHub unavailable",
-		"cache::[redacted]@git.example.com:team/repo.git",
-	} {
-		if !strings.Contains(stderr, want) {
-			t.Fatalf("stderr %q is missing %q", stderr, want)
-		}
+			_, stderr, err := captureGCOutput(t, func() error {
+				return runArchive(slug, true)
+			})
+			if err != nil {
+				t.Fatalf("runArchive with unavailable proof lookup: %v", err)
+			}
+			for _, secret := range test.secrets {
+				if strings.Contains(stderr, secret) {
+					t.Fatalf("stderr %q leaked %q", stderr, secret)
+				}
+			}
+			for _, want := range []string{"GitHub unavailable", test.wantURL} {
+				if !strings.Contains(stderr, want) {
+					t.Fatalf("stderr %q is missing %q", stderr, want)
+				}
+			}
+		})
 	}
 }
 
