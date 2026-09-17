@@ -38,8 +38,19 @@ const dom = {};
 const cardTemplate = document.createElement("button");
 cardTemplate.className = "card";
 cardTemplate.type = "button";
+const cardTopTemplate = make("div", "card__top");
+const cardStatusTemplate = make("span", "status");
+cardStatusTemplate.append(
+  make("span", "status__glyph"),
+  make("span", "status__word"),
+);
+cardTopTemplate.append(make("span", "card__id"), cardStatusTemplate);
+cardTemplate.append(
+  cardTopTemplate,
+  make("p", "card__title"),
+  make("div", "card__foot"),
+);
 const stageTemplate = make("div", "stage");
-stageTemplate.append(cardTemplate);
 
 const state = {
   snapshot: null,
@@ -916,7 +927,6 @@ function renderRoadmap() {
   for (let index = 0; index < stages.length; index += 1) {
     const ids = stages[index];
     const stage = stageTemplate.cloneNode(false);
-    stage.classList.toggle("stage--single", ids.length === 1);
     stage.dataset.stage = String(index);
     stage.dataset.label = `Stage ${index + 1} · ${plural(ids.length, "task")}`;
     stageNodes.push(stage);
@@ -1069,7 +1079,13 @@ function taskCard(node, item, position, hasSelection, existingCard) {
 
 function decorateTaskCard(card, node, item, lane) {
   const meta = statusMeta(lane);
-  let content = `${text(node.title, "Untitled task")}\n${node.id} · ${meta.glyph} ${meta.word}`;
+  card.querySelector(".card__id").textContent = node.id;
+  card.querySelector(".status__glyph").textContent = meta.glyph;
+  card.querySelector(".status__word").textContent = meta.word;
+  card.querySelector(".card__title").textContent = text(node.title, "Untitled task");
+
+  const foot = card.querySelector(".card__foot");
+  foot.replaceChildren();
   const details = item || node;
   if (details) {
     const dependencyCount = item
@@ -1077,22 +1093,19 @@ function decorateTaskCard(card, node, item, lane) {
       : count(node.dependency_count);
     const pr = item && (item.live_pr || item.recorded_pr);
     const prNumber = item ? (pr && pr.number) : count(node.pr_number);
-    let facts = text(details.priority, "P?");
+    foot.append(make("span", "", text(details.priority, "P?")));
     if (dependencyCount > 0) {
-      facts += ` · ${plural(dependencyCount, "dep")}`;
+      foot.append(make("span", "", plural(dependencyCount, "dep")));
     }
     if (prNumber) {
-      facts += ` · PR #${prNumber}`;
+      foot.append(make("span", "card__pr", `PR #${prNumber}`));
     }
     if (details.orphaned) {
-      facts += " · orphan";
+      foot.append(make("span", "flag flag--orphan", "orphan"));
     } else if (details.ready) {
-      facts += " · ready";
+      foot.append(make("span", "flag flag--ready", "ready"));
     }
-    card.dataset.meta = facts;
-    content += `\n${facts}`;
   }
-  card.textContent = content;
   card.setAttribute("aria-label", taskCardLabel(node, item, lane));
 }
 

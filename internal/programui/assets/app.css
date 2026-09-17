@@ -707,14 +707,6 @@ pre {
   contain-intrinsic-size: auto 132px;
 }
 
-.stage--single {
-  display: block;
-}
-
-.stage--single .card {
-  width: 100%;
-}
-
 .stage::before {
   content: attr(data-label);
   grid-column: 1 / -1;
@@ -724,13 +716,11 @@ pre {
   color: var(--muted);
 }
 
-.stage--single::before {
-  margin-bottom: 16px;
-}
-
 .card {
   position: relative;
-  display: block;
+  display: grid;
+  align-content: start;
+  gap: 10px;
   contain: layout style;
   min-width: 0;
   padding: 16px 18px 16px 21px;
@@ -739,8 +729,6 @@ pre {
   background-color: var(--surface);
   color: inherit;
   font-family: inherit;
-  line-height: 1.45;
-  white-space: pre-line;
   text-align: left;
   cursor: pointer;
   transition:
@@ -748,11 +736,6 @@ pre {
     box-shadow var(--swap) ease,
     opacity var(--swap) ease,
     transform var(--press) var(--ease-out);
-}
-
-.card::first-line {
-  font-size: 16px;
-  font-weight: 550;
 }
 
 .card::before {
@@ -788,6 +771,15 @@ pre {
   line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.card__foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--muted);
 }
 
 .card__pr {

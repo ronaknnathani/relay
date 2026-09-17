@@ -883,7 +883,9 @@ func TestBrowserPreservesPreHydrationRoadmapSelection(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
 	}
-	url := startBrowserTestFeedHandler(t, browserTestSnapshot())
+	snapshot := browserTestSnapshot()
+	snapshot.Graph.Layers = [][]string{{"w1"}, {"w2"}}
+	url := startBrowserTestFeedHandler(t, snapshot)
 
 	allocator, cancelAllocator := chromedp.NewExecAllocator(
 		context.Background(),
@@ -903,7 +905,14 @@ func TestBrowserPreservesPreHydrationRoadmapSelection(t *testing.T) {
 		network.SetBlockedURLs([]string{"*/app.js"}),
 		chromedp.Navigate(url),
 		chromedp.Poll(`window.__relayCoreReady === true &&
-			document.querySelectorAll(".card").length === 2`, nil),
+			document.querySelectorAll(".card").length === 2 &&
+			Array.from(document.querySelectorAll(".card")).every((card) =>
+				card.children.length === 3 &&
+				card.children[0].classList.contains("card__top") &&
+				card.children[1].classList.contains("card__title") &&
+				card.children[2].classList.contains("card__foot")) &&
+			document.querySelector('.card[data-item="w1"]').getBoundingClientRect().width <
+				document.querySelector("#graph-nodes").getBoundingClientRect().width * 0.75`, nil),
 		chromedp.Evaluate(`
 			document.querySelector('.card[data-item="w1"]').dispatchEvent(
 				new KeyboardEvent("keydown", {key: "ArrowRight", bubbles: true, cancelable: true}))
@@ -918,7 +927,14 @@ func TestBrowserPreservesPreHydrationRoadmapSelection(t *testing.T) {
 			})()
 		`, nil),
 		chromedp.Poll(`typeof state !== "undefined" &&
-			state.snapshot?.schema === "relay.program.v1"`, nil),
+			state.snapshot?.schema === "relay.program.v1" &&
+			Array.from(document.querySelectorAll(".card")).every((card) =>
+				card.children.length === 3 &&
+				card.children[0].classList.contains("card__top") &&
+				card.children[1].classList.contains("card__title") &&
+				card.children[2].classList.contains("card__foot")) &&
+			document.querySelector('.card[data-item="w1"]').getBoundingClientRect().width <
+				document.querySelector("#graph-nodes").getBoundingClientRect().width * 0.75`, nil),
 	); err != nil {
 		t.Fatalf("pre-hydration keyboard selection: %v", err)
 	}

@@ -74,24 +74,12 @@
         return;
       }
       const stage = document.createElement("div");
-      stage.className = ids.length === 1 ? "stage stage--single" : "stage";
+      stage.className = "stage";
       stage.dataset.stage = String(stageIndex);
       stage.dataset.label = `Stage ${stageIndex + 1} · ${ids.length} task${ids.length === 1 ? "" : "s"}`;
       ids.forEach((id) => {
         const node = nodesByID.get(id);
         const meta = status[node.lane] || ["·", "Unknown"];
-        let facts = node.priority || "";
-        if (node.dependency_count > 0) {
-          facts += ` · ${node.dependency_count} dep${node.dependency_count === 1 ? "" : "s"}`;
-        }
-        if (node.pr_number > 0) {
-          facts += ` · PR #${node.pr_number}`;
-        }
-        if (node.orphaned) {
-          facts += " · orphan";
-        } else if (node.ready) {
-          facts += " · ready";
-        }
         const dependencies = Array.isArray(node.dependencies) ? node.dependencies : [];
         const dependencyLabel = dependencies.length > 0
           ? `Dependencies: ${dependencies.join(", ")}`
@@ -110,7 +98,51 @@
           `Task ${node.id}: ${node.title}. Status ${meta[1]}. ` +
             `Priority ${node.priority}. ${dependencyLabel}.`,
         );
-        card.textContent = `${node.title}\n${node.id} · ${meta[0]} ${meta[1]}\n${facts}`;
+
+        const top = document.createElement("div");
+        top.className = "card__top";
+        const taskID = document.createElement("span");
+        taskID.className = "card__id";
+        taskID.textContent = node.id;
+        const state = document.createElement("span");
+        state.className = "status";
+        const glyph = document.createElement("span");
+        glyph.className = "status__glyph";
+        glyph.textContent = meta[0];
+        const word = document.createElement("span");
+        word.className = "status__word";
+        word.textContent = meta[1];
+        state.append(glyph, word);
+        top.append(taskID, state);
+
+        const title = document.createElement("p");
+        title.className = "card__title";
+        title.textContent = node.title;
+
+        const foot = document.createElement("div");
+        foot.className = "card__foot";
+        const priority = document.createElement("span");
+        priority.textContent = node.priority || "P?";
+        foot.append(priority);
+        if (node.dependency_count > 0) {
+          const dependencyCount = document.createElement("span");
+          dependencyCount.textContent =
+            `${node.dependency_count} dep${node.dependency_count === 1 ? "" : "s"}`;
+          foot.append(dependencyCount);
+        }
+        if (node.pr_number > 0) {
+          const pullRequest = document.createElement("span");
+          pullRequest.className = "card__pr";
+          pullRequest.textContent = `PR #${node.pr_number}`;
+          foot.append(pullRequest);
+        }
+        if (node.orphaned || node.ready) {
+          const flag = document.createElement("span");
+          flag.className = node.orphaned ? "flag flag--orphan" : "flag flag--ready";
+          flag.textContent = node.orphaned ? "orphan" : "ready";
+          foot.append(flag);
+        }
+        card.append(top, title, foot);
         stage.append(card);
         position += 1;
       });

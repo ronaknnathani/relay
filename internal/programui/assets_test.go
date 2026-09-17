@@ -200,25 +200,39 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 	}
 }
 
-func TestRoadmapCardsKeepOneVisibleMetadataLineAndExplicitNames(t *testing.T) {
+func TestRoadmapCardsKeepVisualHierarchyAndExplicitNames(t *testing.T) {
 	script := readAsset(t, "assets/app.js")
+	roadmap := readAsset(t, "assets/roadmap.js")
 	styles := readAsset(t, "assets/app.css")
 	requireContains(t, "app.js", script, []string{
-		`stage.classList.toggle("stage--single", ids.length === 1)`,
 		`card.setAttribute("aria-label", taskCardLabel(node, item, lane))`,
 		`function taskCardLabel(node, item, lane)`,
 		`Dependencies: ${dependencies.join(", ")}`,
 		`No dependencies`,
+		`card.querySelector(".card__id").textContent = node.id`,
+		`card.querySelector(".card__title").textContent`,
+		`const foot = card.querySelector(".card__foot")`,
 		`function updateConnectorSelection()`,
 		`path.dataset.edgeCount = String(groups[group].length)`,
 	})
+	requireContains(t, "roadmap.js", roadmap, []string{
+		`stage.className = "stage"`,
+		`card.append(top, title, foot)`,
+		`top.className = "card__top"`,
+		`foot.className = "card__foot"`,
+	})
 	requireAbsent(t, "app.css", styles, []string{
 		"content: attr(data-meta)",
+		".stage--single",
+		"white-space: pre-line",
+		".card::first-line",
 	})
 	requireContains(t, "app.css", styles, []string{
-		".stage--single {",
-		".stage--single .card {",
-		"display: block;",
+		".card__top {",
+		".card__title {",
+		".card__foot {",
+		"display: grid;",
+		"gap: 10px;",
 	})
 }
 
