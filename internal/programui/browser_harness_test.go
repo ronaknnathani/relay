@@ -1,0 +1,1438 @@
+package programui
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
+	goruntime "runtime"
+	"sort"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/chromedp/cdproto/heapprofiler"
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/runtime"
+	"github.com/chromedp/chromedp"
+)
+
+const (
+	performanceRuns    = 40
+	performanceFixture = "reference-program-v1"
+	performanceHarness = "complete-roadmap-v26"
+
+	performanceBuildProvenance = "goreleaser-ldflags-normalized-go-env-v2"
+	performanceLoadMetric      = "one_minute_load_average_per_logical_cpu"
+	performanceLoadValid       = "valid"
+	performanceLoadInvalid     = "invalid_shared_host_contention"
+
+	performanceMaxNormalizedOneMinute = 0.75
+	performanceLoadObservationCount   = 5
+	performanceLoadObservationDelay   = time.Second
+)
+
+type performanceReport struct {
+	Mode              string                        `json:"mode"`
+	GeneratedAt       string                        `json:"generated_at"`
+	SourceCommit      string                        `json:"source_commit"`
+	SourceCommitTime  string                        `json:"source_commit_time"`
+	SourceModified    bool                          `json:"source_modified"`
+	BinaryRevision    string                        `json:"binary_revision"`
+	BinaryModified    bool                          `json:"binary_modified"`
+	BinaryVersion     string                        `json:"binary_version"`
+	BinaryBuildDate   string                        `json:"binary_build_date"`
+	BinaryBuildMethod string                        `json:"binary_build_method"`
+	BinarySHA256      string                        `json:"binary_sha256"`
+	BuildEnvironment  performanceBuildConfiguration `json:"build_environment"`
+	FixtureVersion    string                        `json:"fixture_version"`
+	HarnessVersion    string                        `json:"harness_version"`
+	ChromiumVersion   string                        `json:"chromium_version"`
+	Environment       performanceEnvironment        `json:"environment"`
+	LoadAdmission     performanceLoadAdmission      `json:"load_admission"`
+	Samples           map[string][]float64          `json:"samples"`
+	P50               map[string]float64            `json:"p50"`
+	P95               map[string]float64            `json:"p95"`
+	Max               map[string]float64            `json:"max"`
+}
+
+type performanceEnvironment struct {
+	MachineID  string `json:"machine_id"`
+	OS         string `json:"os"`
+	Arch       string `json:"arch"`
+	CPU        string `json:"cpu"`
+	LogicalCPU int    `json:"logical_cpu"`
+	GoVersion  string `json:"go_version"`
+}
+
+type performanceBuildConfiguration struct {
+	CGOEnabled   string `json:"cgo_enabled"`
+	GOENV        string `json:"goenv"`
+	GOFLAGS      string `json:"goflags"`
+	GOOS         string `json:"goos"`
+	GOARCH       string `json:"goarch"`
+	GOWORK       string `json:"gowork"`
+	GOTOOLCHAIN  string `json:"gotoolchain"`
+	GOEXPERIMENT string `json:"goexperiment"`
+}
+
+type repositoryProvenance struct {
+	Commit     string
+	CommitTime time.Time
+	Modified   bool
+}
+
+type performanceLoadPolicy struct {
+	Metric                 string  `json:"metric"`
+	MaxNormalizedOneMinute float64 `json:"max_normalized_one_minute"`
+	ObservationCount       int     `json:"observation_count"`
+	ObservationIntervalMS  int     `json:"observation_interval_ms"`
+}
+
+type performanceLoadObservation struct {
+	Sequence            int     `json:"sequence"`
+	OneMinute           float64 `json:"one_minute"`
+	LogicalCPU          int     `json:"logical_cpu"`
+	NormalizedOneMinute float64 `json:"normalized_one_minute"`
+}
+
+type performanceLoadAdmission struct {
+	Status          string                       `json:"status"`
+	Reason          string                       `json:"reason,omitempty"`
+	InvalidSequence int                          `json:"invalid_sequence"`
+	Policy          performanceLoadPolicy        `json:"policy"`
+	Observations    []performanceLoadObservation `json:"observations"`
+}
+
+type binaryProvenance struct {
+	Version   string
+	Commit    string
+	BuildDate string
+}
+
+type browserSample struct {
+	ProcessStartToURL    float64
+	NavigationToUsable   float64
+	NavigationToGraph    float64
+	NavigationToHydrated float64
+	DocumentTTFB         float64
+	DocumentTotal        float64
+	DocumentBytes        float64
+	ProgramBytes         float64
+	ClickToDrawer        float64
+	ClickToFileContent   float64
+	ArtifactBytes        float64
+	ArtifactRequests     float64
+	MaxLongTask          float64
+	TotalBlockingTime    float64
+	UnchangedReopen      float64
+}
+
+func measureProgramUI(t *testing.T, mode string) performanceReport {
+	t.Helper()
+	if mode != "baseline" && mode != "verify" {
+		t.Fatalf("RELAY_BROWSER_PERF = %q, want baseline or verify", mode)
+	}
+	repositoryDir := performanceRepositoryDir(t, mode)
+	source, err := readRepositoryProvenance(repositoryDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadPolicy := performanceLoadPolicy{
+		Metric:                 performanceLoadMetric,
+		MaxNormalizedOneMinute: performanceMaxNormalizedOneMinute,
+		ObservationCount:       performanceLoadObservationCount,
+		ObservationIntervalMS:  int(performanceLoadObservationDelay / time.Millisecond),
+	}
+	report := performanceReport{
+		Mode: mode, GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		SourceCommit: source.Commit, SourceCommitTime: source.CommitTime.Format(time.RFC3339),
+		SourceModified: source.Modified, BinaryModified: source.Modified,
+		FixtureVersion: performanceFixture, HarnessVersion: performanceHarness,
+		Environment:      currentPerformanceEnvironment(t),
+		BuildEnvironment: normalizedPerformanceBuildConfiguration(),
+		LoadAdmission:    performanceLoadAdmission{Policy: loadPolicy},
+		Samples:          map[string][]float64{},
+		P50:              map[string]float64{},
+		P95:              map[string]float64{},
+		Max:              map[string]float64{},
+	}
+	if source.Modified {
+		return report
+	}
+	chrome := chromeExecutable(t)
+	report.ChromiumVersion = chromeVersion(t, chrome)
+	for sequence := 0; sequence < loadPolicy.ObservationCount; sequence++ {
+		if sequence > 0 {
+			time.Sleep(performanceLoadObservationDelay)
+		}
+		report.LoadAdmission.Observations = append(
+			report.LoadAdmission.Observations,
+			observePerformanceLoad(t, sequence),
+		)
+	}
+	report.LoadAdmission = evaluatePerformanceLoad(
+		loadPolicy,
+		report.LoadAdmission.Observations,
+	)
+	if report.LoadAdmission.Status != performanceLoadValid {
+		return report
+	}
+	fixture := newReferenceProgramFixture(t)
+	binary := buildRelayForPerformance(t, repositoryDir, source)
+	binaryMetadata := readBinaryProvenance(t, binary)
+	commandDir := performanceCommandDir(t)
+	report.BinaryRevision = binaryMetadata.Commit
+	report.BinaryVersion = binaryMetadata.Version
+	report.BinaryBuildDate = binaryMetadata.BuildDate
+	report.BinaryBuildMethod = performanceBuildProvenance
+	report.BinarySHA256 = fileSHA256(t, binary)
+	for run := 0; run <= performanceRuns; run++ {
+		sample := measureIsolatedBrowserRun(
+			t, chrome, binary, commandDir, fixture.program.Slug, mode,
+		)
+		if run == 0 {
+			continue
+		}
+		appendPerformanceSample(report.Samples, sample)
+	}
+	for name, samples := range report.Samples {
+		report.P50[name] = percentile(samples, 0.50)
+		report.P95[name] = percentile(samples, 0.95)
+		report.Max[name] = maximum(samples)
+	}
+	return report
+}
+
+func measureIsolatedBrowserRun(
+	t *testing.T,
+	chrome string,
+	binary string,
+	commandDir string,
+	slug string,
+	mode string,
+) browserSample {
+	t.Helper()
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chrome),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+			chromedp.Flag("disable-frame-rate-limit", true),
+			chromedp.Flag("no-first-run", true),
+			chromedp.Flag("disable-background-networking", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	if err := chromedp.Run(browser); err != nil {
+		t.Fatalf("start Chromium: %v", err)
+	}
+	installPerformanceObserver(t, browser)
+	return measureBrowserRun(t, browser, binary, commandDir, slug, mode)
+}
+
+func installPerformanceObserver(t *testing.T, tab context.Context) {
+	t.Helper()
+	if err := chromedp.Run(tab, chromedp.ActionFunc(func(ctx context.Context) error {
+		_, err := page.AddScriptToEvaluateOnNewDocument(`
+			window.__relayLongTasks = [];
+			window.__relayCompleteUsableAt = 0;
+			new PerformanceObserver((list) => {
+				for (const entry of list.getEntries()) {
+					window.__relayLongTasks.push({
+						startTime: entry.startTime,
+						duration: entry.duration
+					});
+				}
+			}).observe({type: "longtask", buffered: true});
+			const relayHydrated = () => {
+				if (typeof state === "undefined" ||
+					state.snapshot?.schema !== "relay.program.v1" ||
+					state.snapshot?.items?.length !== 100) {
+					return;
+				}
+				window.__relayHydratedAt = performance.now();
+				relayHydrationObserver.disconnect();
+			};
+			const relayHydrationObserver = new MutationObserver(relayHydrated);
+			relayHydrationObserver.observe(document, {
+				attributes: true,
+				characterData: true,
+				childList: true,
+				subtree: true
+			});
+			const relayGraphComplete = () => {
+				const edgeCount = Array.from(document.querySelectorAll("#graph-edges .edge"))
+					.reduce((total, path) => total + Number(path.dataset.edgeCount || 1), 0);
+				if (window.__relayCompleteGraphAt || window.__relayGraphPaintPending ||
+					document.querySelectorAll(".card").length !== 100 ||
+					edgeCount !== 200) {
+					return;
+				}
+				window.__relayGraphPaintPending = true;
+				requestAnimationFrame(() => {
+					setTimeout(() => {
+						window.__relayCompleteGraphAt = performance.now();
+						window.__relayGraphPaintPending = false;
+						relayGraphObserver.disconnect();
+						relayUsable();
+					}, 0);
+				});
+			};
+			const relayGraphObserver = new MutationObserver(relayGraphComplete);
+			relayGraphObserver.observe(document, {
+				attributes: true,
+				characterData: true,
+				childList: true,
+				subtree: true
+			});
+			const relayUsable = () => {
+				const cards = Array.from(document.querySelectorAll(".card"));
+				const edgeCount = Array.from(document.querySelectorAll("#graph-edges .edge"))
+					.reduce((total, path) => total + Number(path.dataset.edgeCount || 1), 0);
+				const refresh = document.querySelector("#refresh");
+				const roadmapTab = document.querySelector("#tab-roadmap");
+				if (window.__relayCompleteUsableAt > 0 ||
+					(document.querySelector("#app-script") && !window.__relayCoreReady) ||
+					typeof state === "undefined" ||
+					!state.snapshot ||
+					!window.__relayCompleteGraphAt ||
+					document.querySelector("#program-title")?.textContent !== "Reference Program" ||
+					!document.querySelector("#program-summary")?.textContent ||
+					document.querySelector("#task-total")?.textContent !== "100" ||
+					!document.querySelector("#progress-counts")?.textContent.includes("100") ||
+					!document.querySelector("#roadmap-note")?.textContent ||
+					cards.length !== 100 ||
+					!cards.every((card) => card.dataset.focusKey &&
+						card.textContent.includes("Reference task")) ||
+					document.querySelectorAll("#graph-nodes .stage").length === 0 ||
+					edgeCount !== 200 ||
+					!document.querySelector("#graph")?.getAttribute("aria-label")?.includes(
+						"100 tasks, 200 dependency links") ||
+					!refresh || refresh.disabled ||
+					!roadmapTab) {
+					return;
+				}
+				if (!window.__relayUsabilityProbe) {
+					const first = cards[0];
+					const second = cards[1];
+					const theme = document.documentElement.dataset.theme;
+					first.focus({preventScroll: true});
+					window.__relayUsabilityProbe = {
+						target: second.dataset.item,
+						theme,
+						prevented: !first.dispatchEvent(new KeyboardEvent("keydown", {
+							key: "ArrowRight", bubbles: true, cancelable: true
+						}))
+					};
+					document.querySelector("#theme-toggle").click();
+				}
+				const probe = window.__relayUsabilityProbe;
+				if (!probe.prevented) {
+					window.__relayUsabilityProbe = null;
+					return;
+				}
+				const selected = document.querySelector(
+					'.card[data-item="' + probe.target + '"]');
+				if (probe.prevented &&
+					document.documentElement.dataset.theme !== probe.theme &&
+					selected?.dataset.selected === "true" &&
+					document.activeElement === selected &&
+					roadmapTab.getAttribute("aria-selected") === "true" &&
+					document.querySelector("#panel-roadmap")?.hidden === false) {
+					document.querySelector("#theme-toggle").click();
+					window.__relayCompleteUsableAt = performance.now();
+					relayObserver.disconnect();
+				}
+			};
+			const relayObserver = new MutationObserver(relayUsable);
+			relayObserver.observe(document, {
+				attributes: true,
+				characterData: true,
+				childList: true,
+				subtree: true
+			});
+			queueMicrotask(relayHydrated);
+			queueMicrotask(relayGraphComplete);
+			queueMicrotask(relayUsable);
+		`).Do(ctx)
+		return err
+	})); err != nil {
+		t.Fatalf("install performance observer: %v", err)
+	}
+}
+
+func measureBrowserRun(
+	t *testing.T,
+	browser context.Context,
+	binary string,
+	commandDir string,
+	slug string,
+	mode string,
+) browserSample {
+	t.Helper()
+	output := newLineWriter()
+	var stderr bytes.Buffer
+	command := exec.Command(binary, "program", "ui", slug, "--port", "0", "--no-open")
+	command.Env = environmentWithPath(commandDir)
+	command.Stdout = output
+	command.Stderr = &stderr
+	serverDone := make(chan error, 1)
+	started := time.Now()
+	if err := command.Start(); err != nil {
+		t.Fatalf("start release binary: %v", err)
+	}
+	go func() {
+		serverDone <- command.Wait()
+	}()
+	url := waitForProgramURL(t, output, serverDone)
+	processStartToURL := durationMilliseconds(time.Since(started))
+
+	tab, cancelTimeout := context.WithTimeout(browser, 20*time.Second)
+	defer cancelTimeout()
+	if err := chromedp.Run(tab, chromedp.ActionFunc(func(ctx context.Context) error {
+		return heapprofiler.CollectGarbage().Do(ctx)
+	})); err != nil {
+		t.Fatalf("collect browser garbage before navigation: %v", err)
+	}
+	navigationStarted := time.Now()
+	if err := chromedp.Run(tab,
+		chromedp.Navigate(url),
+		waitForBrowserCondition(`window.__relayCompleteUsableAt > 0`),
+	); err != nil {
+		var diagnostic string
+		_ = chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+			title: document.querySelector("#program-title")?.textContent,
+			summary: document.querySelector("#program-summary")?.textContent,
+			total: document.querySelector("#task-total")?.textContent,
+			progress: document.querySelector("#progress-counts")?.textContent,
+			note: document.querySelector("#roadmap-note")?.textContent,
+			cards: document.querySelectorAll(".card").length,
+			stages: document.querySelectorAll("#graph-nodes .stage").length,
+			edges: Array.from(document.querySelectorAll("#graph-edges .edge"))
+				.reduce((total, path) => total + Number(path.dataset.edgeCount || 1), 0),
+			graphLabel: document.querySelector("#graph")?.getAttribute("aria-label"),
+			schema: typeof state === "undefined" ? "" : state.snapshot?.schema,
+			items: typeof state === "undefined" ? 0 : state.snapshot?.items?.length,
+			selected: document.querySelector(".card[data-selected='true']")?.dataset.item,
+			focused: document.activeElement?.dataset?.item,
+			roadmapSelected: document.querySelector("#tab-roadmap")?.getAttribute("aria-selected"),
+			roadmapHidden: document.querySelector("#panel-roadmap")?.hidden,
+			probe: window.__relayUsabilityProbe,
+			usable: window.__relayCompleteUsableAt
+		})`, &diagnostic))
+		t.Fatalf("navigate to usable program UI: %v: %s", err, diagnostic)
+	}
+	var navigationToUsable float64
+	if err := chromedp.Run(tab,
+		chromedp.Evaluate(`window.__relayCompleteUsableAt`, &navigationToUsable),
+	); err != nil {
+		t.Fatalf("read navigation-to-usable timing: %v", err)
+	}
+	if navigationToUsable <= 0 {
+		navigationToUsable = durationMilliseconds(time.Since(navigationStarted))
+	}
+	if err := chromedp.Run(tab, waitForBrowserCondition(`
+		typeof state !== "undefined" &&
+		state.snapshot?.schema === "relay.program.v1" &&
+		state.snapshot?.items?.length === 100 &&
+		window.__relayCompleteGraphAt > 0 &&
+		performance.getEntriesByType("resource").some((candidate) => {
+			const url = new URL(candidate.name);
+			return url.pathname === "/api/program" && url.search === "";
+		})
+	`)); err != nil {
+		t.Fatalf("wait for full program hydration: %v", err)
+	}
+	var navigationToGraph float64
+	var navigationToHydrated float64
+	if err := chromedp.Run(tab,
+		chromedp.Evaluate(`window.__relayCompleteGraphAt`, &navigationToGraph),
+		chromedp.Evaluate(`window.__relayHydratedAt`, &navigationToHydrated),
+	); err != nil {
+		t.Fatalf("read navigation-to-hydrated timing: %v", err)
+	}
+
+	var documentTiming resourceTiming
+	var programTiming resourceTiming
+	if err := chromedp.Run(tab, chromedp.Evaluate(`
+		(() => {
+			const entry = performance.getEntriesByType("navigation")[0];
+			return entry ? {
+				ttfb: entry.responseStart - entry.startTime,
+				total: entry.responseEnd - entry.startTime,
+				bytes: entry.encodedBodySize
+			} : {ttfb: 0, total: 0, bytes: 0};
+		})()
+	`, &documentTiming), chromedp.Evaluate(`
+		(() => {
+			const entry = performance.getEntriesByType("resource").find((candidate) => {
+				const url = new URL(candidate.name);
+				return url.pathname === "/api/program" && url.search === "";
+			});
+			return entry ? {
+				ttfb: entry.responseStart - entry.startTime,
+				total: entry.responseEnd - entry.startTime,
+				bytes: entry.encodedBodySize
+			} : {ttfb: 0, total: 0, bytes: 0};
+		})()
+	`, &programTiming)); err != nil {
+		t.Fatalf("read initial resource timings: %v", err)
+	}
+	var taskArtifactTextPresent bool
+	if err := chromedp.Run(tab, chromedp.Evaluate(`
+		state.snapshot.items.some((item) =>
+			(item.artifacts || []).some((artifact) => artifact.text !== undefined))
+	`, &taskArtifactTextPresent)); err != nil {
+		t.Fatalf("inspect initial program payload: %v", err)
+	}
+	if mode == "verify" && taskArtifactTextPresent {
+		t.Fatal("initial /api/program response included task artifact text")
+	}
+
+	if err := chromedp.Run(tab, chromedp.Evaluate(`performance.clearResourceTimings()`, nil)); err != nil {
+		t.Fatalf("clear resource timings before artifact request: %v", err)
+	}
+	drawerStarted := time.Now()
+	if err := chromedp.Run(tab,
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+		waitForBrowserCondition(`document.querySelector("#drawer").dataset.state === "open" &&
+			document.querySelector("#drawer-title").textContent === "Reference task 001"`),
+	); err != nil {
+		t.Fatalf("open task drawer: %v", err)
+	}
+	clickToDrawer := durationMilliseconds(time.Since(drawerStarted))
+	var artifactText string
+	if err := chromedp.Run(tab,
+		waitForBrowserCondition(`(() => {
+			return Array.from(document.querySelectorAll(".artifact-text"))
+				.some((artifact) => artifact.textContent.length === 131072);
+		})()`),
+		chromedp.Evaluate(`Array.from(document.querySelectorAll(".artifact-text"))
+			.find((artifact) => artifact.textContent.length === 131072).textContent`, &artifactText),
+	); err != nil {
+		t.Fatalf("wait for selected artifact: %v", err)
+	}
+	clickToFileContent := durationMilliseconds(time.Since(drawerStarted))
+	if want := strings.Repeat(`"`, 128*1024); artifactText != want {
+		t.Fatalf("selected artifact content differs from deterministic fixture")
+	}
+	var artifactResources struct {
+		Count int     `json:"count"`
+		Bytes float64 `json:"bytes"`
+	}
+	if err := chromedp.Run(tab, chromedp.Evaluate(`
+		(() => {
+			const entries = performance.getEntriesByType("resource")
+				.filter((entry) => new URL(entry.name).pathname === "/api/artifact");
+			return {
+				count: entries.length,
+				bytes: entries.reduce((total, entry) => total + entry.encodedBodySize, 0)
+			};
+		})()
+	`, &artifactResources)); err != nil {
+		t.Fatalf("read artifact response timings: %v", err)
+	}
+
+	if err := chromedp.Run(tab,
+		chromedp.Evaluate(`document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}))`, nil),
+		waitForBrowserCondition(`document.querySelector("#drawer").hidden === true`),
+	); err != nil {
+		t.Fatalf("close task drawer: %v", err)
+	}
+	reopenStarted := time.Now()
+	if err := chromedp.Run(tab,
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+		waitForBrowserCondition(`document.querySelector("#drawer").dataset.state === "open" &&
+			Array.from(document.querySelectorAll(".artifact-text"))
+				.some((artifact) => artifact.textContent.length === 131072)`),
+	); err != nil {
+		t.Fatalf("reopen task drawer: %v", err)
+	}
+	unchangedReopen := durationMilliseconds(time.Since(reopenStarted))
+
+	var longTasks []struct {
+		StartTime float64 `json:"startTime"`
+		Duration  float64 `json:"duration"`
+	}
+	if err := chromedp.Run(tab, chromedp.Evaluate(`window.__relayLongTasks || []`, &longTasks)); err != nil {
+		t.Fatalf("read long tasks: %v", err)
+	}
+	maxLongTask := 0.0
+	totalBlockingTime := 0.0
+	for _, task := range longTasks {
+		if task.StartTime > navigationToUsable {
+			continue
+		}
+		maxLongTask = math.Max(maxLongTask, task.Duration)
+		if task.Duration > 50 {
+			totalBlockingTime += task.Duration - 50
+		}
+	}
+
+	if err := chromedp.Run(tab, chromedp.Navigate("about:blank")); err != nil {
+		t.Fatalf("close measured page before server shutdown: %v", err)
+	}
+	// Measurement is complete. Force the same post-run termination for both
+	// revisions so legacy shutdown behavior cannot invalidate or skew a sample.
+	if err := command.Process.Kill(); err != nil {
+		t.Fatalf("terminate measured program UI process: %v", err)
+	}
+	select {
+	case err := <-serverDone:
+		var exitError *exec.ExitError
+		if err != nil && !errors.As(err, &exitError) {
+			t.Fatalf("wait for terminated program UI: %v: %s", err, strings.TrimSpace(stderr.String()))
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("terminated program UI process did not exit")
+	}
+	return browserSample{
+		ProcessStartToURL: processStartToURL, NavigationToUsable: navigationToUsable,
+		NavigationToGraph:    navigationToGraph,
+		NavigationToHydrated: navigationToHydrated,
+		DocumentTTFB:         documentTiming.TTFB, DocumentTotal: documentTiming.Total,
+		DocumentBytes: documentTiming.Bytes, ProgramBytes: programTiming.Bytes,
+		ClickToDrawer: clickToDrawer, ClickToFileContent: clickToFileContent,
+		ArtifactBytes:    artifactResources.Bytes,
+		ArtifactRequests: float64(artifactResources.Count),
+		MaxLongTask:      maxLongTask, TotalBlockingTime: totalBlockingTime,
+		UnchangedReopen: unchangedReopen,
+	}
+}
+
+type resourceTiming struct {
+	TTFB  float64 `json:"ttfb"`
+	Total float64 `json:"total"`
+	Bytes float64 `json:"bytes"`
+}
+
+func waitForProgramURL(t *testing.T, output *lineWriter, serverDone <-chan error) string {
+	t.Helper()
+	select {
+	case line := <-output.lines:
+		return strings.TrimSpace(line)
+	case err := <-serverDone:
+		t.Fatalf("program UI stopped before publishing URL: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("program UI did not publish URL")
+	}
+	return ""
+}
+
+func waitForBrowserCondition(expression string) chromedp.Action {
+	return chromedp.Evaluate(fmt.Sprintf(`
+		new Promise((resolve) => {
+			const ready = () => Boolean(%s);
+			if (ready()) {
+				resolve(true);
+				return;
+			}
+			const observer = new MutationObserver(() => {
+				if (ready()) {
+					observer.disconnect();
+					resolve(true);
+				}
+			});
+			observer.observe(document.documentElement, {
+				attributes: true,
+				characterData: true,
+				childList: true,
+				subtree: true
+			});
+		})
+	`, expression), nil, func(params *runtime.EvaluateParams) *runtime.EvaluateParams {
+		return params.WithAwaitPromise(true)
+	})
+}
+
+func buildRelayForPerformance(
+	t *testing.T,
+	repositoryDir string,
+	provenance repositoryProvenance,
+) string {
+	t.Helper()
+	binary := filepath.Join(t.TempDir(), "relay")
+	command := exec.Command("go", performanceBuildArguments(binary, provenance)...)
+	command.Dir = repositoryDir
+	command.Env = performanceBuildEnvironment(os.Environ())
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build relay for performance test: %v\n%s", err, output)
+	}
+	return binary
+}
+
+func performanceBuildArguments(output string, provenance repositoryProvenance) []string {
+	ldflags := strings.Join([]string{
+		"-s",
+		"-w",
+		"-X github.com/ronaknnathani/relay/internal/cli.version=performance",
+		"-X github.com/ronaknnathani/relay/internal/cli.commit=" + provenance.Commit,
+		"-X github.com/ronaknnathani/relay/internal/cli.date=" +
+			provenance.CommitTime.UTC().Format(time.RFC3339),
+	}, " ")
+	return []string{
+		"build",
+		"-buildvcs=false",
+		"-trimpath",
+		"-ldflags=" + ldflags,
+		"-o", output,
+		"./cmd/relay",
+	}
+}
+
+func performanceBuildEnvironment(environment []string) []string {
+	allowed := map[string]bool{
+		"PATH": true, "HOME": true, "TMPDIR": true, "TMP": true, "TEMP": true,
+		"GOPATH": true, "GOMODCACHE": true, "GOCACHE": true,
+		"GOPROXY": true, "GONOPROXY": true, "GOPRIVATE": true,
+		"GONOSUMDB": true, "GOSUMDB": true,
+		"SSL_CERT_FILE": true, "SSL_CERT_DIR": true,
+	}
+	buildEnvironment := make([]string, 0, len(allowed)+7)
+	for _, entry := range environment {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok && allowed[name] {
+			buildEnvironment = append(buildEnvironment, entry)
+		}
+	}
+	return append(buildEnvironment,
+		"CGO_ENABLED=0",
+		"GOENV=off",
+		"GOFLAGS=",
+		"GOOS="+goruntime.GOOS,
+		"GOARCH="+goruntime.GOARCH,
+		"GOWORK=off",
+		"GOTOOLCHAIN=local",
+		"GOEXPERIMENT=",
+	)
+}
+
+func normalizedPerformanceBuildConfiguration() performanceBuildConfiguration {
+	return performanceBuildConfiguration{
+		CGOEnabled:   "0",
+		GOENV:        "off",
+		GOFLAGS:      "",
+		GOOS:         goruntime.GOOS,
+		GOARCH:       goruntime.GOARCH,
+		GOWORK:       "off",
+		GOTOOLCHAIN:  "local",
+		GOEXPERIMENT: "",
+	}
+}
+
+func performanceCommandDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	script := `#!/bin/sh
+printf '%s\n' '{"number":42,"url":"https://github.example/pr/42","state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","statusCheckRollup":[],"title":"Fixture PR","updatedAt":"2026-09-14T20:00:00Z"}'
+`
+	if err := os.WriteFile(gh, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	return dir
+}
+
+func environmentWithPath(path string) []string {
+	environment := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "PATH=") {
+			environment = append(environment, entry)
+		}
+	}
+	return append(environment, "PATH="+path)
+}
+
+func chromeExecutable(t *testing.T) string {
+	t.Helper()
+	return chromeExecutableWithFinder(t, findChromeExecutable)
+}
+
+func chromeExecutableWithFinder(
+	t *testing.T,
+	finder func() (string, error),
+) string {
+	t.Helper()
+	path, err := finder()
+	if err == nil {
+		return path
+	}
+	if os.Getenv("RELAY_BROWSER_PERF") != "" {
+		t.Fatalf("official performance run requires Chrome or Chromium: %v", err)
+	}
+	t.Skipf("Chrome or Chromium is required for browser tests: %v", err)
+	return ""
+}
+
+func findChromeExecutable() (string, error) {
+	candidates := []string{
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		"/Applications/Chromium.app/Contents/MacOS/Chromium",
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	for _, name := range []string{"google-chrome", "chromium", "chromium-browser"} {
+		if path, err := exec.LookPath(name); err == nil {
+			return path, nil
+		}
+	}
+	return "", errors.New(
+		"no executable was found in the standard application paths or PATH",
+	)
+}
+
+func appendPerformanceSample(samples map[string][]float64, sample browserSample) {
+	values := map[string]float64{
+		"process_start_to_url_ms":   sample.ProcessStartToURL,
+		"navigation_to_usable_ms":   sample.NavigationToUsable,
+		"navigation_to_graph_ms":    sample.NavigationToGraph,
+		"navigation_to_hydrated_ms": sample.NavigationToHydrated,
+		"document_ttfb_ms":          sample.DocumentTTFB,
+		"document_total_ms":         sample.DocumentTotal,
+		"document_bytes":            sample.DocumentBytes,
+		"program_response_bytes":    sample.ProgramBytes,
+		"click_to_drawer_ms":        sample.ClickToDrawer,
+		"click_to_file_content_ms":  sample.ClickToFileContent,
+		"artifact_response_bytes":   sample.ArtifactBytes,
+		"artifact_request_count":    sample.ArtifactRequests,
+		"max_long_task_ms":          sample.MaxLongTask,
+		"total_blocking_time_ms":    sample.TotalBlockingTime,
+		"unchanged_reopen_ms":       sample.UnchangedReopen,
+	}
+	for name, value := range values {
+		samples[name] = append(samples[name], value)
+	}
+}
+
+func percentile(values []float64, quantile float64) float64 {
+	sorted := append([]float64(nil), values...)
+	sort.Float64s(sorted)
+	if len(sorted) == 0 {
+		return 0
+	}
+	index := int(math.Ceil(quantile*float64(len(sorted)))) - 1
+	if index < 0 {
+		index = 0
+	}
+	return sorted[index]
+}
+
+func verifyPerformanceReport(t *testing.T, report performanceReport, baselinePath string) {
+	t.Helper()
+	if baselinePath == "" {
+		t.Fatal("RELAY_PERF_BASELINE is required in verify mode")
+	}
+	data, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatalf("read baseline %s: %v", baselinePath, err)
+	}
+	var baseline performanceReport
+	if err := json.Unmarshal(data, &baseline); err != nil {
+		t.Fatalf("decode baseline %s: %v", baselinePath, err)
+	}
+	if err := validatePerformanceMetadata(
+		report,
+		baseline,
+		repositoryCommit(t, "HEAD"),
+		repositoryMergeBase(t, "HEAD", "origin/main"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePerformancePercentiles(report, performanceRuns); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePerformancePercentiles(baseline, performanceRuns); err != nil {
+		t.Fatalf("baseline report: %v", err)
+	}
+	for _, message := range validatePerformanceBudgets(report) {
+		t.Error(message)
+	}
+	for _, message := range validateNavigationImprovement(report, baseline) {
+		t.Error(message)
+	}
+	for _, required := range []string{
+		"document_bytes",
+		"program_response_bytes",
+		"artifact_response_bytes",
+		"artifact_request_count",
+	} {
+		if report.P50[required] <= 0 || report.P95[required] <= 0 {
+			t.Errorf("%s exact resource measurements are missing", required)
+		}
+	}
+	for name, samples := range report.Samples {
+		if len(samples) != performanceRuns {
+			t.Errorf("%s samples = %d, want %d", name, len(samples), performanceRuns)
+		}
+	}
+}
+
+func validateNavigationImprovement(report, baseline performanceReport) []string {
+	var failures []string
+	for _, quantile := range []struct {
+		name     string
+		current  map[string]float64
+		baseline map[string]float64
+	}{
+		{name: "p50", current: report.P50, baseline: baseline.P50},
+		{name: "p95", current: report.P95, baseline: baseline.P95},
+	} {
+		baselineNavigation := quantile.baseline["navigation_to_usable_ms"]
+		if baselineNavigation <= 0 {
+			failures = append(
+				failures,
+				fmt.Sprintf("baseline navigation_to_usable_ms %s is missing", quantile.name),
+			)
+			continue
+		}
+		if got := quantile.current["navigation_to_usable_ms"]; got > baselineNavigation*0.5 {
+			failures = append(failures, fmt.Sprintf(
+				"navigation_to_usable_ms %s = %.2f, want <= 50%% of baseline %.2f",
+				quantile.name,
+				got,
+				baselineNavigation,
+			))
+		}
+	}
+	return failures
+}
+
+func validatePerformanceBudgets(report performanceReport) []string {
+	var failures []string
+	percentileBudgets := map[string]float64{
+		"navigation_to_usable_ms":  1000,
+		"navigation_to_graph_ms":   1000,
+		"click_to_drawer_ms":       100,
+		"click_to_file_content_ms": 500,
+		"unchanged_reopen_ms":      100,
+	}
+	for name, budget := range percentileBudgets {
+		if got := report.P95[name]; got > budget {
+			failures = append(failures, fmt.Sprintf(
+				"%s p95 = %.2f, want <= %.2f", name, got, budget,
+			))
+		}
+	}
+	absoluteBudgets := map[string]float64{
+		"program_response_bytes":  1024 * 1024,
+		"artifact_response_bytes": 192 * 1024,
+		"artifact_request_count":  1,
+		"max_long_task_ms":        100,
+		"total_blocking_time_ms":  200,
+	}
+	for name, budget := range absoluteBudgets {
+		got := maximum(report.Samples[name])
+		if report.Max != nil {
+			got = report.Max[name]
+		}
+		if got > budget {
+			failures = append(failures, fmt.Sprintf(
+				"%s maximum = %.2f, want every run <= %.2f", name, got, budget,
+			))
+		}
+	}
+	return failures
+}
+
+func maximum(values []float64) float64 {
+	maximumValue := 0.0
+	for _, value := range values {
+		maximumValue = math.Max(maximumValue, value)
+	}
+	return maximumValue
+}
+
+func validatePerformancePercentiles(report performanceReport, sampleCount int) error {
+	for name, samples := range report.Samples {
+		if len(samples) != sampleCount {
+			return fmt.Errorf("%s samples = %d, want %d", name, len(samples), sampleCount)
+		}
+		for _, quantile := range []struct {
+			name  string
+			value float64
+			want  float64
+		}{
+			{name: "p50", value: report.P50[name], want: percentile(samples, 0.50)},
+			{name: "p95", value: report.P95[name], want: percentile(samples, 0.95)},
+		} {
+			if math.Abs(quantile.value-quantile.want) > 0.001 {
+				return fmt.Errorf(
+					"%s %s = %.3f, recomputed %.3f",
+					name, quantile.name, quantile.value, quantile.want,
+				)
+			}
+		}
+	}
+	return nil
+}
+
+func validatePerformanceMetadata(
+	report performanceReport,
+	baseline performanceReport,
+	currentCommit string,
+	baselineCommit string,
+) error {
+	if err := validatePerformanceLoadAdmission(report); err != nil {
+		return err
+	}
+	if err := validatePerformanceLoadAdmission(baseline); err != nil {
+		return fmt.Errorf("baseline %w", err)
+	}
+	switch {
+	case report.Mode != "verify":
+		return fmt.Errorf("performance report mode = %q, want verify", report.Mode)
+	case baseline.Mode != "baseline":
+		return fmt.Errorf("baseline report mode = %q, want baseline", baseline.Mode)
+	case report.SourceCommit != currentCommit:
+		return fmt.Errorf("performance source commit = %q, want current HEAD %q", report.SourceCommit, currentCommit)
+	case report.SourceModified:
+		return errors.New("performance source worktree was modified")
+	case baseline.SourceCommit != baselineCommit:
+		return fmt.Errorf("baseline source commit = %q, want origin/main %q", baseline.SourceCommit, baselineCommit)
+	case baseline.SourceModified:
+		return errors.New("baseline source worktree was modified")
+	case report.SourceCommitTime == "":
+		return errors.New("performance source commit time is missing")
+	case baseline.SourceCommitTime == "":
+		return errors.New("baseline source commit time is missing")
+	case report.BinaryRevision != report.SourceCommit:
+		return fmt.Errorf(
+			"performance binary revision = %q, want source commit %q",
+			report.BinaryRevision, report.SourceCommit,
+		)
+	case baseline.BinaryRevision != baseline.SourceCommit:
+		return fmt.Errorf(
+			"baseline binary revision = %q, want source commit %q",
+			baseline.BinaryRevision, baseline.SourceCommit,
+		)
+	case report.BinaryModified:
+		return errors.New("performance binary was built from a dirty worktree")
+	case baseline.BinaryModified:
+		return errors.New("baseline binary was built from a dirty worktree")
+	case report.BinaryVersion != "performance":
+		return fmt.Errorf("performance binary version = %q, want performance", report.BinaryVersion)
+	case baseline.BinaryVersion != "performance":
+		return fmt.Errorf("baseline binary version = %q, want performance", baseline.BinaryVersion)
+	case report.BinaryBuildDate != report.SourceCommitTime:
+		return fmt.Errorf(
+			"performance binary build date = %q, want source commit time %q",
+			report.BinaryBuildDate,
+			report.SourceCommitTime,
+		)
+	case baseline.BinaryBuildDate != baseline.SourceCommitTime:
+		return fmt.Errorf(
+			"baseline binary build date = %q, want source commit time %q",
+			baseline.BinaryBuildDate,
+			baseline.SourceCommitTime,
+		)
+	case report.BinaryBuildMethod != performanceBuildProvenance:
+		return fmt.Errorf(
+			"performance binary build method = %q, want %q",
+			report.BinaryBuildMethod,
+			performanceBuildProvenance,
+		)
+	case baseline.BinaryBuildMethod != performanceBuildProvenance:
+		return fmt.Errorf(
+			"baseline binary build method = %q, want %q",
+			baseline.BinaryBuildMethod,
+			performanceBuildProvenance,
+		)
+	case report.BuildEnvironment != normalizedPerformanceBuildConfiguration():
+		return fmt.Errorf(
+			"performance build environment = %+v, want %+v",
+			report.BuildEnvironment,
+			normalizedPerformanceBuildConfiguration(),
+		)
+	case baseline.BuildEnvironment != normalizedPerformanceBuildConfiguration():
+		return fmt.Errorf(
+			"baseline build environment = %+v, want %+v",
+			baseline.BuildEnvironment,
+			normalizedPerformanceBuildConfiguration(),
+		)
+	case report.BinarySHA256 == "":
+		return errors.New("performance binary SHA-256 is missing")
+	case baseline.BinarySHA256 == "":
+		return errors.New("baseline binary SHA-256 is missing")
+	case report.BinarySHA256 == baseline.BinarySHA256:
+		return errors.New("performance and baseline binary SHA-256 values are identical")
+	case report.FixtureVersion != performanceFixture ||
+		baseline.FixtureVersion != performanceFixture:
+		return fmt.Errorf(
+			"fixture versions = current %q baseline %q, want %q",
+			report.FixtureVersion, baseline.FixtureVersion, performanceFixture,
+		)
+	case report.HarnessVersion != performanceHarness ||
+		baseline.HarnessVersion != performanceHarness:
+		return fmt.Errorf(
+			"harness versions = current %q baseline %q, want %q",
+			report.HarnessVersion, baseline.HarnessVersion, performanceHarness,
+		)
+	case report.ChromiumVersion == "":
+		return errors.New("performance Chromium version is missing")
+	case baseline.ChromiumVersion == "":
+		return errors.New("baseline Chromium version is missing")
+	case report.ChromiumVersion != baseline.ChromiumVersion:
+		return fmt.Errorf(
+			"Chromium versions differ: current %q baseline %q",
+			report.ChromiumVersion, baseline.ChromiumVersion,
+		)
+	case report.Environment != baseline.Environment:
+		return fmt.Errorf(
+			"performance environments differ: current %+v baseline %+v",
+			report.Environment, baseline.Environment,
+		)
+	default:
+		return nil
+	}
+}
+
+func validatePerformanceLoadAdmission(report performanceReport) error {
+	admission := report.LoadAdmission
+	switch {
+	case admission.Status != performanceLoadValid:
+		return fmt.Errorf("performance environment is invalid: %s", admission.Reason)
+	case admission.Policy.Metric != performanceLoadMetric:
+		return fmt.Errorf(
+			"performance load metric = %q, want %q",
+			admission.Policy.Metric,
+			performanceLoadMetric,
+		)
+	case admission.Policy.MaxNormalizedOneMinute != performanceMaxNormalizedOneMinute:
+		return fmt.Errorf(
+			"performance maximum normalized one-minute load = %.3f, want %.3f",
+			admission.Policy.MaxNormalizedOneMinute,
+			performanceMaxNormalizedOneMinute,
+		)
+	case admission.Policy.ObservationCount != performanceLoadObservationCount:
+		return fmt.Errorf(
+			"performance load observation count = %d, want %d",
+			admission.Policy.ObservationCount,
+			performanceLoadObservationCount,
+		)
+	case admission.Policy.ObservationIntervalMS !=
+		int(performanceLoadObservationDelay/time.Millisecond):
+		return fmt.Errorf(
+			"performance load observation interval = %d ms, want %d ms",
+			admission.Policy.ObservationIntervalMS,
+			performanceLoadObservationDelay/time.Millisecond,
+		)
+	case len(admission.Observations) != performanceLoadObservationCount:
+		return fmt.Errorf(
+			"performance load observations = %d, want %d",
+			len(admission.Observations),
+			performanceLoadObservationCount,
+		)
+	}
+	for sequence, observation := range admission.Observations {
+		switch {
+		case observation.Sequence != sequence:
+			return fmt.Errorf(
+				"performance load observation %d has sequence %d",
+				sequence,
+				observation.Sequence,
+			)
+		case observation.LogicalCPU != report.Environment.LogicalCPU:
+			return fmt.Errorf(
+				"performance load observation %d logical CPUs = %d, want environment value %d",
+				sequence,
+				observation.LogicalCPU,
+				report.Environment.LogicalCPU,
+			)
+		case math.Abs(
+			observation.NormalizedOneMinute-
+				observation.OneMinute/float64(observation.LogicalCPU),
+		) > 0.000001:
+			return fmt.Errorf(
+				"performance load observation %d normalized value %.6f does not match "+
+					"one-minute load %.6f / %d logical CPUs",
+				sequence,
+				observation.NormalizedOneMinute,
+				observation.OneMinute,
+				observation.LogicalCPU,
+			)
+		case observation.NormalizedOneMinute > admission.Policy.MaxNormalizedOneMinute:
+			return fmt.Errorf(
+				"performance load observation %d normalized value %.3f exceeds %.3f",
+				sequence,
+				observation.NormalizedOneMinute,
+				admission.Policy.MaxNormalizedOneMinute,
+			)
+		}
+	}
+	return nil
+}
+
+func readRepositoryProvenance(repositoryDir string) (repositoryProvenance, error) {
+	commit, err := runRepositoryGit(repositoryDir, "rev-parse", "HEAD")
+	if err != nil {
+		return repositoryProvenance{}, err
+	}
+	commitTimeText, err := runRepositoryGit(repositoryDir, "show", "-s", "--format=%cI", "HEAD")
+	if err != nil {
+		return repositoryProvenance{}, err
+	}
+	commitTime, err := time.Parse(time.RFC3339, commitTimeText)
+	if err != nil {
+		return repositoryProvenance{}, fmt.Errorf(
+			"parse source commit time %q: %w",
+			commitTimeText,
+			err,
+		)
+	}
+	status, err := runRepositoryGit(
+		repositoryDir,
+		"status", "--porcelain=v1", "--untracked-files=normal",
+	)
+	if err != nil {
+		return repositoryProvenance{}, err
+	}
+	return repositoryProvenance{
+		Commit:     commit,
+		CommitTime: commitTime.UTC(),
+		Modified:   status != "",
+	}, nil
+}
+
+func runRepositoryGit(repositoryDir string, args ...string) (string, error) {
+	command := exec.Command("git", args...)
+	command.Dir = repositoryDir
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf(
+			"git %s in %s: %w\n%s",
+			strings.Join(args, " "),
+			repositoryDir,
+			err,
+			output,
+		)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func readBinaryProvenance(t *testing.T, path string) binaryProvenance {
+	t.Helper()
+	output, err := exec.Command(path, "--version").CombinedOutput()
+	if err != nil {
+		t.Fatalf("read performance binary version from %s: %v\n%s", path, err, output)
+	}
+	const prefix = "relay version "
+	versionText := strings.TrimSpace(string(output))
+	if !strings.HasPrefix(versionText, prefix) {
+		t.Fatalf("performance binary version %q does not start with %q", versionText, prefix)
+	}
+	versionText = strings.TrimPrefix(versionText, prefix)
+	version, details, ok := strings.Cut(versionText, " (commit ")
+	if !ok {
+		t.Fatalf("performance binary version %q has no commit metadata", versionText)
+	}
+	commit, buildText, ok := strings.Cut(details, ", built ")
+	if !ok || !strings.HasSuffix(buildText, ")") {
+		t.Fatalf("performance binary version %q has invalid build metadata", versionText)
+	}
+	buildDate := strings.TrimSuffix(buildText, ")")
+	if version == "" || commit == "" || buildDate == "" {
+		t.Fatalf("performance binary version %q has incomplete provenance", versionText)
+	}
+	return binaryProvenance{Version: version, Commit: commit, BuildDate: buildDate}
+}
+
+func observePerformanceLoad(t *testing.T, sequence int) performanceLoadObservation {
+	t.Helper()
+	oneMinute, err := readOneMinuteLoadAverage()
+	if err != nil {
+		t.Fatalf("read one-minute host load preflight sample %d: %v", sequence, err)
+	}
+	logicalCPU := goruntime.NumCPU()
+	if logicalCPU <= 0 {
+		t.Fatalf("logical CPU count = %d, want positive", logicalCPU)
+	}
+	return performanceLoadObservation{
+		Sequence:            sequence,
+		OneMinute:           oneMinute,
+		LogicalCPU:          logicalCPU,
+		NormalizedOneMinute: oneMinute / float64(logicalCPU),
+	}
+}
+
+func readOneMinuteLoadAverage() (float64, error) {
+	switch goruntime.GOOS {
+	case "darwin":
+		output, err := exec.Command("sysctl", "-n", "vm.loadavg").CombinedOutput()
+		if err != nil {
+			return 0, fmt.Errorf("sysctl vm.loadavg: %w: %s", err, output)
+		}
+		for _, field := range strings.Fields(string(output)) {
+			value, parseErr := strconv.ParseFloat(strings.Trim(field, "{}"), 64)
+			if parseErr == nil {
+				return value, nil
+			}
+		}
+		return 0, fmt.Errorf("parse vm.loadavg output %q", strings.TrimSpace(string(output)))
+	case "linux":
+		data, err := os.ReadFile("/proc/loadavg")
+		if err != nil {
+			return 0, fmt.Errorf("read /proc/loadavg: %w", err)
+		}
+		fields := strings.Fields(string(data))
+		if len(fields) == 0 {
+			return 0, errors.New("/proc/loadavg is empty")
+		}
+		value, err := strconv.ParseFloat(fields[0], 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse /proc/loadavg one-minute value %q: %w", fields[0], err)
+		}
+		return value, nil
+	default:
+		return 0, fmt.Errorf("one-minute load average is unsupported on %s", goruntime.GOOS)
+	}
+}
+
+func evaluatePerformanceLoad(
+	policy performanceLoadPolicy,
+	observations []performanceLoadObservation,
+) performanceLoadAdmission {
+	admission := performanceLoadAdmission{
+		Status:          performanceLoadValid,
+		InvalidSequence: -1,
+		Policy:          policy,
+		Observations:    append([]performanceLoadObservation(nil), observations...),
+	}
+	for _, observation := range observations {
+		if observation.NormalizedOneMinute <= policy.MaxNormalizedOneMinute {
+			continue
+		}
+		admission.Status = performanceLoadInvalid
+		admission.InvalidSequence = observation.Sequence
+		admission.Reason = fmt.Sprintf(
+			"normalized one-minute load %.3f in preflight sample %d exceeds %.3f; "+
+				"the entire benchmark is invalid and no measured sample is retried or omitted",
+			observation.NormalizedOneMinute,
+			observation.Sequence,
+			policy.MaxNormalizedOneMinute,
+		)
+		break
+	}
+	return admission
+}
+
+func currentPerformanceEnvironment(t *testing.T) performanceEnvironment {
+	t.Helper()
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("read performance host name: %v", err)
+	}
+	cpu := goruntime.GOARCH
+	if goruntime.GOOS == "darwin" {
+		if output, commandErr := exec.Command("sysctl", "-n", "machdep.cpu.brand_string").CombinedOutput(); commandErr == nil && strings.TrimSpace(string(output)) != "" {
+			cpu = strings.TrimSpace(string(output))
+		}
+	}
+	machineDigest := sha256.Sum256([]byte(hostname))
+	return performanceEnvironment{
+		MachineID: fmt.Sprintf("%x", machineDigest[:8]),
+		OS:        goruntime.GOOS, Arch: goruntime.GOARCH, CPU: cpu,
+		LogicalCPU: goruntime.NumCPU(), GoVersion: goruntime.Version(),
+	}
+}
+
+func repositoryCommit(t *testing.T, ref string) string {
+	t.Helper()
+	command := exec.Command("git", "rev-parse", ref)
+	command.Dir = filepath.Join("..", "..")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve git commit %s: %v\n%s", ref, err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func performanceRepositoryDir(t *testing.T, mode string) string {
+	t.Helper()
+	dir, err := resolvePerformanceRepositoryDir(
+		mode,
+		filepath.Join("..", ".."),
+		os.Getenv("RELAY_PERF_SOURCE_DIR"),
+	)
+	if err != nil {
+		t.Fatalf("resolve performance repository directory: %v", err)
+	}
+	return dir
+}
+
+func resolvePerformanceRepositoryDir(mode, defaultDir, override string) (string, error) {
+	dir := defaultDir
+	if override != "" {
+		if mode != "baseline" {
+			return "", errors.New("RELAY_PERF_SOURCE_DIR is allowed only in baseline mode")
+		}
+		dir = override
+	}
+	absolute, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(absolute)
+	if err != nil {
+		return "", fmt.Errorf("stat %s: %w", absolute, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", absolute)
+	}
+	return absolute, nil
+}
+
+func repositoryMergeBase(t *testing.T, left, right string) string {
+	t.Helper()
+	command := exec.Command("git", "merge-base", left, right)
+	command.Dir = filepath.Join("..", "..")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve git merge-base %s %s: %v\n%s", left, right, err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func fileSHA256(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read performance binary %s: %v", path, err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data))
+}
+
+func chromeVersion(t *testing.T, executable string) string {
+	t.Helper()
+	output, err := exec.Command(executable, "--version").CombinedOutput()
+	if err != nil {
+		t.Fatalf("read Chromium version from %s: %v\n%s", executable, err, output)
+	}
+	version := strings.TrimSpace(string(output))
+	if version == "" {
+		t.Fatalf("Chromium version from %s is empty", executable)
+	}
+	return version
+}
+
+func durationMilliseconds(duration time.Duration) float64 {
+	return float64(duration.Microseconds()) / 1000
+}
+
+func (report performanceReport) String() string {
+	return fmt.Sprintf("%s performance report with %d metrics", report.Mode, len(report.Samples))
+}

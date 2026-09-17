@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ronaknnathani/relay/internal/agent"
@@ -48,6 +49,18 @@ type AgentLister interface {
 	Agents() ([]herdr.Agent, error)
 }
 
+// AgentSnapshot carries worker data together with cache provenance.
+type AgentSnapshot struct {
+	Agents      []herdr.Agent
+	Stale       bool
+	FetchedAt   string
+	StaleReason string
+}
+
+type agentProvenanceLister interface {
+	AgentsWithProvenance() (AgentSnapshot, error)
+}
+
 // Options supplies optional snapshot detail and external sources.
 type Options struct {
 	Now    func() time.Time
@@ -58,6 +71,7 @@ type Options struct {
 	Agents        AgentLister
 	ArtifactLimit int64
 	DetailItem    string
+	LocalOnly     bool
 }
 
 // Build constructs a read-only snapshot of an active or archived program.
@@ -83,8 +97,21 @@ func Build(slug string, options Options) (Snapshot, error) {
 	generatedAt := now().UTC()
 	snapshot.Schema = SchemaVersion
 	snapshot.GeneratedAt = generatedAt.Format(time.RFC3339)
+	snapshot.Refresh = RefreshDTO{Status: "fresh"}
 	snapshot.Program = programDTO(p, path)
 	snapshot.Patrol = patrolDTO(p.Slug, p.Agent, &snapshot)
+	if options.LocalOnly {
+		snapshot.SourceHealth.GitHub = SourceDTO{
+			Status: "loading", Warnings: []string{"GitHub refresh pending"},
+		}
+		snapshot.SourceHealth.Herdr = SourceDTO{
+			Status: "loading", Warnings: []string{"Herdr refresh pending"},
+		}
+		snapshot.Warnings = append(snapshot.Warnings, "GitHub refresh pending", "Herdr refresh pending")
+		options.GitHub = nil
+		options.PRIndex = nil
+		options.Agents = nil
+	}
 	detailItem := selectedItem(p.Items, options.DetailItem)
 	if options.DetailItem != "" && detailItem == "" {
 		snapshot.Warnings = append(snapshot.Warnings, fmt.Sprintf("detail item %q not found", options.DetailItem))
@@ -92,6 +119,22 @@ func Build(slug string, options Options) (Snapshot, error) {
 	snapshot.DetailItem = detailItem
 
 	options.GitHub = newMemoFetcher(options.GitHub)
+	type agentResult struct {
+		snapshot AgentSnapshot
+		err      error
+	}
+	var agentsResult <-chan agentResult
+	if options.Agents != nil {
+		channel := make(chan agentResult, 1)
+		agentsResult = channel
+		go func() {
+			agentSnapshot, err := listAgents(options.Agents, generatedAt)
+			channel <- agentResult{snapshot: agentSnapshot, err: err}
+		}()
+	}
+	prefetched := prefetchPullRequests(
+		context.Background(), p.Repo, recordedPullRequestRefs(p.Items), options.GitHub,
+	)
 	views, projectWarnings, err := projectViewsForSnapshot(p, options)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load child project views: %w", err)
@@ -116,11 +159,16 @@ func Build(slug string, options Options) (Snapshot, error) {
 		displayIdentity(p.Title, artifactBody(snapshot.ProgramArtifacts, "goal.md"))
 	snapshot.OpenDecisions, snapshot.ResolvedDecisions = decisionLists(observed.Decisions)
 
-	agents := []herdr.Agent{}
-	agentsErr := error(nil)
-	if options.Agents != nil {
+	var agents []herdr.Agent
+	var agentSnapshot AgentSnapshot
+	var agentsErr error
+	if agentsResult != nil {
 		snapshot.SourceHealth.Herdr.Status = "ok"
-		agents, agentsErr = options.Agents.Agents()
+		result := <-agentsResult
+		agentSnapshot, agentsErr = result.snapshot, result.err
+		agents = agentSnapshot.Agents
+		snapshot.SourceHealth.Herdr.Stale = agentSnapshot.Stale
+		snapshot.SourceHealth.Herdr.FetchedAt = agentSnapshot.FetchedAt
 		if agentsErr != nil {
 			addSourceWarning(&snapshot, &snapshot.SourceHealth.Herdr, fmt.Sprintf("list Herdr agents: %v", agentsErr))
 		}
@@ -134,10 +182,88 @@ func Build(slug string, options Options) (Snapshot, error) {
 	}
 	snapshot.Items = buildItems(
 		context.Background(), observed, plan, orphaned, detailItem, limit,
-		options.GitHub, agents, agentsErr, &snapshot,
+		true, options.GitHub, prefetched, agents, agentSnapshot, agentsErr, &snapshot,
 	)
-	snapshot.Contracts = buildContracts(programDir, observed.Contracts, selectedContractRefs(observed.Items, detailItem), limit, &snapshot.Warnings)
+	snapshot.Contracts = buildContracts(
+		programDir, observed.Contracts, selectedContractRefs(observed.Items, detailItem),
+		limit, &snapshot.Warnings,
+	)
 	return snapshot, nil
+}
+
+func listAgents(lister AgentLister, generatedAt time.Time) (AgentSnapshot, error) {
+	if provenance, ok := lister.(agentProvenanceLister); ok {
+		return provenance.AgentsWithProvenance()
+	}
+	agents, err := lister.Agents()
+	result := AgentSnapshot{Agents: agents}
+	if err == nil {
+		result.FetchedAt = generatedAt.Format(time.RFC3339Nano)
+	} else if len(agents) > 0 {
+		result.Stale = true
+		result.StaleReason = err.Error()
+	}
+	return result, err
+}
+
+func recordedPullRequestRefs(items []program.WorkItem) []string {
+	seen := make(map[string]bool)
+	refs := make([]string, 0)
+	for _, item := range items {
+		ref := strings.TrimSpace(item.PRRef)
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	return refs
+}
+
+func prefetchPullRequests(
+	ctx context.Context,
+	repo string,
+	refs []string,
+	fetcher Fetcher,
+) map[string]memoResult {
+	results := make(map[string]memoResult, len(refs))
+	if fetcher == nil || len(refs) == 0 {
+		return results
+	}
+	const parallelism = 4
+	type fetchedResult struct {
+		ref    string
+		result memoResult
+	}
+	jobs := make(chan string)
+	fetched := make(chan fetchedResult)
+	var wait sync.WaitGroup
+	workers := min(parallelism, len(refs))
+	wait.Add(workers)
+	for range workers {
+		go func() {
+			defer wait.Done()
+			for ref := range jobs {
+				pullRequest, err := fetcher.Fetch(ctx, repo, ref)
+				fetched <- fetchedResult{
+					ref: ref, result: memoResult{pullRequest: pullRequest, err: err},
+				}
+			}
+		}()
+	}
+	go func() {
+		for _, ref := range refs {
+			jobs <- ref
+		}
+		close(jobs)
+		wait.Wait()
+		close(fetched)
+	}()
+	for entry := range fetched {
+		results[entry.ref] = entry.result
+	}
+	return results
 }
 
 // projectViewsForSnapshot resolves child state with the same authoritative
@@ -145,6 +271,9 @@ func Build(slug string, options Options) (Snapshot, error) {
 // identical capacity, status, and readiness. A configured pull request fetcher
 // is reused as the lifecycle source instead of running a second GitHub query.
 func projectViewsForSnapshot(p program.Program, options Options) ([]program.ProjectView, []ProjectWarning, error) {
+	if options.LocalOnly {
+		return projectViews(p, nil)
+	}
 	index := options.PRIndex
 	if index == nil {
 		index = NewFetcherPRIndex(context.Background(), p.Repo, options.GitHub)
@@ -489,8 +618,11 @@ func buildItems(
 	orphaned map[string]bool,
 	detailItem string,
 	limit int64,
+	includeArtifacts bool,
 	github Fetcher,
+	prefetched map[string]memoResult,
 	agents []herdr.Agent,
+	agentSnapshot AgentSnapshot,
 	agentsErr error,
 	snapshot *Snapshot,
 ) []ItemDTO {
@@ -506,87 +638,166 @@ func buildItems(
 		reasons[blocked.Item.ID] = append([]string(nil), blocked.Reasons...)
 	}
 
+	type builtItem struct {
+		dto      ItemDTO
+		snapshot Snapshot
+	}
+	built := make([]builtItem, len(items))
+	jobs := make(chan int)
+	var wait sync.WaitGroup
+	workers := min(8, len(items))
+	wait.Add(workers)
+	for range workers {
+		go func() {
+			defer wait.Done()
+			for index := range jobs {
+				itemSnapshot := emptySnapshot()
+				built[index] = builtItem{
+					dto: buildItem(
+						ctx, p, items[index], ready, reasons, dependents, orphaned,
+						detailItem, limit, includeArtifacts, github, prefetched, agents, agentSnapshot, agentsErr,
+						&itemSnapshot,
+					),
+					snapshot: itemSnapshot,
+				}
+			}
+		}()
+	}
+	for index := range items {
+		jobs <- index
+	}
+	close(jobs)
+	wait.Wait()
+
 	result := make([]ItemDTO, 0, len(items))
-	for _, item := range items {
-		dto := ItemDTO{
-			ID:           item.ID,
-			Kind:         string(item.Kind),
-			Title:        item.Title,
-			Priority:     string(item.Priority),
-			Status:       string(item.Status),
-			Lane:         string(item.Status),
-			Repo:         item.Repo,
-			ProjectSlug:  item.ProjectSlug,
-			Ready:        ready[item.ID],
-			Orphaned:     orphaned[item.ID],
-			Reasons:      nonNilStrings(reasons[item.ID]),
-			Dependencies: nonNilStrings(item.Dependencies),
-			Dependents:   nonNilStrings(dependents[item.ID]),
-			Contracts:    nonNilStrings(item.ContractRefs),
-			Notes:        nonNilStrings(item.Notes),
-			Timestamps: ItemTimestampsDTO{
-				CreatedAt:    item.CreatedAt,
-				UpdatedAt:    item.UpdatedAt,
-				DispatchedAt: item.DispatchedAt,
-				InReviewAt:   item.InReviewAt,
-				MergedAt:     item.MergedAt,
-				CanceledAt:   item.CancelledAt,
-			},
-			Mailbox:   emptyMailbox(),
-			Decisions: itemDecisions(p.Decisions, item.ID),
-			Artifacts: missingChildArtifacts(),
-			Warnings:  []string{},
+	for _, item := range built {
+		result = append(result, item.dto)
+		for _, warning := range item.snapshot.SourceHealth.Mailbox.Warnings {
+			addSourceWarning(snapshot, &snapshot.SourceHealth.Mailbox, warning)
 		}
-		if dto.Orphaned {
-			dto.Reasons = append(dto.Reasons, "linked child project is missing or archived without verified merge")
+		for _, warning := range item.snapshot.SourceHealth.GitHub.Warnings {
+			addSourceWarning(snapshot, &snapshot.SourceHealth.GitHub, warning)
 		}
-		if item.PRGrantedAt != "" {
-			dto.Grant = &GrantDTO{GrantedAt: item.PRGrantedAt, GrantedBy: item.PRGrantedBy}
-		}
-		childDir, manifest, archived, childErr := loadChild(item.ProjectSlug)
-		if childErr != nil && item.ProjectSlug != "" {
-			dto.Warnings = append(dto.Warnings, childErr.Error())
-		}
-		if agentsErr != nil && item.ProjectSlug != "" {
-			dto.Warnings = append(dto.Warnings, fmt.Sprintf("Herdr unavailable: %v", agentsErr))
-		}
-		if childErr == nil && item.ProjectSlug != "" {
+		mergeSourceProvenance(&snapshot.SourceHealth.GitHub, item.snapshot.SourceHealth.GitHub)
+	}
+	return result
+}
+
+func buildItem(
+	ctx context.Context,
+	p program.Program,
+	item program.WorkItem,
+	ready map[string]bool,
+	reasons map[string][]string,
+	dependents map[string][]string,
+	orphaned map[string]bool,
+	detailItem string,
+	limit int64,
+	includeArtifacts bool,
+	github Fetcher,
+	prefetched map[string]memoResult,
+	agents []herdr.Agent,
+	agentSnapshot AgentSnapshot,
+	agentsErr error,
+	snapshot *Snapshot,
+) ItemDTO {
+	artifacts := []ArtifactDTO{}
+	if includeArtifacts {
+		artifacts = missingChildArtifacts()
+	}
+	dto := ItemDTO{
+		ID:           item.ID,
+		Kind:         string(item.Kind),
+		Title:        item.Title,
+		Priority:     string(item.Priority),
+		Status:       string(item.Status),
+		Lane:         string(item.Status),
+		Repo:         item.Repo,
+		ProjectSlug:  item.ProjectSlug,
+		Ready:        ready[item.ID],
+		Orphaned:     orphaned[item.ID],
+		Reasons:      nonNilStrings(reasons[item.ID]),
+		Dependencies: nonNilStrings(item.Dependencies),
+		Dependents:   nonNilStrings(dependents[item.ID]),
+		Contracts:    nonNilStrings(item.ContractRefs),
+		Notes:        nonNilStrings(item.Notes),
+		Timestamps: ItemTimestampsDTO{
+			CreatedAt:    item.CreatedAt,
+			UpdatedAt:    item.UpdatedAt,
+			DispatchedAt: item.DispatchedAt,
+			InReviewAt:   item.InReviewAt,
+			MergedAt:     item.MergedAt,
+			CanceledAt:   item.CancelledAt,
+		},
+		Mailbox:   emptyMailbox(),
+		Decisions: itemDecisions(p.Decisions, item.ID),
+		Artifacts: artifacts,
+		Warnings:  []string{},
+	}
+	if !includeArtifacts {
+		dto.Repo = ""
+		dto.ProjectSlug = ""
+		dto.Contracts = []string{}
+		dto.Notes = []string{}
+		dto.Timestamps = ItemTimestampsDTO{}
+		dto.Decisions = []DecisionDTO{}
+	}
+	if dto.Orphaned {
+		dto.Reasons = append(dto.Reasons, "linked child project is missing or archived without verified merge")
+	}
+	if item.PRGrantedAt != "" {
+		dto.Grant = &GrantDTO{GrantedAt: item.PRGrantedAt, GrantedBy: item.PRGrantedBy}
+	}
+	childDir, manifest, archived, childErr := loadChild(item.ProjectSlug)
+	if childErr != nil && item.ProjectSlug != "" {
+		dto.Warnings = append(dto.Warnings, childErr.Error())
+	}
+	if agentsErr != nil && item.ProjectSlug != "" {
+		dto.Warnings = append(dto.Warnings, fmt.Sprintf("Herdr unavailable: %v", agentsErr))
+	}
+	if childErr == nil && item.ProjectSlug != "" {
+		dto.ChildAvailable = true
+		if includeArtifacts {
 			dto.Child = childDTO(manifest, childDir, archived, &dto.Warnings)
 			dto.Artifacts = childArtifacts(childDir, detailItem == item.ID, limit, &dto.Warnings)
 			dto.Mailbox = mailboxCounts(childDir, item.ID, snapshot, &dto.Warnings)
-			dto.RecordedPR = recordedPullRequest(manifest, filepath.Join(childDir, "state.json"), item.PRRef, &dto.Warnings)
-			worktree := ""
-			if manifest.Worktree != nil {
-				worktree = *manifest.Worktree
-			}
-			if agentsErr == nil {
-				if agent, ok := herdr.FindLiveWorker(agents, manifest.Slug, manifest.Repo, worktree); ok {
-					dto.Worker = workerDTO(agent)
-				}
-			}
-		} else if item.PRRef != "" {
-			dto.RecordedPR = pullRequestFromRef(item.PRRef)
 		}
-		if item.ProjectSlug != "" && childErr != nil {
-			dto.Mailbox.Available = false
-			addSourceWarning(snapshot, &snapshot.SourceHealth.Mailbox, fmt.Sprintf("item %s mailbox unavailable: child project %q not found", item.ID, item.ProjectSlug))
+		dto.RecordedPR = recordedPullRequest(manifest, filepath.Join(childDir, "state.json"), item.PRRef, &dto.Warnings)
+		worktree := ""
+		if manifest.Worktree != nil {
+			worktree = *manifest.Worktree
 		}
-		if github != nil && dto.RecordedPR != nil {
-			live, err := github.Fetch(ctx, p.Repo, dto.RecordedPR.Ref)
-			if err != nil {
-				message := fmt.Sprintf("item %s GitHub refresh failed: %v", item.ID, err)
-				dto.Warnings = append(dto.Warnings, message)
-				addSourceWarning(snapshot, &snapshot.SourceHealth.GitHub, message)
-				if live.Stale {
-					dto.LivePR = &live
-				}
-			} else {
+		if agent, ok := herdr.FindLiveWorker(agents, manifest.Slug, manifest.Repo, worktree); ok {
+			dto.Worker = workerDTO(agent, agentSnapshot)
+		}
+	} else if item.PRRef != "" {
+		dto.RecordedPR = pullRequestFromRef(item.PRRef)
+	}
+	if item.ProjectSlug != "" && childErr != nil {
+		dto.Mailbox.Available = false
+		addSourceWarning(snapshot, &snapshot.SourceHealth.Mailbox,
+			fmt.Sprintf("item %s mailbox unavailable: child project %q not found", item.ID, item.ProjectSlug))
+	}
+	if github != nil && dto.RecordedPR != nil {
+		result, ok := prefetched[dto.RecordedPR.Ref]
+		if !ok {
+			result.pullRequest, result.err = github.Fetch(ctx, p.Repo, dto.RecordedPR.Ref)
+		}
+		live, err := result.pullRequest, result.err
+		snapshot.SourceHealth.GitHub.FetchedAt = live.FetchedAt
+		snapshot.SourceHealth.GitHub.Stale = live.Stale
+		if err != nil {
+			message := fmt.Sprintf("item %s GitHub refresh failed: %v", item.ID, err)
+			dto.Warnings = append(dto.Warnings, message)
+			addSourceWarning(snapshot, &snapshot.SourceHealth.GitHub, message)
+			if live.Stale {
 				dto.LivePR = &live
 			}
+		} else {
+			dto.LivePR = &live
 		}
-		result = append(result, dto)
 	}
-	return result
+	return dto
 }
 
 func dependentIDs(items []program.WorkItem) map[string][]string {
@@ -816,12 +1027,13 @@ func pullRequestFromRef(ref string) *PullRequestDTO {
 	return result
 }
 
-func workerDTO(agent herdr.Agent) *WorkerDTO {
+func workerDTO(agent herdr.Agent, provenance AgentSnapshot) *WorkerDTO {
 	return &WorkerDTO{
 		Status: string(agent.Status), PaneID: agent.PaneID, TabID: agent.TabID,
 		WorkspaceID: agent.WorkspaceID, TerminalTitle: agent.TerminalTitle,
 		CWD: agent.CWD, ForegroundCWD: agent.ForegroundCWD,
-		NativeSessionID: agent.NativeSessionID,
+		NativeSessionID: agent.NativeSessionID, Stale: provenance.Stale,
+		FetchedAt: provenance.FetchedAt, StaleReason: provenance.StaleReason,
 	}
 }
 
@@ -878,6 +1090,13 @@ func addSourceWarning(snapshot *Snapshot, source *SourceDTO, warning string) {
 	snapshot.Warnings = append(snapshot.Warnings, warning)
 }
 
+func mergeSourceProvenance(target *SourceDTO, source SourceDTO) {
+	target.Stale = target.Stale || source.Stale
+	if source.FetchedAt > target.FetchedAt {
+		target.FetchedAt = source.FetchedAt
+	}
+}
+
 func numberedID(id string) int {
 	number, err := strconv.Atoi(strings.TrimLeft(id, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"))
 	if err != nil {
@@ -924,13 +1143,26 @@ func missingChildArtifacts() []ArtifactDTO {
 }
 
 func childArtifacts(childDir string, includeText bool, limit int64, warnings *[]string) []ArtifactDTO {
-	result := make([]ArtifactDTO, 0, len(childArtifactNames))
-	for _, name := range childArtifactNames {
-		artifact, err := readArtifact(childDir, name, limit, includeText)
-		if err != nil {
-			*warnings = append(*warnings, err.Error())
+	type artifactResult struct {
+		artifact ArtifactDTO
+		err      error
+	}
+	loaded := make([]artifactResult, len(childArtifactNames))
+	var wait sync.WaitGroup
+	wait.Add(len(childArtifactNames))
+	for index, name := range childArtifactNames {
+		go func() {
+			defer wait.Done()
+			loaded[index].artifact, loaded[index].err = readArtifact(childDir, name, limit, includeText)
+		}()
+	}
+	wait.Wait()
+	result := make([]ArtifactDTO, 0, len(loaded))
+	for _, loadedArtifact := range loaded {
+		if loadedArtifact.err != nil {
+			*warnings = append(*warnings, loadedArtifact.err.Error())
 		}
-		result = append(result, artifact)
+		result = append(result, loadedArtifact.artifact)
 	}
 	return result
 }

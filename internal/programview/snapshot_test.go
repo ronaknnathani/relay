@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -239,6 +240,161 @@ func TestBuildPopulatesProgramDetailAndDegradesPerSource(t *testing.T) {
 	}
 }
 
+func TestBuildLocalOnlySkipsExternalSourcesAndKeepsLocalProgramArtifacts(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	at := "2026-09-14T20:00:00Z"
+	p := program.Program{
+		Revision: 1, Slug: "local-only", Title: "Local only", Repo: repo,
+		State: program.StateActive, Agent: "copilot", MaxOpenPRs: 2,
+		CreatedAt: at, UpdatedAt: at, ApprovalRequestedAt: at, ApprovedAt: at, ApprovedBy: "test",
+		Items: []program.WorkItem{{
+			ID: "w1", Kind: program.ItemKindChange, Title: "task",
+			Priority: program.PriorityP1, Status: program.ItemDispatched,
+			Dependencies: []string{}, ContractRefs: []string{"api@v1"},
+			Repo: repo, ProjectSlug: "local-child", PRRef: "#42", Notes: []string{"local note"},
+			CreatedAt: at, UpdatedAt: at, DispatchedAt: at,
+		}},
+		Contracts: []program.Contract{{
+			Name: "api", Version: 1, Ref: "api@v1", Path: "contracts/api/v1.md",
+			SHA256: "abc", Status: program.ContractApproved, PublishedAt: at,
+			ApprovedAt: at, ApprovedBy: "test",
+		}},
+		Decisions: []program.Decision{{
+			ID: "d1", Kind: program.DecisionQuestion, RaisedBy: program.RaisedByTL,
+			ItemID: "w1", Question: "Use the local seed?", Options: []string{"yes"}, CreatedAt: at,
+		}},
+	}
+	if err := program.Create(p); err != nil {
+		t.Fatal(err)
+	}
+	childDir := filepath.Join(project.ActiveDir(), "local-child")
+	if err := os.MkdirAll(childDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(repo, ".worktrees", "local-child")
+	if err := project.Save(project.ManifestPath(project.ActiveDir(), "local-child"), project.Manifest{
+		Slug: "local-child", Title: "Local child", Repo: repo, Branch: "feature",
+		BaseBranch: "main", Worktree: &worktree, Status: "active", Workflow: "deliver-pr",
+		Program: p.Slug, ProgramItem: "w1", Phase: "implement", Created: at, Updated: at,
+		PhasesCompleted: []string{}, PhasesRemaining: []string{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(childDir, "plan.md"), "task body")
+	programDir := program.ProgramDir(program.ActiveDir(), p.Slug)
+	writeTestFile(t, filepath.Join(programDir, "goal.md"), "goal")
+	writeTestFile(t, filepath.Join(programDir, "contracts", "api", "v1.md"), "contract body")
+
+	var githubCalls, agentCalls int
+	got, err := Build(p.Slug, Options{
+		LocalOnly: true,
+		GitHub: fetcherFunc(func(context.Context, string, string) (PullRequestDTO, error) {
+			githubCalls++
+			return PullRequestDTO{}, nil
+		}),
+		PRIndex: prIndexFunc(func(string) (PRState, bool) {
+			githubCalls++
+			return PRStateOpen, true
+		}),
+		Agents: agentListerFunc(func() ([]herdr.Agent, error) {
+			agentCalls++
+			return nil, nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if githubCalls != 0 || agentCalls != 0 {
+		t.Fatalf("external calls = GitHub %d, Herdr %d; want zero", githubCalls, agentCalls)
+	}
+	if got.SourceHealth.GitHub.Status != "loading" || got.SourceHealth.Herdr.Status != "loading" {
+		t.Fatalf("source health = %+v", got.SourceHealth)
+	}
+	item := findSnapshotItem(t, got.Items, "w1")
+	if item.Repo != repo || item.ProjectSlug != "local-child" ||
+		len(item.Contracts) != 1 || item.Contracts[0] != "api@v1" ||
+		len(item.Notes) != 1 || item.Notes[0] != "local note" ||
+		item.Timestamps.DispatchedAt != at || item.Child == nil ||
+		item.Child.Manifest.Slug != "local-child" || len(item.Decisions) != 1 {
+		t.Fatalf("local task metadata = %+v", item)
+	}
+	for _, artifact := range item.Artifacts {
+		if artifact.Text != nil {
+			t.Fatalf("task artifact included text: %+v", artifact)
+		}
+		if artifact.Path != artifact.Name {
+			t.Fatalf("task artifact path = %q, want %q", artifact.Path, artifact.Name)
+		}
+	}
+	if len(got.ProgramArtifacts) != 3 || !got.ProgramArtifacts[0].Present {
+		t.Fatalf("program artifact metadata = %+v", got.ProgramArtifacts)
+	}
+	if artifactText(got.ProgramArtifacts[0]) != "goal" {
+		t.Fatalf("local goal artifact = %+v", got.ProgramArtifacts[0])
+	}
+	if got.Program.DisplayTitle != "Local only" || got.Program.Summary != "goal" {
+		t.Fatalf("local program identity = %+v", got.Program)
+	}
+	if len(got.OpenDecisions) != 1 || len(got.Contracts) != 1 {
+		t.Fatalf("local decisions/contracts = %+v / %+v", got.OpenDecisions, got.Contracts)
+	}
+	if got.Contracts[0].Artifact.Text != nil {
+		t.Fatalf("contract artifact included text: %+v", got.Contracts[0].Artifact)
+	}
+	if got.Items == nil || got.Contracts == nil || got.Warnings == nil {
+		t.Fatalf("local snapshot contains nil arrays: %+v", got)
+	}
+
+	data, err := json.Marshal(ArtifactDTO{Name: "missing.md", Path: "missing.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"name":"missing.md","path":"missing.md","present":false,"size":0,"updated_at":"","truncated":false}` {
+		t.Fatalf("artifact JSON = %s", data)
+	}
+}
+
+func TestBuildPrefetchesPullRequestsWithBoundedConcurrency(t *testing.T) {
+	release := make(chan struct{})
+	var active, maximum atomic.Int32
+	fetcher := fetcherFunc(func(context.Context, string, string) (PullRequestDTO, error) {
+		current := active.Add(1)
+		for {
+			observed := maximum.Load()
+			if current <= observed || maximum.CompareAndSwap(observed, current) {
+				break
+			}
+		}
+		<-release
+		active.Add(-1)
+		return PullRequestDTO{State: "open"}, nil
+	})
+	done := make(chan struct{})
+	var results map[string]memoResult
+	go func() {
+		results = prefetchPullRequests(context.Background(), "/repo",
+			[]string{"#1", "#2", "#3", "#4", "#5", "#6", "#7", "#8"}, fetcher)
+		close(done)
+	}()
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for maximum.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	<-done
+	if got := maximum.Load(); got < 2 || got > 4 {
+		t.Fatalf("maximum concurrent fetches = %d, want 2-4", got)
+	}
+	if len(results) != 8 {
+		t.Fatalf("prefetched results = %d, want 8", len(results))
+	}
+}
+
 type fetcherFunc func(context.Context, string, string) (PullRequestDTO, error)
 
 func (f fetcherFunc) Fetch(ctx context.Context, repo, ref string) (PullRequestDTO, error) {
@@ -249,6 +405,19 @@ type agentListerFunc func() ([]herdr.Agent, error)
 
 func (f agentListerFunc) Agents() ([]herdr.Agent, error) {
 	return f()
+}
+
+type provenanceAgentLister struct {
+	result AgentSnapshot
+	err    error
+}
+
+func (l provenanceAgentLister) Agents() ([]herdr.Agent, error) {
+	return l.result.Agents, l.err
+}
+
+func (l provenanceAgentLister) AgentsWithProvenance() (AgentSnapshot, error) {
+	return l.result, l.err
 }
 
 func writeTestFile(t *testing.T, path, content string) {
@@ -334,9 +503,12 @@ func TestBuildUsesStalePRAndReportsDegradedSources(t *testing.T) {
 				Stale: true, FetchedAt: at, StaleReason: "gh unavailable",
 			}, errors.New("gh unavailable")
 		}),
-		Agents: agentListerFunc(func() ([]herdr.Agent, error) {
-			return nil, errors.New("herdr unavailable")
-		}),
+		Agents: provenanceAgentLister{
+			result: AgentSnapshot{Agents: []herdr.Agent{{
+				Status: herdr.StatusWorking, PaneID: "pane-stale", CWD: worktree,
+			}}, Stale: true, FetchedAt: at, StaleReason: "herdr unavailable"},
+			err: errors.New("herdr unavailable"),
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -346,11 +518,18 @@ func TestBuildUsesStalePRAndReportsDegradedSources(t *testing.T) {
 		item.LivePR == nil || !item.LivePR.Stale || item.LivePR.FetchedAt != at {
 		t.Fatalf("PR provenance = recorded %+v live %+v", item.RecordedPR, item.LivePR)
 	}
+	if item.Worker == nil || item.Worker.PaneID != "pane-stale" ||
+		!item.Worker.Stale || item.Worker.FetchedAt != at ||
+		item.Worker.StaleReason != "herdr unavailable" {
+		t.Fatalf("stale Herdr worker = %+v", item.Worker)
+	}
 	if artifactText(item.Artifacts[0]) != "12345" || !item.Artifacts[0].Truncated {
 		t.Fatalf("truncated artifact = %+v", item.Artifacts[0])
 	}
 	if got.SourceHealth.GitHub.Status != "degraded" ||
+		!got.SourceHealth.GitHub.Stale || got.SourceHealth.GitHub.FetchedAt != at ||
 		got.SourceHealth.Herdr.Status != "degraded" ||
+		!got.SourceHealth.Herdr.Stale || got.SourceHealth.Herdr.FetchedAt != at ||
 		got.SourceHealth.Mailbox.Status != "degraded" {
 		t.Fatalf("source health = %+v", got.SourceHealth)
 	}

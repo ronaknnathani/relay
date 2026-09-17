@@ -15,23 +15,25 @@ import (
 )
 
 const (
-	snapshotTTL = 2 * time.Second
-	githubTTL   = 12 * time.Second
+	snapshotTTL        = 5 * time.Second
+	githubTTL          = 12 * time.Second
+	initialRefreshWait = 500 * time.Millisecond
 )
 
 var programUIHerdrCommandTimeout = 5 * time.Second
 
 // Options configures the foreground local Program UI server.
 type Options struct {
-	Slug        string
-	Port        int
-	Open        bool
-	Out         io.Writer
-	Builder     Builder
-	GitHub      programview.Fetcher
-	Agents      programview.AgentLister
-	Now         func() time.Time
-	OpenBrowser func(string) error
+	Slug         string
+	Port         int
+	Open         bool
+	Out          io.Writer
+	Builder      Builder
+	LocalBuilder Builder
+	GitHub       programview.Fetcher
+	Agents       programview.AgentLister
+	Now          func() time.Time
+	OpenBrowser  func(string) error
 }
 
 // Serve verifies the program, listens on loopback, and blocks until cancellation.
@@ -44,6 +46,7 @@ func Serve(ctx context.Context, options Options) error {
 		now = time.Now
 	}
 	builder := options.Builder
+	localBuilder := options.LocalBuilder
 	if builder == nil {
 		github := options.GitHub
 		if github == nil {
@@ -56,16 +59,34 @@ func Serve(ctx context.Context, options Options) error {
 				ctx, programUIHerdrCommandTimeout,
 			)
 		}
+		if agents != nil {
+			agents = newAgentCache(agents, githubTTL, now)
+		}
 		builder = func(slug, detailItem string) (programview.Snapshot, error) {
 			return programview.Build(slug, programview.Options{
 				Now: now, GitHub: cachedGitHub, Agents: agents, DetailItem: detailItem,
 			})
 		}
+		if localBuilder == nil {
+			localBuilder = func(slug, detailItem string) (programview.Snapshot, error) {
+				return programview.Build(slug, programview.Options{
+					Now: now, GitHub: cachedGitHub, Agents: agents,
+					DetailItem: detailItem, LocalOnly: true,
+				})
+			}
+		}
+	}
+	if localBuilder == nil {
+		localBuilder = builder
 	}
 	cache := newSnapshotCache(snapshotTTL, now, builder)
-	if _, err := cache.Get(options.Slug, ""); err != nil {
+	seed, err := localBuilder(options.Slug, "")
+	if err != nil {
 		return fmt.Errorf("verify program %q: %w", options.Slug, err)
 	}
+	feed := newSnapshotFeed(seed, snapshotTTL, now, func() (programview.Snapshot, error) {
+		return builder(options.Slug, "")
+	})
 	if err := ctx.Err(); err != nil {
 		return nil
 	}
@@ -81,7 +102,7 @@ func Serve(ctx context.Context, options Options) error {
 	}
 	url := "http://127.0.0.1:" + actualPort
 	server := &http.Server{
-		Handler:           newHandler(options.Slug, actualPort, cache),
+		Handler:           newHandler(options.Slug, actualPort, cache, feed, defaultArtifactLoader),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	serveError := make(chan error, 1)
@@ -97,6 +118,15 @@ func Serve(ctx context.Context, options Options) error {
 		stopErr := stopServer(server, serveError)
 		return errors.Join(fmt.Errorf("print program UI URL: %w", err), stopErr)
 	}
+	go func() {
+		timer := time.NewTimer(initialRefreshWait)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+			feed.Refresh()
+		}
+	}()
 	if options.Open {
 		openBrowser := options.OpenBrowser
 		if openBrowser == nil {
@@ -115,7 +145,19 @@ func Serve(ctx context.Context, options Options) error {
 		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownContext); err != nil {
-			return fmt.Errorf("shut down program UI: %w", err)
+			closeErr := server.Close()
+			serveErr := <-serveError
+			if errors.Is(serveErr, http.ErrServerClosed) {
+				serveErr = nil
+			}
+			if closeErr != nil || serveErr != nil {
+				return errors.Join(
+					fmt.Errorf("force close program UI after graceful shutdown: %w", err),
+					closeErr,
+					serveErr,
+				)
+			}
+			return nil
 		}
 		err := <-serveError
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {

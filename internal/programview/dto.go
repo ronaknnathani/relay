@@ -7,6 +7,7 @@ const SchemaVersion = "relay.program.v1"
 type Snapshot struct {
 	Schema            string          `json:"schema"`
 	GeneratedAt       string          `json:"generated_at"`
+	Refresh           RefreshDTO      `json:"refresh"`
 	DetailItem        string          `json:"detail_item"`
 	Program           ProgramDTO      `json:"program"`
 	Patrol            PatrolDTO       `json:"patrol"`
@@ -20,6 +21,13 @@ type Snapshot struct {
 	ProgramArtifacts  []ArtifactDTO   `json:"program_artifacts"`
 	Warnings          []string        `json:"warnings"`
 	SourceHealth      SourceHealthDTO `json:"source_health"`
+}
+
+// RefreshDTO reports whether a snapshot is current or retained during a refresh.
+type RefreshDTO struct {
+	Status     string `json:"status"`
+	Error      string `json:"error,omitempty"`
+	Refreshing bool   `json:"refreshing"`
 }
 
 // PatrolDTO contains the read-only adaptive patrol runtime summary.
@@ -140,31 +148,32 @@ type GraphEdgeDTO struct {
 
 // ItemDTO contains durable and observed work item state.
 type ItemDTO struct {
-	ID           string            `json:"id"`
-	Kind         string            `json:"kind"`
-	Title        string            `json:"title"`
-	Priority     string            `json:"priority"`
-	Status       string            `json:"status"`
-	Lane         string            `json:"lane"`
-	Repo         string            `json:"repo"`
-	ProjectSlug  string            `json:"project_slug"`
-	Ready        bool              `json:"ready"`
-	Orphaned     bool              `json:"orphaned"`
-	Reasons      []string          `json:"reasons"`
-	Dependencies []string          `json:"dependencies"`
-	Dependents   []string          `json:"dependents"`
-	Contracts    []string          `json:"contracts"`
-	Notes        []string          `json:"notes"`
-	Timestamps   ItemTimestampsDTO `json:"timestamps"`
-	Grant        *GrantDTO         `json:"grant,omitempty"`
-	Child        *ChildDTO         `json:"child,omitempty"`
-	RecordedPR   *PullRequestDTO   `json:"recorded_pr,omitempty"`
-	LivePR       *PullRequestDTO   `json:"live_pr,omitempty"`
-	Worker       *WorkerDTO        `json:"worker,omitempty"`
-	Mailbox      MailboxDTO        `json:"mailbox"`
-	Decisions    []DecisionDTO     `json:"decisions"`
-	Artifacts    []ArtifactDTO     `json:"artifacts"`
-	Warnings     []string          `json:"warnings"`
+	ID             string            `json:"id"`
+	Kind           string            `json:"kind"`
+	Title          string            `json:"title"`
+	Priority       string            `json:"priority"`
+	Status         string            `json:"status"`
+	Lane           string            `json:"lane"`
+	Repo           string            `json:"repo"`
+	ProjectSlug    string            `json:"project_slug"`
+	Ready          bool              `json:"ready"`
+	Orphaned       bool              `json:"orphaned"`
+	Reasons        []string          `json:"reasons"`
+	Dependencies   []string          `json:"dependencies"`
+	Dependents     []string          `json:"dependents"`
+	Contracts      []string          `json:"contracts"`
+	Notes          []string          `json:"notes"`
+	Timestamps     ItemTimestampsDTO `json:"timestamps"`
+	Grant          *GrantDTO         `json:"grant,omitempty"`
+	ChildAvailable bool              `json:"child_available"`
+	Child          *ChildDTO         `json:"child,omitempty"`
+	RecordedPR     *PullRequestDTO   `json:"recorded_pr,omitempty"`
+	LivePR         *PullRequestDTO   `json:"live_pr,omitempty"`
+	Worker         *WorkerDTO        `json:"worker,omitempty"`
+	Mailbox        MailboxDTO        `json:"mailbox"`
+	Decisions      []DecisionDTO     `json:"decisions"`
+	Artifacts      []ArtifactDTO     `json:"artifacts"`
+	Warnings       []string          `json:"warnings"`
 }
 
 // ItemTimestampsDTO contains work item lifecycle timestamps.
@@ -268,6 +277,9 @@ type WorkerDTO struct {
 	CWD             string `json:"cwd"`
 	ForegroundCWD   string `json:"foreground_cwd"`
 	NativeSessionID string `json:"native_session_id"`
+	Stale           bool   `json:"stale"`
+	FetchedAt       string `json:"fetched_at"`
+	StaleReason     string `json:"stale_reason"`
 }
 
 // MailboxDTO contains unread child mailbox counts and the exact unread message
@@ -324,6 +336,24 @@ type ArtifactDTO struct {
 	Text      *string `json:"text,omitempty"`
 }
 
+// ArtifactState identifies the result of loading one allowlisted artifact.
+type ArtifactState string
+
+const (
+	ArtifactStateLoaded    ArtifactState = "loaded"
+	ArtifactStateEmpty     ArtifactState = "empty"
+	ArtifactStateMissing   ArtifactState = "missing"
+	ArtifactStateTruncated ArtifactState = "truncated"
+	ArtifactStateError     ArtifactState = "error"
+)
+
+// ArtifactResponse is the additive wire envelope for one requested artifact.
+type ArtifactResponse struct {
+	State    ArtifactState `json:"state"`
+	Artifact ArtifactDTO   `json:"artifact"`
+	Error    string        `json:"error,omitempty"`
+}
+
 // SourceHealthDTO reports whether optional local/external sources degraded.
 type SourceHealthDTO struct {
 	Projects SourceDTO `json:"projects"`
@@ -335,6 +365,8 @@ type SourceHealthDTO struct {
 
 // SourceDTO reports one source status and warnings.
 type SourceDTO struct {
-	Status   string   `json:"status"`
-	Warnings []string `json:"warnings"`
+	Status    string   `json:"status"`
+	Warnings  []string `json:"warnings"`
+	Stale     bool     `json:"stale"`
+	FetchedAt string   `json:"fetched_at"`
 }
