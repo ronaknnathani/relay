@@ -506,7 +506,9 @@ function renderDetail() {
   } else {
     dom.drawerScroll.scrollTop = 0;
   }
-  restoreArtifactTextScroll(dom.detailBody, artifactScroll);
+  if (sameTask) {
+    restoreArtifactTextScroll(dom.detailBody, artifactScroll);
+  }
 }
 
 /* The last section still has to be able to sit under the section bar, so the
@@ -1055,7 +1057,7 @@ function captureArtifactTextScroll(root) {
   return {
     artifactKey: viewer.dataset.artifactKey,
     scrollTop: viewer.scrollTop,
-    atBottom: maxScrollTop - viewer.scrollTop <= 1,
+    atBottom: maxScrollTop > 0 && maxScrollTop - viewer.scrollTop <= 1,
   };
 }
 
