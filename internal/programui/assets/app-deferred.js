@@ -426,6 +426,7 @@ function renderDetail() {
   const sameTask = item !== null && state.detailItem === item.id;
   const keptScroll = sameTask ? dom.drawerScroll.scrollTop : 0;
   const keptSection = sameTask ? state.detailSection : "";
+  const artifactScroll = captureArtifactTextScroll(dom.detailBody);
 
   dom.detailBody.replaceChildren();
   state.detailItem = item ? item.id : "";
@@ -505,6 +506,7 @@ function renderDetail() {
   } else {
     dom.drawerScroll.scrollTop = 0;
   }
+  restoreArtifactTextScroll(dom.detailBody, artifactScroll);
 }
 
 /* The last section still has to be able to sit under the section bar, so the
@@ -1044,6 +1046,33 @@ function artifactCacheKey(selector) {
     : `contract:${selector.ref}`;
 }
 
+function captureArtifactTextScroll(root) {
+  const viewer = root.querySelector(".artifact-text[data-artifact-key]");
+  if (!viewer) {
+    return null;
+  }
+  const maxScrollTop = Math.max(0, viewer.scrollHeight - viewer.clientHeight);
+  return {
+    artifactKey: viewer.dataset.artifactKey,
+    scrollTop: viewer.scrollTop,
+    atBottom: maxScrollTop - viewer.scrollTop <= 1,
+  };
+}
+
+function restoreArtifactTextScroll(root, snapshot) {
+  if (!snapshot) {
+    return;
+  }
+  const viewer = root.querySelector(".artifact-text[data-artifact-key]");
+  if (!viewer || viewer.dataset.artifactKey !== snapshot.artifactKey) {
+    return;
+  }
+  const maxScrollTop = Math.max(0, viewer.scrollHeight - viewer.clientHeight);
+  viewer.scrollTop = snapshot.atBottom
+    ? maxScrollTop
+    : Math.min(snapshot.scrollTop, maxScrollTop);
+}
+
 function currentArtifactKey(itemID) {
   const selector = state.artifactSelection.get(itemID);
   return selector ? artifactCacheKey(selector) : "";
@@ -1116,7 +1145,9 @@ function appendArtifactContent(section, selector, metadata) {
     return;
   }
   if (typeof artifact.text === "string") {
-    section.append(make("pre", "artifact-text", artifact.text));
+    const viewer = make("pre", "artifact-text", artifact.text);
+    viewer.dataset.artifactKey = key;
+    section.append(viewer);
   }
   section.append(make("p", "muted",
     [artifact.path, formatSize(artifact.size), artifact.updated_at
