@@ -1339,6 +1339,9 @@ function markSelection() {
     card.dataset.selected = active ? "true" : "false";
     card.setAttribute("tabindex", active ? "0" : "-1");
   });
+  state.kanbanCards.forEach((card, id) => {
+    card.dataset.selected = id === state.selected ? "true" : "false";
+  });
   if (dom.ledgerRows) {
     Array.from(dom.ledgerRows.querySelectorAll("tr")).forEach((row) => {
       const active = row.dataset.item === state.selected;

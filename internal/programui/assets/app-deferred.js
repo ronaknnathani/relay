@@ -100,6 +100,15 @@ function renderKanban() {
   state.kanbanCards = cards;
 }
 
+function onKanbanClick(event) {
+  const card = event.target.closest(".kanban__card");
+  if (!card || !dom.kanbanBoard.contains(card)) {
+    return;
+  }
+  selectItem(card.dataset.taskId);
+  openDrawer(false);
+}
+
 /* ---------- tasks ---------- */
 
 function matchesFilter(item) {
@@ -1618,6 +1627,7 @@ function ensureDeferredDom() {
   dom.drawerScroll = byID("drawer-scroll");
   dom.drawerNav = byID("drawer-nav");
   dom.detailBody = byID("detail-body");
+  dom.kanbanBoard.addEventListener("click", onKanbanClick);
   dom.filter.addEventListener("input", () => {
     state.filter = dom.filter.value;
     renderLedger();
@@ -1755,6 +1765,10 @@ function applyHash() {
 }
 
 function focusSelection() {
+  if (state.tab === "kanban") {
+    restoreFocus(`kanban-card:${state.selected}`);
+    return;
+  }
   if (state.tab === "tasks") {
     restoreFocus(`row:${state.selected}`);
     return;

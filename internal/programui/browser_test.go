@@ -240,6 +240,7 @@ func TestBrowserDeepLinkedDeferredTabsWaitForAssetsAndRecover(t *testing.T) {
 		name     string
 		rendered string
 	}{
+		{name: "kanban", rendered: `document.querySelectorAll("#kanban-board .kanban__lane").length === 6`},
 		{name: "tasks", rendered: `document.querySelector("#ledger-count").textContent === "2 of 2 tasks"`},
 		{name: "decisions", rendered: `document.querySelector("#decisions-note").textContent === "Nothing is waiting on you."`},
 		{name: "goal", rendered: `document.querySelector("#goal-body").textContent.includes("No program files were found on disk.")`},
@@ -413,6 +414,11 @@ func TestBrowserDeepLinkedDeferredTabsWaitForFullSnapshot(t *testing.T) {
 		falseEmpty string
 		rendered   string
 	}{
+		{
+			name:       "kanban",
+			falseEmpty: `document.querySelectorAll("#kanban-board .kanban__lane").length === 6`,
+			rendered:   `document.querySelectorAll("#kanban-board .kanban__lane").length === 6`,
+		},
 		{
 			name:       "tasks",
 			falseEmpty: `document.querySelector("#ledger-count").textContent === "No tasks"`,
@@ -687,6 +693,100 @@ func TestBrowserKanbanBoard(t *testing.T) {
 				t.Fatalf("Kanban tasks after Tasks filters = %s", afterFilters)
 			}
 		})
+	}
+}
+
+func TestBrowserKanbanNavigation(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	snapshot := browserTestSnapshot()
+	snapshot.Items[0].Status = "pending"
+	snapshot.Items[0].Lane = "pending"
+	snapshot.Items[1].Status = "in-review"
+	snapshot.Items[1].Lane = "in-review"
+
+	var mutation atomic.Bool
+	feed := newSnapshotFeed(snapshot, time.Minute, time.Now, func() (programview.Snapshot, error) {
+		return snapshot, nil
+	})
+	url := startBrowserHTTPHandler(t, func(port int) http.Handler {
+		base := newHandler(
+			snapshot.Program.Slug,
+			strconv.Itoa(port),
+			newSnapshotCache(time.Minute, time.Now, nil),
+			feed,
+			nil,
+		)
+		return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			if request.Method != http.MethodGet && request.Method != http.MethodHead {
+				mutation.Store(true)
+			}
+			base.ServeHTTP(response, request)
+		})
+	})
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 20*time.Second)
+	defer cancelTimeout()
+
+	if err := chromedp.Run(browser,
+		chromedp.Navigate(url),
+		chromedp.Poll(`typeof renderKanban === "function" &&
+			state.snapshot?.schema === "relay.program.v1"`, nil),
+		chromedp.Focus("#tab-roadmap", chromedp.ByQuery),
+		chromedp.Evaluate(`document.activeElement.dispatchEvent(new KeyboardEvent(
+			"keydown", {key: "ArrowRight", bubbles: true, cancelable: true}))`, nil),
+		chromedp.Poll(`state.tab === "kanban" &&
+			location.hash === "#tab=kanban" &&
+			document.activeElement?.id === "tab-kanban"`, nil),
+		chromedp.Focus(`.kanban__card[data-task-id="w1"]`, chromedp.ByQuery),
+		chromedp.KeyEvent("\r"),
+		chromedp.Poll(`state.selected === "w1" &&
+			document.querySelector("#drawer").dataset.state === "open" &&
+			document.querySelector("#drawer-title").textContent === "First task" &&
+			location.hash === "#tab=kanban&task=w1"`, nil),
+		chromedp.Click("#drawer-close", chromedp.ByQuery),
+		chromedp.Poll(`document.querySelector("#drawer").hidden === true &&
+			document.activeElement?.dataset.taskId === "w1"`, nil),
+		chromedp.Focus(`.kanban__card[data-task-id="w2"]`, chromedp.ByQuery),
+		chromedp.KeyEvent(" "),
+		chromedp.Poll(`state.selected === "w2" &&
+			document.querySelector("#drawer-title").textContent === "Second task" &&
+			location.hash === "#tab=kanban&task=w2"`, nil),
+	); err != nil {
+		t.Fatalf("Kanban keyboard navigation: %v", err)
+	}
+	if mutation.Load() {
+		t.Fatal("Kanban navigation issued a mutation request")
+	}
+
+	if err := chromedp.Run(browser,
+		chromedp.Navigate(url+"/#tab=kanban&task=w1"),
+		chromedp.Poll(`state.tab === "kanban" &&
+			state.selected === "w1" &&
+			document.querySelector("#drawer").dataset.state === "open" &&
+			document.querySelector("#drawer-title").textContent === "First task"`, nil),
+		chromedp.Reload(),
+		chromedp.Poll(`state.tab === "kanban" &&
+			state.selected === "w1" &&
+			document.querySelector("#drawer").dataset.state === "open" &&
+			document.querySelector("#drawer-title").textContent === "First task"`, nil),
+	); err != nil {
+		t.Fatalf("Kanban deep-link restoration: %v", err)
+	}
+	if mutation.Load() {
+		t.Fatal("Kanban deep-link restoration issued a mutation request")
 	}
 }
 
