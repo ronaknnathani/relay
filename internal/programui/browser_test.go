@@ -1935,6 +1935,393 @@ func TestBrowserArtifactLoadingAndOrdering(t *testing.T) {
 	}
 }
 
+func TestBrowserPreservesTaskArtifactScrollAcrossRefresh(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	overflowing := func(marker string, lines int) string {
+		return marker + "\n" + strings.Repeat("A long artifact line that keeps the nested viewer overflowing.\n", lines)
+	}
+	snapshot := browserTestSnapshot()
+	snapshot.Items = append([]programview.ItemDTO(nil), snapshot.Items...)
+	snapshot.Items[0].Artifacts = []programview.ArtifactDTO{
+		{Name: "assignment.md", Path: "assignment.md", Present: true},
+		{Name: "task.md", Path: "task.md", Present: true},
+	}
+	snapshot.Items[1].Artifacts = []programview.ArtifactDTO{
+		{Name: "assignment.md", Path: "assignment.md", Present: true},
+	}
+	snapshot.Items[0].Dependents = []string{"w2"}
+	snapshot.Items[0].Contracts = []string{"shared@v1"}
+	snapshot.Items[1].Contracts = []string{"shared@v1"}
+	snapshot.Contracts = []programview.ContractDTO{{
+		Ref: "shared@v1", Name: "shared", Version: 1,
+		Artifact: programview.ArtifactDTO{
+			Name: "shared.md", Path: "shared.md", Present: true,
+		},
+	}}
+	var artifactMu sync.RWMutex
+	artifactContents := map[string]string{
+		"task:w1:assignment.md": overflowing("assignment-initial", 120),
+		"task:w1:task.md":       "task-second-file",
+		"task:w2:assignment.md": overflowing("assignment-second-task", 90),
+		"contract:shared@v1":    overflowing("shared-contract", 90),
+	}
+	setArtifact := func(key, value string) {
+		artifactMu.Lock()
+		artifactContents[key] = value
+		artifactMu.Unlock()
+	}
+	url := startBrowserTestHandler(t, HandlerOptions{
+		Slug: "browser-test",
+		Builder: func(_ string, _ string) (programview.Snapshot, error) {
+			return snapshot, nil
+		},
+		ArtifactLoader: func(_ string, selector programview.ArtifactSelector) (programview.ArtifactResponse, error) {
+			key := artifactCacheKeyForTest(selector)
+			artifactMu.RLock()
+			value := artifactContents[key]
+			artifactMu.RUnlock()
+			name := selector.Name
+			if name == "" {
+				name = "shared.md"
+			}
+			return programview.ArtifactResponse{
+				State: programview.ArtifactStateLoaded,
+				Artifact: programview.ArtifactDTO{
+					Name: name, Path: name, Present: true,
+					Size: int64(len(value)), Text: &value,
+				},
+			}, nil
+		},
+	})
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 30*time.Second)
+	defer cancelTimeout()
+	if err := chromedp.Run(browser,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(`
+				const relayFetch = window.fetch.bind(window);
+				window.__relayArtifactCalls = 0;
+				window.__relayArtifactCompletions = 0;
+				window.fetch = (input, options) => {
+					const url = new URL(typeof input === "string" ? input : input.url, window.location.href);
+					const artifact = url.pathname === "/api/artifact";
+					if (artifact) {
+						window.__relayArtifactCalls += 1;
+					}
+					return relayFetch(input, options).then((response) => {
+						if (artifact) {
+							window.__relayArtifactCompletions += 1;
+						}
+						return response;
+					});
+				};
+			`).Do(ctx)
+			return err
+		}),
+		chromedp.Navigate(url),
+		chromedp.Poll(`state.snapshot?.schema === "relay.program.v1" &&
+			programController === null &&
+			document.querySelectorAll(".card").length === 2`, nil),
+		chromedp.Evaluate(`clearTimeout(pollTimer); pollTimer = null`, nil),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+		chromedp.Poll(`document.querySelector(".artifact-text")?.textContent.startsWith(
+			"assignment-initial") && window.__relayArtifactCompletions === 1`, nil),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	type scrollState struct {
+		ScrollTop float64 `json:"scrollTop"`
+		Maximum   float64 `json:"maximum"`
+		Drawer    float64 `json:"drawer"`
+		Selected  string  `json:"selected"`
+		Focus     string  `json:"focus"`
+	}
+	var initial scrollState
+	if err := chromedp.Run(browser, chromedp.Evaluate(`(() => {
+		const viewer = document.querySelector(".artifact-text");
+		const drawer = document.querySelector("#drawer-scroll");
+		viewer.scrollTop = viewer.scrollHeight;
+		drawer.scrollTop = Math.min(80, drawer.scrollHeight - drawer.clientHeight);
+		document.querySelector('button[data-focus-key="art:w1:assignment.md"]').focus();
+		return {
+			scrollTop: viewer.scrollTop,
+			maximum: viewer.scrollHeight - viewer.clientHeight,
+			drawer: drawer.scrollTop,
+			selected: document.querySelector(
+				'button[data-focus-key="art:w1:assignment.md"]').getAttribute("aria-current"),
+			focus: document.activeElement?.dataset.focusKey || ""
+		};
+	})()`, &initial)); err != nil {
+		t.Fatal(err)
+	}
+	if initial.Maximum <= 0 || initial.ScrollTop != initial.Maximum || initial.Drawer <= 0 {
+		t.Fatalf("initial scroll state = %+v, want overflowing nested and outer viewers", initial)
+	}
+	if initial.Selected != "true" || initial.Focus != "art:w1:assignment.md" {
+		t.Fatalf("initial selection state = %+v", initial)
+	}
+
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`schedule(0)`, nil),
+		chromedp.Poll(`window.__relayArtifactCalls === 2 &&
+			window.__relayArtifactCompletions === 2`, nil),
+		chromedp.Evaluate(`clearTimeout(pollTimer); pollTimer = null`, nil),
+	); err != nil {
+		t.Fatalf("automatic artifact refresh: %v", err)
+	}
+	var automatic scrollState
+	if err := chromedp.Run(browser, chromedp.Evaluate(`(() => {
+		const viewer = document.querySelector(".artifact-text");
+		return {
+			scrollTop: viewer.scrollTop,
+			maximum: viewer.scrollHeight - viewer.clientHeight,
+			drawer: document.querySelector("#drawer-scroll").scrollTop,
+			selected: document.querySelector(
+				'button[data-focus-key="art:w1:assignment.md"]').getAttribute("aria-current"),
+			focus: document.activeElement?.dataset.focusKey || ""
+		};
+	})()`, &automatic)); err != nil {
+		t.Fatal(err)
+	}
+	if automatic.Maximum-automatic.ScrollTop > 1 {
+		t.Fatalf("automatic refresh scroll state = %+v, want bottom distance <= 1", automatic)
+	}
+	if automatic.Selected != "true" || automatic.Focus != "art:w1:assignment.md" {
+		t.Fatalf("automatic refresh selection state = %+v", automatic)
+	}
+	if automatic.Drawer != initial.Drawer {
+		t.Fatalf("automatic refresh outer scroll = %v, want %v", automatic.Drawer, initial.Drawer)
+	}
+
+	setArtifact("task:w1:assignment.md", overflowing("assignment-longer", 180))
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+		chromedp.Poll(`window.__relayArtifactCalls === 3 &&
+			window.__relayArtifactCompletions === 3 &&
+			document.querySelector(".artifact-text")?.textContent.startsWith("assignment-longer")`, nil),
+		chromedp.Evaluate(`clearTimeout(pollTimer); pollTimer = null`, nil),
+	); err != nil {
+		t.Fatalf("changed artifact refresh: %v", err)
+	}
+	var changed scrollState
+	if err := chromedp.Run(browser, chromedp.Evaluate(`(() => {
+		const viewer = document.querySelector(".artifact-text");
+		return {
+			scrollTop: viewer.scrollTop,
+			maximum: viewer.scrollHeight - viewer.clientHeight,
+			drawer: document.querySelector("#drawer-scroll").scrollTop,
+			selected: document.querySelector(
+				'button[data-focus-key="art:w1:assignment.md"]').getAttribute("aria-current"),
+			focus: document.activeElement?.dataset.focusKey || ""
+		};
+	})()`, &changed)); err != nil {
+		t.Fatal(err)
+	}
+	if changed.Maximum-changed.ScrollTop > 1 {
+		t.Fatalf("changed refresh scroll state = %+v, want bottom distance <= 1", changed)
+	}
+	if changed.Selected != "true" || changed.Focus != "art:w1:assignment.md" {
+		t.Fatalf("changed refresh selection state = %+v", changed)
+	}
+
+	var previousOffset float64
+	if err := chromedp.Run(browser, chromedp.Evaluate(`(() => {
+		const viewer = document.querySelector(".artifact-text");
+		viewer.scrollTop = Math.min(137, viewer.scrollHeight - viewer.clientHeight - 20);
+		return viewer.scrollTop;
+	})()`, &previousOffset)); err != nil {
+		t.Fatal(err)
+	}
+	if previousOffset <= 0 {
+		t.Fatalf("non-bottom offset = %v, want > 0", previousOffset)
+	}
+	setArtifact("task:w1:assignment.md", overflowing("assignment-shorter", 80))
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+		chromedp.Poll(`window.__relayArtifactCalls === 4 &&
+			window.__relayArtifactCompletions === 4 &&
+			document.querySelector(".artifact-text")?.textContent.startsWith("assignment-shorter")`, nil),
+		chromedp.Evaluate(`clearTimeout(pollTimer); pollTimer = null`, nil),
+	); err != nil {
+		t.Fatalf("non-bottom artifact refresh: %v", err)
+	}
+	var offset scrollState
+	if err := chromedp.Run(browser, chromedp.Evaluate(`(() => {
+		const viewer = document.querySelector(".artifact-text");
+		return {
+			scrollTop: viewer.scrollTop,
+			maximum: viewer.scrollHeight - viewer.clientHeight,
+			drawer: document.querySelector("#drawer-scroll").scrollTop,
+			selected: document.querySelector(
+				'button[data-focus-key="art:w1:assignment.md"]').getAttribute("aria-current"),
+			focus: document.activeElement?.dataset.focusKey || ""
+		};
+	})()`, &offset)); err != nil {
+		t.Fatal(err)
+	}
+	wantOffset := min(previousOffset, offset.Maximum)
+	if offset.ScrollTop == 0 || offset.ScrollTop < wantOffset-1 || offset.ScrollTop > wantOffset+1 {
+		t.Fatalf("non-bottom refresh scroll state = %+v, want offset %v ± 1", offset, wantOffset)
+	}
+
+	var otherFile scrollState
+	if err := chromedp.Run(browser,
+		chromedp.Click(`button[data-focus-key="art:w1:task.md"]`, chromedp.ByQuery),
+		chromedp.Poll(`window.__relayArtifactCalls === 5 &&
+			window.__relayArtifactCompletions === 5 &&
+			document.querySelector(".artifact-text")?.textContent.startsWith("task-second-file")`, nil),
+		chromedp.Evaluate(`(() => {
+			const viewer = document.querySelector(".artifact-text");
+			return {
+				scrollTop: viewer.scrollTop,
+				maximum: viewer.scrollHeight - viewer.clientHeight,
+				selected: document.querySelector(
+					'button[data-focus-key="art:w1:task.md"]').getAttribute("aria-current"),
+				focus: document.activeElement?.dataset.focusKey || ""
+			};
+		})()`, &otherFile),
+	); err != nil {
+		t.Fatalf("select other file: %v", err)
+	}
+	if otherFile.Maximum != 0 || otherFile.ScrollTop != 0 ||
+		otherFile.Selected != "true" || otherFile.Focus != "art:w1:task.md" {
+		t.Fatalf("other file state = %+v, want initial top with selected focused control", otherFile)
+	}
+
+	setArtifact("task:w1:task.md", overflowing("task-second-file-grown", 90))
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+		chromedp.Poll(`window.__relayArtifactCalls === 6 &&
+			window.__relayArtifactCompletions === 6 &&
+			document.querySelector(".artifact-text")?.textContent.startsWith(
+				"task-second-file-grown")`, nil),
+		chromedp.Evaluate(`clearTimeout(pollTimer); pollTimer = null`, nil),
+	); err != nil {
+		t.Fatalf("grow non-overflowing artifact: %v", err)
+	}
+	var grownFile scrollState
+	if err := chromedp.Run(browser, chromedp.Evaluate(`(() => {
+		const viewer = document.querySelector(".artifact-text");
+		return {
+			scrollTop: viewer.scrollTop,
+			maximum: viewer.scrollHeight - viewer.clientHeight,
+			selected: document.querySelector(
+				'button[data-focus-key="art:w1:task.md"]').getAttribute("aria-current"),
+			focus: document.activeElement?.dataset.focusKey || ""
+		};
+	})()`, &grownFile)); err != nil {
+		t.Fatal(err)
+	}
+	if grownFile.Maximum <= 0 || grownFile.ScrollTop != 0 ||
+		grownFile.Selected != "true" || grownFile.Focus != "art:w1:task.md" {
+		t.Fatalf("grown file state = %+v, want overflowing viewer kept at initial top", grownFile)
+	}
+
+	type navigationState struct {
+		ScrollTop float64 `json:"scrollTop"`
+		Selected  string  `json:"selected"`
+		Focus     string  `json:"focus"`
+	}
+	var otherTask navigationState
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`(() => {
+			const viewer = document.querySelector(".artifact-text");
+			viewer.scrollTop = Math.min(137, viewer.scrollHeight - viewer.clientHeight - 20);
+			if (viewer.scrollTop <= 0) {
+				throw new Error("cross-task source viewer did not scroll");
+			}
+		})()`, nil),
+		chromedp.Evaluate(
+			`document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}))`, nil,
+		),
+		chromedp.Poll(`document.querySelector("#drawer").hidden === true`, nil),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w2"]').click()`, nil),
+		chromedp.Poll(`window.__relayArtifactCalls === 7 &&
+			window.__relayArtifactCompletions === 7 &&
+			document.querySelector(".artifact-text")?.textContent.startsWith(
+				"assignment-second-task")`, nil),
+		chromedp.Evaluate(`({
+			scrollTop: document.querySelector(".artifact-text").scrollTop,
+			selected: document.querySelector(
+				'button[data-focus-key="art:w2:assignment.md"]').getAttribute("aria-current"),
+			focus: document.activeElement?.id || ""
+		})`, &otherTask),
+	); err != nil {
+		t.Fatalf("select other task: %v", err)
+	}
+	if otherTask.ScrollTop != 0 || otherTask.Selected != "true" || otherTask.Focus != "detail-panel" {
+		t.Fatalf("other task state = %+v, want initial top with existing selection and focus", otherTask)
+	}
+
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`window.__relayArtifactCalls = 0;
+			window.__relayArtifactCompletions = 0`, nil),
+		chromedp.Click(`button[data-focus-key="contract:w2:shared@v1"]`, chromedp.ByQuery),
+		chromedp.Poll(`window.__relayArtifactCalls === 1 &&
+			window.__relayArtifactCompletions === 1 &&
+			document.querySelector(".artifact-text")?.textContent.startsWith("shared-contract")`, nil),
+		chromedp.Evaluate(
+			`document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}))`, nil,
+		),
+		chromedp.Poll(`document.querySelector("#drawer").hidden === true`, nil),
+		chromedp.Evaluate(`document.querySelector('.card[data-item="w1"]').click()`, nil),
+		chromedp.Poll(`window.__relayArtifactCalls === 2 &&
+			window.__relayArtifactCompletions === 2`, nil),
+		chromedp.Click(`button[data-focus-key="contract:w1:shared@v1"]`, chromedp.ByQuery),
+		chromedp.Poll(`window.__relayArtifactCalls === 3 &&
+			window.__relayArtifactCompletions === 3 &&
+			document.querySelector(".artifact-text")?.textContent.startsWith("shared-contract")`, nil),
+	); err != nil {
+		t.Fatalf("select shared contract in both tasks: %v", err)
+	}
+	var contractOffset float64
+	if err := chromedp.Run(browser, chromedp.Evaluate(`(() => {
+		const viewer = document.querySelector(".artifact-text");
+		viewer.scrollTop = Math.min(137, viewer.scrollHeight - viewer.clientHeight - 20);
+		return viewer.scrollTop;
+	})()`, &contractOffset)); err != nil {
+		t.Fatal(err)
+	}
+	if contractOffset <= 0 {
+		t.Fatalf("shared contract source offset = %v, want > 0", contractOffset)
+	}
+
+	var otherTaskContract navigationState
+	if err := chromedp.Run(browser,
+		chromedp.Click(`button[data-focus-key="dependent:w2"]`, chromedp.ByQuery),
+		chromedp.Poll(`document.querySelector("#drawer-id").textContent === "w2" &&
+			document.querySelector(".artifact-text")?.textContent.startsWith("shared-contract")`, nil),
+		chromedp.Evaluate(`({
+			scrollTop: document.querySelector(".artifact-text").scrollTop,
+			selected: document.querySelector(
+				'button[data-focus-key="contract:w2:shared@v1"]').getAttribute("aria-current"),
+			focus: document.activeElement?.dataset.focusKey || ""
+		})`, &otherTaskContract),
+	); err != nil {
+		t.Fatalf("open shared contract in dependent task: %v", err)
+	}
+	if otherTaskContract.ScrollTop != 0 || otherTaskContract.Selected != "true" {
+		t.Fatalf(
+			"other task shared contract state = %+v, want initial top with existing selection",
+			otherTaskContract,
+		)
+	}
+}
+
 func TestBrowserRefreshQueuesOneArtifactRevalidationDuringInflightLoad(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
