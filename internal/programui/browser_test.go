@@ -2,6 +2,7 @@ package programui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -903,6 +904,115 @@ func TestBrowserKanbanRefresh(t *testing.T) {
 			document.querySelector("#feed-state").textContent.includes("test refresh failed")`, nil),
 	); err != nil {
 		t.Fatalf("retain Kanban board after failed refresh: %v", err)
+	}
+}
+
+func TestBrowserKanbanResponsive(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	snapshot := browserTestSnapshot()
+	snapshot.Items[0].Status = "pending"
+	snapshot.Items[0].Lane = "pending"
+	snapshot.Items[1].Status = "cancelled"
+	snapshot.Items[1].Lane = "cancelled"
+	url := startBrowserTestFeedHandler(t, snapshot)
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+
+	const canonicalOrder = `["pending","dispatched","in-review","blocked","merged","cancelled"]`
+	if err := chromedp.Run(browser,
+		chromedp.EmulateViewport(420, 800),
+		chromedp.Navigate(url+"/#tab=kanban"),
+		chromedp.Poll(`state.tab === "kanban" &&
+			document.querySelectorAll("#kanban-board .kanban__lane").length === 6`, nil),
+	); err != nil {
+		t.Fatalf("render narrow Kanban board: %v", err)
+	}
+
+	var before string
+	if err := chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+		overflow: dom.kanbanScroll.scrollWidth > dom.kanbanScroll.clientWidth,
+		order: Array.from(document.querySelectorAll("#kanban-board .kanban__lane"),
+			(lane) => lane.dataset.lane)
+	})`, &before)); err != nil {
+		t.Fatal(err)
+	}
+	wantBefore := `{"overflow":true,"order":` + canonicalOrder + `}`
+	if before != wantBefore {
+		t.Fatalf("narrow Kanban layout = %s, want %s", before, wantBefore)
+	}
+
+	var after string
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`(() => {
+			dom.kanbanScroll.scrollLeft = dom.kanbanScroll.scrollWidth;
+			const viewport = dom.kanbanScroll.getBoundingClientRect();
+			const cancelled = document.querySelector('.kanban__lane[data-lane="cancelled"]')
+				.getBoundingClientRect();
+			return JSON.stringify({
+				order: Array.from(document.querySelectorAll("#kanban-board .kanban__lane"),
+					(lane) => lane.dataset.lane),
+				reached: cancelled.left >= viewport.left && cancelled.right <= viewport.right + 1
+			});
+		})()`, &after),
+	); err != nil {
+		t.Fatal(err)
+	}
+	wantAfter := `{"order":` + canonicalOrder + `,"reached":true}`
+	if after != wantAfter {
+		t.Fatalf("scrolled Kanban layout = %s, want %s", after, wantAfter)
+	}
+
+	for _, theme := range []string{"light", "dark"} {
+		var colors string
+		if err := chromedp.Run(browser,
+			chromedp.Evaluate(`(() => {
+				applyTheme(`+strconv.Quote(theme)+`);
+				const lane = document.querySelector('.kanban__lane[data-lane="pending"]');
+				const card = lane.querySelector(".kanban__card");
+				const laneStyle = getComputedStyle(lane);
+				const cardStyle = getComputedStyle(card);
+				return JSON.stringify({
+					laneDisplay: laneStyle.display,
+					cardDisplay: cardStyle.display,
+					laneForeground: laneStyle.color,
+					laneBackground: laneStyle.backgroundColor,
+					cardForeground: cardStyle.color,
+					cardBackground: cardStyle.backgroundColor
+				});
+			})()`, &colors),
+		); err != nil {
+			t.Fatal(err)
+		}
+		var values struct {
+			LaneDisplay    string `json:"laneDisplay"`
+			CardDisplay    string `json:"cardDisplay"`
+			LaneForeground string `json:"laneForeground"`
+			LaneBackground string `json:"laneBackground"`
+			CardForeground string `json:"cardForeground"`
+			CardBackground string `json:"cardBackground"`
+		}
+		if err := json.Unmarshal([]byte(colors), &values); err != nil {
+			t.Fatal(err)
+		}
+		if values.LaneDisplay == "none" || values.CardDisplay == "none" ||
+			values.LaneForeground == values.LaneBackground ||
+			values.CardForeground == values.CardBackground {
+			t.Fatalf("%s theme Kanban colors are not usable: %+v", theme, values)
+		}
 	}
 }
 
