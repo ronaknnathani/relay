@@ -19,6 +19,7 @@ import (
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/chromedp/kb"
 	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/programview"
 )
@@ -241,7 +242,17 @@ func TestBrowserDeepLinkedDeferredTabsWaitForAssetsAndRecover(t *testing.T) {
 		name     string
 		rendered string
 	}{
-		{name: "kanban", rendered: `document.querySelectorAll("#kanban-board .kanban__lane").length === 6`},
+		{
+			name: "kanban",
+			rendered: `document.querySelectorAll("#kanban-board .kanban__card").length === 2 &&
+				document.querySelector(
+					'#kanban-board .kanban__lane[data-lane="dispatched"] .kanban__lane-count'
+				).textContent === "2" &&
+				JSON.stringify(Array.from(
+					document.querySelectorAll("#kanban-board .kanban__card"),
+					(card) => card.dataset.taskId
+				)) === '["w1","w2"]'`,
+		},
 		{name: "tasks", rendered: `document.querySelector("#ledger-count").textContent === "2 of 2 tasks"`},
 		{name: "decisions", rendered: `document.querySelector("#decisions-note").textContent === "Nothing is waiting on you."`},
 		{name: "goal", rendered: `document.querySelector("#goal-body").textContent.includes("No program files were found on disk.")`},
@@ -418,7 +429,14 @@ func TestBrowserDeepLinkedDeferredTabsWaitForFullSnapshot(t *testing.T) {
 		{
 			name:       "kanban",
 			falseEmpty: `document.querySelectorAll("#kanban-board .kanban__lane").length === 6`,
-			rendered:   `document.querySelectorAll("#kanban-board .kanban__lane").length === 6`,
+			rendered: `document.querySelectorAll("#kanban-board .kanban__card").length === 2 &&
+				document.querySelector(
+					'#kanban-board .kanban__lane[data-lane="dispatched"] .kanban__lane-count'
+				).textContent === "2" &&
+				JSON.stringify(Array.from(
+					document.querySelectorAll("#kanban-board .kanban__card"),
+					(card) => card.dataset.taskId
+				)) === '["w1","w2"]'`,
 		},
 		{
 			name:       "tasks",
@@ -678,20 +696,31 @@ func TestBrowserKanbanBoard(t *testing.T) {
 			if err := chromedp.Run(browser,
 				chromedp.Evaluate(`(() => {
 					selectTab("tasks");
-					state.filter = "no matching task";
-					state.statuses = new Set(["cancelled"]);
-					renderLedger();
+					dom.filter.value = "no matching task";
+					dom.filter.dispatchEvent(new Event("input", {bubbles: true}));
+					document.querySelector(
+						'#status-filters .chip[data-lane="cancelled"]'
+					).click();
 					selectTab("kanban");
+					state.dirtyTabs.add("kanban");
+					renderActiveTab();
 					return JSON.stringify(Array.from(
-						document.querySelectorAll("#kanban-board .kanban__card"),
-						(card) => card.dataset.taskId
+						document.querySelectorAll("#kanban-board .kanban__lane"), (lane) => ({
+							lane: lane.dataset.lane,
+							heading: lane.querySelector(".kanban__lane-title").textContent,
+							count: lane.querySelector(".kanban__lane-count").textContent,
+							ids: Array.from(
+								lane.querySelectorAll(".kanban__card"),
+								(card) => card.dataset.taskId
+							)
+						})
 					));
 				})()`, &afterFilters),
 			); err != nil {
 				t.Fatal(err)
 			}
-			if afterFilters != `["w1","w3","w2","w4","w5"]` {
-				t.Fatalf("Kanban tasks after Tasks filters = %s", afterFilters)
+			if afterFilters != test.expected {
+				t.Fatalf("Kanban lanes after Tasks filters = %s, want %s", afterFilters, test.expected)
 			}
 		})
 	}
@@ -751,7 +780,8 @@ func TestBrowserKanbanNavigation(t *testing.T) {
 		chromedp.Poll(`state.tab === "kanban" &&
 			location.hash === "#tab=kanban" &&
 			document.activeElement?.id === "tab-kanban"`, nil),
-		chromedp.Focus(`.kanban__card[data-task-id="w1"]`, chromedp.ByQuery),
+		chromedp.KeyEvent(kb.Tab),
+		chromedp.Poll(`document.activeElement?.dataset.taskId === "w1"`, nil),
 		chromedp.KeyEvent("\r"),
 		chromedp.Poll(`state.selected === "w1" &&
 			document.querySelector("#drawer").dataset.state === "open" &&
@@ -760,7 +790,8 @@ func TestBrowserKanbanNavigation(t *testing.T) {
 		chromedp.Click("#drawer-close", chromedp.ByQuery),
 		chromedp.Poll(`document.querySelector("#drawer").hidden === true &&
 			document.activeElement?.dataset.taskId === "w1"`, nil),
-		chromedp.Focus(`.kanban__card[data-task-id="w2"]`, chromedp.ByQuery),
+		chromedp.KeyEvent(kb.Tab),
+		chromedp.Poll(`document.activeElement?.dataset.taskId === "w2"`, nil),
 		chromedp.KeyEvent(" "),
 		chromedp.Poll(`state.selected === "w2" &&
 			document.querySelector("#drawer-title").textContent === "Second task" &&
