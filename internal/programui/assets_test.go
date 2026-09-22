@@ -353,6 +353,7 @@ func TestKanbanAssetContract(t *testing.T) {
 		`const card = cardTemplate.cloneNode(true);`,
 		`card.classList.add("kanban__card");`,
 		`decorateTaskCard(card, item, item, lane);`,
+		"return [dom.roadmapScroll, dom.kanbanScroll, dom.tableScroll, dom.drawerScroll];",
 	})
 
 	styles := readAsset(t, "assets/app-deferred.css")

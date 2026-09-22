@@ -790,6 +790,122 @@ func TestBrowserKanbanNavigation(t *testing.T) {
 	}
 }
 
+func TestBrowserKanbanRefresh(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	initial := browserTestSnapshot()
+	initial.Items[0].Status = "pending"
+	initial.Items[0].Lane = "pending"
+	initial.Items[1].Status = "dispatched"
+	initial.Items[1].Lane = "dispatched"
+
+	updated := initial
+	updated.Items = []programview.ItemDTO{
+		{
+			ID: "w3", Title: "New pending task", Status: "pending", Lane: "pending", Priority: "P3",
+			Dependencies: []string{}, Dependents: []string{}, Contracts: []string{}, Notes: []string{},
+			Decisions: []programview.DecisionDTO{}, Artifacts: []programview.ArtifactDTO{},
+			Warnings: []string{}, Mailbox: programview.MailboxDTO{InboxIDs: []string{}, OutboxIDs: []string{}},
+		},
+		initial.Items[1],
+	}
+	updated.Items[1].Status = "in-review"
+	updated.Items[1].Lane = "in-review"
+	updated.Items[1].Title = "Updated review task"
+	updated.Items[1].Priority = "P0"
+	updated.Progress.Total = 2
+
+	var refreshes atomic.Int32
+	feed := newSnapshotFeed(initial, time.Minute, time.Now, func() (programview.Snapshot, error) {
+		if refreshes.Add(1) == 1 {
+			return updated, nil
+		}
+		return programview.Snapshot{}, errors.New("test refresh failed")
+	})
+	url := startBrowserHTTPHandler(t, func(port int) http.Handler {
+		return newHandler(
+			initial.Program.Slug,
+			strconv.Itoa(port),
+			newSnapshotCache(time.Minute, time.Now, nil),
+			feed,
+			nil,
+		)
+	})
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 20*time.Second)
+	defer cancelTimeout()
+
+	if err := chromedp.Run(browser,
+		chromedp.Navigate(url+"/#tab=kanban"),
+		chromedp.Poll(`state.tab === "kanban" &&
+			document.querySelectorAll("#kanban-board .kanban__card").length === 2`, nil),
+		chromedp.Evaluate(`(() => {
+			dom.kanbanScroll.scrollLeft = 180;
+			document.querySelector('.kanban__card[data-task-id="w2"]').focus();
+		})()`, nil),
+	); err != nil {
+		t.Fatalf("prepare Kanban refresh: %v", err)
+	}
+
+	feed.Refresh()
+	eventually(t, time.Second, func() bool {
+		return !feed.Get().Refresh.Refreshing && feed.Get().Items[0].ID == "w3"
+	})
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+		chromedp.Poll(`JSON.stringify(
+			Array.from(document.querySelectorAll("#kanban-board .kanban__lane"), (lane) => ({
+				lane: lane.dataset.lane,
+				count: lane.querySelector(".kanban__lane-count").textContent,
+				ids: Array.from(lane.querySelectorAll(".kanban__card"), (card) => card.dataset.taskId)
+			}))
+		) === JSON.stringify([
+			{lane: "pending", count: "1", ids: ["w3"]},
+			{lane: "dispatched", count: "0", ids: []},
+			{lane: "in-review", count: "1", ids: ["w2"]},
+			{lane: "blocked", count: "0", ids: []},
+			{lane: "merged", count: "0", ids: []},
+			{lane: "cancelled", count: "0", ids: []}
+		]) &&
+			document.querySelector('.kanban__card[data-task-id="w1"]') === null &&
+			document.querySelector('.kanban__card[data-task-id="w2"] .card__title').textContent ===
+				"Updated review task" &&
+			document.querySelector('.kanban__card[data-task-id="w2"] .card__foot').textContent === "P0" &&
+			document.activeElement?.dataset.taskId === "w2" &&
+			dom.kanbanScroll.scrollLeft >= 150`, nil),
+	); err != nil {
+		t.Fatalf("apply successful Kanban refresh: %v", err)
+	}
+
+	feed.Refresh()
+	eventually(t, time.Second, func() bool {
+		return !feed.Get().Refresh.Refreshing && feed.Get().Refresh.Status == "failed"
+	})
+	if err := chromedp.Run(browser,
+		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
+		chromedp.Poll(`document.querySelectorAll("#kanban-board .kanban__card").length === 2 &&
+			document.querySelector('.kanban__card[data-task-id="w3"]') !== null &&
+			document.querySelector('.kanban__card[data-task-id="w2"] .card__title').textContent ===
+				"Updated review task" &&
+			document.querySelector("#feed-state").textContent.includes("Stale") &&
+			document.querySelector("#feed-state").textContent.includes("test refresh failed")`, nil),
+	); err != nil {
+		t.Fatalf("retain Kanban board after failed refresh: %v", err)
+	}
+}
+
 func TestBrowserHeaderRefreshWaitsForFullSnapshot(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")

@@ -1712,7 +1712,7 @@ function renderDetailPreservingFocus() {
 }
 
 function scrollTargets() {
-  return [dom.roadmapScroll, dom.tableScroll, dom.drawerScroll];
+  return [dom.roadmapScroll, dom.kanbanScroll, dom.tableScroll, dom.drawerScroll];
 }
 
 function captureScroll() {
