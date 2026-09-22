@@ -774,12 +774,14 @@ func TestBrowserKanbanNavigation(t *testing.T) {
 
 	if err := chromedp.Run(browser,
 		chromedp.Navigate(url+"/#tab=kanban&task=w1"),
-		chromedp.Poll(`state.tab === "kanban" &&
+		chromedp.Poll(`typeof state !== "undefined" &&
+			state.tab === "kanban" &&
 			state.selected === "w1" &&
 			document.querySelector("#drawer").dataset.state === "open" &&
 			document.querySelector("#drawer-title").textContent === "First task"`, nil),
 		chromedp.Reload(),
-		chromedp.Poll(`state.tab === "kanban" &&
+		chromedp.Poll(`typeof state !== "undefined" &&
+			state.tab === "kanban" &&
 			state.selected === "w1" &&
 			document.querySelector("#drawer").dataset.state === "open" &&
 			document.querySelector("#drawer-title").textContent === "First task"`, nil),
