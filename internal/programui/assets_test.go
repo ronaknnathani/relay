@@ -370,6 +370,30 @@ func TestKanbanAssetContract(t *testing.T) {
 		".kanban__card {",
 		"width: 100%;",
 	})
+
+	for _, pair := range [][2]string{
+		{"assets/index.html", "assets/index.min.html"},
+		{"assets/app.js", "assets/app.min.js"},
+		{"assets/app-deferred.js", "assets/app-deferred.min.js"},
+		{"assets/app-deferred.css", "assets/app-deferred.min.css"},
+	} {
+		source := readAsset(t, pair[0])
+		minified := readAsset(t, pair[1])
+		if len(minified) >= len(source) {
+			t.Errorf("%s must be smaller than %s", pair[1], pair[0])
+		}
+		requireContains(t, pair[1], minified, []string{"kanban"})
+	}
+	requireContains(t, "index.min.html", readAsset(t, "assets/index.min.html"), []string{
+		`id="tab-kanban"`,
+		`id="panel-kanban"`,
+		`id="kanban-board"`,
+	})
+	requireContains(t, "app-deferred.min.js", readAsset(t, "assets/app-deferred.min.js"), []string{
+		"kanban__lane",
+		"kanban__card",
+		"kanban-card:",
+	})
 }
 
 func TestIndexReplacesTheDetailRailWithAnOnDemandDrawer(t *testing.T) {

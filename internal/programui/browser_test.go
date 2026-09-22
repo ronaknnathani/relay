@@ -597,8 +597,8 @@ func TestBrowserKanbanBoard(t *testing.T) {
 				`{"lane":"cancelled","heading":"Cancelled","count":"0","ids":[]}]`,
 		},
 		{
-			name:     "empty",
-			items:    []programview.ItemDTO{},
+			name:  "empty",
+			items: []programview.ItemDTO{},
 			expected: `[{"lane":"pending","heading":"Pending","count":"0","ids":[]},` +
 				`{"lane":"dispatched","heading":"Dispatched","count":"0","ids":[]},` +
 				`{"lane":"in-review","heading":"In review","count":"0","ids":[]},` +
