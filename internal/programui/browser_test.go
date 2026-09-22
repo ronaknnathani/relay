@@ -24,6 +24,11 @@ import (
 	"github.com/ronaknnathani/relay/internal/programview"
 )
 
+const (
+	canonicalCancelledStatus  = "cancelled" //nolint:misspell // Persisted Relay status spelling.
+	canonicalCancelledHeading = "Cancelled" //nolint:misspell // Display spelling for the persisted Relay status.
+)
+
 func TestBrowserHydratesAndPollsWhenDeferredBundleFails(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
@@ -612,7 +617,8 @@ func TestBrowserKanbanBoard(t *testing.T) {
 				`{"lane":"in-review","heading":"In review","count":"0","ids":[]},` +
 				`{"lane":"blocked","heading":"Blocked","count":"1","ids":["w4"]},` +
 				`{"lane":"merged","heading":"Merged","count":"1","ids":["w5"]},` +
-				`{"lane":"cancelled","heading":"Cancelled","count":"0","ids":[]}]`,
+				`{"lane":"` + canonicalCancelledStatus + `","heading":"` +
+				canonicalCancelledHeading + `","count":"0","ids":[]}]`,
 		},
 		{
 			name:  "empty",
@@ -622,7 +628,8 @@ func TestBrowserKanbanBoard(t *testing.T) {
 				`{"lane":"in-review","heading":"In review","count":"0","ids":[]},` +
 				`{"lane":"blocked","heading":"Blocked","count":"0","ids":[]},` +
 				`{"lane":"merged","heading":"Merged","count":"0","ids":[]},` +
-				`{"lane":"cancelled","heading":"Cancelled","count":"0","ids":[]}]`,
+				`{"lane":"` + canonicalCancelledStatus + `","heading":"` +
+				canonicalCancelledHeading + `","count":"0","ids":[]}]`,
 		},
 	}
 
@@ -699,7 +706,7 @@ func TestBrowserKanbanBoard(t *testing.T) {
 					dom.filter.value = "no matching task";
 					dom.filter.dispatchEvent(new Event("input", {bubbles: true}));
 					document.querySelector(
-						'#status-filters .chip[data-lane="cancelled"]'
+						'#status-filters .chip[data-lane="`+canonicalCancelledStatus+`"]'
 					).click();
 					selectTab("kanban");
 					state.dirtyTabs.add("kanban");
@@ -911,7 +918,7 @@ func TestBrowserKanbanRefresh(t *testing.T) {
 			{lane: "in-review", count: "1", ids: ["w2"]},
 			{lane: "blocked", count: "0", ids: []},
 			{lane: "merged", count: "0", ids: []},
-			{lane: "cancelled", count: "0", ids: []}
+			{lane: "`+canonicalCancelledStatus+`", count: "0", ids: []}
 		]) &&
 			document.querySelector('.kanban__card[data-task-id="w1"]') === null &&
 			document.querySelector('.kanban__card[data-task-id="w2"] .card__title').textContent ===
@@ -947,8 +954,8 @@ func TestBrowserKanbanResponsive(t *testing.T) {
 	snapshot := browserTestSnapshot()
 	snapshot.Items[0].Status = "pending"
 	snapshot.Items[0].Lane = "pending"
-	snapshot.Items[1].Status = "cancelled"
-	snapshot.Items[1].Lane = "cancelled"
+	snapshot.Items[1].Status = canonicalCancelledStatus
+	snapshot.Items[1].Lane = canonicalCancelledStatus
 	url := startBrowserTestFeedHandler(t, snapshot)
 
 	allocator, cancelAllocator := chromedp.NewExecAllocator(
@@ -965,7 +972,8 @@ func TestBrowserKanbanResponsive(t *testing.T) {
 	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
 	defer cancelTimeout()
 
-	const canonicalOrder = `["pending","dispatched","in-review","blocked","merged","cancelled"]`
+	const canonicalOrder = `["pending","dispatched","in-review","blocked","merged","` +
+		canonicalCancelledStatus + `"]`
 	if err := chromedp.Run(browser,
 		chromedp.EmulateViewport(420, 800),
 		chromedp.Navigate(url+"/#tab=kanban"),
@@ -993,12 +1001,15 @@ func TestBrowserKanbanResponsive(t *testing.T) {
 		chromedp.Evaluate(`(() => {
 			dom.kanbanScroll.scrollLeft = dom.kanbanScroll.scrollWidth;
 			const viewport = dom.kanbanScroll.getBoundingClientRect();
-			const cancelled = document.querySelector('.kanban__lane[data-lane="cancelled"]')
+			const cancelledLane = document.querySelector(
+				'.kanban__lane[data-lane="`+canonicalCancelledStatus+`"]'
+			)
 				.getBoundingClientRect();
 			return JSON.stringify({
 				order: Array.from(document.querySelectorAll("#kanban-board .kanban__lane"),
 					(lane) => lane.dataset.lane),
-				reached: cancelled.left >= viewport.left && cancelled.right <= viewport.right + 1
+				reached: cancelledLane.left >= viewport.left &&
+					cancelledLane.right <= viewport.right + 1
 			});
 		})()`, &after),
 	); err != nil {
