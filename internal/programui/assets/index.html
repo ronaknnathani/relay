@@ -92,6 +92,7 @@
   <main id="views">
     <div class="segmented" role="tablist" aria-label="Program views">
       <button id="tab-roadmap" class="segment" type="button" role="tab" aria-selected="true" aria-controls="panel-roadmap" data-tab="roadmap">Roadmap</button>
+      <button id="tab-kanban" class="segment" type="button" role="tab" aria-selected="false" aria-controls="panel-kanban" data-tab="kanban" tabindex="-1">Kanban</button>
       <button id="tab-tasks" class="segment" type="button" role="tab" aria-selected="false" aria-controls="panel-tasks" data-tab="tasks" tabindex="-1">Tasks</button>
       <button id="tab-decisions" class="segment" type="button" role="tab" aria-selected="false" aria-controls="panel-decisions" data-tab="decisions" tabindex="-1">Decisions</button>
       <button id="tab-goal" class="segment" type="button" role="tab" aria-selected="false" aria-controls="panel-goal" data-tab="goal" tabindex="-1">Goal</button>
@@ -124,6 +125,16 @@
     </section>
     <script id="initial-program" type="application/json">__RELAY_ROADMAP_JSON__</script>
     <script id="app-script">__RELAY_ROADMAP_CORE__</script>
+    <section id="panel-kanban" class="panel" role="tabpanel" aria-labelledby="tab-kanban" tabindex="-1" hidden>
+      <div class="panel__head">
+        <h2 id="kanban-heading">Kanban</h2>
+        <p class="panel__note">Tasks by status</p>
+      </div>
+      <div id="kanban-scroll" class="kanban">
+        <div id="kanban-board" class="kanban__board"></div>
+      </div>
+    </section>
+
     <section id="panel-tasks" class="panel" role="tabpanel" aria-labelledby="tab-tasks" tabindex="-1" hidden>
       <div class="panel__head">
         <h2 id="tasks-heading">Tasks</h2>

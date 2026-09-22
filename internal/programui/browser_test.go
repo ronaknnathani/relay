@@ -554,6 +554,142 @@ func TestBrowserDeepLinkedDeferredTabsWaitForFullSnapshot(t *testing.T) {
 	}
 }
 
+func TestBrowserKanbanBoard(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	item := func(id, title, status, priority string) programview.ItemDTO {
+		return programview.ItemDTO{
+			ID: id, Title: title, Status: status, Lane: status, Priority: priority,
+			Dependencies: []string{}, Dependents: []string{}, Contracts: []string{},
+			Notes: []string{}, Decisions: []programview.DecisionDTO{},
+			Artifacts: []programview.ArtifactDTO{}, Warnings: []string{},
+			Mailbox: programview.MailboxDTO{InboxIDs: []string{}, OutboxIDs: []string{}},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		items    []programview.ItemDTO
+		expected string
+	}{
+		{
+			name: "populated",
+			items: []programview.ItemDTO{
+				item("w1", "First pending", "pending", "P2"),
+				item("w2", "Dispatched task", "dispatched", "P1"),
+				item("w3", "Second pending", "pending", "P3"),
+				item("w4", "Blocked task", "blocked", "P0"),
+				item("w5", "Merged task", "merged", "P1"),
+			},
+			expected: `[{"lane":"pending","heading":"Pending","count":"2","ids":["w1","w3"]},` +
+				`{"lane":"dispatched","heading":"Dispatched","count":"1","ids":["w2"]},` +
+				`{"lane":"in-review","heading":"In review","count":"0","ids":[]},` +
+				`{"lane":"blocked","heading":"Blocked","count":"1","ids":["w4"]},` +
+				`{"lane":"merged","heading":"Merged","count":"1","ids":["w5"]},` +
+				`{"lane":"cancelled","heading":"Cancelled","count":"0","ids":[]}]`,
+		},
+		{
+			name:     "empty",
+			items:    []programview.ItemDTO{},
+			expected: `[{"lane":"pending","heading":"Pending","count":"0","ids":[]},` +
+				`{"lane":"dispatched","heading":"Dispatched","count":"0","ids":[]},` +
+				`{"lane":"in-review","heading":"In review","count":"0","ids":[]},` +
+				`{"lane":"blocked","heading":"Blocked","count":"0","ids":[]},` +
+				`{"lane":"merged","heading":"Merged","count":"0","ids":[]},` +
+				`{"lane":"cancelled","heading":"Cancelled","count":"0","ids":[]}]`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := browserTestSnapshot()
+			snapshot.Items = test.items
+			snapshot.Progress.Total = len(test.items)
+			url := startBrowserTestFeedHandler(t, snapshot)
+
+			allocator, cancelAllocator := chromedp.NewExecAllocator(
+				context.Background(),
+				append(chromedp.DefaultExecAllocatorOptions[:],
+					chromedp.ExecPath(chromeExecutable(t)),
+					chromedp.Flag("headless", true),
+					chromedp.Flag("disable-gpu", true),
+				)...,
+			)
+			defer cancelAllocator()
+			browser, cancelBrowser := chromedp.NewContext(allocator)
+			defer cancelBrowser()
+			browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+			defer cancelTimeout()
+
+			if err := chromedp.Run(browser,
+				chromedp.Navigate(url+"/#tab=kanban"),
+				chromedp.Poll(`typeof renderKanban === "function" &&
+					state.tab === "kanban" &&
+					document.querySelectorAll("#kanban-board .kanban__lane").length === 6`, nil),
+			); err != nil {
+				t.Fatalf("render Kanban board: %v", err)
+			}
+
+			var actual string
+			if err := chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify(
+				Array.from(document.querySelectorAll("#kanban-board .kanban__lane"), (lane) => ({
+					lane: lane.dataset.lane,
+					heading: lane.querySelector(".kanban__lane-title").textContent,
+					count: lane.querySelector(".kanban__lane-count").textContent,
+					ids: Array.from(lane.querySelectorAll(".kanban__card"), (card) => card.dataset.taskId)
+				}))
+			)`, &actual)); err != nil {
+				t.Fatal(err)
+			}
+			if actual != test.expected {
+				t.Fatalf("Kanban lanes = %s, want %s", actual, test.expected)
+			}
+
+			if test.name == "empty" {
+				return
+			}
+			var cardContract string
+			if err := chromedp.Run(browser,
+				chromedp.Evaluate(`JSON.stringify({
+					count: document.querySelectorAll("#kanban-board .kanban__card").length,
+					tag: document.querySelector('.kanban__card[data-task-id="w1"]').tagName,
+					type: document.querySelector('.kanban__card[data-task-id="w1"]').type,
+					text: document.querySelector('.kanban__card[data-task-id="w1"]').textContent,
+					label: document.querySelector('.kanban__card[data-task-id="w1"]').getAttribute("aria-label")
+				})`, &cardContract),
+			); err != nil {
+				t.Fatal(err)
+			}
+			wantCard := `{"count":5,"tag":"BUTTON","type":"button","text":"w1○PendingFirst pendingP2",` +
+				`"label":"Task w1: First pending. Status Pending. Priority P2. No dependencies."}`
+			if cardContract != wantCard {
+				t.Fatalf("Kanban card contract = %s, want %s", cardContract, wantCard)
+			}
+
+			var afterFilters string
+			if err := chromedp.Run(browser,
+				chromedp.Evaluate(`(() => {
+					selectTab("tasks");
+					state.filter = "no matching task";
+					state.statuses = new Set(["cancelled"]);
+					renderLedger();
+					selectTab("kanban");
+					return JSON.stringify(Array.from(
+						document.querySelectorAll("#kanban-board .kanban__card"),
+						(card) => card.dataset.taskId
+					));
+				})()`, &afterFilters),
+			); err != nil {
+				t.Fatal(err)
+			}
+			if afterFilters != `["w1","w3","w2","w4","w5"]` {
+				t.Fatalf("Kanban tasks after Tasks filters = %s", afterFilters)
+			}
+		})
+	}
+}
+
 func TestBrowserHeaderRefreshWaitsForFullSnapshot(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
