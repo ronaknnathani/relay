@@ -354,6 +354,21 @@ func TestKanbanAssetContract(t *testing.T) {
 		`card.classList.add("kanban__card");`,
 		`decorateTaskCard(card, item, item, lane);`,
 	})
+
+	styles := readAsset(t, "assets/app-deferred.css")
+	requireContains(t, "app-deferred.css", styles, []string{
+		".kanban {",
+		"overflow-x: auto;",
+		"scrollbar-width: thin;",
+		".kanban__board {",
+		"display: grid;",
+		"grid-template-columns: repeat(6, 280px);",
+		"width: max-content;",
+		".kanban__lane {",
+		"background-color: var(--lane-wash);",
+		".kanban__card {",
+		"width: 100%;",
+	})
 }
 
 func TestIndexReplacesTheDetailRailWithAnOnDemandDrawer(t *testing.T) {
