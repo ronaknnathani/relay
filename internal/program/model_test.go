@@ -159,6 +159,34 @@ func TestIDsUseMaxPlusOne(t *testing.T) {
 	}
 }
 
+func TestAddItemDefaultsAndValidatesRepositoriesIndependently(t *testing.T) {
+	p := newTestProgram(t)
+
+	primary := addTestItem(t, &p, "primary", PriorityP0)
+	secondary, err := p.AddItem(WorkItem{
+		Title:    "secondary",
+		Priority: PriorityP1,
+		Repo:     "/tmp/secondary-repo",
+	})
+	if err != nil {
+		t.Fatalf("AddItem secondary: %v", err)
+	}
+	if primary.Repo != p.Repo {
+		t.Fatalf("primary repo = %q, want %q", primary.Repo, p.Repo)
+	}
+	if secondary.Repo != "/tmp/secondary-repo" {
+		t.Fatalf("secondary repo = %q", secondary.Repo)
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate mixed repositories: %v", err)
+	}
+
+	p.Items[1].Repo = ""
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), `item "w2" repo is required`) {
+		t.Fatalf("blank item repo validation error = %v", err)
+	}
+}
+
 func TestValidationAggregatesAndDetectsCycles(t *testing.T) {
 	p := newTestProgram(t)
 	p.Title = ""
@@ -183,7 +211,7 @@ func TestValidationAggregatesAndDetectsCycles(t *testing.T) {
 			Status:       ItemPending,
 			Dependencies: []string{"w1", "w9"},
 			ContractRefs: []string{"missing@v1"},
-			Repo:         "other/repo",
+			Repo:         "",
 			CreatedAt:    p.CreatedAt,
 			UpdatedAt:    p.UpdatedAt,
 		},
@@ -197,7 +225,7 @@ func TestValidationAggregatesAndDetectsCycles(t *testing.T) {
 		"agent is required",
 		"dependency cycle",
 		"dependency \"w9\" does not exist",
-		"repo",
+		`item "w2" repo is required`,
 		"contract \"missing@v1\" does not resolve",
 	} {
 		if !strings.Contains(err.Error(), want) {

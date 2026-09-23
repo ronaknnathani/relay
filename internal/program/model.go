@@ -321,8 +321,8 @@ func (p Program) Validate() error {
 		if !validItemStatus(item.Status) {
 			errs = append(errs, fmt.Errorf("item %q status %q is unsupported", item.ID, item.Status))
 		}
-		if item.Repo != p.Repo {
-			errs = append(errs, fmt.Errorf("item %q repo %q must equal program repo %q in V1", item.ID, item.Repo, p.Repo))
+		if strings.TrimSpace(item.Repo) == "" {
+			errs = append(errs, fmt.Errorf("item %q repo is required", item.ID))
 		}
 		if item.ProjectSlug != "" {
 			if err := project.ValidateSlug(item.ProjectSlug); err != nil {

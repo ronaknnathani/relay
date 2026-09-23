@@ -23,6 +23,14 @@ func TestStoreRoundTripAndDoubleCreate(t *testing.T) {
 	home := setTestHome(t)
 	p := newTestProgram(t)
 	item := addTestItem(t, &p, "change", PriorityP0)
+	secondary, err := p.AddItem(WorkItem{
+		Title:    "secondary",
+		Priority: PriorityP1,
+		Repo:     "/tmp/secondary-repo",
+	})
+	if err != nil {
+		t.Fatalf("AddItem secondary: %v", err)
+	}
 	if err := Create(p); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -61,6 +69,10 @@ func TestStoreRoundTripAndDoubleCreate(t *testing.T) {
 	loadedItem, ok := loaded.Item(item.ID)
 	if !ok || loadedItem.Title != "change" {
 		t.Fatalf("loaded item = %+v, %v", loadedItem, ok)
+	}
+	loadedSecondary, ok := loaded.Item(secondary.ID)
+	if !ok || loadedSecondary.Repo != secondary.Repo {
+		t.Fatalf("loaded secondary item = %+v, %v", loadedSecondary, ok)
 	}
 }
 
