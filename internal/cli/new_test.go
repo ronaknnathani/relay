@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ronaknnathani/relay/internal/config"
@@ -82,6 +83,108 @@ func TestRunNewCreatesExpectedProjectFilesWithoutLaunch(t *testing.T) {
 	}
 }
 
+func TestCreateProjectRejectsSlugAfterConcurrentArchive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "concurrent-recreate"
+	branch := "test/" + slug
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/",
+		DefaultAgent: "copilot",
+		PermissionModes: map[string]string{
+			"copilot": "allow-all",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	removalStarted := make(chan struct{})
+	continueRemoval := make(chan struct{})
+	previous := archiveWorktreeRemove
+	archiveWorktreeRemove = func(
+		repo, worktree string, expected gitx.WorktreeState, force bool,
+	) error {
+		close(removalStarted)
+		<-continueRemoval
+		return previous(repo, worktree, expected, force)
+	}
+	t.Cleanup(func() { archiveWorktreeRemove = previous })
+
+	archiveErr := make(chan error, 1)
+	go func() {
+		_, err := archiveProject(slug, true)
+		archiveErr <- err
+	}()
+	<-removalStarted
+
+	createErr := make(chan error, 1)
+	go func() {
+		_, err := createProject(projectCreateOpts{
+			task: "replacement project", name: slug, repo: repo,
+		})
+		createErr <- err
+	}()
+	close(continueRemoval)
+	if err := <-archiveErr; err != nil {
+		t.Fatalf("archiveProject: %v", err)
+	}
+	if err := <-createErr; err == nil || !strings.Contains(err.Error(), "archived metadata still exists") {
+		t.Fatalf("createProject error = %v, want archived slug rejection", err)
+	}
+	if _, err := project.Load(project.ManifestPath(project.ArchivedDir(), slug)); err != nil {
+		t.Fatalf("load archived predecessor manifest: %v", err)
+	}
+}
+
+func TestCreateProjectRejectsAnyArchivedMetadataDirectory(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		content string
+	}{
+		{name: "directory only"},
+		{name: "malformed manifest", content: "{"},
+		{name: "legacy manifest", content: `{"slug":"archived-slug"}`},
+		{name: "completed cleanup", content: `{"slug":"archived-slug","archive_cleanup":{"branch_state":"done","worktree_state":"done"}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			slug := "archived-slug"
+			archivedDir := filepath.Join(project.ArchivedDir(), slug)
+			if err := os.MkdirAll(archivedDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if test.content != "" {
+				if err := os.WriteFile(
+					filepath.Join(archivedDir, "manifest.json"), []byte(test.content), 0o644,
+				); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			_, err := createProject(projectCreateOpts{
+				task: "replacement project", name: slug, repo: t.TempDir(),
+			})
+			if err == nil {
+				t.Fatal("createProject succeeded with archived metadata")
+			}
+			for _, want := range []string{
+				"archived metadata still exists",
+				archivedDir,
+				"choose a different project name",
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("createProject error %q is missing %q", err, want)
+				}
+			}
+			if pathExists(filepath.Join(project.ActiveDir(), slug)) {
+				t.Fatal("blocked creation installed an active project")
+			}
+		})
+	}
+}
+
 func TestReclaimLeftoversRemovesBranchWorktreeAndDir(t *testing.T) {
 	repo := newTestRepo(t)
 	worktreeDir := filepath.Join(repo, ".worktrees", "wt")
@@ -129,6 +232,38 @@ func TestReclaimLeftoversHandlesUnregisteredWorktree(t *testing.T) {
 	}
 	if pathExists(worktreeDir) {
 		t.Errorf("orphan dir still present after reclaim")
+	}
+}
+
+func TestReclaimLeftoversRemovesDanglingWorktreeSymlink(t *testing.T) {
+	repo := newTestRepo(t)
+	worktreeDir := filepath.Join(repo, ".worktrees", "dangling")
+	if err := os.MkdirAll(filepath.Dir(worktreeDir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), worktreeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := reclaimLeftovers(repo, "user/missing", worktreeDir, ""); err != nil {
+		t.Fatalf("reclaimLeftovers: %v", err)
+	}
+	if _, err := os.Lstat(worktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("dangling worktree symlink still exists: %v", err)
+	}
+}
+
+func TestReclaimLeftoversReturnsBranchProbeFailure(t *testing.T) {
+	repo := t.TempDir()
+
+	err := reclaimLeftovers(repo, "user/feature", "", "")
+	if err == nil {
+		t.Fatal("reclaimLeftovers error = nil")
+	}
+	for _, want := range []string{"inspect reclaim branch", "not a git repository"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("reclaimLeftovers error %q is missing %q", err, want)
+		}
 	}
 }
 

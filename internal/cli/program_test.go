@@ -19,6 +19,8 @@ import (
 func runProgramCommand(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	cmd := newCmdProgram()
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
 	cmd.SetArgs(args)
 	var out bytes.Buffer
 	cmd.SetOut(&out)

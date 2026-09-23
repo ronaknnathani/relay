@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,11 +24,17 @@ func TestPullRequestNumber(t *testing.T) {
 	}{
 		{ref: "#123", want: 123, ok: true},
 		{ref: "https://github.com/acme/widgets/pull/456", want: 456, ok: true},
-		{ref: "https://github.example/acme/widgets/pull/789/files", want: 789, ok: true},
 		{ref: "#0"},
+		{ref: "#+1"},
+		{ref: "#-1"},
 		{ref: "#12x"},
+		{ref: "--repo"},
+		{ref: "-Rother/repo"},
+		{ref: "12"},
 		{ref: "https://github.com/acme/widgets/issues/123"},
 		{ref: "https://github.com/acme/widgets/pull/not-a-number"},
+		{ref: "https://github.example/acme/widgets/pull/789/files", want: 789, ok: true},
+		{ref: "https://github.com/acme/widgets/pull/456?diff=split"},
 	}
 	for _, test := range tests {
 		t.Run(test.ref, func(t *testing.T) {
@@ -36,20 +46,52 @@ func TestPullRequestNumber(t *testing.T) {
 	}
 }
 
+func TestPullRequestRepositoryIncludesCanonicalHost(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "github.com",
+			url:  "https://GitHub.COM/acme/widgets/pull/42",
+			want: "github.com/acme/widgets",
+		},
+		{
+			name: "enterprise",
+			url:  "https://GitHub.Example/acme/widgets/pull/42",
+			want: "github.example/acme/widgets",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := pullRequestRepository(test.url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("pullRequestRepository(%q) = %q, want %q", test.url, got, test.want)
+			}
+		})
+	}
+}
+
 func TestGHPRIndexLoaderQueriesOnlyRecordedReferences(t *testing.T) {
 	var mutex sync.Mutex
 	commands := [][]string{}
 	loader := ghPRIndexLoader{
-		hasOrigin: func(string) bool { return true },
-		lookPath:  func(string) (string, error) { return "/usr/bin/gh", nil },
+		originURL: func(string) (string, error) {
+			return "https://github.example/acme/repo.git", nil
+		},
+		lookPath: func(string) (string, error) { return "/usr/bin/gh", nil },
 		run: func(_ context.Context, dir, name string, args ...string) ([]byte, error) {
 			mutex.Lock()
 			commands = append(commands, append([]string{dir, name}, args...))
 			mutex.Unlock()
 			switch args[2] {
-			case "#7":
+			case "7":
 				return []byte(`{"number":7,"state":"MERGED","url":"https://github.example/acme/repo/pull/7"}`), nil
-			case "https://github.example/acme/repo/pull/2048":
+			case "2048":
 				return []byte(`{"number":2048,"state":"CLOSED","url":"https://github.example/acme/repo/pull/2048"}`), nil
 			default:
 				return nil, fmt.Errorf("unexpected ref %q", args[2])
@@ -71,6 +113,9 @@ func TestGHPRIndexLoaderQueriesOnlyRecordedReferences(t *testing.T) {
 		}
 		if slices.Contains(command, "list") || slices.Contains(command, "--limit") {
 			t.Fatalf("command %#v still lists the whole repository", command)
+		}
+		if !slices.Equal(command[5:7], []string{"--repo", "github.example/acme/repo"}) {
+			t.Fatalf("command = %#v, want explicit repository", command)
 		}
 		if command[len(command)-1] != "number,state,url" {
 			t.Fatalf("command = %#v, want minimal JSON fields", command)
@@ -99,8 +144,10 @@ func TestGHPRIndexLoaderReusesCachedStateWithinTTL(t *testing.T) {
 	runs := 0
 	now := time.Unix(1000, 0)
 	loader := ghPRIndexLoader{
-		hasOrigin: func(string) bool { return true },
-		lookPath:  func(string) (string, error) { return "/usr/bin/gh", nil },
+		originURL: func(string) (string, error) {
+			return "https://github.example/acme/repo.git", nil
+		},
+		lookPath: func(string) (string, error) { return "/usr/bin/gh", nil },
 		run: func(context.Context, string, string, ...string) ([]byte, error) {
 			runs++
 			return []byte(`{"number":7,"state":"OPEN","url":"https://github.example/acme/repo/pull/7"}`), nil
@@ -143,8 +190,10 @@ func TestGHPRIndexLoaderBoundsConcurrentSubprocesses(t *testing.T) {
 		refs = append(refs, fmt.Sprintf("#%d", number))
 	}
 	loader := ghPRIndexLoader{
-		hasOrigin: func(string) bool { return true },
-		lookPath:  func(string) (string, error) { return "/usr/bin/gh", nil },
+		originURL: func(string) (string, error) {
+			return "https://github.example/acme/repo.git", nil
+		},
+		lookPath: func(string) (string, error) { return "/usr/bin/gh", nil },
 		run: func(_ context.Context, _, _ string, args ...string) ([]byte, error) {
 			mutex.Lock()
 			inFlight++
@@ -156,7 +205,7 @@ func TestGHPRIndexLoaderBoundsConcurrentSubprocesses(t *testing.T) {
 			mutex.Lock()
 			inFlight--
 			mutex.Unlock()
-			number, _ := PullRequestNumber(args[2])
+			number, _ := strconv.Atoi(args[2])
 			return fmt.Appendf(nil,
 				`{"number":%d,"state":"OPEN","url":"https://github.example/acme/repo/pull/%d"}`,
 				number, number), nil
@@ -183,24 +232,25 @@ func TestGHPRIndexLoaderFallsBackConservatively(t *testing.T) {
 	tests := []struct {
 		name      string
 		refs      []string
-		hasOrigin bool
+		originErr error
 		lookErr   error
 		runErr    error
 		output    string
 		wantRuns  int
 	}{
-		{name: "no recorded refs", hasOrigin: true},
-		{name: "no origin", refs: []string{"#12"}},
-		{name: "gh unavailable", refs: []string{"#12"}, hasOrigin: true, lookErr: exec.ErrNotFound},
+		{name: "no recorded refs"},
+		{name: "no origin", refs: []string{"#12"}, originErr: errors.New("no origin")},
+		{name: "gh unavailable", refs: []string{"#12"}, lookErr: exec.ErrNotFound},
 		{
-			name: "view error", refs: []string{"#12"}, hasOrigin: true,
+			name: "view error", refs: []string{"#12"},
 			runErr: errors.New("authentication failed"), wantRuns: 1,
 		},
-		{name: "malformed JSON", refs: []string{"#12"}, hasOrigin: true, output: "{", wantRuns: 1},
+		{name: "malformed JSON", refs: []string{"#12"}, output: "{", wantRuns: 1},
 		{
-			name: "unknown state", refs: []string{"#12"}, hasOrigin: true,
+			name: "unknown state", refs: []string{"#12"},
 			output: `{"number":12,"state":"MYSTERY","url":"https://github.example/pull/12"}`, wantRuns: 1,
 		},
+		{name: "malformed reference", refs: []string{"--repo"}, wantRuns: 0},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -210,8 +260,10 @@ func TestGHPRIndexLoaderFallsBackConservatively(t *testing.T) {
 				output = `{"number":12,"state":"OPEN","url":"https://github.example/pull/12"}`
 			}
 			loader := ghPRIndexLoader{
-				hasOrigin: func(string) bool { return test.hasOrigin },
-				lookPath:  func(string) (string, error) { return "/usr/bin/gh", test.lookErr },
+				originURL: func(string) (string, error) {
+					return "https://github.example/acme/repo.git", test.originErr
+				},
+				lookPath: func(string) (string, error) { return "/usr/bin/gh", test.lookErr },
 				run: func(context.Context, string, string, ...string) ([]byte, error) {
 					runs++
 					return []byte(output), test.runErr
@@ -225,6 +277,337 @@ func TestGHPRIndexLoaderFallsBackConservatively(t *testing.T) {
 				t.Fatalf("gh runs = %d, want %d", runs, test.wantRuns)
 			}
 		})
+	}
+}
+
+func TestGHPullRequestLookupUsesOriginIdentityDespiteGHRepo(t *testing.T) {
+	t.Setenv("GH_REPO", "attacker/redirect")
+	var gotArgs []string
+	lookup := ghPullRequestLookup{
+		originURL: func(string) (string, error) {
+			return "git@github.example:acme/widgets.git", nil
+		},
+		lookPath: func(string) (string, error) { return "/usr/bin/gh", nil },
+		run: func(_ context.Context, dir, name string, args ...string) ([]byte, error) {
+			if dir != "/repo" || name != "gh" {
+				t.Fatalf("command = dir %q name %q", dir, name)
+			}
+			gotArgs = append([]string(nil), args...)
+			return []byte(`{
+				"state":"MERGED",
+				"url":"https://github.example/acme/widgets/pull/42",
+				"baseRefName":"main",
+				"headRefName":"user/verified-pr",
+				"headRefOid":"abc123"
+			}`), nil
+		},
+	}
+
+	proof, err := lookup.Lookup("/repo", "https://github.example/acme/widgets/pull/42/files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof != (PullRequestProof{
+		State:      PRStateMerged,
+		Repository: "github.example/acme/widgets",
+		BaseBranch: "main",
+		HeadBranch: "user/verified-pr",
+		HeadSHA:    "abc123",
+	}) {
+		t.Fatalf("proof = %+v", proof)
+	}
+	wantArgs := []string{
+		"pr", "view", "42",
+		"--repo", "github.example/acme/widgets",
+		"--json", "state,url,baseRefName,headRefName,headRefOid",
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("args = %v, want %v", gotArgs, wantArgs)
+	}
+}
+
+func TestGitHubJSONCommandsIgnoreSuccessfulDebugStderr(t *testing.T) {
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	script := `#!/bin/sh
+echo '{"number":42,"state":"MERGED","url":"https://github.example/acme/widgets/pull/42","baseRefName":"main","headRefName":"user/verified-pr","headRefOid":"abc123","isDraft":false,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","statusCheckRollup":[],"title":"Ship it","updatedAt":"2026-08-25T16:00:00Z"}'
+echo 'gh debug: request completed' >&2
+`
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GH_DEBUG", "api")
+	repoDir := t.TempDir()
+
+	originURL := func(string) (string, error) {
+		return "https://github.example/acme/widgets.git", nil
+	}
+	loader := ghPRIndexLoader{
+		originURL: originURL,
+		lookPath:  exec.LookPath,
+		run:       runGHCommand,
+		cache:     newPRStateCache(time.Minute, time.Now),
+	}
+	index := loader.Load(repoDir, []string{"#42"})
+	if index == nil {
+		t.Fatal("index = nil")
+	}
+	if state, found := index.Lookup("#42"); !found || state != PRStateMerged {
+		t.Fatalf("index lookup = (%q, %t), want (%q, true)", state, found, PRStateMerged)
+	}
+
+	lookup := ghPullRequestLookup{
+		originURL: originURL,
+		lookPath:  exec.LookPath,
+		run:       runGHCommand,
+	}
+	proof, err := lookup.Lookup(repoDir, "#42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.State != PRStateMerged || proof.HeadSHA != "abc123" {
+		t.Fatalf("proof = %+v", proof)
+	}
+
+	pullRequest, err := NewGHFetcher().Fetch(context.Background(), repoDir, "#42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pullRequest.Number != 42 || pullRequest.State != "merged" {
+		t.Fatalf("pull request = %+v", pullRequest)
+	}
+}
+
+func TestRunGHCommandReturnsOnlyStderrOnFailure(t *testing.T) {
+	scriptPath := filepath.Join(t.TempDir(), "failed-gh")
+	script := `#!/bin/sh
+echo '{"misleading":"stdout"}'
+echo 'authentication failed for ssh://token@git.example/repo' >&2
+exit 1
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := runGHCommand(context.Background(), t.TempDir(), scriptPath)
+	if err == nil {
+		t.Fatal("runGHCommand error = nil")
+	}
+	if strings.Contains(string(output), "misleading") {
+		t.Fatalf("failure output included stdout: %q", output)
+	}
+	if !strings.Contains(string(output), "authentication failed") {
+		t.Fatalf("failure output = %q, want stderr diagnostic", output)
+	}
+}
+
+func TestGHPullRequestLookupRejectsMalformedReferenceBeforeRunningGH(t *testing.T) {
+	for _, ref := range []string{
+		"--repo",
+		"-Rattacker/redirect",
+		"42",
+		"#0",
+		"#42x",
+		"https://github.example/acme/widgets/pull/42?diff=split",
+		"https://github.example/acme/other/pull/42",
+	} {
+		t.Run(ref, func(t *testing.T) {
+			runs := 0
+			lookup := ghPullRequestLookup{
+				originURL: func(string) (string, error) {
+					return "https://github.example/acme/widgets.git", nil
+				},
+				lookPath: func(string) (string, error) { return "/usr/bin/gh", nil },
+				run: func(context.Context, string, string, ...string) ([]byte, error) {
+					runs++
+					return nil, nil
+				},
+			}
+
+			_, err := lookup.Lookup("/repo", ref)
+			if err == nil {
+				t.Fatal("Lookup error = nil")
+			}
+			if runs != 0 {
+				t.Fatalf("gh runs = %d, want 0", runs)
+			}
+		})
+	}
+}
+
+func TestGHPullRequestLookupReturnsCommandFailure(t *testing.T) {
+	lookup := ghPullRequestLookup{
+		originURL: func(string) (string, error) {
+			return "https://origin-user:origin-secret@example.com/acme/widgets.git", nil
+		},
+		lookPath: func(string) (string, error) { return "/usr/bin/gh", nil },
+		run: func(context.Context, string, string, ...string) ([]byte, error) {
+			return []byte(
+				"authentication failed for ssh://gh-token@git.example.com/acme/widgets.git" +
+					"?access_token=diagnostic-secret#scope",
+			), errors.New("exit status 1")
+		},
+	}
+
+	_, err := lookup.Lookup("/repo", "#42")
+	if err == nil {
+		t.Fatal("Lookup error = nil")
+	}
+	for _, secret := range []string{
+		"origin-user", "origin-secret", "gh-token", "diagnostic-secret", "access_token",
+	} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("Lookup error %q leaked %q", err, secret)
+		}
+	}
+	for _, want := range []string{
+		"ssh://[redacted]@git.example.com/acme/widgets.git",
+		"/repo",
+		"authentication failed",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Lookup error %q is missing %q", err, want)
+		}
+	}
+}
+
+func TestGHPullRequestLookupReturnsRepositoryName(t *testing.T) {
+	tests := []string{
+		"https://github.example/acme/widgets.git",
+		"ssh://git@github.example/acme/widgets.git",
+		"git@github.example:acme/widgets.git",
+	}
+	for _, origin := range tests {
+		t.Run(origin, func(t *testing.T) {
+			lookup := ghPullRequestLookup{
+				originURL: func(string) (string, error) { return origin, nil },
+			}
+			repository, err := lookup.Repository("/repo")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if repository != "github.example/acme/widgets" {
+				t.Fatalf("repository = %q, want github.example/acme/widgets", repository)
+			}
+		})
+	}
+}
+
+func TestGHPullRequestLookupStripsSCPQueryAndFragmentFromRepositoryName(t *testing.T) {
+	lookup := ghPullRequestLookup{
+		originURL: func(string) (string, error) {
+			return "git@github.example:acme/widgets.git?access_token=query-secret#fragment-secret", nil
+		},
+	}
+
+	repository, err := lookup.Repository("/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository != "github.example/acme/widgets" {
+		t.Fatalf("repository = %q, want github.example/acme/widgets", repository)
+	}
+}
+
+func TestGHPullRequestLookupSanitizesRemoteDerivedValidationErrors(t *testing.T) {
+	lookup := ghPullRequestLookup{
+		originURL: func(string) (string, error) {
+			return "git@github.example:acme/widgets/extra.git?access_token=query-secret#fragment-secret", nil
+		},
+	}
+
+	_, err := lookup.Repository("/repo")
+	if err == nil {
+		t.Fatal("Repository error = nil")
+	}
+	for _, secret := range []string{"git@", "access_token", "query-secret", "fragment-secret"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("Repository error %q leaked %q", err, secret)
+		}
+	}
+	if !strings.Contains(err.Error(), "repository name") {
+		t.Fatalf("Repository error %q is missing repository validation context", err)
+	}
+}
+
+func TestGHPullRequestLookupSanitizesCustomSchemeErrors(t *testing.T) {
+	lookup := ghPullRequestLookup{
+		originURL: func(string) (string, error) {
+			return "vault+token://origin-user:origin-secret@github.example/acme/widgets.git" +
+				"?access_token=query-secret#fragment-secret", nil
+		},
+	}
+
+	_, err := lookup.Repository("/repo")
+	if err == nil {
+		t.Fatal("Repository error = nil")
+	}
+	for _, secret := range []string{
+		"origin-user", "origin-secret", "access_token", "query-secret", "fragment-secret",
+	} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("Repository error %q leaked %q", err, secret)
+		}
+	}
+	for _, want := range []string{
+		"vault+token://[redacted]@github.example/acme/widgets.git",
+		"unsupported scheme",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Repository error %q is missing %q", err, want)
+		}
+	}
+}
+
+func TestGHPullRequestLookupSanitizesMalformedOriginParseErrors(t *testing.T) {
+	lookup := ghPullRequestLookup{
+		originURL: func(string) (string, error) {
+			return "custom://origin-user:origin-secret@github.example/acme/%zz.git" +
+				"?access_token=query-secret#fragment-secret", nil
+		},
+	}
+
+	_, err := lookup.Repository("/repo")
+	if err == nil {
+		t.Fatal("Repository error = nil")
+	}
+	for _, secret := range []string{
+		"origin-user", "origin-secret", "access_token", "query-secret", "fragment-secret",
+	} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("Repository error %q leaked %q", err, secret)
+		}
+	}
+	for _, want := range []string{
+		"[redacted-remote]",
+		"invalid URL",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Repository error %q is missing %q", err, want)
+		}
+	}
+}
+
+func TestGHPullRequestLookupRepositoryPreservesOriginFailure(t *testing.T) {
+	lookup := ghPullRequestLookup{
+		originURL: func(string) (string, error) {
+			return "", errors.New("git remote get-url origin: exit status 2\nerror: No such remote 'origin'")
+		},
+	}
+
+	_, err := lookup.Repository("/repo")
+	if err == nil {
+		t.Fatal("Repository error = nil")
+	}
+	for _, want := range []string{
+		"git remote get-url origin",
+		"No such remote",
+		"/repo",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Repository error %q is missing %q", err, want)
+		}
 	}
 }
 

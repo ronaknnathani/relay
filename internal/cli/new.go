@@ -145,11 +145,19 @@ func createProject(opts projectCreateOpts) (projectCreateResult, error) {
 	if err := project.ValidateSlug(slug); err != nil {
 		return projectCreateResult{}, err
 	}
+	return withProjectLifecycleLock(slug, func() (projectCreateResult, error) {
+		return createProjectLocked(opts, slug)
+	})
+}
 
+func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResult, error) {
 	projDir := filepath.Join(project.ActiveDir(), slug)
 	manifestPath := project.ManifestPath(project.ActiveDir(), slug)
 	if _, err := os.Stat(manifestPath); err == nil {
 		return projectCreateResult{}, fmt.Errorf("project %q already exists. Use: relay resume %s", slug, slug)
+	}
+	if err := requireArchivedSlugAvailable(slug); err != nil {
+		return projectCreateResult{}, err
 	}
 
 	repoRoot := opts.repo
@@ -185,7 +193,10 @@ func createProject(opts projectCreateOpts) (projectCreateResult, error) {
 	// A branch, worktree, or project dir with no valid manifest is leftover
 	// state from an interrupted or failed setup (e.g. Ctrl+C before the manifest
 	// was written). Detect it and offer to reclaim so the same slug is reusable.
-	branchExists := gitx.BranchExists(repoRoot, branch)
+	branchExists, err := gitx.LocalBranchExists(repoRoot, branch)
+	if err != nil {
+		return projectCreateResult{}, fmt.Errorf("inspect project branch %q: %w", branch, err)
+	}
 	if branchExists || pathExists(worktreeDir) || pathExists(projDir) {
 		// "safe" leftovers can be reclaimed without prompting non-interactively:
 		// the branch has no unique commits AND the worktree holds no uncommitted
@@ -272,9 +283,24 @@ func createProject(opts projectCreateOpts) (projectCreateResult, error) {
 	}, nil
 }
 
+func requireArchivedSlugAvailable(slug string) error {
+	archivedDir := filepath.Join(project.ArchivedDir(), slug)
+	if _, err := os.Lstat(archivedDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("inspect archived project metadata %s: %w", archivedDir, err)
+	}
+	return fmt.Errorf(
+		"project %q cannot be created because archived metadata still exists at %s; "+
+			"choose a different project name, or move/remove that archived directory after preserving any history you need",
+		slug, archivedDir,
+	)
+}
+
 // pathExists reports whether a filesystem path exists (file, dir, or symlink).
 func pathExists(p string) bool {
-	_, err := os.Stat(p)
+	_, err := os.Lstat(p)
 	return err == nil
 }
 
@@ -283,8 +309,12 @@ func pathExists(p string) bool {
 // worktree is safe only when it is clean (no uncommitted/untracked changes); a
 // leftover directory that git does not track is safe only when it is empty.
 func worktreeReclaimSafe(repoRoot, dir string) bool {
-	if !pathExists(dir) {
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
 		return true
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return false
 	}
 	registered, err := gitx.IsWorktree(repoRoot, dir)
 	if err != nil {
@@ -304,12 +334,14 @@ func branchMerged(repo, branch, base string) bool {
 	if base == "" {
 		return false
 	}
-	if gitx.HasOrigin(repo) && gitx.RevParse(repo, "origin/"+base) != "" {
-		if gitx.IsBranchReachable(repo, branch, "origin/"+base) {
+	branchRef := "refs/heads/" + branch
+	remoteBaseRef := "refs/remotes/origin/" + base
+	if gitx.HasOrigin(repo) && gitx.RevParse(repo, remoteBaseRef) != "" {
+		if gitx.IsBranchReachable(repo, branchRef, remoteBaseRef) {
 			return true
 		}
 	}
-	return gitx.IsBranchReachable(repo, branch, base)
+	return gitx.IsBranchReachable(repo, branchRef, "refs/heads/"+base)
 }
 
 // leftoverDesc summarizes which leftover artifacts exist for a slug.
@@ -374,12 +406,16 @@ func promptYesNo(question string, defaultYes bool) (bool, error) {
 // sees exactly what was reclaimed.
 func reclaimLeftovers(repoRoot, branch, worktreeDir, projDir string) error {
 	if pathExists(worktreeDir) {
-		if err := gitx.WorktreeRemove(repoRoot, worktreeDir, true); err != nil {
+		if err := gitx.WorktreeReclaim(repoRoot, worktreeDir, true); err != nil {
 			return fmt.Errorf("reclaim worktree %s: %w", worktreeDir, err)
 		}
 		fmt.Printf("  %s %s\n", ui.Color(ui.Dim, "Removed worktree:"), worktreeDir)
 	}
-	if gitx.BranchExists(repoRoot, branch) {
+	branchExists, err := gitx.LocalBranchExists(repoRoot, branch)
+	if err != nil {
+		return fmt.Errorf("inspect reclaim branch %q: %w", branch, err)
+	}
+	if branchExists {
 		if err := gitx.ForceDeleteBranch(repoRoot, branch); err != nil {
 			return fmt.Errorf("reclaim branch %q: %w", branch, err)
 		}

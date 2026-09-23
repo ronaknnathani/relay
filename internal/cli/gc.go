@@ -1,13 +1,106 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/ronaknnathani/relay/internal/ui"
 	"github.com/spf13/cobra"
 )
+
+var (
+	errGCCompletedWithErrors = errors.New("relay gc completed with errors")
+	gcArchiveProject         = archiveProjectWithProof
+)
+
+type gcRefreshKey struct {
+	commonDir string
+	origin    string
+	base      string
+}
+
+type gcRefreshResult struct {
+	baseCommit string
+	err        error
+}
+
+type gcPreRefreshKey struct {
+	repository string
+	base       string
+}
+
+type gcRefreshCache struct {
+	failures     map[gcPreRefreshKey]gcRefreshResult
+	canonicalKey map[gcPreRefreshKey]gcRefreshKey
+	results      map[gcRefreshKey]gcRefreshResult
+}
+
+func newGCRefreshCache() *gcRefreshCache {
+	return &gcRefreshCache{
+		failures:     make(map[gcPreRefreshKey]gcRefreshResult),
+		canonicalKey: make(map[gcPreRefreshKey]gcRefreshKey),
+		results:      make(map[gcRefreshKey]gcRefreshResult),
+	}
+}
+
+func (c *gcRefreshCache) refresh(repo, base string) (gcRefreshResult, bool) {
+	preKey, err := gcPreRefreshKeyFor(repo, base)
+	if failure, found := c.failures[preKey]; found {
+		return failure, false
+	}
+	if key, found := c.canonicalKey[preKey]; found {
+		return c.results[key], false
+	}
+	if err != nil {
+		result := gcRefreshResult{err: err}
+		c.failures[preKey] = result
+		return result, true
+	}
+
+	commonDir, err := gitx.CanonicalGitCommonDir(repo)
+	if err != nil {
+		result := gcRefreshResult{err: fmt.Errorf(
+			"resolve repository %s common directory: %w", repo, err,
+		)}
+		c.failures[preKey] = result
+		return result, true
+	}
+	origin, err := gitx.OriginURL(repo)
+	if err != nil {
+		result := gcRefreshResult{err: fmt.Errorf(
+			"resolve repository %s effective origin: %w", repo, err,
+		)}
+		c.failures[preKey] = result
+		return result, true
+	}
+
+	key := gcRefreshKey{commonDir: commonDir, origin: origin, base: base}
+	c.canonicalKey[preKey] = key
+	if result, found := c.results[key]; found {
+		return result, false
+	}
+	diagnostic, baseCommit, err := gitx.FetchBaseSnapshot(repo, base)
+	result := gcRefreshResult{baseCommit: baseCommit, err: err}
+	if result.err != nil && diagnostic != "" {
+		result.err = fmt.Errorf("%w\n%s", result.err, diagnostic)
+	}
+	c.results[key] = result
+	return result, true
+}
+
+func gcPreRefreshKeyFor(repo, base string) (gcPreRefreshKey, error) {
+	normalized, err := filepath.Abs(repo)
+	key := gcPreRefreshKey{repository: filepath.Clean(normalized), base: base}
+	if err != nil {
+		key.repository = filepath.Clean(repo)
+		return key, fmt.Errorf("normalize repository path %s: %w", repo, err)
+	}
+	return key, nil
+}
 
 func newCmdGC() *cobra.Command {
 	return &cobra.Command{
@@ -21,32 +114,145 @@ func newCmdGC() *cobra.Command {
 }
 
 func runGC() error {
-	manifests, err := project.LoadAll(project.ActiveDir())
+	loadResults, err := project.LoadAllResults(project.ActiveDir())
 	if err != nil {
 		return err
 	}
-	for _, m := range manifests {
-		if m.Repo == "" || m.Branch == "" {
+	ownership := loadProjectResourceOwnershipIndex(loadResults)
+	refreshes := newGCRefreshCache()
+	hadErrors := false
+	for _, loadResult := range loadResults {
+		m := loadResult.Manifest
+		if err := ownership.requireExclusive(loadResult.Path); err != nil {
+			ui.Warn("project %s: %s", loadResult.Name, err)
+			hadErrors = true
+			continue
+		}
+		if (m.Program == "") != (m.ProgramItem == "") {
+			ui.Warn(
+				"invalid project metadata %s: program ownership requires both program and program_item; "+
+					"preserving project %s for manual repair",
+				loadResult.Path, loadResult.Name,
+			)
+			hadErrors = true
+			continue
+		}
+		if m.Program != "" {
+			fmt.Printf(
+				"[relay] Skipping %s: managed by a program; use 'relay program worker cleanup %s %s'.\n",
+				loadResult.Name, m.Program, m.ProgramItem,
+			)
+			continue
+		}
+		if err := validateGCManifest(loadResult); err != nil {
+			ui.Warn("%s", err)
+			hadErrors = true
 			continue
 		}
 		base := m.BaseBranch
+		var baseErr error
 		if base == "" {
-			base = gitx.DetectDefaultBranch(m.Repo)
+			base, baseErr = gitx.DetectDefaultBranchWithError(m.Repo)
 		}
-		if base == "" {
-			fmt.Printf("[relay] Skipping %s: cannot determine default branch.\n", m.Slug)
-			continue
+		if baseErr != nil {
+			ui.Warn("evaluate project %s in %s: %s", m.Slug, m.Repo, baseErr)
 		}
-		if _, err := gitx.Fetch(m.Repo, base); err != nil {
-			ui.Warn("fetch %s in %s: %s", base, m.Repo, err)
+		var refresh gcRefreshResult
+		if base != "" {
+			var report bool
+			refresh, report = refreshes.refresh(m.Repo, base)
+			if report && refresh.err != nil {
+				ui.Warn("refresh repository %s base %s: %s", m.Repo, base, refresh.err)
+			}
 		}
-		if !gitx.IsWorkMerged(m.Repo, m.Branch, base, m.StartSHA) {
+
+		var (
+			merged bool
+			proof  archiveProofSnapshot
+		)
+		var evaluationErr error
+		if base != "" && refresh.err == nil {
+			if m.StartSHA == "" {
+				evaluationErr = fmt.Errorf("project %s has no start_sha", m.Slug)
+			} else {
+				var branchTip string
+				branchTip, merged, evaluationErr = gitx.WorkMergedTip(
+					m.Repo, m.Branch, refresh.baseCommit, m.StartSHA,
+				)
+				if merged {
+					proof, evaluationErr = newMergedBranchArchiveProof(
+						m, archiveProofFreshUpstream, branchTip,
+					)
+					merged = evaluationErr == nil
+				}
+			}
+		}
+		var prErr error
+		if !merged && !errors.Is(evaluationErr, gitx.ErrInvalidWorkStart) {
+			var evidence recordedPullRequestEvidence
+			evidence, prErr = resolveRecordedPullRequestEvidence(m, m.Slug)
+			if evidence.Merged && prErr == nil {
+				proof, prErr = newPullRequestArchiveProof(m, evidence)
+				merged = prErr == nil
+			}
+		}
+		if !merged {
+			if baseErr != nil || refresh.err != nil {
+				hadErrors = true
+			}
+			for _, err := range []error{evaluationErr, prErr} {
+				if err == nil {
+					continue
+				}
+				ui.Warn("evaluate project %s: %s", m.Slug, err)
+				hadErrors = true
+			}
 			continue
 		}
 		fmt.Printf("[relay] Branch %s is merged. Archiving project %s.\n", m.Branch, m.Slug)
-		if err := runArchive(m.Slug, true); err != nil {
+		result, err := gcArchiveProject(proof, true)
+		if err != nil {
+			if result.ProjectLocation == archiveLocationArchived {
+				renderArchivedCleanupFailure(os.Stdout, result)
+				ui.Warn(
+					"project %s metadata is archived but cleanup is incomplete; retry with: relay archive %s",
+					m.Slug, m.Slug,
+				)
+			}
 			ui.Warn("archive %s: %s", m.Slug, err)
+			hadErrors = true
+			continue
 		}
+		renderArchive(os.Stdout, result)
+		if len(result.Warnings) > 0 || result.BranchDeletionWarning != "" {
+			hadErrors = true
+		}
+	}
+	if hadErrors {
+		return errGCCompletedWithErrors
+	}
+	return nil
+}
+
+func validateGCManifest(result project.ManifestLoadResult) error {
+	m := result.Manifest
+	if err := project.ValidateSlug(m.Slug); err != nil {
+		return fmt.Errorf("invalid project metadata %s: %w", result.Path, err)
+	}
+	if m.Slug != result.Name {
+		return fmt.Errorf(
+			"invalid project metadata %s: slug %q does not match directory %q",
+			result.Path, m.Slug, result.Name,
+		)
+	}
+	if m.Repo == "" {
+		return fmt.Errorf("invalid project metadata %s: repository is empty", result.Path)
+	}
+	if m.Branch == "" {
+		return fmt.Errorf("invalid project metadata %s: branch is empty", result.Path)
+	}
+	if err := validateManifestWorktreeMetadata(m); err != nil {
+		return fmt.Errorf("invalid project metadata %s: %w", result.Path, err)
 	}
 	return nil
 }

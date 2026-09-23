@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/mailbox"
 	"github.com/ronaknnathani/relay/internal/patrollock"
@@ -47,9 +48,10 @@ var (
 	newHerdrClient = func() herdrRuntimeClient {
 		return herdr.NewClientWithCommandTimeout(context.Background(), herdrCommandTimeout)
 	}
-	herdrAvailable = herdr.Available
-	workerNow      = time.Now
-	workerSleep    = time.Sleep
+	herdrAvailable                = herdr.Available
+	workerNow                     = time.Now
+	workerSleep                   = time.Sleep
+	programWorkerStartSaveProgram = program.Save
 )
 
 type programWorkerOutput struct {
@@ -216,11 +218,8 @@ func runProgramWorkerStart(out io.Writer, programSlug, itemID string, jsonOutput
 func startProgramWorker(
 	programSlug, itemID, command string,
 ) (result programWorkerOutput, retErr error) {
-	target, p, err := loadProgramWorkerStartTarget(programSlug, itemID)
+	initialTarget, initialProgram, _, err := loadProgramWorkerStartTarget(programSlug, itemID)
 	if err != nil {
-		return programWorkerOutput{}, err
-	}
-	if err := requireManagedAgent(p.Agent, fmt.Sprintf("program %q", p.Slug)); err != nil {
 		return programWorkerOutput{}, err
 	}
 	if _, err := requireHerdrPane(command); err != nil {
@@ -229,7 +228,7 @@ func startProgramWorker(
 	// One child project has exactly one owner, so discovery, tab creation, the
 	// resume command, Herdr recognition, and renaming all run under a per-child
 	// kernel lock that a crashed holder releases automatically.
-	lock, err := acquireWorkerStartLock(target.manifest.Slug, command)
+	lock, err := acquireWorkerStartLock(initialTarget.manifest.Slug, command)
 	if err != nil {
 		return programWorkerOutput{}, err
 	}
@@ -239,6 +238,219 @@ func startProgramWorker(
 		}
 	}()
 
+	return withProjectLifecycleLock(
+		initialTarget.manifest.Slug,
+		func() (programWorkerOutput, error) {
+			target, p, programPath, err := loadProgramWorkerStartTarget(programSlug, itemID)
+			if err != nil {
+				return programWorkerOutput{}, err
+			}
+			if target.item.ProjectSlug != initialTarget.item.ProjectSlug ||
+				target.manifest.Slug != initialTarget.manifest.Slug {
+				return programWorkerOutput{}, fmt.Errorf(
+					"program worker %q: child project changed from %q to %q while waiting for its "+
+						"lifecycle lock; no worker was started, retry with current program state",
+					itemID, initialTarget.item.ProjectSlug, target.item.ProjectSlug,
+				)
+			}
+			if err := validateReloadedProgramWorkerTarget(
+				initialProgram, initialTarget, p, target,
+			); err != nil {
+				return programWorkerOutput{}, fmt.Errorf(
+					"program worker %q changed while waiting for its lifecycle lock: %w; "+
+						"no worker was started, retry with current program state",
+					itemID, err,
+				)
+			}
+			target, p, err = repairLegacyProgramWorkerStartIdentity(
+				programPath, programSlug, itemID, p, target,
+			)
+			if err != nil {
+				return programWorkerOutput{}, fmt.Errorf(
+					"program worker %q legacy resource identity could not be repaired safely: %w; "+
+						"no Herdr state was changed",
+					itemID, err,
+				)
+			}
+			if err := validateProgramWorkerStartIdentity(p, target.item, target.manifest); err != nil {
+				return programWorkerOutput{}, fmt.Errorf(
+					"program worker %q resource identity is not safe to start: %w; "+
+						"no Herdr state was changed",
+					itemID, err,
+				)
+			}
+			if err := requireManagedAgent(p.Agent, fmt.Sprintf("program %q", p.Slug)); err != nil {
+				return programWorkerOutput{}, err
+			}
+			return startProgramWorkerLocked(target, programSlug, itemID, command)
+		},
+	)
+}
+
+func validateReloadedProgramWorkerTarget(
+	initialProgram program.Program,
+	initialTarget programWorkerTarget,
+	currentProgram program.Program,
+	currentTarget programWorkerTarget,
+) error {
+	initialWorktree := worktreeValue(initialTarget.manifest)
+	currentWorktree := worktreeValue(currentTarget.manifest)
+	if currentProgram.Repo != initialProgram.Repo ||
+		currentTarget.item.Repo != initialTarget.item.Repo ||
+		currentTarget.item.ProjectBranch != initialTarget.item.ProjectBranch ||
+		currentTarget.item.ProjectWorktree != initialTarget.item.ProjectWorktree ||
+		currentTarget.manifest.Repo != initialTarget.manifest.Repo ||
+		currentTarget.manifest.Branch != initialTarget.manifest.Branch ||
+		currentWorktree != initialWorktree {
+		return fmt.Errorf(
+			"repository/branch/worktree changed from program %q item %q/%q manifest %q/%q/%q "+
+				"to program %q item %q/%q manifest %q/%q/%q",
+			initialProgram.Repo,
+			initialTarget.item.Repo, initialTarget.item.ProjectBranch,
+			initialTarget.manifest.Repo, initialTarget.manifest.Branch, initialWorktree,
+			currentProgram.Repo,
+			currentTarget.item.Repo, currentTarget.item.ProjectBranch,
+			currentTarget.manifest.Repo, currentTarget.manifest.Branch, currentWorktree,
+		)
+	}
+	return nil
+}
+
+func repairLegacyProgramWorkerStartIdentity(
+	path, programSlug, itemID string,
+	p program.Program,
+	target programWorkerTarget,
+) (programWorkerTarget, program.Program, error) {
+	branchMissing := target.item.ProjectBranch == ""
+	worktreeMissing := target.item.ProjectWorktree == ""
+	if branchMissing != worktreeMissing {
+		return programWorkerTarget{}, program.Program{}, fmt.Errorf(
+			"child project %q has incomplete durable dispatch identity %q/%q",
+			target.manifest.Slug,
+			target.item.ProjectBranch, target.item.ProjectWorktree,
+		)
+	}
+	if !branchMissing {
+		return target, p, nil
+	}
+	if err := validateLegacyProgramWorkerRepairIdentity(p, target.item, target.manifest); err != nil {
+		return programWorkerTarget{}, program.Program{}, fmt.Errorf(
+			"validate legacy child project %q resources: %w",
+			target.manifest.Slug, err,
+		)
+	}
+	worktree := worktreeValue(target.manifest)
+	for i := range p.Items {
+		if p.Items[i].ID != itemID {
+			continue
+		}
+		p.Items[i].ProjectBranch = target.manifest.Branch
+		p.Items[i].ProjectWorktree = worktree
+	}
+	if err := p.Validate(); err != nil {
+		return programWorkerTarget{}, program.Program{}, fmt.Errorf(
+			"validate repaired program %q: %w", programSlug, err,
+		)
+	}
+	if err := programWorkerStartSaveProgram(path, p); err != nil {
+		return programWorkerTarget{}, program.Program{}, fmt.Errorf(
+			"save repaired dispatch identity for child project %q: %w",
+			target.manifest.Slug, err,
+		)
+	}
+	stored, err := program.Load(path)
+	if err != nil {
+		return programWorkerTarget{}, program.Program{}, fmt.Errorf(
+			"reload program after repairing child project %q: %w",
+			target.manifest.Slug, err,
+		)
+	}
+	if stored.Slug != programSlug {
+		return programWorkerTarget{}, program.Program{}, fmt.Errorf(
+			"stored program slug %q does not match requested program %q after repair",
+			stored.Slug, programSlug,
+		)
+	}
+	storedTarget, err := programWorkerTargetFor(stored, itemID)
+	if err != nil {
+		return programWorkerTarget{}, program.Program{}, fmt.Errorf(
+			"reload repaired child project %q target: %w", target.manifest.Slug, err,
+		)
+	}
+	if stored.Repo != p.Repo ||
+		storedTarget.item.Repo != target.item.Repo ||
+		storedTarget.item.ProjectSlug != target.item.ProjectSlug ||
+		storedTarget.item.ProjectBranch != target.manifest.Branch ||
+		storedTarget.item.ProjectWorktree != worktree ||
+		storedTarget.manifest.Slug != target.manifest.Slug ||
+		storedTarget.manifest.Repo != target.manifest.Repo ||
+		storedTarget.manifest.Branch != target.manifest.Branch ||
+		worktreeValue(storedTarget.manifest) != worktree {
+		return programWorkerTarget{}, program.Program{}, fmt.Errorf(
+			"reloaded program/item/manifest identity does not match child project %q after repair",
+			target.manifest.Slug,
+		)
+	}
+	if err := validateProgramWorkerStartIdentity(
+		stored, storedTarget.item, storedTarget.manifest,
+	); err != nil {
+		return programWorkerTarget{}, program.Program{}, fmt.Errorf(
+			"revalidate repaired child project %q resources: %w",
+			target.manifest.Slug, err,
+		)
+	}
+	return storedTarget, stored, nil
+}
+
+func validateLegacyProgramWorkerRepairIdentity(
+	p program.Program, item program.WorkItem, manifest project.Manifest,
+) error {
+	repoRoot, err := gitx.CanonicalRepositoryRoot(manifest.Repo)
+	if err != nil {
+		return fmt.Errorf("resolve repository root %s: %w", manifest.Repo, err)
+	}
+	worktree, err := gitx.CanonicalPath(worktreeValue(manifest))
+	if err != nil {
+		return fmt.Errorf("resolve worktree %s: %w", worktreeValue(manifest), err)
+	}
+	expectedWorktree, err := gitx.CanonicalPath(filepath.Join(
+		repoRoot, ".worktrees", strings.ReplaceAll(manifest.Branch, "/", "_"),
+	))
+	if err != nil {
+		return fmt.Errorf("resolve expected worktree for branch %q: %w", manifest.Branch, err)
+	}
+	if worktree != expectedWorktree {
+		return fmt.Errorf(
+			"worktree %s does not match expected canonical worktree path %s for branch %q",
+			worktree, expectedWorktree, manifest.Branch,
+		)
+	}
+	return validateManagedChildResourceIdentity(p, item, manifest)
+}
+
+func validateProgramWorkerStartIdentity(
+	p program.Program, item program.WorkItem, manifest project.Manifest,
+) error {
+	worktree := worktreeValue(manifest)
+	if item.ProjectBranch == "" || item.ProjectWorktree == "" {
+		return fmt.Errorf(
+			"child project %q has no durable dispatch branch/worktree identity",
+			manifest.Slug,
+		)
+	}
+	if manifest.Branch != item.ProjectBranch || worktree != item.ProjectWorktree {
+		return fmt.Errorf(
+			"child project %q manifest branch/worktree %q/%q does not match dispatched %q/%q",
+			manifest.Slug, manifest.Branch, worktree,
+			item.ProjectBranch, item.ProjectWorktree,
+		)
+	}
+	return validateManagedChildResourceIdentity(p, item, manifest)
+}
+
+func startProgramWorkerLocked(
+	target programWorkerTarget, programSlug, itemID, command string,
+) (programWorkerOutput, error) {
 	// The server probe and its agent list run inside the lock so a concurrent
 	// start that already created the owner is adopted instead of duplicated.
 	readiness, err := requireHerdrRuntime(command, true)
@@ -672,16 +884,24 @@ func findProgramWorker(programSlug, itemID string) (programWorkerTarget, herdr.A
 	return target, agent, client, nil
 }
 
-func loadProgramWorkerStartTarget(programSlug, itemID string) (programWorkerTarget, program.Program, error) {
-	_, p, err := loadActiveProgram(programSlug)
+func loadProgramWorkerStartTarget(
+	programSlug, itemID string,
+) (programWorkerTarget, program.Program, string, error) {
+	path, p, err := loadActiveProgram(programSlug)
 	if err != nil {
-		return programWorkerTarget{}, program.Program{}, err
+		return programWorkerTarget{}, program.Program{}, "", err
+	}
+	if p.Slug != programSlug {
+		return programWorkerTarget{}, program.Program{}, "", fmt.Errorf(
+			"program worker %q: program manifest slug %q does not match requested program %q",
+			itemID, p.Slug, programSlug,
+		)
 	}
 	target, err := programWorkerTargetFor(p, itemID)
 	if err != nil {
-		return programWorkerTarget{}, program.Program{}, err
+		return programWorkerTarget{}, program.Program{}, "", err
 	}
-	return target, p, nil
+	return target, p, path, nil
 }
 
 func loadProgramWorkerTarget(programSlug, itemID string) (programWorkerTarget, error) {
@@ -734,6 +954,19 @@ func loadProgramWorkerManifest(p program.Program, item program.WorkItem) (projec
 		return project.Manifest{}, fmt.Errorf(
 			"program worker %q: child project %q is linked to %q/%q, want %q/%q",
 			item.ID, manifest.Slug, manifest.Program, manifest.ProgramItem, p.Slug, item.ID,
+		)
+	}
+	if manifest.Slug != item.ProjectSlug {
+		return project.Manifest{}, fmt.Errorf(
+			"program worker %q: child project manifest slug %q does not match linked project %q",
+			item.ID, manifest.Slug, item.ProjectSlug,
+		)
+	}
+	if item.Repo != p.Repo || manifest.Repo != p.Repo {
+		return project.Manifest{}, fmt.Errorf(
+			"program worker %q: child project repository identity does not match dispatch "+
+				"(manifest %q, item %q, program %q)",
+			item.ID, manifest.Repo, item.Repo, p.Repo,
 		)
 	}
 	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {

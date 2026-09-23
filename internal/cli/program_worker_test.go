@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/mailbox"
 	"github.com/ronaknnathani/relay/internal/patrollock"
@@ -185,7 +186,10 @@ func (f *fakeHerdrClient) ShowNotification(title, body string) error {
 func createWorkerFixture(t *testing.T, status program.ItemStatus) (program.Program, program.WorkItem, project.Manifest) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
-	repo := t.TempDir()
+	repo, err := filepath.EvalSymlinks(newTestRepo(t))
+	if err != nil {
+		t.Fatal(err)
+	}
 	p, err := program.New("governance", "Ship governed changes", repo, "copilot", 3)
 	if err != nil {
 		t.Fatal(err)
@@ -209,18 +213,20 @@ func createWorkerFixture(t *testing.T, status program.ItemStatus) (program.Progr
 			t.Fatal(err)
 		}
 	}
+	branch := "test/" + childSlug
+	worktree := addArchiveWorktree(t, repo, childSlug, branch)
+	manifest := project.Manifest{
+		Slug: childSlug, Title: item.Title, Repo: repo, Agent: "copilot",
+		Branch: branch, Worktree: &worktree,
+		Program: p.Slug, ProgramItem: item.ID, Phase: "implement",
+	}
+	if err := bindDispatchIdentity(&p, item.ID, manifest); err != nil {
+		t.Fatal(err)
+	}
 	if err := program.Create(p); err != nil {
 		t.Fatal(err)
 	}
 	loadedItem, _ := p.Item(item.ID)
-	worktree := filepath.Join(repo, ".worktrees", childSlug)
-	if err := os.MkdirAll(worktree, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	manifest := project.Manifest{
-		Slug: childSlug, Title: item.Title, Repo: repo, Agent: "copilot",
-		Worktree: &worktree, Program: p.Slug, ProgramItem: item.ID, Phase: "implement",
-	}
 	manifestPath := project.ManifestPath(project.ActiveDir(), childSlug)
 	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -229,6 +235,46 @@ func createWorkerFixture(t *testing.T, status program.ItemStatus) (program.Progr
 		t.Fatal(err)
 	}
 	return p, loadedItem, manifest
+}
+
+func createLegacyWorkerFixture(
+	t *testing.T, status program.ItemStatus,
+) (program.Program, program.WorkItem, project.Manifest) {
+	t.Helper()
+	p, item, manifest := createWorkerFixture(t, status)
+	expectedWorktree := filepath.Join(
+		manifest.Repo, ".worktrees", strings.ReplaceAll(manifest.Branch, "/", "_"),
+	)
+	runArchiveGit(t, manifest.Repo, "worktree", "move", *manifest.Worktree, expectedWorktree)
+	manifest.Worktree = &expectedWorktree
+	if err := project.Save(
+		project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	programPath := program.ManifestPath(program.ActiveDir(), p.Slug)
+	loaded, err := program.Load(programPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range loaded.Items {
+		if loaded.Items[i].ID == item.ID {
+			loaded.Items[i].ProjectBranch = ""
+			loaded.Items[i].ProjectWorktree = ""
+		}
+	}
+	if err := program.Save(programPath, loaded); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := program.Load(programPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyItem, ok := reloaded.Item(item.ID)
+	if !ok {
+		t.Fatal("legacy item disappeared")
+	}
+	return reloaded, legacyItem, manifest
 }
 
 // installManagedHerdrFakes puts a test inside a healthy Herdr workspace, which
@@ -333,6 +379,260 @@ func TestProgramWorkerStartCreatesRunsPollsAndRenames(t *testing.T) {
 	}
 }
 
+func TestProgramWorkerStartRepairsLegacyDispatchIdentity(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createLegacyWorkerFixture(t, program.ItemDispatched)
+	worker := herdr.Agent{
+		Status: herdr.StatusIdle, PaneID: "w7:p9", TabID: "w7:t9", WorkspaceID: "w7",
+		TerminalTitle: "relay:" + manifest.Slug + " - GitHub Copilot",
+		ForegroundCWD: *manifest.Worktree,
+	}
+	client := &fakeHerdrClient{
+		agentResponses: [][]herdr.Agent{nil, nil, {worker}},
+		tab:            herdr.Tab{ID: "w7:t9", RootPaneID: "w7:p9"},
+	}
+	installWorkerFakes(t, client)
+
+	if _, err := runProgramCommand(t, "worker", "start", p.Slug, item.ID, "--json"); err != nil {
+		t.Fatalf("worker start: %v", err)
+	}
+	reloaded, err := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repaired, ok := reloaded.Item(item.ID)
+	if !ok {
+		t.Fatal("repaired item disappeared")
+	}
+	if repaired.ProjectBranch != manifest.Branch ||
+		repaired.ProjectWorktree != *manifest.Worktree {
+		t.Fatalf(
+			"repaired identity = %q/%q, want %q/%q",
+			repaired.ProjectBranch, repaired.ProjectWorktree,
+			manifest.Branch, *manifest.Worktree,
+		)
+	}
+	if len(client.created) != 1 || len(client.runPane) != 1 || len(client.renamed) != 1 {
+		t.Fatalf(
+			"worker was not started after repair: created=%v run=%v renamed=%v",
+			client.created, client.runPane, client.renamed,
+		)
+	}
+}
+
+func TestProgramWorkerEnsureRepairsLegacyDispatchIdentity(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createLegacyWorkerFixture(t, program.ItemDispatched)
+	worker := herdr.Agent{
+		Status: herdr.StatusIdle, PaneID: "w7:p9", TabID: "w7:t9", WorkspaceID: "w7",
+		TerminalTitle: "relay:" + manifest.Slug + " - GitHub Copilot",
+		ForegroundCWD: *manifest.Worktree,
+	}
+	client := &fakeHerdrClient{agentResponses: [][]herdr.Agent{{worker}}}
+	installWorkerFakes(t, client)
+
+	out, err := runProgramCommand(t, "worker", "ensure", p.Slug, "--json")
+	if err != nil {
+		t.Fatalf("worker ensure: %v", err)
+	}
+	var result programWorkerEnsureOutput
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode output %q: %v", out, err)
+	}
+	if len(result.Warnings) != 0 || len(result.Entries) != 1 ||
+		result.Entries[0].Worker == nil || !result.Entries[0].Worker.Adopted {
+		t.Fatalf("worker ensure result = %+v, want adopted repaired worker", result)
+	}
+	reloaded, err := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repaired, ok := reloaded.Item(item.ID)
+	if !ok {
+		t.Fatal("repaired item disappeared")
+	}
+	if repaired.ProjectBranch != manifest.Branch ||
+		repaired.ProjectWorktree != *manifest.Worktree {
+		t.Fatalf(
+			"repaired identity = %q/%q, want %q/%q",
+			repaired.ProjectBranch, repaired.ProjectWorktree,
+			manifest.Branch, *manifest.Worktree,
+		)
+	}
+}
+
+func TestProgramWorkerStartRejectsLegacyManifestRedirectToVictimWorktree(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createLegacyWorkerFixture(t, program.ItemDispatched)
+	originalBranch := manifest.Branch
+	originalWorktree := *manifest.Worktree
+	victimBranch := "test/legacy-worker-victim"
+	victimWorktree := addArchiveWorktree(t, manifest.Repo, "legacy-worker-victim", victimBranch)
+	manifest.Branch = victimBranch
+	manifest.Worktree = &victimWorktree
+	if err := project.Save(
+		project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{agentResponses: [][]herdr.Agent{{{
+		Status: herdr.StatusIdle, PaneID: "w7:p9", TabID: "w7:t9", WorkspaceID: "w7",
+		TerminalTitle: "relay:" + manifest.Slug + " - GitHub Copilot",
+		ForegroundCWD: victimWorktree,
+	}}}}
+	installWorkerFakes(t, client)
+
+	_, err := runProgramCommand(t, "worker", "start", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), "expected canonical worktree path") {
+		t.Fatalf("worker start error = %v, want victim worktree rejection", err)
+	}
+	if client.agentCalls != 0 || len(client.created) != 0 ||
+		len(client.runPane) != 0 || len(client.renamed) != 0 {
+		t.Fatalf(
+			"victim rejection mutated Herdr: agents=%d created=%v run=%v renamed=%v",
+			client.agentCalls, client.created, client.runPane, client.renamed,
+		)
+	}
+	reloaded, loadErr := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	unchanged, _ := reloaded.Item(item.ID)
+	if unchanged.ProjectBranch != "" || unchanged.ProjectWorktree != "" {
+		t.Fatalf("victim identity was persisted: %+v", unchanged)
+	}
+	if !pathExists(originalWorktree) || !gitx.BranchExists(manifest.Repo, originalBranch) ||
+		!pathExists(victimWorktree) || !gitx.BranchExists(manifest.Repo, victimBranch) {
+		t.Fatal("legacy worker repair changed original or victim resources")
+	}
+}
+
+func TestProgramWorkerStartRejectsAmbiguousLegacyResourceOwnership(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createLegacyWorkerFixture(t, program.ItemDispatched)
+	duplicate := manifest
+	duplicate.Slug = "duplicate-legacy-worker"
+	duplicate.Program = "other-program"
+	duplicate.ProgramItem = "other-item"
+	duplicatePath := project.ManifestPath(project.ActiveDir(), duplicate.Slug)
+	if err := os.MkdirAll(filepath.Dir(duplicatePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(duplicatePath, duplicate); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeHerdrClient{}
+	installWorkerFakes(t, client)
+
+	_, err := runProgramCommand(t, "worker", "start", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), duplicate.Slug) ||
+		!strings.Contains(err.Error(), "also claimed") {
+		t.Fatalf("worker start error = %v, want ambiguous ownership rejection", err)
+	}
+	if client.agentCalls != 0 || len(client.created) != 0 ||
+		len(client.runPane) != 0 || len(client.renamed) != 0 {
+		t.Fatalf(
+			"ownership rejection mutated Herdr: agents=%d created=%v run=%v renamed=%v",
+			client.agentCalls, client.created, client.runPane, client.renamed,
+		)
+	}
+	reloaded, loadErr := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	unchanged, _ := reloaded.Item(item.ID)
+	if unchanged.ProjectBranch != "" || unchanged.ProjectWorktree != "" {
+		t.Fatalf("ambiguous identity was persisted: %+v", unchanged)
+	}
+	if !pathExists(*manifest.Worktree) || !gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("ambiguous repair changed the shared resources")
+	}
+}
+
+func TestProgramWorkerStartLegacyRepairSaveFailureStopsBeforeHerdr(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createLegacyWorkerFixture(t, program.ItemDispatched)
+	previousSave := programWorkerStartSaveProgram
+	programWorkerStartSaveProgram = func(string, program.Program) error {
+		return errors.New("injected worker identity save failure")
+	}
+	t.Cleanup(func() { programWorkerStartSaveProgram = previousSave })
+	client := &fakeHerdrClient{}
+	installWorkerFakes(t, client)
+
+	_, err := runProgramCommand(t, "worker", "start", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), "injected worker identity save failure") ||
+		!strings.Contains(err.Error(), "no Herdr state was changed") {
+		t.Fatalf("worker start error = %v, want fail-closed save failure", err)
+	}
+	if client.agentCalls != 0 || len(client.created) != 0 ||
+		len(client.runPane) != 0 || len(client.renamed) != 0 {
+		t.Fatalf(
+			"save failure mutated Herdr: agents=%d created=%v run=%v renamed=%v",
+			client.agentCalls, client.created, client.runPane, client.renamed,
+		)
+	}
+	reloaded, loadErr := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	unchanged, _ := reloaded.Item(item.ID)
+	if unchanged.ProjectBranch != "" || unchanged.ProjectWorktree != "" {
+		t.Fatalf("failed repair changed the item: %+v", unchanged)
+	}
+	if !pathExists(*manifest.Worktree) || !gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("save failure changed the child resources")
+	}
+}
+
+func TestProgramWorkerStartLegacyRepairRevalidatesSavedIdentityBeforeHerdr(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createLegacyWorkerFixture(t, program.ItemDispatched)
+	previousSave := programWorkerStartSaveProgram
+	programWorkerStartSaveProgram = func(path string, candidate program.Program) error {
+		if err := program.Save(path, candidate); err != nil {
+			return err
+		}
+		redirected, err := program.Load(path)
+		if err != nil {
+			return err
+		}
+		for i := range redirected.Items {
+			if redirected.Items[i].ID == item.ID {
+				redirected.Items[i].ProjectWorktree = filepath.Join(
+					manifest.Repo, ".worktrees", "post-save-victim",
+				)
+			}
+		}
+		return program.Save(path, redirected)
+	}
+	t.Cleanup(func() { programWorkerStartSaveProgram = previousSave })
+	client := &fakeHerdrClient{}
+	installWorkerFakes(t, client)
+
+	_, err := runProgramCommand(t, "worker", "start", p.Slug, item.ID, "--json")
+	if err == nil || !strings.Contains(err.Error(), "reloaded program/item/manifest identity") ||
+		!strings.Contains(err.Error(), "no Herdr state was changed") {
+		t.Fatalf("worker start error = %v, want post-save revalidation failure", err)
+	}
+	if client.agentCalls != 0 || len(client.created) != 0 ||
+		len(client.runPane) != 0 || len(client.renamed) != 0 {
+		t.Fatalf(
+			"post-save mismatch mutated Herdr: agents=%d created=%v run=%v renamed=%v",
+			client.agentCalls, client.created, client.runPane, client.renamed,
+		)
+	}
+	if !pathExists(*manifest.Worktree) || !gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatal("post-save mismatch changed the child resources")
+	}
+}
+
 func TestProgramWorkerStartShellQuotesProjectSlug(t *testing.T) {
 	t.Setenv("HERDR_ENV", "1")
 	t.Setenv("HERDR_WORKSPACE_ID", "w7")
@@ -346,6 +646,9 @@ func TestProgramWorkerStartShellQuotesProjectSlug(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := project.Save(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(project.ActiveDir(), "governance-"+item.ID)); err != nil {
 		t.Fatal(err)
 	}
 	p.Items[0].ProjectSlug = unsafeSlug
@@ -1362,6 +1665,219 @@ func TestWorkerStartLockPathIsPerChildProject(t *testing.T) {
 	}
 	if err := lock.Release(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestProgramWorkerStartReloadsAfterWorkerThenProjectLifecycleLock(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+	client := &fakeHerdrClient{}
+	installWorkerFakes(t, client)
+
+	lifecycleLock, err := patrollock.Acquire(projectLifecycleLockPath(manifest.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan error, 1)
+	go func() {
+		_, startErr := startProgramWorker(
+			p.Slug, item.ID, "relay program worker start",
+		)
+		started <- startErr
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		select {
+		case err := <-started:
+			t.Fatalf("worker start returned before waiting for the lifecycle lock: %v", err)
+		default:
+		}
+		held, inspectErr := patrollock.IsHeld(workerStartLockPath(manifest.Slug))
+		if inspectErr != nil {
+			t.Fatal(inspectErr)
+		}
+		if held {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("worker start did not acquire its worker lock before the project lifecycle lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	activeDir := filepath.Join(project.ActiveDir(), manifest.Slug)
+	archivedDir := filepath.Join(project.ArchivedDir(), manifest.Slug)
+	if err := os.MkdirAll(project.ArchivedDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(activeDir, archivedDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycleLock.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-started:
+		if err == nil || !strings.Contains(err.Error(), "is not active") {
+			t.Fatalf("worker start error = %v, want archived child rejection", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker start did not continue after the lifecycle lock was released")
+	}
+	if len(client.created) != 0 || len(client.runPane) != 0 || len(client.renamed) != 0 {
+		t.Fatalf(
+			"stale worker start mutated Herdr: created=%v run=%v renamed=%v",
+			client.created, client.runPane, client.renamed,
+		)
+	}
+}
+
+func TestProgramWorkerStartRejectsDurableRedirectWhileWaitingForLifecycleLock(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+	client := &fakeHerdrClient{}
+	installWorkerFakes(t, client)
+
+	lifecycleLock, err := patrollock.Acquire(projectLifecycleLockPath(manifest.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan error, 1)
+	go func() {
+		_, startErr := startProgramWorker(
+			p.Slug, item.ID, "relay program worker start",
+		)
+		started <- startErr
+	}()
+	waitForWorkerStartLock(t, manifest.Slug, started)
+
+	redirectBranch := "test/redirected-worker"
+	redirectWorktree := addArchiveWorktree(t, manifest.Repo, "redirected-worker", redirectBranch)
+	programPath := program.ManifestPath(program.ActiveDir(), p.Slug)
+	redirectedProgram, err := program.Load(programPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range redirectedProgram.Items {
+		if redirectedProgram.Items[index].ID == item.ID {
+			redirectedProgram.Items[index].ProjectBranch = redirectBranch
+			redirectedProgram.Items[index].ProjectWorktree = redirectWorktree
+		}
+	}
+	if err := program.Save(programPath, redirectedProgram); err != nil {
+		t.Fatal(err)
+	}
+	redirectedManifest, err := project.Load(
+		project.ManifestPath(project.ActiveDir(), manifest.Slug),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redirectedManifest.Branch = redirectBranch
+	redirectedManifest.Worktree = &redirectWorktree
+	if err := project.Save(
+		project.ManifestPath(project.ActiveDir(), manifest.Slug), redirectedManifest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycleLock.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-started:
+		if err == nil || !strings.Contains(err.Error(), "changed while waiting") ||
+			!strings.Contains(err.Error(), "repository/branch/worktree changed") {
+			t.Fatalf("worker start error = %v, want durable redirect rejection", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker start did not continue after the lifecycle lock was released")
+	}
+	if len(client.created) != 0 || len(client.runPane) != 0 || len(client.renamed) != 0 {
+		t.Fatalf(
+			"redirected worker start mutated Herdr: created=%v run=%v renamed=%v",
+			client.created, client.runPane, client.renamed,
+		)
+	}
+	if !pathExists(*manifest.Worktree) || !gitx.BranchExists(manifest.Repo, manifest.Branch) ||
+		!pathExists(redirectWorktree) || !gitx.BranchExists(manifest.Repo, redirectBranch) {
+		t.Fatal("worker start changed resources after a durable redirect")
+	}
+}
+
+func TestProgramWorkerStartRejectsRegisteredWorktreeRedirectWhileWaiting(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_WORKSPACE_ID", "w7")
+	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+	client := &fakeHerdrClient{}
+	installWorkerFakes(t, client)
+
+	lifecycleLock, err := patrollock.Acquire(projectLifecycleLockPath(manifest.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan error, 1)
+	go func() {
+		_, startErr := startProgramWorker(
+			p.Slug, item.ID, "relay program worker start",
+		)
+		started <- startErr
+	}()
+	waitForWorkerStartLock(t, manifest.Slug, started)
+
+	runArchiveGit(t, manifest.Repo, "worktree", "remove", "--force", *manifest.Worktree)
+	redirectBranch := "test/registered-redirect"
+	runArchiveGit(
+		t, manifest.Repo, "worktree", "add", "-b", redirectBranch, *manifest.Worktree, "HEAD",
+	)
+	if err := lifecycleLock.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-started:
+		if err == nil || !strings.Contains(err.Error(), "resource identity is not safe") ||
+			!strings.Contains(err.Error(), "attached to") {
+			t.Fatalf("worker start error = %v, want registered worktree redirect rejection", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker start did not continue after the lifecycle lock was released")
+	}
+	if len(client.created) != 0 || len(client.runPane) != 0 || len(client.renamed) != 0 {
+		t.Fatalf(
+			"redirected worker start mutated Herdr: created=%v run=%v renamed=%v",
+			client.created, client.runPane, client.renamed,
+		)
+	}
+	if !pathExists(*manifest.Worktree) || !gitx.BranchExists(manifest.Repo, redirectBranch) {
+		t.Fatal("worker start changed redirected registered worktree resources")
+	}
+}
+
+func waitForWorkerStartLock(t *testing.T, childSlug string, started <-chan error) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		select {
+		case err := <-started:
+			t.Fatalf("worker start returned before waiting for the lifecycle lock: %v", err)
+		default:
+		}
+		held, err := patrollock.IsHeld(workerStartLockPath(childSlug))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if held {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("worker start did not acquire its worker lock before the project lifecycle lock")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

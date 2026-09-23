@@ -2,7 +2,9 @@ package project
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -36,7 +38,7 @@ func Load(path string) (Manifest, error) {
 	}
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
-		return Manifest{}, fmt.Errorf("parse manifest %s: %w", path, err)
+		return m, fmt.Errorf("parse manifest %s: %w", path, err)
 	}
 	return m, nil
 }
@@ -69,9 +71,19 @@ func Find(slug string) (string, error) {
 	return "", fmt.Errorf("project not found: %s", slug)
 }
 
-// LoadAll reads every manifest under dir. Subdirectories without a
-// readable manifest are silently skipped (matches existing behavior).
-func LoadAll(dir string) ([]Manifest, error) {
+// ManifestLoadResult reports the manifest or load error for one project directory.
+type ManifestLoadResult struct {
+	Name     string
+	Path     string
+	Manifest Manifest
+	Err      error
+}
+
+// LoadAllResults reads every project directory under dir without discarding
+// manifest errors. Directories without manifest.json are intentionally ignored:
+// the active store also contains coordination and incomplete directories that
+// are not Relay projects. Results preserve the order returned by os.ReadDir.
+func LoadAllResults(dir string) ([]ManifestLoadResult, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -79,17 +91,56 @@ func LoadAll(dir string) ([]Manifest, error) {
 		}
 		return nil, fmt.Errorf("read dir %s: %w", dir, err)
 	}
-	var result []Manifest
+	var results []ManifestLoadResult
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		path := ManifestPath(dir, e.Name())
-		m, err := Load(path)
-		if err != nil {
+		info, statErr := os.Lstat(path)
+		if errors.Is(statErr, fs.ErrNotExist) {
 			continue
 		}
-		result = append(result, m)
+		if statErr != nil {
+			results = append(results, ManifestLoadResult{
+				Name: e.Name(),
+				Path: path,
+				Err:  fmt.Errorf("inspect manifest %s: %w", path, statErr),
+			})
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			results = append(results, ManifestLoadResult{
+				Name: e.Name(),
+				Path: path,
+				Err:  fmt.Errorf("inspect manifest %s: not a regular file", path),
+			})
+			continue
+		}
+		m, err := Load(path)
+		results = append(results, ManifestLoadResult{
+			Name:     e.Name(),
+			Path:     path,
+			Manifest: m,
+			Err:      err,
+		})
 	}
-	return result, nil
+	return results, nil
+}
+
+// LoadAll reads every manifest under dir. Subdirectories without a
+// readable manifest are silently skipped (matches existing behavior).
+func LoadAll(dir string) ([]Manifest, error) {
+	results, err := LoadAllResults(dir)
+	if err != nil {
+		return nil, err
+	}
+	var manifests []Manifest
+	for _, result := range results {
+		if result.Err != nil {
+			continue
+		}
+		manifests = append(manifests, result.Manifest)
+	}
+	return manifests, nil
 }

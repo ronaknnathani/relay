@@ -2,14 +2,17 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ronaknnathani/relay/internal/agent"
+	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/program"
 	"github.com/ronaknnathani/relay/internal/project"
 )
@@ -118,6 +121,15 @@ func TestProgramDispatchCreatesManagedChildWithoutLaunch(t *testing.T) {
 	}
 	if !strings.HasSuffix(manifest.Branch, childSlug) {
 		t.Fatalf("child branch = %q", manifest.Branch)
+	}
+	persisted, err := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedItem, ok := persisted.Item(item.ID)
+	if !ok || persistedItem.ProjectBranch != manifest.Branch ||
+		persistedItem.ProjectWorktree != *manifest.Worktree {
+		t.Fatalf("dispatched item = %+v, want child branch/worktree identity", persistedItem)
 	}
 
 	source, err := os.ReadFile(filepath.Join(program.ProgramDir(program.ActiveDir(), p.Slug), filepath.FromSlash(contract.Path)))
@@ -272,7 +284,7 @@ func TestProgramDispatchReusesPreLinkedExistingChild(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	worktree := filepath.Join(p.Repo, ".worktrees", "existing-child")
+	worktree := addArchiveWorktree(t, p.Repo, "existing-child", "test/existing-child")
 	if err := project.Save(project.ManifestPath(project.ActiveDir(), childSlug), project.Manifest{
 		Slug: childSlug, Title: item.Title, Repo: p.Repo, Branch: "test/existing-child",
 		Agent: "copilot", Workflow: "deliver-pr", Worktree: &worktree,
@@ -327,6 +339,288 @@ func TestProgramDispatchReusesPreLinkedExistingChild(t *testing.T) {
 	}
 	if !bytes.Equal(copied, source) {
 		t.Fatalf("verified contract snapshot changed: %q", copied)
+	}
+}
+
+func TestProgramDispatchRejectsReusedChildWhoseWorktreeBelongsToAnotherBranch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	p, item, _ := createDispatchProgram(t, "governance", 3)
+	childSlug := "stale-child"
+	if err := p.LinkItem(item.ID, childSlug); err != nil {
+		t.Fatal(err)
+	}
+	programPath := program.ManifestPath(program.ActiveDir(), p.Slug)
+	if err := program.Save(programPath, p); err != nil {
+		t.Fatal(err)
+	}
+	victimBranch := "test/victim"
+	victimWorktree := addArchiveWorktree(t, p.Repo, "victim", victimBranch)
+	manifestPath := project.ManifestPath(project.ActiveDir(), childSlug)
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(manifestPath, project.Manifest{
+		Slug: childSlug, Title: item.Title, Repo: p.Repo, Branch: "test/stale-child",
+		Agent: "copilot", Workflow: "deliver-pr", Worktree: &victimWorktree,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runProgramCommand(t, "dispatch", p.Slug, item.ID); err == nil ||
+		!strings.Contains(err.Error(), "cannot be safely reused") ||
+		!strings.Contains(err.Error(), "attached to") {
+		t.Fatalf("dispatch stale child error = %v, want registered branch mismatch", err)
+	}
+	stored, err := project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Program != "" || stored.ProgramItem != "" {
+		t.Fatalf("stale child ownership was persisted: %q/%q", stored.Program, stored.ProgramItem)
+	}
+	loaded, err := program.Load(programPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadedItem, _ := loaded.Item(item.ID)
+	if loadedItem.ProjectBranch != "" || loadedItem.ProjectWorktree != "" {
+		t.Fatalf("stale child dispatch identity was persisted: %+v", loadedItem)
+	}
+	if !pathExists(victimWorktree) || !gitx.BranchExists(p.Repo, victimBranch) {
+		t.Fatal("reused-child validation changed victim resources")
+	}
+}
+
+func TestProgramDispatchRejectsReusedChildOutsideExpectedWorktreeRoot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	p, item, _ := createDispatchProgram(t, "governance", 3)
+	childSlug := "outside-child"
+	if err := p.LinkItem(item.ID, childSlug); err != nil {
+		t.Fatal(err)
+	}
+	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {
+		t.Fatal(err)
+	}
+	branch := "test/outside-child"
+	worktree := filepath.Join(t.TempDir(), "outside-child")
+	runArchiveGit(t, p.Repo, "worktree", "add", "-q", worktree, "-b", branch, "HEAD")
+	manifestPath := project.ManifestPath(project.ActiveDir(), childSlug)
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(manifestPath, project.Manifest{
+		Slug: childSlug, Title: item.Title, Repo: p.Repo, Branch: branch,
+		Agent: "copilot", Workflow: "deliver-pr", Worktree: &worktree,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runProgramCommand(t, "dispatch", p.Slug, item.ID); err == nil ||
+		!strings.Contains(err.Error(), "exclusive direct child") {
+		t.Fatalf("dispatch outside worktree error = %v, want expected-path rejection", err)
+	}
+	if !pathExists(worktree) || !gitx.BranchExists(p.Repo, branch) {
+		t.Fatal("expected-path validation changed outside worktree resources")
+	}
+}
+
+func TestProgramDispatchAdoptionPreventsGCFromArchivingChild(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	fixture := newGCRepoFixture(t, "main")
+	childSlug := "adoption-wins"
+	branch, worktree := addGCProject(t, fixture, childSlug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	p := program.Program{Slug: "delivery", Repo: fixture.repo}
+	item := program.WorkItem{ID: "worker-1", Repo: fixture.repo}
+
+	archiveReady := make(chan struct{})
+	continueArchive := make(chan struct{})
+	previousArchive := gcArchiveProject
+	gcArchiveProject = func(proof archiveProofSnapshot, force bool) (archiveResult, error) {
+		close(archiveReady)
+		<-continueArchive
+		return archiveProjectWithProof(proof, force)
+	}
+	t.Cleanup(func() { gcArchiveProject = previousArchive })
+
+	gcDone := make(chan error, 1)
+	go func() {
+		gcDone <- runGC()
+	}()
+	<-archiveReady
+
+	created, reused, err := prepareDispatchChild(p, item, childSlug, "copilot", true)
+	if err != nil {
+		t.Fatalf("adopt existing child: %v", err)
+	}
+	if !reused || created.manifest.Program != p.Slug ||
+		created.manifest.ProgramItem != item.ID {
+		t.Fatalf("adoption result = %+v, reused=%t", created.manifest, reused)
+	}
+	close(continueArchive)
+	if err := <-gcDone; !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), childSlug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Program != p.Slug || manifest.ProgramItem != item.ID {
+		t.Fatalf("persisted ownership = %q/%q", manifest.Program, manifest.ProgramItem)
+	}
+	if pathExists(filepath.Join(project.ArchivedDir(), childSlug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC staged or removed a child after adoption won")
+	}
+}
+
+func TestProgramDispatchAdoptionCannotOverwriteArchivedChild(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	fixture := newGCRepoFixture(t, "main")
+	childSlug := "archive-wins"
+	branch, worktree := addGCProject(t, fixture, childSlug)
+	mergeGCProjectUpstream(t, fixture, branch)
+	p := program.Program{Slug: "delivery", Repo: fixture.repo}
+	item := program.WorkItem{ID: "worker-1", Repo: fixture.repo}
+
+	archiveStaged := make(chan struct{})
+	continueArchive := make(chan struct{})
+	previousRemove := archiveWorktreeRemove
+	archiveWorktreeRemove = func(
+		repo, worktree string, expected gitx.WorktreeState, force bool,
+	) error {
+		close(archiveStaged)
+		<-continueArchive
+		return previousRemove(repo, worktree, expected, force)
+	}
+	t.Cleanup(func() { archiveWorktreeRemove = previousRemove })
+
+	gcDone := make(chan error, 1)
+	go func() {
+		gcDone <- runGC()
+	}()
+	<-archiveStaged
+
+	adoptionStarted := make(chan struct{})
+	adoptionDone := make(chan error, 1)
+	go func() {
+		close(adoptionStarted)
+		_, _, err := prepareDispatchChild(p, item, childSlug, "copilot", true)
+		adoptionDone <- err
+	}()
+	<-adoptionStarted
+	select {
+	case err := <-adoptionDone:
+		t.Fatalf("adoption completed while archive held the lifecycle lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(continueArchive)
+	if err := <-gcDone; err != nil {
+		t.Fatalf("runGC: %v", err)
+	}
+	if err := <-adoptionDone; err == nil ||
+		!strings.Contains(err.Error(), "archived metadata still exists") {
+		t.Fatalf("adoption error = %v, want archived child rejection", err)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), childSlug)) ||
+		!pathExists(filepath.Join(project.ArchivedDir(), childSlug)) ||
+		pathExists(worktree) ||
+		gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("adoption overwrote or restored an archived child")
+	}
+	archived, err := project.Load(project.ManifestPath(project.ArchivedDir(), childSlug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived.Program != "" || archived.ProgramItem != "" {
+		t.Fatalf("archived ownership was overwritten: %q/%q", archived.Program, archived.ProgramItem)
+	}
+}
+
+func TestProgramDispatchAdoptionFailsClosedOnUnreadableCompetingMetadata(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	fixture := newGCRepoFixture(t, "main")
+	childSlug := "adoption-unreadable-owner"
+	branch, worktree := addGCProject(t, fixture, childSlug)
+	p := program.Program{Slug: "delivery", Repo: fixture.repo}
+	item := program.WorkItem{ID: "worker-1", Repo: fixture.repo}
+	manifestPath := project.ManifestPath(project.ActiveDir(), childSlug)
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	competingPath := project.ManifestPath(project.ActiveDir(), "unreadable-owner")
+	if err := os.MkdirAll(filepath.Dir(competingPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(competingPath, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = prepareDispatchChild(p, item, childSlug, "copilot", true)
+	if err == nil || !strings.Contains(err.Error(), competingPath) ||
+		!strings.Contains(err.Error(), "parse manifest") ||
+		!strings.Contains(err.Error(), "cannot prove exclusive") {
+		t.Fatalf("adoption error = %v, want unreadable competing ownership failure", err)
+	}
+	after, readErr := os.ReadFile(manifestPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !reflect.DeepEqual(after, before) || !pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("adoption changed resources after unreadable competing metadata")
+	}
+}
+
+func TestProgramDispatchAdoptionFailsClosedOnAmbiguousCompetingWorktree(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	fixture := newGCRepoFixture(t, "main")
+	childSlug := "adoption-ambiguous-owner"
+	branch, worktree := addGCProject(t, fixture, childSlug)
+	p := program.Program{Slug: "delivery", Repo: fixture.repo}
+	item := program.WorkItem{ID: "worker-1", Repo: fixture.repo}
+
+	dangling := filepath.Join(fixture.repo, ".worktrees", "dangling-owner")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	competing := project.Manifest{
+		Slug: "ambiguous-owner", Repo: fixture.repo, Branch: "user/ambiguous-owner",
+		Worktree: &dangling,
+	}
+	competingPath := project.ManifestPath(project.ActiveDir(), competing.Slug)
+	if err := os.MkdirAll(filepath.Dir(competingPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(competingPath, competing); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := prepareDispatchChild(p, item, childSlug, "copilot", true)
+	if err == nil || !strings.Contains(err.Error(), competingPath) ||
+		!strings.Contains(err.Error(), "resolve symlink path") ||
+		!strings.Contains(err.Error(), "cannot prove exclusive") {
+		t.Fatalf("adoption error = %v, want ambiguous worktree ownership failure", err)
+	}
+	if !pathExists(worktree) || !gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("adoption changed resources after ambiguous competing worktree metadata")
+	}
+	manifest, loadErr := project.Load(project.ManifestPath(project.ActiveDir(), childSlug))
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if manifest.Program != "" || manifest.ProgramItem != "" {
+		t.Fatalf("adoption persisted ownership after ambiguity: %q/%q", manifest.Program, manifest.ProgramItem)
 	}
 }
 

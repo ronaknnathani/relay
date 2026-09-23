@@ -279,8 +279,11 @@ func activeProjectViewWithRepository(
 		base = repository.defaultBranch
 	}
 	baseRef := base
-	if base != "" && repository.hasOrigin && gitx.RevParse(manifest.Repo, "origin/"+base) != "" {
-		baseRef = "origin/" + base
+	if base != "" && repository.hasOrigin &&
+		gitx.RevParse(manifest.Repo, "refs/remotes/origin/"+base) != "" {
+		baseRef = "refs/remotes/origin/" + base
+	} else if base != "" {
+		baseRef = "refs/heads/" + base
 	}
 	merged := baseRef != "" && gitx.IsWorkMerged(manifest.Repo, manifest.Branch, baseRef, manifest.StartSHA)
 	return program.ProjectView{
