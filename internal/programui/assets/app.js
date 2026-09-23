@@ -16,7 +16,7 @@ const BACKOFF = [3000, 6000, 12000];
 const INITIAL_ROADMAP_CARDS = 2;
 const ROADMAP_RENDER_BATCH = 128;
 const LANES = ["pending", "dispatched", "in-review", "blocked", "merged", "cancelled"];
-const TABS = ["roadmap", "tasks", "decisions", "goal"];
+const TABS = ["roadmap", "kanban", "tasks", "decisions", "goal"];
 const ACTIVE_STATUSES = ["dispatched", "in-review"];
 
 /* Work item IDs must match what /api/program accepts, or a stale hash makes
@@ -71,6 +71,7 @@ const state = {
   roadmapRenderGeneration: 0,
   dirtyTabs: new Set(TABS),
   cards: new Map(),
+  kanbanCards: new Map(),
   connectorPaths: [],
   drawerOpen: false,
   drawerReturn: null,
@@ -1338,6 +1339,9 @@ function markSelection() {
     card.dataset.selected = active ? "true" : "false";
     card.setAttribute("tabindex", active ? "0" : "-1");
   });
+  state.kanbanCards.forEach((card, id) => {
+    card.dataset.selected = id === state.selected ? "true" : "false";
+  });
   if (dom.ledgerRows) {
     Array.from(dom.ledgerRows.querySelectorAll("tr")).forEach((row) => {
       const active = row.dataset.item === state.selected;
@@ -1414,6 +1418,8 @@ function renderActiveTab() {
       state.dirtyTabs.delete(state.tab);
     }
     return;
+  } else if (state.tab === "kanban") {
+    renderKanban();
   } else if (state.tab === "tasks") {
     if (dom.statusFilters.childElementCount === 0) {
       buildStatusFilters();

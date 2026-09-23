@@ -49,6 +49,66 @@ const ARTIFACT_HINTS = {
   "decisions.md": "No decisions have been written to this file yet.",
 };
 
+/* ---------- kanban ---------- */
+
+function renderKanban() {
+  const buckets = new Map(LANES.map((lane) => [lane, []]));
+  items().forEach((item) => {
+    const lane = text(item.status);
+    if (!buckets.has(lane)) {
+      throw new Error(`Task ${item.id} has invalid status ${lane}`);
+    }
+    buckets.get(lane).push(item);
+  });
+
+  const fragment = new DocumentFragment();
+  const cards = new Map();
+  LANES.forEach((lane) => {
+    const laneItems = buckets.get(lane);
+    const section = make("section", "kanban__lane");
+    section.dataset.lane = lane;
+
+    const header = make("header", "kanban__lane-head");
+    const heading = make("h3", "kanban__lane-title", statusMeta(lane).word);
+    heading.id = `kanban-lane-${lane}`;
+    const countNode = make("span", "kanban__lane-count");
+    countNode.textContent = String(laneItems.length);
+    header.append(heading, countNode);
+    section.setAttribute("aria-labelledby", heading.id);
+    section.append(header);
+
+    const stack = make("div", "kanban__stack");
+    laneItems.forEach((item) => {
+      const card = cardTemplate.cloneNode(true);
+      card.classList.add("kanban__card");
+      card.dataset.item = item.id;
+      card.dataset.taskId = item.id;
+      card.dataset.focusKey = `kanban-card:${item.id}`;
+      card.dataset.selected = item.id === state.selected ? "true" : "false";
+      decorateTaskCard(card, item, item, lane);
+      cards.set(item.id, card);
+      stack.append(card);
+    });
+    if (laneItems.length === 0) {
+      stack.append(make("p", "kanban__empty", "No tasks"));
+    }
+    section.append(stack);
+    fragment.append(section);
+  });
+
+  dom.kanbanBoard.replaceChildren(fragment);
+  state.kanbanCards = cards;
+}
+
+function onKanbanClick(event) {
+  const card = event.target.closest(".kanban__card");
+  if (!card || !dom.kanbanBoard.contains(card)) {
+    return;
+  }
+  selectItem(card.dataset.taskId);
+  openDrawer(false);
+}
+
 /* ---------- tasks ---------- */
 
 function matchesFilter(item) {
@@ -1535,6 +1595,8 @@ function ensureDeferredDom() {
     return;
   }
   const byID = (id) => document.getElementById(id);
+  dom.kanbanScroll = byID("kanban-scroll");
+  dom.kanbanBoard = byID("kanban-board");
   dom.filter = byID("filter");
   dom.statusFilters = byID("status-filters");
   dom.ledgerCount = byID("ledger-count");
@@ -1565,6 +1627,7 @@ function ensureDeferredDom() {
   dom.drawerScroll = byID("drawer-scroll");
   dom.drawerNav = byID("drawer-nav");
   dom.detailBody = byID("detail-body");
+  dom.kanbanBoard.addEventListener("click", onKanbanClick);
   dom.filter.addEventListener("input", () => {
     state.filter = dom.filter.value;
     renderLedger();
@@ -1649,7 +1712,7 @@ function renderDetailPreservingFocus() {
 }
 
 function scrollTargets() {
-  return [dom.roadmapScroll, dom.tableScroll, dom.drawerScroll];
+  return [dom.roadmapScroll, dom.kanbanScroll, dom.tableScroll, dom.drawerScroll];
 }
 
 function captureScroll() {
@@ -1702,6 +1765,10 @@ function applyHash() {
 }
 
 function focusSelection() {
+  if (state.tab === "kanban") {
+    restoreFocus(`kanban-card:${state.selected}`);
+    return;
+  }
   if (state.tab === "tasks") {
     restoreFocus(`row:${state.selected}`);
     return;

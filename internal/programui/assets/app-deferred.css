@@ -1,3 +1,71 @@
+/* ---------- kanban ---------- */
+
+.kanban {
+  max-width: 100%;
+  padding-bottom: 8px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
+
+.kanban__board {
+  display: grid;
+  grid-template-columns: repeat(6, 280px);
+  gap: 14px;
+  width: max-content;
+  min-width: 100%;
+  align-items: start;
+}
+
+.kanban__lane {
+  min-height: 240px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--lane);
+  border-radius: var(--radius);
+  background-color: var(--lane-wash);
+}
+
+.kanban__lane-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.kanban__lane-title {
+  color: var(--lane);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.kanban__lane-count {
+  min-width: 2ch;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  text-align: right;
+}
+
+.kanban__stack {
+  display: grid;
+  gap: 10px;
+}
+
+.kanban__card {
+  width: 100%;
+  min-height: 126px;
+  background-color: var(--surface);
+}
+
+.kanban__empty {
+  padding: 28px 10px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
 /* ---------- tasks table ---------- */
 
 .controls {

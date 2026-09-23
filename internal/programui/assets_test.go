@@ -274,28 +274,32 @@ func TestBootstrapStartsCoreBundleWithoutArtificialDelay(t *testing.T) {
 	}
 }
 
-func TestIndexExposesFourTabsAndDefaultsToRoadmap(t *testing.T) {
+func TestIndexExposesFiveTabsAndDefaultsToRoadmap(t *testing.T) {
 	index := readAsset(t, "assets/index.html")
 	requireContains(t, "index.html", index, []string{
 		`role="tablist"`,
 		`id="tab-roadmap"`,
+		`id="tab-kanban"`,
 		`id="tab-tasks"`,
 		`id="tab-decisions"`,
 		`id="tab-goal"`,
 		`id="panel-roadmap"`,
+		`id="panel-kanban"`,
 		`id="panel-tasks"`,
 		`id="panel-decisions"`,
 		`id="panel-goal"`,
 		`aria-controls="panel-roadmap"`,
 		`aria-labelledby="tab-roadmap"`,
+		`aria-controls="panel-kanban"`,
+		`aria-labelledby="tab-kanban"`,
 	})
-	if strings.Count(index, `role="tab"`) != 4 || strings.Count(index, `role="tabpanel"`) != 4 {
-		t.Error("index.html must declare exactly four tabs and four tab panels")
+	if strings.Count(index, `role="tab"`) != 5 || strings.Count(index, `role="tabpanel"`) != 5 {
+		t.Error("index.html must declare exactly five tabs and five tab panels")
 	}
 	if !strings.Contains(index, `id="tab-roadmap" class="segment" type="button" role="tab" aria-selected="true"`) {
 		t.Error("Roadmap must be the selected tab in the served markup")
 	}
-	for _, hidden := range []string{"panel-tasks", "panel-decisions", "panel-goal"} {
+	for _, hidden := range []string{"panel-kanban", "panel-tasks", "panel-decisions", "panel-goal"} {
 		_, after, found := strings.Cut(index, `id="`+hidden+`"`)
 		if !found {
 			t.Errorf("index.html has no %s section", hidden)
@@ -309,10 +313,86 @@ func TestIndexExposesFourTabsAndDefaultsToRoadmap(t *testing.T) {
 
 	script := readScriptAssets(t)
 	requireContains(t, "app.js", script, []string{
-		`const TABS = ["roadmap", "tasks", "decisions", "goal"]`,
+		`const TABS = ["roadmap", "kanban", "tasks", "decisions", "goal"]`,
 		"function selectTab(",
 		"function onTabKey(",
 		`panel.hidden = key !== tab`,
+		`} else if (state.tab === "kanban") {`,
+		"renderKanban();",
+	})
+
+	wantOrder := []string{"tab-roadmap", "tab-kanban", "tab-tasks", "tab-decisions", "tab-goal"}
+	last := -1
+	for _, id := range wantOrder {
+		next := strings.Index(index, `id="`+id+`"`)
+		if next <= last {
+			t.Fatalf("tab %s is out of order in index.html", id)
+		}
+		last = next
+	}
+}
+
+func TestKanbanAssetContract(t *testing.T) {
+	index := readAsset(t, "assets/index.html")
+	requireContains(t, "index.html", index, []string{
+		`id="kanban-scroll"`,
+		`id="kanban-board"`,
+	})
+
+	script := readScriptAssets(t)
+	requireContains(t, "app.js", script, []string{
+		"function renderKanban()",
+		"const buckets = new Map(LANES.map((lane) => [lane, []]));",
+		"items().forEach((item) => {",
+		"throw new Error(`Task ${item.id} has invalid status ${lane}`);",
+		"buckets.get(lane).push(item);",
+		"LANES.forEach((lane) => {",
+		`const section = make("section", "kanban__lane");`,
+		`section.setAttribute("aria-labelledby", heading.id);`,
+		`countNode.textContent = String(laneItems.length);`,
+		`const card = cardTemplate.cloneNode(true);`,
+		`card.classList.add("kanban__card");`,
+		`decorateTaskCard(card, item, item, lane);`,
+		"return [dom.roadmapScroll, dom.kanbanScroll, dom.tableScroll, dom.drawerScroll];",
+	})
+
+	styles := readAsset(t, "assets/app-deferred.css")
+	requireContains(t, "app-deferred.css", styles, []string{
+		".kanban {",
+		"overflow-x: auto;",
+		"scrollbar-width: thin;",
+		".kanban__board {",
+		"display: grid;",
+		"grid-template-columns: repeat(6, 280px);",
+		"width: max-content;",
+		".kanban__lane {",
+		"background-color: var(--lane-wash);",
+		".kanban__card {",
+		"width: 100%;",
+	})
+
+	for _, pair := range [][2]string{
+		{"assets/index.html", "assets/index.min.html"},
+		{"assets/app.js", "assets/app.min.js"},
+		{"assets/app-deferred.js", "assets/app-deferred.min.js"},
+		{"assets/app-deferred.css", "assets/app-deferred.min.css"},
+	} {
+		source := readAsset(t, pair[0])
+		minified := readAsset(t, pair[1])
+		if len(minified) >= len(source) {
+			t.Errorf("%s must be smaller than %s", pair[1], pair[0])
+		}
+		requireContains(t, pair[1], minified, []string{"kanban"})
+	}
+	requireContains(t, "index.min.html", readAsset(t, "assets/index.min.html"), []string{
+		`id="tab-kanban"`,
+		`id="panel-kanban"`,
+		`id="kanban-board"`,
+	})
+	requireContains(t, "app-deferred.min.js", readAsset(t, "assets/app-deferred.min.js"), []string{
+		"kanban__lane",
+		"kanban__card",
+		"kanban-card:",
 	})
 }
 
