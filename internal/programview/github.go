@@ -45,6 +45,12 @@ type PRIndex interface {
 // references a program actually links.
 type PRIndexLoader func(repo string, refs []string) PRIndex
 
+// PullRequestKey identifies a repository-local pull request reference.
+type PullRequestKey struct {
+	Repo string
+	Ref  string
+}
+
 // PullRequestProof contains the GitHub fields needed to bind a merged pull
 // request to the recorded repository, base branch, head branch, and head SHA.
 type PullRequestProof struct {

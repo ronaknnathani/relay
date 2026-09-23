@@ -89,8 +89,11 @@ func (p *Program) Reconcile(projects []ProjectView) (ReconcileResult, error) {
 			}
 			continue
 		}
-		if view.Repo != p.Repo {
-			return ReconcileResult{}, fmt.Errorf("reconcile item %q: project %q repo %q does not match program repo %q", item.ID, view.Slug, view.Repo, p.Repo)
+		if view.Repo != item.Repo {
+			return ReconcileResult{}, fmt.Errorf(
+				"reconcile item %q: project %q repo %q does not match item repo %q",
+				item.ID, view.Slug, view.Repo, item.Repo,
+			)
 		}
 		changed := false
 		closedRecordedPR := view.PRClosed && item.PRRef != "" &&
@@ -197,16 +200,17 @@ func (p Program) Plan(projects []ProjectView) View {
 }
 
 func (p Program) prCapacity(projects []ProjectView) Capacity {
-	linkedProjects := make(map[string]bool, len(p.Items))
+	linkedProjects := make(map[string]string, len(p.Items))
 	for _, item := range p.Items {
 		if item.ProjectSlug != "" {
-			linkedProjects[item.ProjectSlug] = true
+			linkedProjects[item.ProjectSlug] = item.Repo
 		}
 	}
 	openProjects := make(map[string]bool, len(projects))
 	recordedProjects := make(map[string]bool, len(projects))
 	for _, project := range projects {
-		if !linkedProjects[project.Slug] || project.Repo != p.Repo {
+		expectedRepo, linked := linkedProjects[project.Slug]
+		if !linked || project.Repo != expectedRepo {
 			continue
 		}
 		if project.PRRef != "" && !project.PRClosed {

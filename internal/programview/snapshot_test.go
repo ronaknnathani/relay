@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -149,6 +150,7 @@ func TestBuildPopulatesProgramDetailAndDegradesPerSource(t *testing.T) {
 	prURL := "https://github.example/pr/42"
 	manifest := project.Manifest{
 		Slug: "child-review", Title: "Review", Repo: repo, Branch: "feature", BaseBranch: "main",
+		Program: p.Slug, ProgramItem: "w2",
 		Worktree: &worktree, Status: "active", Workflow: "deliver-pr", Phase: "validate",
 		Created: at, Updated: at, PR: project.PRInfo{Number: &prNumber, URL: &prURL},
 		PhasesCompleted: []string{}, PhasesRemaining: []string{},
@@ -375,10 +377,13 @@ func TestBuildPrefetchesPullRequestsWithBoundedConcurrency(t *testing.T) {
 		return PullRequestDTO{State: "open"}, nil
 	})
 	done := make(chan struct{})
-	var results map[string]memoResult
+	var results map[PullRequestKey]memoResult
 	go func() {
-		results = prefetchPullRequests(context.Background(), "/repo",
-			[]string{"#1", "#2", "#3", "#4", "#5", "#6", "#7", "#8"}, fetcher)
+		keys := make([]PullRequestKey, 0, 8)
+		for _, ref := range []string{"#1", "#2", "#3", "#4", "#5", "#6", "#7", "#8"} {
+			keys = append(keys, PullRequestKey{Repo: "/repo", Ref: ref})
+		}
+		results = prefetchPullRequests(context.Background(), keys, fetcher)
 		close(done)
 	}()
 	deadline := time.Now().Add(250 * time.Millisecond)
@@ -599,13 +604,14 @@ func TestBuildSkipsMalformedSiblingProjectStateWithoutFabricatingOrphansOrCapaci
 	if err := program.Create(p); err != nil {
 		t.Fatal(err)
 	}
-	for _, slug := range []string{"healthy-child", "broken-child"} {
+	for index, slug := range []string{"healthy-child", "broken-child"} {
 		childDir := filepath.Join(project.ActiveDir(), slug)
 		if err := os.MkdirAll(childDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if err := project.Save(project.ManifestPath(project.ActiveDir(), slug), project.Manifest{
 			Slug: slug, Title: slug, Repo: repo, Branch: slug, BaseBranch: "main",
+			Program: p.Slug, ProgramItem: fmt.Sprintf("w%d", index+1),
 			Status: "active", Created: at, Updated: at, PhasesCompleted: []string{}, PhasesRemaining: []string{},
 		}); err != nil {
 			t.Fatal(err)
@@ -728,9 +734,11 @@ func TestBuildReusesOneGitHubFetchPerRecordedPullRequest(t *testing.T) {
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
+
 	number := 42
 	saveProjectManifest(t, project.ActiveDir(), project.Manifest{
-		Slug: "child", Repo: repo, Branch: "feature", PR: project.PRInfo{Number: &number},
+		Slug: "child", Repo: repo, Branch: "feature", Program: "relay-v1", ProgramItem: "w1",
+		PR: project.PRInfo{Number: &number},
 	})
 	p, err := program.New("relay-v1", "Relay V1", repo, "copilot", 2)
 	if err != nil {
@@ -769,6 +777,68 @@ func TestBuildReusesOneGitHubFetchPerRecordedPullRequest(t *testing.T) {
 	}
 	if len(snapshot.Items) != 1 || snapshot.Items[0].LivePR == nil {
 		t.Fatalf("snapshot items = %+v", snapshot.Items)
+	}
+}
+
+func TestBuildMergesSecondaryRepositoryItemAndReadiesPrimaryDependent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	primary := t.TempDir()
+	secondary := t.TempDir()
+	p, err := program.New("multi-repo", "Multi repo", primary, "copilot", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StatePendingApproval, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StateActive, "ceo"); err != nil {
+		t.Fatal(err)
+	}
+	dependency, err := p.AddItem(program.WorkItem{
+		Title: "Secondary dependency", Priority: program.PriorityP0, Repo: secondary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(dependency.ID, "secondary-child"); err != nil {
+		t.Fatal(err)
+	}
+	dependent, err := p.AddItem(program.WorkItem{
+		Title: "Primary dependent", Priority: program.PriorityP0, Dependencies: []string{dependency.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	number := 42
+	saveProjectManifest(t, project.ActiveDir(), project.Manifest{
+		Slug: "secondary-child", Repo: secondary, Branch: "feature",
+		Program: p.Slug, ProgramItem: dependency.ID, PR: project.PRInfo{Number: &number},
+	})
+	if err := program.Create(p); err != nil {
+		t.Fatal(err)
+	}
+	var wrongRepo atomic.Bool
+	fetcher := fetcherFunc(func(_ context.Context, repo, ref string) (PullRequestDTO, error) {
+		if repo != secondary {
+			wrongRepo.Store(true)
+		}
+		return PullRequestDTO{Number: 42, Ref: ref, State: "merged"}, nil
+	})
+
+	snapshot, err := Build(p.Slug, Options{GitHub: fetcher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotDependency := findSnapshotItem(t, snapshot.Items, dependency.ID)
+	gotDependent := findSnapshotItem(t, snapshot.Items, dependent.ID)
+	if gotDependency.Status != string(program.ItemMerged) || !gotDependent.Ready {
+		t.Fatalf("dependency = %+v, dependent = %+v", gotDependency, gotDependent)
+	}
+	if !reflect.DeepEqual(snapshot.Plan.Ready, []string{dependent.ID}) {
+		t.Fatalf("ready items = %v", snapshot.Plan.Ready)
+	}
+	if wrongRepo.Load() {
+		t.Fatalf("GitHub fetch used a repository other than %q", secondary)
 	}
 }
 

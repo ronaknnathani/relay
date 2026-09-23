@@ -84,10 +84,14 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 		return nil, nil, fmt.Errorf("read active projects directory %s: %w", project.ActiveDir(), err)
 	}
 
-	linkedSlugs := make(map[string]bool)
+	type linkedChild struct {
+		itemID string
+		repo   string
+	}
+	linkedSlugs := make(map[string]linkedChild)
 	for _, item := range p.Items {
 		if item.ProjectSlug != "" {
-			linkedSlugs[item.ProjectSlug] = true
+			linkedSlugs[item.ProjectSlug] = linkedChild{itemID: item.ID, repo: item.Repo}
 		}
 	}
 
@@ -96,23 +100,32 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 	active := make(map[string]bool, len(entries))
 	repositories := make(map[string]projectRepositoryState)
 	for _, entry := range entries {
-		if !entry.IsDir() || !linkedSlugs[entry.Name()] {
+		expected, linked := linkedSlugs[entry.Name()]
+		if !entry.IsDir() || !linked {
 			continue
 		}
+		active[entry.Name()] = true
 		manifest, loadErr := project.Load(project.ManifestPath(project.ActiveDir(), entry.Name()))
 		if loadErr != nil {
 			warnings = append(warnings, ProjectWarning{
 				ProjectSlug: entry.Name(),
 				Message:     fmt.Sprintf("load active project %q: %v", entry.Name(), loadErr),
 			})
-			views = append(views, unavailableProjectView(p, entry.Name(), p.Repo, project.Manifest{}))
-			active[entry.Name()] = true
+			views = append(views, unavailableProjectView(p, entry.Name(), expected.repo, project.Manifest{}))
 			continue
 		}
-		if manifest.Repo != p.Repo {
+		if manifest.Program != p.Slug || manifest.ProgramItem != expected.itemID || manifest.Repo != expected.repo {
+			warnings = append(warnings, ProjectWarning{
+				ProjectSlug: entry.Name(),
+				Message: fmt.Sprintf(
+					"active project %q does not match linked item %s: program=%q item=%q repo=%q, want program=%q item=%q repo=%q",
+					entry.Name(), expected.itemID,
+					manifest.Program, manifest.ProgramItem, manifest.Repo,
+					p.Slug, expected.itemID, expected.repo,
+				),
+			})
 			continue
 		}
-		active[manifest.Slug] = true
 		repository, found := repositories[manifest.Repo]
 		if !found {
 			repository = projectRepositoryState{hasOrigin: gitx.HasOrigin(manifest.Repo)}
@@ -157,8 +170,9 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 		}
 	}
 	for slug := range archivedSlugs {
+		expected := linkedSlugs[slug]
 		if !archivedEntries[slug] {
-			views = append(views, program.ProjectView{Slug: slug, Repo: p.Repo, Orphaned: true})
+			views = append(views, program.ProjectView{Slug: slug, Repo: expected.repo, Orphaned: true})
 			continue
 		}
 		manifest, loadErr := project.Load(project.ManifestPath(project.ArchivedDir(), slug))
@@ -167,7 +181,19 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 				ProjectSlug: slug,
 				Message:     fmt.Sprintf("load archived project %q: %v", slug, loadErr),
 			})
-			views = append(views, unavailableProjectView(p, slug, p.Repo, project.Manifest{}))
+			views = append(views, unavailableProjectView(p, slug, expected.repo, project.Manifest{}))
+			continue
+		}
+		if manifest.Program != p.Slug || manifest.ProgramItem != expected.itemID || manifest.Repo != expected.repo {
+			warnings = append(warnings, ProjectWarning{
+				ProjectSlug: slug,
+				Message: fmt.Sprintf(
+					"archived project %q does not match linked item %s: program=%q item=%q repo=%q, want program=%q item=%q repo=%q",
+					slug, expected.itemID,
+					manifest.Program, manifest.ProgramItem, manifest.Repo,
+					p.Slug, expected.itemID, expected.repo,
+				),
+			})
 			continue
 		}
 		hasPR, prRef, prErr := RecordedPR(manifest, "")
@@ -191,9 +217,21 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 	}
 
 	if load != nil {
-		if index := load(p.Repo, recordedRefs(views)); index != nil {
-			for i := range views {
-				views[i] = overlayProjectView(views[i], index)
+		viewsByRepo := make(map[string][]int)
+		for i, view := range views {
+			if view.PRRef != "" && !view.Unavailable {
+				viewsByRepo[view.Repo] = append(viewsByRepo[view.Repo], i)
+			}
+		}
+		for repo, indexes := range viewsByRepo {
+			refs := make([]string, 0, len(indexes))
+			for _, index := range indexes {
+				refs = append(refs, views[index].PRRef)
+			}
+			if index := load(repo, refs); index != nil {
+				for _, viewIndex := range indexes {
+					views[viewIndex] = overlayProjectView(views[viewIndex], index)
+				}
 			}
 		}
 	}
@@ -206,16 +244,6 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 		return warnings[i].ProjectSlug < warnings[j].ProjectSlug
 	})
 	return views, warnings, nil
-}
-
-func recordedRefs(views []program.ProjectView) []string {
-	refs := make([]string, 0, len(views))
-	for _, view := range views {
-		if view.PRRef != "" && !view.Unavailable {
-			refs = append(refs, view.PRRef)
-		}
-	}
-	return refs
 }
 
 // unavailableProjectView returns the most conservative view of a child project

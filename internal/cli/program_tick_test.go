@@ -87,12 +87,14 @@ func TestProgramTickIdempotencyAndCapacityMatrix(t *testing.T) {
 	pr999 := 999
 	pr999URL := "https://example.test/pull/999"
 	saveProgramTestProject(t, project.ActiveDir(), project.Manifest{
-		Slug:       "child-review",
-		Repo:       repoRoot,
-		Branch:     "child-review",
-		BaseBranch: "main",
-		StartSHA:   startSHA,
-		PR:         project.PRInfo{Number: &pr999, URL: &pr999URL},
+		Slug:        "child-review",
+		Repo:        repoRoot,
+		Branch:      "child-review",
+		BaseBranch:  "main",
+		StartSHA:    startSHA,
+		Program:     p.Slug,
+		ProgramItem: child.ID,
+		PR:          project.PRInfo{Number: &pr999, URL: &pr999URL},
 	})
 	state, err := project.NewState("child-review", "deliver-pr", []string{"implement"})
 	if err != nil {
@@ -144,9 +146,8 @@ func TestProgramTickIdempotencyAndCapacityMatrix(t *testing.T) {
 		PR:         project.PRInfo{Number: &pr404},
 	})
 	saveProgramTestProject(t, project.ArchivedDir(), project.Manifest{
-		Slug:   "archived-child",
-		Repo:   repoRoot,
-		Merged: true,
+		Slug: "archived-child", Repo: repoRoot, Merged: true,
+		Program: p.Slug, ProgramItem: archived.ID,
 	})
 
 	first, err := runProgramCommand(t, "tick", p.Slug, "--json")
@@ -205,6 +206,7 @@ func TestProgramTickUsesInjectedGitHubLifecycleForReconciliationAndCapacity(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	p, err := program.New("github-lifecycle", "GitHub lifecycle", repo, "copilot", 3)
 	if err != nil {
 		t.Fatal(err)
@@ -283,6 +285,68 @@ func TestProgramTickUsesInjectedGitHubLifecycleForReconciliationAndCapacity(t *t
 	}
 }
 
+func TestProgramTickSecondaryMergeReadiesPrimaryDependent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	primary := newTestRepo(t)
+	secondary := newTestRepo(t)
+	p, err := program.New("multi-repo", "Multi repo", primary, "copilot", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StatePendingApproval, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StateActive, "ceo"); err != nil {
+		t.Fatal(err)
+	}
+	dependency, err := p.AddItem(program.WorkItem{
+		Title: "Secondary dependency", Priority: program.PriorityP0, Repo: secondary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(dependency.ID, "secondary-child"); err != nil {
+		t.Fatal(err)
+	}
+	dependent, err := p.AddItem(program.WorkItem{
+		Title: "Primary dependent", Priority: program.PriorityP0, Dependencies: []string{dependency.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := program.Create(p); err != nil {
+		t.Fatal(err)
+	}
+
+	original := buildProgramProjectViews
+	buildProgramProjectViews = func(program.Program) ([]program.ProjectView, []programview.ProjectWarning, error) {
+		return []program.ProjectView{{
+			Slug: "secondary-child", Repo: secondary, PRRef: "#42", Merged: true,
+		}}, nil, nil
+	}
+	t.Cleanup(func() { buildProgramProjectViews = original })
+
+	out, err := runProgramCommand(t, "tick", p.Slug, "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output programQueueOutput
+	if err := json.Unmarshal([]byte(out), &output); err != nil {
+		t.Fatal(err)
+	}
+	if len(output.View.Ready) != 1 || output.View.Ready[0].ID != dependent.ID {
+		t.Fatalf("ready = %+v", output.View.Ready)
+	}
+	loaded, err := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := loaded.Item(dependency.ID)
+	if got.Status != program.ItemMerged || got.PRRef != "#42" {
+		t.Fatalf("dependency = %+v", got)
+	}
+}
+
 func TestProgramTickVerifiesContractHashes(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := createCLIProgram(t, "governance")
@@ -336,9 +400,11 @@ func TestArchivedProjectViewsDistinguishMergedFromDiscarded(t *testing.T) {
 	}
 	saveProgramTestProject(t, project.ArchivedDir(), project.Manifest{
 		Slug: "merged-child", Repo: p.Repo, Merged: true,
+		Program: p.Slug, ProgramItem: merged.ID,
 	})
 	saveProgramTestProject(t, project.ArchivedDir(), project.Manifest{
 		Slug: "discarded-child", Repo: p.Repo,
+		Program: p.Slug, ProgramItem: discarded.ID,
 	})
 
 	views, _, err := buildProgramProjectViews(p)
