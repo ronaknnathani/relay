@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -28,7 +29,7 @@ func newCmdProgramItem() *cobra.Command {
 }
 
 func newCmdProgramItemAdd() *cobra.Command {
-	var priorityText, dependenciesText, contractsText string
+	var priorityText, dependenciesText, contractsText, repo string
 	var notes []string
 	cmd := &cobra.Command{
 		Use:   "add <program> <title>",
@@ -46,7 +47,11 @@ func newCmdProgramItemAdd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runProgramItemAdd(cmd.OutOrStdout(), args[0], program.WorkItem{
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("resolve current directory for work item repository: %w", err)
+			}
+			return runProgramItemAdd(cmd.OutOrStdout(), args[0], cwd, repo, program.WorkItem{
 				Title:        strings.Join(args[1:], " "),
 				Priority:     program.Priority(priorityText),
 				Dependencies: dependencies,
@@ -59,11 +64,16 @@ func newCmdProgramItemAdd() *cobra.Command {
 	cmd.Flags().StringVar(&dependenciesText, "depends-on", "", "comma-separated dependency item IDs")
 	cmd.Flags().StringVar(&contractsText, "contract", "", "comma-separated contract references")
 	cmd.Flags().StringArrayVar(&notes, "notes", nil, "note to append (repeatable)")
+	cmd.Flags().StringVar(&repo, "repo", "", "local repository root (defaults to the program repository)")
 	return cmd
 }
 
-func runProgramItemAdd(out io.Writer, slug string, candidate program.WorkItem) error {
+func runProgramItemAdd(out io.Writer, slug, cwd, requestedRepo string, candidate program.WorkItem) error {
 	path, p, err := loadActiveProgram(slug)
+	if err != nil {
+		return err
+	}
+	candidate.Repo, err = resolveProgramItemRepo(p.Repo, cwd, requestedRepo)
 	if err != nil {
 		return err
 	}
@@ -116,7 +126,11 @@ func runProgramItemList(out io.Writer, slug, status string, jsonOutput bool) err
 		return writeProgramJSON(out, items)
 	}
 	for _, item := range items {
-		fmt.Fprintf(out, "%s  %-10s %-2s %s\n", item.ID, item.Status, item.Priority, item.Title)
+		repo := ""
+		if item.Repo != p.Repo {
+			repo = " [repo: " + item.Repo + "]"
+		}
+		fmt.Fprintf(out, "%s  %-10s %-2s %s%s\n", item.ID, item.Status, item.Priority, item.Title, repo)
 	}
 	return nil
 }
