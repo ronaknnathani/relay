@@ -413,6 +413,89 @@ func TestBrowserHydratesAndPollsWhenDeferredBundleFails(t *testing.T) {
 	}
 }
 
+func TestBrowserFastPollsPartialSnapshotThenReturnsToNormalInterval(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	seed := browserTestSnapshot()
+	releaseRefresh := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(releaseRefresh) })
+	})
+
+	output := newLineWriter()
+	serverContext, cancelServer := context.WithCancel(context.Background())
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- Serve(serverContext, Options{
+			Slug: "browser-test", Port: 0, Open: false, Out: output,
+			LocalBuilder: func(string, string) (programview.Snapshot, error) {
+				return seed, nil
+			},
+			Builder: func(string, string) (programview.Snapshot, error) {
+				<-releaseRefresh
+				return seed, nil
+			},
+		})
+	}()
+	t.Cleanup(func() {
+		cancelServer()
+		select {
+		case err := <-serverDone:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("program UI did not stop")
+		}
+	})
+	url := waitForProgramURL(t, output, serverDone)
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+
+	programRequests := `performance.getEntriesByType("resource").filter((entry) => {
+		const request = new URL(entry.name);
+		return request.pathname.endsWith("/api/program") && request.search === "";
+	})`
+	if err := chromedp.Run(browser,
+		chromedp.Navigate(url),
+		chromedp.Poll(programRequests+`.length >= 1`, nil),
+	); err != nil {
+		t.Fatalf("initial partial snapshot request: %v", err)
+	}
+	releaseOnce.Do(func() { close(releaseRefresh) })
+
+	var requestTimes []float64
+	if err := chromedp.Run(browser,
+		chromedp.Poll(programRequests+`.length >= 3`, nil,
+			chromedp.WithPollingTimeout(8*time.Second)),
+		chromedp.Evaluate(programRequests+`.slice(0, 3).map((entry) => entry.startTime)`, &requestTimes),
+	); err != nil {
+		t.Fatalf("automatic detail polling: %v", err)
+	}
+	fastDelay := time.Duration(requestTimes[1]-requestTimes[0]) * time.Millisecond
+	normalDelay := time.Duration(requestTimes[2]-requestTimes[1]) * time.Millisecond
+	if fastDelay < 500*time.Millisecond || fastDelay > 2*time.Second {
+		t.Fatalf("partial snapshot poll delay = %s, want about 1s", fastDelay)
+	}
+	if normalDelay < 2500*time.Millisecond || normalDelay > 4*time.Second {
+		t.Fatalf("fresh snapshot poll delay = %s, want about 3s", normalDelay)
+	}
+}
+
 func TestBrowserDeferredActionExceptionsSurfaceAndRecover(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
