@@ -1431,6 +1431,28 @@ func TestArchiveDoesNotMarkEmptyReachableBranchMerged(t *testing.T) {
 	}
 }
 
+func TestArchivePreservesEmptyBranchWhenUpstreamWasRewritten(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "empty-work-rewritten-upstream"
+	branch := "user/empty-work-rewritten-upstream"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+
+	start := gitx.RevParse(repo, "refs/heads/"+branch)
+	tree := gitOutput(t, repo, "rev-parse", start+"^{tree}")
+	rewritten := gitOutput(t, repo, "commit-tree", tree, "-m", "rewritten upstream")
+	runArchiveGit(t, repo, "update-ref", "refs/remotes/origin/main", rewritten)
+
+	_, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	})
+	if err == nil || !strings.Contains(err.Error(), "merge could not be verified") {
+		t.Fatalf("runArchive error = %v, want rewritten-upstream verification failure", err)
+	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
+}
+
 func TestArchiveWarnsWhenOptionalPullRequestLookupFailsForReachableBranch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)

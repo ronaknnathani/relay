@@ -418,12 +418,20 @@ func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision
 			)
 			if evaluationErr == nil && proof.BranchPresent &&
 				startCommit != "" && tip == startCommit {
-				proof.AuthoritativeCommit = tip
-				proof.Kind = archiveProofReachable
-				if err := validateArchiveWorktreeBinding(proof); err != nil {
-					return archiveDecision{}, err
+				reachable, reachabilityErr := gitx.CommitReachable(m.Repo, tip, baseRef)
+				if reachabilityErr != nil {
+					evaluationErr = fmt.Errorf(
+						"verify empty work range for branch %q against %s: %w",
+						m.Branch, baseRef, reachabilityErr,
+					)
+				} else if reachable {
+					proof.AuthoritativeCommit = tip
+					proof.Kind = archiveProofReachable
+					if err := validateArchiveWorktreeBinding(proof); err != nil {
+						return archiveDecision{}, err
+					}
+					return archiveDecision{proof: proof}, nil
 				}
-				return archiveDecision{proof: proof}, nil
 			}
 		}
 	}
