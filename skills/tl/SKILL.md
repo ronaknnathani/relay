@@ -232,6 +232,13 @@ Cleanup only ever accepts an item Relay records as `merged`. It refuses `pending
 running and reported as pending with the retry command: never force it. Re-running cleanup after a
 partial run finishes the job, and the work item stays `merged` throughout.
 
+## Delivery delegation
+
+The program governance model delegates each child to adaptive `deliver-pr`. Managed delivery is route-first:
+`clarify`, `plan`, `simplify`, `review`, and `validate` run only when selected. `pr-monitor` remains
+the observer, `pr-fix` remains the mutation owner, and the required plan-review handoff stays durable
+through the program mailbox.
+
 ## Operating model
 
 - The CEO approves the goal, priority, material architecture, escalated issues, and final pull
