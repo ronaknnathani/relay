@@ -16,9 +16,10 @@ write production code or invoke upstream/downstream phases.
 
 ## Process
 
-1. **Reuse fresh evidence.** Read the selected task/requirements artifacts and fresh
-   `exploration.md`. Do not repeat broad discovery. Investigate only a missing fact needed for the
-   selected decision, and cite decisive evidence as `path:line`.
+1. **Reuse fresh evidence.** Read the selected task/requirements artifacts and fresh `exploration.md`.
+   Do not repeat broad discovery. If it is stale, request one replacement exploration; otherwise
+   investigate only a missing fact needed for the selected decision, and cite decisive evidence as
+   `path:line`.
 2. **Commit one decision.** State the chosen architecture and why it fits existing patterns. Record a
    rejected alternative only when its omission would surprise a reader. Never hand implementation a
    menu of options.
