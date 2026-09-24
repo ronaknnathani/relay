@@ -3,6 +3,9 @@ package programui
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -266,6 +269,9 @@ func newGitHubCache(fetcher programview.Fetcher, ttl time.Duration, now func() t
 
 func (c *githubCache) Fetch(ctx context.Context, repo, ref string) (programview.PullRequestDTO, error) {
 	key := repo + "\x00" + ref
+	if number, ok := pullRequestCacheNumber(ref); ok {
+		key = repo + "\x00" + strconv.Itoa(number)
+	}
 	c.mu.Lock()
 	stale, hasStale := c.entries[key]
 	if hasStale && c.now().Before(stale.expiresAt) {
@@ -317,4 +323,23 @@ func (c *githubCache) Fetch(ctx context.Context, repo, ref string) (programview.
 	close(flight.done)
 	c.mu.Unlock()
 	return flight.pullRequest, flight.err
+}
+
+func pullRequestCacheNumber(ref string) (int, bool) {
+	if number, ok := programview.PullRequestNumber(ref); ok {
+		return number, true
+	}
+	parsed, err := url.Parse(strings.TrimSpace(ref))
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil ||
+		parsed.Hostname() == "" || parsed.Port() != "" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
+		return 0, false
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) < 2 ||
+		(segments[len(segments)-2] != "pr" && segments[len(segments)-2] != "pull") {
+		return 0, false
+	}
+	number, err := strconv.Atoi(segments[len(segments)-1])
+	return number, err == nil && number > 0
 }

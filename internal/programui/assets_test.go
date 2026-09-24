@@ -1293,6 +1293,7 @@ func TestScriptKeepsPollingSelectionAndLinkSafety(t *testing.T) {
 		"Pull request · stale GitHub cache",
 		"Stale since",
 		"pr.stale",
+		"card.dataset.meta = foot.textContent;",
 		"function writeHash()",
 		"function readHash()",
 		"function matchesFilter(",
@@ -1301,6 +1302,12 @@ func TestScriptKeepsPollingSelectionAndLinkSafety(t *testing.T) {
 		`event.key === "ArrowDown"`,
 		`event.key === "ArrowUp"`,
 		"File content loads with the external refresh.",
+	})
+	if strings.Count(readAsset(t, "assets/app.js"), "schedule(nextPollDelay(snapshot));") != 2 {
+		t.Error("app.js must schedule polling after both initial and subsequent snapshots")
+	}
+	requireContains(t, "app.min.js", readAsset(t, "assets/app.min.js"), []string{
+		"nextPollDelay",
 	})
 
 	if !strings.Contains(script, `event.key === "/" && state.tab === "tasks"`) {

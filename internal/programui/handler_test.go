@@ -565,6 +565,31 @@ func TestGitHubCacheTTLAndStaleFallback(t *testing.T) {
 	}
 }
 
+func TestGitHubCacheDeduplicatesEquivalentReferences(t *testing.T) {
+	var calls int
+	cache := newGitHubCache(
+		fetcherFunc(func(context.Context, string, string) (programview.PullRequestDTO, error) {
+			calls++
+			return programview.PullRequestDTO{Number: 42, State: "open"}, nil
+		}),
+		time.Minute,
+		time.Now,
+	)
+	if _, err := cache.Fetch(context.Background(), "/repo", "#42"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.Fetch(
+		context.Background(),
+		"/repo",
+		"https://github.example/pr/42",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("fetch calls = %d, want 1", calls)
+	}
+}
+
 func TestAgentCacheTTLStaleFallbackAndRecovery(t *testing.T) {
 	now := time.Date(2026, 8, 25, 16, 0, 0, 0, time.UTC)
 	var calls int

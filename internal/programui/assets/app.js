@@ -1107,6 +1107,7 @@ function decorateTaskCard(card, node, item, lane) {
       foot.append(make("span", "flag flag--ready", "ready"));
     }
   }
+  card.dataset.meta = foot.textContent;
   card.setAttribute("aria-label", taskCardLabel(node, item, lane));
 }
 
@@ -1611,6 +1612,11 @@ function schedule(delay) {
   }, delay);
 }
 
+function nextPollDelay(snapshot) {
+  const refresh = snapshot.refresh || {};
+  return refresh.refreshing || refresh.status === "partial" ? 1000 : POLL_INTERVAL;
+}
+
 function signatureOf(body) {
   return body.replace(/"generated_at":"[^"]*"/g, "");
 }
@@ -1685,6 +1691,7 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
           });
         }
       });
+      schedule(nextPollDelay(snapshot));
       return true;
     }
     const signature = signatureOf(body);
@@ -1696,7 +1703,7 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
       state.signature = signature;
     } else if (roadmapUnchanged && state.tab === "roadmap") {
       renderHeader();
-      window.requestAnimationFrame(drawConnectorsForCurrentGraph);
+      renderRoadmap();
       TABS.filter((tab) => tab !== "roadmap").forEach((tab) => state.dirtyTabs.add(tab));
       state.signature = signature;
     } else {
@@ -1712,7 +1719,7 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
     } else if (state.drawerOpen) {
       withDeferredUI(() => loadCurrentArtifact(true, true));
     }
-    schedule(POLL_INTERVAL);
+    schedule(nextPollDelay(snapshot));
     return true;
   } catch (error) {
     if (controller.signal.aborted) {
