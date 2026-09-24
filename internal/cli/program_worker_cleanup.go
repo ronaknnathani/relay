@@ -401,7 +401,7 @@ func loadProgramCleanupTarget(
 		)
 	}
 	if !archived {
-		if err := validateManagedChildResourceIdentity(p, item, manifest); err != nil {
+		if err := validateManagedChildResourceIdentity(item, manifest); err != nil {
 			return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
 				"cleanup %s/%s: child project %q current resources do not match its durable dispatch "+
 					"identity: %w; refusing automatic forced cleanup",
@@ -481,7 +481,7 @@ func upgradeLegacyProgramCleanupTarget(
 			p.Slug, item.ID, manifest.Slug,
 		)
 	}
-	if err := validateManagedChildResourceIdentity(p, item, manifest); err != nil {
+	if err := validateManagedChildResourceIdentity(item, manifest); err != nil {
 		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
 			"cleanup %s/%s: legacy child project %q has no historical dispatch identity and its "+
 				"current resources could not be verified without ambiguity: %w; resources were "+

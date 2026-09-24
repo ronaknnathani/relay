@@ -236,6 +236,7 @@ func mergeProgressionProgram(t *testing.T, repo string) program.Program {
 	at := "2026-09-01T04:00:00Z"
 	if err := project.Save(project.ManifestPath(project.ActiveDir(), childSlug), project.Manifest{
 		Slug: childSlug, Title: "Ship the API", Repo: repo, Branch: "feature/api",
+		Program: p.Slug, ProgramItem: first.ID,
 		BaseBranch: "main", Worktree: &worktree, Status: "active",
 		Workflow: "deliver-pr", Phase: "implement", Created: at, Updated: at,
 		PhasesCompleted: []string{}, PhasesRemaining: []string{},

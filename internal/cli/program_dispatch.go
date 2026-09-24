@@ -231,7 +231,7 @@ func adoptDispatchChild(
 			"active child %q has no complete branch/worktree identity", expectedSlug,
 		)
 	}
-	if err := validateManagedChildResourceIdentity(p, item, manifest); err != nil {
+	if err := validateManagedChildResourceIdentity(item, manifest); err != nil {
 		return projectCreateResult{}, fmt.Errorf(
 			"active child %q cannot be safely reused: %w; inspect the child manifest and registered "+
 				"worktree, then repair or remove the stale child metadata before retrying",
@@ -261,7 +261,7 @@ func adoptDispatchChild(
 }
 
 func validateManagedChildResourceIdentity(
-	p program.Program, item program.WorkItem, manifest project.Manifest,
+	item program.WorkItem, manifest project.Manifest,
 ) error {
 	if manifest.Repo != item.Repo {
 		return fmt.Errorf(
