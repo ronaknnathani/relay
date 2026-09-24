@@ -22,12 +22,15 @@ func TestBuildOverviewDerivesProgramsAndAttentionWork(t *testing.T) {
 	alpha := overviewTestProgram("alpha", "Alpha prompt. More detail.", repo, at)
 	alpha.Items = []program.WorkItem{
 		overviewTestItem("w1", "ready", program.PriorityP0, program.ItemPending, repo, at),
-		overviewTestItem("w2", "blocked", program.PriorityP2, program.ItemBlocked, repo, at),
-		overviewTestItem("w10", "dispatched", program.PriorityP1, program.ItemDispatched, repo, at),
+		overviewTestItem("w10", "dispatch ten", program.PriorityP0, program.ItemDispatched, repo, at),
+		overviewTestItem("w2", "dispatch two", program.PriorityP0, program.ItemDispatched, repo, at),
+		overviewTestItem("w12", "blocked", program.PriorityP2, program.ItemBlocked, repo, at),
 	}
-	alpha.Items[1].BlockedReason = "owner needed"
-	alpha.Items[2].ProjectSlug = "alpha-child"
+	alpha.Items[1].ProjectSlug = "alpha-ten"
+	alpha.Items[1].DispatchedAt = at
+	alpha.Items[2].ProjectSlug = "alpha-two"
 	alpha.Items[2].DispatchedAt = at
+	alpha.Items[3].BlockedReason = "owner needed"
 	alpha.Decisions = []program.Decision{{
 		ID: "d1", Kind: program.DecisionQuestion, RaisedBy: program.RaisedByTL,
 		Question: "Ship?", Options: []string{"yes"}, CreatedAt: at,
@@ -37,6 +40,7 @@ func TestBuildOverviewDerivesProgramsAndAttentionWork(t *testing.T) {
 		overviewTestItem("w2", "review", program.PriorityP0, program.ItemInReview, repo, at),
 		overviewTestItem("w3", "dispatch first", program.PriorityP0, program.ItemDispatched, repo, at),
 		overviewTestItem("w4", "done", program.PriorityP0, program.ItemMerged, repo, at),
+		overviewTestItem("w5", "cancelled", program.PriorityP0, program.ItemCancelled, repo, at),
 	}
 	beta.Items[0].ProjectSlug = "beta-review"
 	beta.Items[0].PRRef = "#2"
@@ -49,6 +53,7 @@ func TestBuildOverviewDerivesProgramsAndAttentionWork(t *testing.T) {
 	beta.Items[2].DispatchedAt = at
 	beta.Items[2].InReviewAt = at
 	beta.Items[2].MergedAt = at
+	beta.Items[3].CancelledAt = at
 
 	for _, p := range []program.Program{alpha, beta} {
 		if err := program.Create(p); err != nil {
@@ -78,22 +83,23 @@ func TestBuildOverviewDerivesProgramsAndAttentionWork(t *testing.T) {
 		got.Programs[0].Summary != "Alpha summary for the overview." {
 		t.Fatalf("alpha identity = %+v", got.Programs[0])
 	}
-	if got.Programs[0].Ready != 0 || got.Programs[0].InFlight != 1 ||
+	if got.Programs[0].Ready != 0 || got.Programs[0].InFlight != 2 ||
 		got.Programs[0].Blocked != 2 || got.Programs[0].OpenDecisions != 1 ||
 		got.Programs[0].NextAction != "resolve d1" {
 		t.Fatalf("alpha planning = %+v", got.Programs[0])
 	}
 	if got.Programs[1].Progress != (ProgressDTO{
-		Total: 3, Dispatched: 1, InReview: 1, Merged: 1, Completed: 1, Percent: 33,
+		Total: 4, Dispatched: 1, InReview: 1, Merged: 1, Canceled: 1, Completed: 2, Percent: 25,
 	}) {
 		t.Fatalf("beta progress = %+v", got.Programs[1].Progress)
 	}
 
 	wantWork := []OverviewWorkItemDTO{
+		{ProgramSlug: "alpha", ProgramTitle: "Alpha display", ID: "w2", Title: "dispatch two", Priority: "P0", Status: "dispatched"},
+		{ProgramSlug: "alpha", ProgramTitle: "Alpha display", ID: "w10", Title: "dispatch ten", Priority: "P0", Status: "dispatched"},
 		{ProgramSlug: "beta", ProgramTitle: "Beta", ID: "w3", Title: "dispatch first", Priority: "P0", Status: "dispatched"},
-		{ProgramSlug: "alpha", ProgramTitle: "Alpha display", ID: "w10", Title: "dispatched", Priority: "P1", Status: "dispatched"},
 		{ProgramSlug: "beta", ProgramTitle: "Beta", ID: "w2", Title: "review", Priority: "P0", Status: "in-review"},
-		{ProgramSlug: "alpha", ProgramTitle: "Alpha display", ID: "w2", Title: "blocked", Priority: "P2", Status: "blocked", Reasons: []string{"owner needed"}},
+		{ProgramSlug: "alpha", ProgramTitle: "Alpha display", ID: "w12", Title: "blocked", Priority: "P2", Status: "blocked", Reasons: []string{"owner needed"}},
 	}
 	if !reflect.DeepEqual(got.Work, wantWork) {
 		t.Fatalf("work = %#v, want %#v", got.Work, wantWork)
