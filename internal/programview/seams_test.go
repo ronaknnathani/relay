@@ -932,6 +932,58 @@ func TestArchivedSecondaryChildUsesRepositoryScopedPullRequestState(t *testing.T
 	}
 }
 
+func TestArchivedMergedChildWithMissingCheckoutDoesNotConsumeCapacity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	primary := newProgramViewTestRepo(t)
+	secondary := newProgramViewTestRepo(t)
+	p, err := program.New("program", "Program", primary, "copilot", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StatePendingApproval, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StateActive, "ceo"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := p.AddItem(program.WorkItem{
+		Title: "Archived secondary", Priority: program.PriorityP0, Repo: secondary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(item.ID, "archived-secondary"); err != nil {
+		t.Fatal(err)
+	}
+	number := 42
+	saveProjectManifest(t, project.ArchivedDir(), project.Manifest{
+		Slug: "archived-secondary", Repo: secondary, Branch: "feature",
+		Program: p.Slug, ProgramItem: item.ID,
+		PR: project.PRInfo{Number: &number}, Merged: true,
+	})
+	if err := os.RemoveAll(secondary); err != nil {
+		t.Fatal(err)
+	}
+
+	views, warnings, err := ProjectViewsWithPRIndex(p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []program.ProjectView{{
+		Slug: "archived-secondary", Repo: secondary, HasPR: true, PRRef: "#42",
+		Merged: true, Archived: true,
+	}}
+	if !reflect.DeepEqual(views, want) {
+		t.Fatalf("views = %+v, want %+v", views, want)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %+v", warnings)
+	}
+	if capacity := p.Plan(views).Capacity; capacity != (program.Capacity{Limit: 1, Available: 1}) {
+		t.Fatalf("capacity = %+v, want merged archived PR to consume no capacity", capacity)
+	}
+}
+
 func TestReadOnlySnapshotMatchesStrictCLICapacity(t *testing.T) {
 	tests := []struct {
 		name  string

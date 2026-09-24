@@ -201,22 +201,6 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 			})
 			continue
 		}
-		repository, found := repositories[manifest.Repo]
-		if !found {
-			repository = loadProjectRepositoryState(manifest.Repo, false)
-			repositories[manifest.Repo] = repository
-		}
-		if repository.err != nil {
-			warnings = append(warnings, ProjectWarning{
-				ProjectSlug: slug,
-				Message: fmt.Sprintf(
-					"inspect archived project %q repository %s: %v",
-					slug, manifest.Repo, repository.err,
-				),
-			})
-			views = append(views, unavailableProjectView(p, slug, expected.repo, manifest))
-			continue
-		}
 		hasPR, prRef, prErr := RecordedPR(manifest, "")
 		if prErr != nil {
 			warnings = append(warnings, ProjectWarning{
