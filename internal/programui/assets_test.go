@@ -13,6 +13,12 @@ import (
 
 // assetNames lists every file the browser is allowed to load.
 var assetNames = []string{
+	"assets/overview.html",
+	"assets/overview.min.html",
+	"assets/overview.css",
+	"assets/overview.min.css",
+	"assets/overview.js",
+	"assets/overview.min.js",
 	"assets/index.html",
 	"assets/index.min.html",
 	"assets/app.css",
@@ -75,6 +81,67 @@ func requireAbsent(t *testing.T, name, content string, unwanted []string) {
 	for _, banned := range unwanted {
 		if strings.Contains(content, banned) {
 			t.Errorf("%s still contains %q", name, banned)
+		}
+	}
+}
+
+func TestOverviewAssetsExposeProgramsAndAttentionBoard(t *testing.T) {
+	index := readAsset(t, "assets/overview.html")
+	requireContains(t, "overview.html", index, []string{
+		`<main id="overview">`,
+		`id="programs"`,
+		`id="program-list"`,
+		`id="program-empty"`,
+		`id="work"`,
+		`id="work-empty"`,
+		`id="diagnostics"`,
+		`id="diagnostic-list"`,
+		`aria-live="polite"`,
+		`data-status="dispatched"`,
+		`data-status="in-review"`,
+		`data-status="blocked"`,
+		`<link rel="stylesheet" href="overview.css">`,
+		`<script src="overview.js" defer></script>`,
+	})
+	if strings.Index(index, `data-status="dispatched"`) >
+		strings.Index(index, `data-status="in-review"`) ||
+		strings.Index(index, `data-status="in-review"`) >
+			strings.Index(index, `data-status="blocked"`) {
+		t.Fatal("overview lanes must be ordered dispatched, in-review, blocked")
+	}
+
+	script := readAsset(t, "assets/overview.js")
+	requireContains(t, "overview.js", script, []string{
+		`fetch("api/overview"`,
+		"window.setInterval(refresh, 3000)",
+		`link.href = ` + "`programs/${encodeURIComponent(program.slug)}/`",
+		`link.href = ` + "`programs/${encodeURIComponent(item.program_slug)}/#task=${encodeURIComponent(item.id)}`",
+		"textContent",
+		"replaceChildren",
+		`["dispatched", "in-review", "blocked"]`,
+	})
+	requireContains(t, "overview.html", index, []string{
+		"No active programs.",
+		"No attention items.",
+		"No items in this lane.",
+	})
+	styles := readAsset(t, "assets/overview.css")
+	requireContains(t, "overview.css", styles, []string{
+		".program-grid",
+		".kanban",
+		".work-card",
+		":focus-visible",
+		"@media",
+	})
+	for _, pair := range [][2]string{
+		{"assets/overview.html", "assets/overview.min.html"},
+		{"assets/overview.css", "assets/overview.min.css"},
+		{"assets/overview.js", "assets/overview.min.js"},
+	} {
+		source := readAsset(t, pair[0])
+		minified := readAsset(t, pair[1])
+		if len(minified) >= len(source) {
+			t.Errorf("%s must be smaller than %s", pair[1], pair[0])
 		}
 	}
 }
