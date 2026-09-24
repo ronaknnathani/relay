@@ -388,6 +388,9 @@ func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision
 	if base == "" {
 		base, evaluationErr = gitx.DetectDefaultBranchWithError(m.Repo)
 	}
+	if evaluationErr == nil && strings.TrimSpace(m.StartSHA) == "" {
+		evaluationErr = fmt.Errorf("%w: start_sha is missing", gitx.ErrInvalidWorkStart)
+	}
 	if evaluationErr == nil {
 		baseRef := "refs/remotes/origin/" + base
 		if gitx.RevParse(m.Repo, baseRef) == "" {
@@ -401,16 +404,20 @@ func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision
 				m.Repo, m.Branch, baseRef, m.StartSHA,
 			)
 			if evaluationErr == nil && merged {
-				proof, evaluationErr = newMergedBranchArchiveProof(
+				candidate, proofErr := newMergedBranchArchiveProof(
 					m, archiveProofReachable, tip,
 				)
-				if evaluationErr == nil {
-					proof.ForceAuthorized = force
-					return archiveDecision{proof: proof}, nil
+				if proofErr == nil {
+					candidate.ForceAuthorized = force
+					return archiveDecision{proof: candidate}, nil
 				}
+				evaluationErr = proofErr
 			}
+			startCommit := gitx.RevParse(
+				m.Repo, strings.TrimSpace(m.StartSHA)+"^{commit}",
+			)
 			if evaluationErr == nil && proof.BranchPresent &&
-				tip == gitx.RevParse(m.Repo, strings.TrimSpace(m.StartSHA)+"^{commit}") {
+				startCommit != "" && tip == startCommit {
 				proof.AuthoritativeCommit = tip
 				proof.Kind = archiveProofReachable
 				if err := validateArchiveWorktreeBinding(proof); err != nil {
@@ -452,14 +459,14 @@ func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision
 	if prErr != nil {
 		warnings = append(warnings, prErr.Error())
 	}
-	if err := validateArchiveWorktreeBinding(proof); err != nil {
-		return archiveDecision{}, err
-	}
 	if proof.BranchPresent {
 		proof.AuthoritativeCommit = proof.ExpectedBranchTip
 		proof.Kind = archiveProofForced
 	} else {
 		proof.Kind = archiveProofMissingBranch
+	}
+	if err := validateArchiveWorktreeBinding(proof); err != nil {
+		return archiveDecision{}, err
 	}
 	return archiveDecision{proof: proof, warnings: warnings}, nil
 }

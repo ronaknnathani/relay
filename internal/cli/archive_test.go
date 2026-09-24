@@ -712,6 +712,28 @@ func TestArchiveForceRejectsDetachedWorktreeWithoutAuthoritativeCommit(t *testin
 	}
 }
 
+func TestArchiveForceRemovesDetachedWorktreeAtBranchTip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "detached-at-branch-tip"
+	branch := "user/detached-at-branch-tip"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "unmerged\n", "unmerged work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, worktree, "checkout", "-q", "--detach")
+
+	result, err := archiveProject(slug, true)
+	if err != nil {
+		t.Fatalf("archiveProject --force: %v", err)
+	}
+	if !result.WorktreeRemoved || !result.BranchDeleted {
+		t.Fatalf("archive result = %+v, want detached worktree and branch removed", result)
+	}
+	if pathExists(worktree) || gitx.BranchExists(repo, branch) {
+		t.Fatal("forced archive left the detached worktree or branch behind")
+	}
+}
+
 func TestArchiveRejectsDanglingWorktreeSymlink(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
@@ -1323,6 +1345,53 @@ func TestArchiveForceKeepsAuthorityWhenOptionalPullRequestValidationFails(t *tes
 	}
 }
 
+func TestArchiveForceKeepsSnapshotWhenMergedProofRevalidationFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "force-merged-proof-revalidation"
+	branch := "user/force-merged-proof-revalidation"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "merged\n", "merged work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, repo, "merge", "-q", "--squash", branch)
+	runArchiveGit(t, repo, "commit", "-q", "-m", "squash project")
+	runArchiveGit(t, repo, "update-ref", "refs/remotes/origin/main", "refs/heads/main")
+
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalTip := gitx.RevParse(repo, "refs/heads/"+branch)
+	branchChecks := 0
+	previousBranchExists := archiveBranchExists
+	archiveBranchExists = func(repoPath, branchName string) (bool, error) {
+		branchChecks++
+		if branchChecks == 2 {
+			runArchiveGit(t, worktree, "checkout", "-q", "--detach")
+			commitArchiveFile(t, worktree, "later.txt", "later\n", "later work")
+			runArchiveGit(t, repo, "branch", "-f", branch, "HEAD")
+		}
+		return previousBranchExists(repoPath, branchName)
+	}
+	t.Cleanup(func() { archiveBranchExists = previousBranchExists })
+
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatalf("decideArchive --force: %v", err)
+	}
+	if decision.proof.Slug != slug ||
+		!decision.proof.BranchPresent ||
+		decision.proof.ExpectedBranchTip != originalTip ||
+		!decision.proof.WorktreePresent ||
+		decision.proof.ExpectedWorktreeTip != originalTip {
+		t.Fatalf("proof = %+v, want original project snapshot at %s", decision.proof, originalTip)
+	}
+	if len(decision.warnings) == 0 ||
+		!strings.Contains(decision.warnings[0], "branch tip changed") {
+		t.Fatalf("warnings = %v, want merge-proof revalidation failure", decision.warnings)
+	}
+}
+
 func TestArchiveRecordsVerifiedMergedBranch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
@@ -1750,6 +1819,27 @@ func TestArchiveInvalidStartWithoutProofPreservesProject(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "merge could not be verified") ||
 		!strings.Contains(err.Error(), "invalid work start") {
 		t.Fatalf("runArchive error = %v, want invalid-start verification failure", err)
+	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
+}
+
+func TestArchiveMissingStartWithoutProofPreservesProject(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "missing-start-no-proof"
+	branch := "user/missing-start-no-proof"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "unverified\n", "unverified work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	updateGCManifest(t, slug, func(manifest *project.Manifest) {
+		manifest.StartSHA = ""
+	})
+
+	_, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	})
+	if err == nil || !strings.Contains(err.Error(), "merge could not be verified") {
+		t.Fatalf("runArchive error = %v, want missing-start verification failure", err)
 	}
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
