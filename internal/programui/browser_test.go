@@ -740,8 +740,10 @@ func TestBrowserKanbanNavigation(t *testing.T) {
 	snapshot := browserTestSnapshot()
 	snapshot.Items[0].Status = "pending"
 	snapshot.Items[0].Lane = "pending"
+	snapshot.Items[0].Repo = "/repos/first"
 	snapshot.Items[1].Status = "in-review"
 	snapshot.Items[1].Lane = "in-review"
+	snapshot.Items[1].Repo = "/repos/second"
 
 	var mutation atomic.Bool
 	feed := newSnapshotFeed(snapshot, time.Minute, time.Now, func() (programview.Snapshot, error) {
@@ -793,6 +795,7 @@ func TestBrowserKanbanNavigation(t *testing.T) {
 		chromedp.Poll(`state.selected === "w1" &&
 			document.querySelector("#drawer").dataset.state === "open" &&
 			document.querySelector("#drawer-title").textContent === "First task" &&
+			document.querySelector("#detail-body").textContent.includes("/repos/first") &&
 			location.hash === "#tab=kanban&task=w1"`, nil),
 		chromedp.Click("#drawer-close", chromedp.ByQuery),
 		chromedp.Poll(`document.querySelector("#drawer").hidden === true &&
@@ -802,6 +805,7 @@ func TestBrowserKanbanNavigation(t *testing.T) {
 		chromedp.KeyEvent(" "),
 		chromedp.Poll(`state.selected === "w2" &&
 			document.querySelector("#drawer-title").textContent === "Second task" &&
+			document.querySelector("#detail-body").textContent.includes("/repos/second") &&
 			location.hash === "#tab=kanban&task=w2"`, nil),
 	); err != nil {
 		t.Fatalf("Kanban keyboard navigation: %v", err)

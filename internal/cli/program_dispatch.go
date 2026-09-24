@@ -169,6 +169,10 @@ func prepareDispatchChild(
 		created, err := createDispatchChild(p, item, childSlug, agentName)
 		return created, false, err
 	}
+	repoRoot, err := resolveDispatchItemRepository(item)
+	if err != nil {
+		return projectCreateResult{}, false, err
+	}
 	prepared, err := withProjectLifecycleLock(childSlug, func() (dispatchChildPreparation, error) {
 		manifestPath := project.ManifestPath(project.ActiveDir(), childSlug)
 		manifest, err := project.Load(manifestPath)
@@ -181,7 +185,7 @@ func prepareDispatchChild(
 				name:        childSlug,
 				agent:       agentName,
 				workflow:    defaultWorkflow,
-				repo:        p.Repo,
+				repo:        repoRoot,
 				program:     p.Slug,
 				programItem: item.ID,
 			}, childSlug)
@@ -210,9 +214,9 @@ func adoptDispatchChild(
 			"active child manifest %s has slug %q, want %q", manifestPath, childSlug, expectedSlug,
 		)
 	}
-	if manifest.Repo != p.Repo {
+	if manifest.Repo != item.Repo {
 		return projectCreateResult{}, fmt.Errorf(
-			"active child %q repo %q does not match program repo %q", expectedSlug, manifest.Repo, p.Repo,
+			"active child %q repo %q does not match item repo %q", expectedSlug, manifest.Repo, item.Repo,
 		)
 	}
 	if manifest.Program != "" && manifest.Program != p.Slug {
@@ -231,7 +235,7 @@ func adoptDispatchChild(
 			"active child %q has no complete branch/worktree identity", expectedSlug,
 		)
 	}
-	if err := validateManagedChildResourceIdentity(p, item, manifest); err != nil {
+	if err := validateManagedChildResourceIdentity(item, manifest); err != nil {
 		return projectCreateResult{}, fmt.Errorf(
 			"active child %q cannot be safely reused: %w; inspect the child manifest and registered "+
 				"worktree, then repair or remove the stale child metadata before retrying",
@@ -261,12 +265,12 @@ func adoptDispatchChild(
 }
 
 func validateManagedChildResourceIdentity(
-	p program.Program, item program.WorkItem, manifest project.Manifest,
+	item program.WorkItem, manifest project.Manifest,
 ) error {
-	if manifest.Repo != p.Repo || item.Repo != p.Repo {
+	if manifest.Repo != item.Repo {
 		return fmt.Errorf(
-			"repository identity does not match dispatch (manifest %q, item %q, program %q)",
-			manifest.Repo, item.Repo, p.Repo,
+			"repository identity does not match dispatch (manifest %q, item %q)",
+			manifest.Repo, item.Repo,
 		)
 	}
 	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" ||
@@ -330,15 +334,29 @@ func createDispatchChild(
 	item program.WorkItem,
 	childSlug, agentName string,
 ) (projectCreateResult, error) {
+	repoRoot, err := resolveDispatchItemRepository(item)
+	if err != nil {
+		return projectCreateResult{}, err
+	}
 	return createProject(projectCreateOpts{
 		task:        item.Title,
 		name:        childSlug,
 		agent:       agentName,
 		workflow:    defaultWorkflow,
-		repo:        p.Repo,
+		repo:        repoRoot,
 		program:     p.Slug,
 		programItem: item.ID,
 	})
+}
+
+func resolveDispatchItemRepository(item program.WorkItem) (string, error) {
+	repoRoot, err := gitx.CanonicalRepositoryRoot(item.Repo)
+	if err != nil {
+		return "", fmt.Errorf(
+			"resolve item repository %s: %w", item.Repo, err,
+		)
+	}
+	return repoRoot, nil
 }
 
 func defaultDispatchSlug(programSlug, itemID string) string {

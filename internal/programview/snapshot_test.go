@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -98,9 +99,7 @@ func TestBuildPopulatesProgramDetailAndDegradesPerSource(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	repo := filepath.Join(home, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initProgramViewTestRepo(t, repo)
 
 	at := "2026-08-25T16:00:00Z"
 	p := program.Program{
@@ -149,6 +148,7 @@ func TestBuildPopulatesProgramDetailAndDegradesPerSource(t *testing.T) {
 	prURL := "https://github.example/pr/42"
 	manifest := project.Manifest{
 		Slug: "child-review", Title: "Review", Repo: repo, Branch: "feature", BaseBranch: "main",
+		Program: p.Slug, ProgramItem: "w2",
 		Worktree: &worktree, Status: "active", Workflow: "deliver-pr", Phase: "validate",
 		Created: at, Updated: at, PR: project.PRInfo{Number: &prNumber, URL: &prURL},
 		PhasesCompleted: []string{}, PhasesRemaining: []string{},
@@ -243,9 +243,7 @@ func TestBuildPopulatesProgramDetailAndDegradesPerSource(t *testing.T) {
 func TestBuildLocalOnlySkipsExternalSourcesAndKeepsLocalProgramArtifacts(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := filepath.Join(t.TempDir(), "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initProgramViewTestRepo(t, repo)
 
 	at := "2026-09-14T20:00:00Z"
 	p := program.Program{
@@ -359,6 +357,61 @@ func TestBuildLocalOnlySkipsExternalSourcesAndKeepsLocalProgramArtifacts(t *test
 	}
 }
 
+func TestBuildRejectsUnownedLinkedChildDetails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newProgramViewTestRepo(t)
+	p, err := program.New("ownership", "Ownership", repo, "copilot", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StatePendingApproval, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StateActive, "ceo"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := p.AddItem(program.WorkItem{Title: "Child", Priority: program.PriorityP0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(item.ID, "linked-child"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range p.Items {
+		if p.Items[i].ID == item.ID {
+			p.Items[i].PRRef = "#42"
+		}
+	}
+	if err := program.Create(p); err != nil {
+		t.Fatal(err)
+	}
+	foreignPR := "https://github.example/acme/foreign/pull/99"
+	saveProjectManifest(t, project.ActiveDir(), project.Manifest{
+		Slug: "linked-child", Repo: repo, Branch: "feature",
+		Program: "other-program", ProgramItem: item.ID,
+		PR: project.PRInfo{URL: &foreignPR},
+	})
+	writeTestFile(t, filepath.Join(project.ActiveDir(), "linked-child", "assignment.md"), "foreign child")
+
+	snapshot, err := Build(p.Slug, Options{LocalOnly: true, DetailItem: item.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := findSnapshotItem(t, snapshot.Items, item.ID)
+	if got.ChildAvailable || got.Child != nil || got.Worker != nil ||
+		got.RecordedPR == nil || got.RecordedPR.Ref != "#42" {
+		t.Fatalf("item = %+v, want only the item-recorded pull request", got)
+	}
+	if len(got.Warnings) == 0 || !strings.Contains(got.Warnings[0], "does not match linked item") {
+		t.Fatalf("warnings = %+v", got.Warnings)
+	}
+	for _, artifact := range got.Artifacts {
+		if artifact.Text != nil {
+			t.Fatalf("unowned artifact exposed: %+v", artifact)
+		}
+	}
+}
+
 func TestBuildPrefetchesPullRequestsWithBoundedConcurrency(t *testing.T) {
 	release := make(chan struct{})
 	var active, maximum atomic.Int32
@@ -375,10 +428,13 @@ func TestBuildPrefetchesPullRequestsWithBoundedConcurrency(t *testing.T) {
 		return PullRequestDTO{State: "open"}, nil
 	})
 	done := make(chan struct{})
-	var results map[string]memoResult
+	var results map[PullRequestKey]memoResult
 	go func() {
-		results = prefetchPullRequests(context.Background(), "/repo",
-			[]string{"#1", "#2", "#3", "#4", "#5", "#6", "#7", "#8"}, fetcher)
+		keys := make([]PullRequestKey, 0, 8)
+		for _, ref := range []string{"#1", "#2", "#3", "#4", "#5", "#6", "#7", "#8"} {
+			keys = append(keys, PullRequestKey{Repo: "/repo", Ref: ref})
+		}
+		results = prefetchPullRequests(context.Background(), keys, fetcher)
 		close(done)
 	}()
 	deadline := time.Now().Add(250 * time.Millisecond)
@@ -457,9 +513,7 @@ func TestBuildUsesStalePRAndReportsDegradedSources(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	repo := filepath.Join(home, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initProgramViewTestRepo(t, repo)
 	at := "2026-08-25T16:00:00Z"
 	p := program.Program{
 		Revision: 1, Slug: "degraded", Title: "Degraded", Repo: repo,
@@ -487,6 +541,7 @@ func TestBuildUsesStalePRAndReportsDegradedSources(t *testing.T) {
 	number := 7
 	if err := project.Save(project.ManifestPath(project.ActiveDir(), "child"), project.Manifest{
 		Slug: "child", Title: "Child", Repo: repo, Branch: "feature", Worktree: &worktree,
+		Program: p.Slug, ProgramItem: "w1",
 		Status: "active", Created: at, Updated: at, PR: project.PRInfo{Number: &number},
 		PhasesCompleted: []string{}, PhasesRemaining: []string{},
 	}); err != nil {
@@ -571,9 +626,7 @@ func TestBuildSkipsMalformedSiblingProjectStateWithoutFabricatingOrphansOrCapaci
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	repo := filepath.Join(home, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initProgramViewTestRepo(t, repo)
 	at := "2026-08-25T16:00:00Z"
 	p := program.Program{
 		Revision: 1, Slug: "tolerant", Title: "Tolerant", Repo: repo,
@@ -599,13 +652,14 @@ func TestBuildSkipsMalformedSiblingProjectStateWithoutFabricatingOrphansOrCapaci
 	if err := program.Create(p); err != nil {
 		t.Fatal(err)
 	}
-	for _, slug := range []string{"healthy-child", "broken-child"} {
+	for index, slug := range []string{"healthy-child", "broken-child"} {
 		childDir := filepath.Join(project.ActiveDir(), slug)
 		if err := os.MkdirAll(childDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if err := project.Save(project.ManifestPath(project.ActiveDir(), slug), project.Manifest{
 			Slug: slug, Title: slug, Repo: repo, Branch: slug, BaseBranch: "main",
+			Program: p.Slug, ProgramItem: fmt.Sprintf("w%d", index+1),
 			Status: "active", Created: at, Updated: at, PhasesCompleted: []string{}, PhasesRemaining: []string{},
 		}); err != nil {
 			t.Fatal(err)
@@ -725,12 +779,12 @@ func TestBuildReusesOneGitHubFetchPerRecordedPullRequest(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	repo := filepath.Join(home, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initProgramViewTestRepo(t, repo)
+
 	number := 42
 	saveProjectManifest(t, project.ActiveDir(), project.Manifest{
-		Slug: "child", Repo: repo, Branch: "feature", PR: project.PRInfo{Number: &number},
+		Slug: "child", Repo: repo, Branch: "feature", Program: "relay-v1", ProgramItem: "w1",
+		PR: project.PRInfo{Number: &number},
 	})
 	p, err := program.New("relay-v1", "Relay V1", repo, "copilot", 2)
 	if err != nil {
@@ -772,6 +826,68 @@ func TestBuildReusesOneGitHubFetchPerRecordedPullRequest(t *testing.T) {
 	}
 }
 
+func TestBuildMergesSecondaryRepositoryItemAndReadiesPrimaryDependent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	primary := newProgramViewTestRepo(t)
+	secondary := newProgramViewTestRepo(t)
+	p, err := program.New("multi-repo", "Multi repo", primary, "copilot", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StatePendingApproval, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StateActive, "ceo"); err != nil {
+		t.Fatal(err)
+	}
+	dependency, err := p.AddItem(program.WorkItem{
+		Title: "Secondary dependency", Priority: program.PriorityP0, Repo: secondary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(dependency.ID, "secondary-child"); err != nil {
+		t.Fatal(err)
+	}
+	dependent, err := p.AddItem(program.WorkItem{
+		Title: "Primary dependent", Priority: program.PriorityP0, Dependencies: []string{dependency.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	number := 42
+	saveProjectManifest(t, project.ActiveDir(), project.Manifest{
+		Slug: "secondary-child", Repo: secondary, Branch: "feature",
+		Program: p.Slug, ProgramItem: dependency.ID, PR: project.PRInfo{Number: &number},
+	})
+	if err := program.Create(p); err != nil {
+		t.Fatal(err)
+	}
+	var wrongRepo atomic.Bool
+	fetcher := fetcherFunc(func(_ context.Context, repo, ref string) (PullRequestDTO, error) {
+		if repo != secondary {
+			wrongRepo.Store(true)
+		}
+		return PullRequestDTO{Number: 42, Ref: ref, State: "merged"}, nil
+	})
+
+	snapshot, err := Build(p.Slug, Options{GitHub: fetcher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotDependency := findSnapshotItem(t, snapshot.Items, dependency.ID)
+	gotDependent := findSnapshotItem(t, snapshot.Items, dependent.ID)
+	if gotDependency.Status != string(program.ItemMerged) || !gotDependent.Ready {
+		t.Fatalf("dependency = %+v, dependent = %+v", gotDependency, gotDependent)
+	}
+	if !reflect.DeepEqual(snapshot.Plan.Ready, []string{dependent.ID}) {
+		t.Fatalf("ready items = %v", snapshot.Plan.Ready)
+	}
+	if wrongRepo.Load() {
+		t.Fatalf("GitHub fetch used a repository other than %q", secondary)
+	}
+}
+
 // The patrol fingerprints unread worker mail by identifier, so the snapshot must
 // expose the exact unread ids and not only their count.
 func TestBuildExposesSortedUnreadMailboxIdentifiers(t *testing.T) {
@@ -810,9 +926,7 @@ func newMailboxSnapshotProgram(t *testing.T) (program.Program, string) {
 		t.Fatal(err)
 	}
 	repo := filepath.Join(home, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initProgramViewTestRepo(t, repo)
 	at := "2026-08-26T12:00:00Z"
 	p := program.Program{
 		Revision: 1, Slug: "mail-ids", Title: "Mail ids", Repo: repo,
@@ -836,6 +950,7 @@ func newMailboxSnapshotProgram(t *testing.T) (program.Program, string) {
 	manifest := project.Manifest{
 		Slug: "mail-child", Title: "Mail child", Repo: repo, Branch: "feature",
 		BaseBranch: "main", Worktree: &worktree, Status: "active",
+		Program: p.Slug, ProgramItem: "w1",
 		Workflow: "deliver-pr", Phase: "implement", Created: at, Updated: at,
 		PhasesCompleted: []string{}, PhasesRemaining: []string{},
 	}

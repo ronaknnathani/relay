@@ -393,6 +393,7 @@ func TestKanbanAssetContract(t *testing.T) {
 		"kanban__lane",
 		"kanban__card",
 		"kanban-card:",
+		"Repository",
 	})
 }
 

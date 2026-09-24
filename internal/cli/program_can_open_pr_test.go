@@ -83,10 +83,12 @@ func TestProgramCanOpenPRUsesItsReservationAtZeroAvailableAndIsReadOnly(t *testi
 			t.Fatal(err)
 		}
 		saveProgramTestProject(t, project.ActiveDir(), project.Manifest{
-			Slug:   "open-pr-" + suffix,
-			Repo:   p.Repo,
-			Branch: "missing-open-branch-" + suffix,
-			PR:     project.PRInfo{Number: &number},
+			Slug:        "open-pr-" + suffix,
+			Repo:        p.Repo,
+			Branch:      "missing-open-branch-" + suffix,
+			Program:     p.Slug,
+			ProgramItem: openItem.ID,
+			PR:          project.PRInfo{Number: &number},
 		})
 	}
 	if err := program.Save(program.ManifestPath(program.ActiveDir(), p.Slug), p); err != nil {

@@ -12,7 +12,7 @@ import (
 )
 
 func TestProgramViewCompatibilityWrappers(t *testing.T) {
-	repo := t.TempDir()
+	repo := newTestRepo(t)
 	manifest := project.Manifest{Slug: "child", Repo: repo, Branch: "feature"}
 	if _, err := activeProjectView(manifest); err != nil {
 		t.Fatal(err)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -39,6 +40,7 @@ func installFakePRInspection(t *testing.T, inspection prwatch.Inspection, err er
 func openPRInspection(reviewDecision string) prwatch.Inspection {
 	return prwatch.Inspection{
 		Number: 7, Ref: "7", URL: "https://github.com/acme/widgets/pull/7",
+		Repo:  "acme/widgets",
 		State: prwatch.StateOpen, ReviewDecision: reviewDecision,
 		MergeStateStatus: "BLOCKED", HeadSHA: "head777",
 	}
@@ -108,6 +110,7 @@ func createChangeFixture(t *testing.T, status program.ItemStatus) (program.Progr
 	if err != nil {
 		t.Fatal(err)
 	}
+	runArchiveGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widgets.git")
 	p, err := program.New("governance", "Ship governed changes", repo, "copilot", 3)
 	if err != nil {
 		t.Fatal(err)
@@ -841,5 +844,143 @@ func TestRequestChangeRefusesAnUnparsableRecordedReference(t *testing.T) {
 	}
 	if *calls != 1 {
 		t.Fatalf("GitHub reads = %d, want exactly the one fail-closed read", *calls)
+	}
+}
+
+func TestRequestChangeRejectsRepositoryMismatchBeforeGitHubRead(t *testing.T) {
+	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+	p = recordItemPR(t, p, item.ID, "#7")
+	manifest.Repo = newTestRepo(t)
+	if err := project.Save(project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest); err != nil {
+		t.Fatal(err)
+	}
+	installManagedHerdrFakes(t, &fakeHerdrClient{})
+	calls := installFakePRInspection(t, openPRInspection("REVIEW_REQUIRED"), nil)
+
+	_, err := runProgramCommand(t, "worker", "request-change", p.Slug, item.ID,
+		"--body", "Rename the token field", "--json")
+	if err == nil || !strings.Contains(err.Error(), "repository identity does not match dispatch") {
+		t.Fatalf("request-change error = %v", err)
+	}
+	if *calls != 0 {
+		t.Fatalf("GitHub reads = %d, want none", *calls)
+	}
+}
+
+func TestRequestChangeRejectsRewrittenWorktreeBeforeGitHubRead(t *testing.T) {
+	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+	p = recordItemPR(t, p, item.ID, "#7")
+	victimBranch := "test/request-change-victim"
+	victimWorktree := addArchiveWorktree(t, manifest.Repo, "request-change-victim", victimBranch)
+	manifest.Branch = victimBranch
+	manifest.Worktree = &victimWorktree
+	if err := project.Save(project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest); err != nil {
+		t.Fatal(err)
+	}
+	installManagedHerdrFakes(t, &fakeHerdrClient{})
+	calls := installFakePRInspection(t, openPRInspection("REVIEW_REQUIRED"), nil)
+
+	_, err := runProgramCommand(t, "worker", "request-change", p.Slug, item.ID,
+		"--body", "Rename the token field", "--json")
+	if err == nil || !strings.Contains(err.Error(), "resource identity is unsafe") ||
+		!strings.Contains(err.Error(), "does not match dispatched") {
+		t.Fatalf("request-change error = %v", err)
+	}
+	if *calls != 0 {
+		t.Fatalf("GitHub reads = %d, want none", *calls)
+	}
+	if len(inboxMessages(t, manifest.Slug)) != 0 {
+		t.Fatal("unsafe worktree received feedback")
+	}
+}
+
+func TestRequestChangeRejectsInspectedRepositoryOrURLMismatch(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*prwatch.Inspection)
+		wantDetail string
+	}{
+		{
+			name: "repository",
+			mutate: func(inspection *prwatch.Inspection) {
+				inspection.Repo = "acme/other"
+			},
+			wantDetail: `inspected repository "acme/other"`,
+		},
+		{
+			name: "URL repository",
+			mutate: func(inspection *prwatch.Inspection) {
+				inspection.URL = "https://github.com/acme/other/pull/7"
+			},
+			wantDetail: `URL repository "github.com/acme/other"`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+			p = recordItemPR(t, p, item.ID, "#7")
+			client := installManagedHerdrFakes(t, &fakeHerdrClient{})
+			inspection := openPRInspection("REVIEW_REQUIRED")
+			test.mutate(&inspection)
+			calls := installFakePRInspection(t, inspection, nil)
+
+			_, err := runProgramCommand(t, "worker", "request-change", p.Slug, item.ID,
+				"--body", "Rename the token field", "--json")
+			if err == nil || !strings.Contains(err.Error(), test.wantDetail) {
+				t.Fatalf("request-change error = %v", err)
+			}
+			if *calls != 1 {
+				t.Fatalf("GitHub reads = %d, want 1", *calls)
+			}
+			if len(client.prompted) != 0 || len(inboxMessages(t, manifest.Slug)) != 0 {
+				t.Fatal("identity mismatch notified the worker")
+			}
+		})
+	}
+}
+
+func TestRequestChangeRoutesSecondaryRepositoryToSameWorker(t *testing.T) {
+	p, item, manifest := createSecondaryWorkerFixture(t, program.ItemDispatched)
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
+	client := installManagedHerdrFakes(t, &fakeHerdrClient{
+		agentResponses: [][]herdr.Agent{{liveWorkerAgent(manifest, herdr.StatusIdle)}},
+	})
+	installFakePRInspection(t, openPRInspection("REVIEW_REQUIRED"), nil)
+
+	out, err := runProgramCommand(t, "worker", "request-change", p.Slug, item.ID,
+		"--body", "Rename the token field", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := decodeChangeOutput(t, out)
+	if result.Route != changeRouteSameWorker || !result.Notified ||
+		len(client.prompted) != 1 || len(inboxMessages(t, manifest.Slug)) != 1 {
+		t.Fatalf("result = %+v, prompts = %+v", result, client.prompted)
+	}
+}
+
+func TestRequestChangeSecondaryFollowUpInheritsRepository(t *testing.T) {
+	p, item, manifest := createSecondaryWorkerFixture(t, program.ItemDispatched)
+	p = recordItemPR(t, p, item.ID, "https://github.com/acme/widgets/pull/7")
+	installManagedHerdrFakes(t, &fakeHerdrClient{
+		agentResponses: [][]herdr.Agent{{liveWorkerAgent(manifest, herdr.StatusIdle)}},
+	})
+	installFakePRInspection(t, openPRInspection(prwatch.ReviewApproved), nil)
+
+	out, err := runProgramCommand(t, "worker", "request-change", p.Slug, item.ID,
+		"--body", "Rename the token field", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := decodeChangeOutput(t, out)
+	loaded, err := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	followUp, ok := loaded.Item(result.FollowUpItem)
+	if !ok || result.Route != changeRouteFollowUpPending ||
+		followUp.Repo != manifest.Repo ||
+		!reflect.DeepEqual(followUp.Dependencies, []string{item.ID}) {
+		t.Fatalf("result = %+v, follow-up = %+v", result, followUp)
 	}
 }

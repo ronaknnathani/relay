@@ -35,6 +35,7 @@ func createCleanupFixture(t *testing.T) (program.Program, program.WorkItem, proj
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	p, err := program.New("governance", "Ship governed changes", repo, "copilot", 3)
 	if err != nil {
 		t.Fatal(err)
@@ -84,6 +85,43 @@ func createCleanupFixture(t *testing.T) (program.Program, program.WorkItem, proj
 	}
 	mergedItem, _ := loaded.Item(item.ID)
 	return loaded, mergedItem, manifest
+}
+
+func TestProgramWorkerCleanupTargetAcceptsSecondaryRepository(t *testing.T) {
+	p, item, manifest := createSecondaryWorkerFixture(t, program.ItemDispatched)
+	mergeProgramItem(t, p.Slug, item.ID)
+	loaded, err := program.Load(program.ManifestPath(program.ActiveDir(), p.Slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gotItem, gotManifest, _, archived, err := loadProgramCleanupTarget(loaded, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived || gotItem.Repo != manifest.Repo || gotManifest.Repo != manifest.Repo {
+		t.Fatalf("item = %+v, manifest = %+v, archived = %t", gotItem, gotManifest, archived)
+	}
+}
+
+func TestProgramWorkerCleanupRemovesSecondaryRepositoryResources(t *testing.T) {
+	p, item, manifest := createSecondaryWorkerFixture(t, program.ItemDispatched)
+	mergeProgramItem(t, p.Slug, item.ID)
+	client := &fakeHerdrClient{}
+	client.agentsHook = func() ([]herdr.Agent, error) { return nil, nil }
+	installManagedHerdrFakes(t, client)
+	installStubWatcherState(t, manifest.Slug, false)
+
+	if _, err := runProgramCommand(t, "worker", "cleanup", p.Slug, item.ID, "--json"); err != nil {
+		t.Fatal(err)
+	}
+	if pathExists(*manifest.Worktree) || gitx.BranchExists(manifest.Repo, manifest.Branch) {
+		t.Fatalf("secondary resources survived: worktree=%t branch=%t",
+			pathExists(*manifest.Worktree), gitx.BranchExists(manifest.Repo, manifest.Branch))
+	}
+	if !pathExists(filepath.Join(project.ArchivedDir(), manifest.Slug)) {
+		t.Fatal("secondary child was not archived")
+	}
 }
 
 // workerTabID is the tab a managed worker holds in these fixtures. The child's

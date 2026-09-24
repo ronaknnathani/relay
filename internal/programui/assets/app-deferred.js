@@ -690,6 +690,7 @@ function detailHead(item) {
   const head = detailSection("Overview");
   const stamps = item.timestamps || {};
   const times = keyValues([
+    ["Repository", text(item.repo)],
     ["Project", text(item.project_slug)],
     ["Updated", formatTimestamp(stamps.updated_at)],
     ["Dispatched", formatTimestamp(stamps.dispatched_at)],

@@ -97,3 +97,49 @@ func TestProgramDecisionBlocksAllReadiness(t *testing.T) {
 		t.Fatalf("blocked = %+v", blocked)
 	}
 }
+
+func TestReadinessAllowsDependenciesAcrossRepositories(t *testing.T) {
+	p := newTestProgram(t)
+	first, err := p.AddItem(WorkItem{
+		Title:    "secondary dependency",
+		Priority: PriorityP0,
+		Repo:     "/tmp/secondary-repo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := addTestItem(t, &p, "primary dependent", PriorityP0, first.ID)
+	third, err := p.AddItem(WorkItem{
+		Title:        "secondary dependent",
+		Priority:     PriorityP0,
+		Repo:         "/tmp/secondary-repo",
+		Dependencies: []string{second.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateTestProgram(t, &p)
+
+	ready, _ := p.Readiness()
+	if !reflect.DeepEqual(ready, []WorkItem{first}) {
+		t.Fatalf("initial ready = %+v, want %+v", ready, []WorkItem{first})
+	}
+
+	p.Items[0].ProjectSlug = "secondary-dependency"
+	p.Items[0].Status = ItemMerged
+	p.Items[0].DispatchedAt = p.UpdatedAt
+	p.Items[0].MergedAt = p.UpdatedAt
+	ready, _ = p.Readiness()
+	if !reflect.DeepEqual(ready, []WorkItem{second}) {
+		t.Fatalf("ready after first merge = %+v, want %+v", ready, []WorkItem{second})
+	}
+
+	p.Items[1].ProjectSlug = "primary-dependent"
+	p.Items[1].Status = ItemMerged
+	p.Items[1].DispatchedAt = p.UpdatedAt
+	p.Items[1].MergedAt = p.UpdatedAt
+	ready, _ = p.Readiness()
+	if !reflect.DeepEqual(ready, []WorkItem{third}) {
+		t.Fatalf("ready after second merge = %+v, want %+v", ready, []WorkItem{third})
+	}
+}

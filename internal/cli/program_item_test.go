@@ -30,6 +30,11 @@ func createCLIProgram(t *testing.T, slug string) program.Program {
 func TestProgramItemAddUpdateCycleAndList(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	p := createCLIProgram(t, "governance")
+	secondary := newTestRepo(t)
+	secondary, err := filepath.EvalSymlinks(secondary)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	out, err := runProgramCommand(t, "item", "add", p.Slug, "First change", "--priority", "P1", "--notes", "first note")
 	if err != nil {
@@ -38,7 +43,7 @@ func TestProgramItemAddUpdateCycleAndList(t *testing.T) {
 	if strings.TrimSpace(out) != "w1" {
 		t.Fatalf("first item output = %q", out)
 	}
-	out, err = runProgramCommand(t, "item", "add", p.Slug, "Second change", "--depends-on", "w1")
+	out, err = runProgramCommand(t, "item", "add", p.Slug, "Second change", "--depends-on", "w1", "--repo", secondary)
 	if err != nil {
 		t.Fatalf("item add second: %v", err)
 	}
@@ -80,8 +85,40 @@ func TestProgramItemAddUpdateCycleAndList(t *testing.T) {
 		t.Fatalf("decode items: %v\n%s", err, out)
 	}
 	if len(items) != 2 || items[1].Title != "Updated second" || items[1].Priority != program.PriorityP0 ||
-		len(items[1].Dependencies) != 0 || len(items[1].Notes) != 1 || items[1].Notes[0] != "replanned" {
+		len(items[1].Dependencies) != 0 || len(items[1].Notes) != 1 || items[1].Notes[0] != "replanned" ||
+		items[0].Repo != p.Repo || items[1].Repo != secondary {
 		t.Fatalf("items = %+v", items)
+	}
+
+	out, err = runProgramCommand(t, "item", "list", p.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, secondary) {
+		t.Fatalf("item list output missing secondary repository %q:\n%s", secondary, out)
+	}
+}
+
+func TestProgramItemAddInvalidRepoDoesNotSave(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p := createCLIProgram(t, "governance")
+	path := program.ManifestPath(program.ActiveDir(), p.Slug)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	missing := filepath.Join(filepath.Dir(p.Repo), "missing")
+	if _, err := runProgramCommand(t, "item", "add", p.Slug, "Invalid", "--repo", missing); err == nil ||
+		!strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), "must be checked out") {
+		t.Fatalf("item add error = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("invalid repository modified program manifest")
 	}
 }
 

@@ -29,7 +29,9 @@ func ProjectViewsWithPRIndex(p program.Program, index PRIndex) ([]program.Projec
 }
 
 func staticPRIndexLoader(index PRIndex) PRIndexLoader {
-	return func(string, []string) PRIndex { return index }
+	return func(string, []string) PRIndexLoadResult {
+		return PRIndexLoadResult{Index: index}
+	}
 }
 
 // OverlayProjectViewsWithPRIndex returns a copy with recorded pull request
@@ -84,10 +86,14 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 		return nil, nil, fmt.Errorf("read active projects directory %s: %w", project.ActiveDir(), err)
 	}
 
-	linkedSlugs := make(map[string]bool)
+	type linkedChild struct {
+		itemID string
+		repo   string
+	}
+	linkedChildren := make(map[string]linkedChild)
 	for _, item := range p.Items {
 		if item.ProjectSlug != "" {
-			linkedSlugs[item.ProjectSlug] = true
+			linkedChildren[item.ProjectSlug] = linkedChild{itemID: item.ID, repo: item.Repo}
 		}
 	}
 
@@ -96,50 +102,65 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 	active := make(map[string]bool, len(entries))
 	repositories := make(map[string]projectRepositoryState)
 	for _, entry := range entries {
-		if !entry.IsDir() || !linkedSlugs[entry.Name()] {
+		expected, linked := linkedChildren[entry.Name()]
+		if !entry.IsDir() || !linked {
 			continue
 		}
+		active[entry.Name()] = true
 		manifest, loadErr := project.Load(project.ManifestPath(project.ActiveDir(), entry.Name()))
 		if loadErr != nil {
 			warnings = append(warnings, ProjectWarning{
 				ProjectSlug: entry.Name(),
 				Message:     fmt.Sprintf("load active project %q: %v", entry.Name(), loadErr),
 			})
-			views = append(views, unavailableProjectView(p, entry.Name(), p.Repo, project.Manifest{}))
-			active[entry.Name()] = true
+			views = append(views, unavailableProjectView(p, entry.Name(), expected.repo, project.Manifest{}))
 			continue
 		}
-		if manifest.Repo != p.Repo {
+		if ownershipErr := validateLinkedChildManifest(
+			p.Slug, entry.Name(), expected.itemID, expected.repo, manifest,
+		); ownershipErr != nil {
+			warnings = append(warnings, ProjectWarning{
+				ProjectSlug: entry.Name(),
+				Message:     fmt.Sprintf("active project %q does not match linked item %s: %v", entry.Name(), expected.itemID, ownershipErr),
+			})
 			continue
 		}
-		active[manifest.Slug] = true
 		repository, found := repositories[manifest.Repo]
 		if !found {
-			repository = projectRepositoryState{hasOrigin: gitx.HasOrigin(manifest.Repo)}
-			if manifest.BaseBranch == "" {
-				repository.defaultBranch = gitx.DetectDefaultBranch(manifest.Repo)
-			}
+			repository = loadProjectRepositoryState(manifest.Repo, manifest.BaseBranch == "")
 			repositories[manifest.Repo] = repository
-		} else if manifest.BaseBranch == "" && repository.defaultBranch == "" {
-			repository.defaultBranch = gitx.DetectDefaultBranch(manifest.Repo)
+		} else if manifest.BaseBranch == "" && repository.defaultBranch == "" &&
+			repository.err == nil && repository.defaultBranchErr == nil {
+			repository = loadProjectRepositoryState(manifest.Repo, true)
 			repositories[manifest.Repo] = repository
 		}
+		if repositoryErr := repository.errorFor(manifest.BaseBranch == ""); repositoryErr != nil {
+			warnings = append(warnings, ProjectWarning{
+				ProjectSlug: entry.Name(),
+				Message: fmt.Sprintf(
+					"inspect active project %q repository %s: %v",
+					entry.Name(), manifest.Repo, repositoryErr,
+				),
+			})
+			views = append(views, unavailableProjectView(p, entry.Name(), expected.repo, manifest))
+			continue
+		}
 		view, viewErr := activeProjectViewWithRepository(
-			manifest, project.StatePath(manifest.Slug), repository,
+			manifest, project.StatePath(entry.Name()), repository,
 		)
 		if viewErr != nil {
 			warnings = append(warnings, ProjectWarning{
-				ProjectSlug: manifest.Slug,
-				Message:     fmt.Sprintf("load active project %q state: %v", manifest.Slug, viewErr),
+				ProjectSlug: entry.Name(),
+				Message:     fmt.Sprintf("load active project %q state: %v", entry.Name(), viewErr),
 			})
-			views = append(views, unavailableProjectView(p, manifest.Slug, manifest.Repo, manifest))
+			views = append(views, unavailableProjectView(p, entry.Name(), expected.repo, manifest))
 			continue
 		}
 		views = append(views, view)
 	}
 
 	archivedSlugs := make(map[string]bool)
-	for slug := range linkedSlugs {
+	for slug := range linkedChildren {
 		if !active[slug] {
 			archivedSlugs[slug] = true
 		}
@@ -157,8 +178,9 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 		}
 	}
 	for slug := range archivedSlugs {
+		expected := linkedChildren[slug]
 		if !archivedEntries[slug] {
-			views = append(views, program.ProjectView{Slug: slug, Repo: p.Repo, Orphaned: true})
+			views = append(views, program.ProjectView{Slug: slug, Repo: expected.repo, Orphaned: true})
 			continue
 		}
 		manifest, loadErr := project.Load(project.ManifestPath(project.ArchivedDir(), slug))
@@ -167,7 +189,16 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 				ProjectSlug: slug,
 				Message:     fmt.Sprintf("load archived project %q: %v", slug, loadErr),
 			})
-			views = append(views, unavailableProjectView(p, slug, p.Repo, project.Manifest{}))
+			views = append(views, unavailableProjectView(p, slug, expected.repo, project.Manifest{}))
+			continue
+		}
+		if ownershipErr := validateLinkedChildManifest(
+			p.Slug, slug, expected.itemID, expected.repo, manifest,
+		); ownershipErr != nil {
+			warnings = append(warnings, ProjectWarning{
+				ProjectSlug: slug,
+				Message:     fmt.Sprintf("archived project %q does not match linked item %s: %v", slug, expected.itemID, ownershipErr),
+			})
 			continue
 		}
 		hasPR, prRef, prErr := RecordedPR(manifest, "")
@@ -191,9 +222,33 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 	}
 
 	if load != nil {
-		if index := load(p.Repo, recordedRefs(views)); index != nil {
-			for i := range views {
-				views[i] = overlayProjectView(views[i], index)
+		viewsByRepo := make(map[string][]int)
+		for i, view := range views {
+			if view.PRRef != "" && !view.Unavailable {
+				viewsByRepo[view.Repo] = append(viewsByRepo[view.Repo], i)
+			}
+		}
+		for repo, indexes := range viewsByRepo {
+			refs := make([]string, 0, len(indexes))
+			for _, index := range indexes {
+				refs = append(refs, views[index].PRRef)
+			}
+			result := load(repo, refs)
+			if result.Index != nil {
+				for _, viewIndex := range indexes {
+					views[viewIndex] = overlayProjectView(views[viewIndex], result.Index)
+				}
+			}
+			for _, loadErr := range result.Errors {
+				for _, viewIndex := range indexes {
+					if strings.TrimSpace(views[viewIndex].PRRef) != strings.TrimSpace(loadErr.Ref) {
+						continue
+					}
+					warnings = append(warnings, ProjectWarning{
+						ProjectSlug: views[viewIndex].Slug,
+						Message:     loadErr.Err.Error(),
+					})
+				}
 			}
 		}
 	}
@@ -206,16 +261,6 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 		return warnings[i].ProjectSlug < warnings[j].ProjectSlug
 	})
 	return views, warnings, nil
-}
-
-func recordedRefs(views []program.ProjectView) []string {
-	refs := make([]string, 0, len(views))
-	for _, view := range views {
-		if view.PRRef != "" && !view.Unavailable {
-			refs = append(refs, view.PRRef)
-		}
-	}
-	return refs
 }
 
 // unavailableProjectView returns the most conservative view of a child project
@@ -253,16 +298,42 @@ func ActiveProjectView(manifest project.Manifest) (program.ProjectView, error) {
 }
 
 func activeProjectView(manifest project.Manifest, statePath string) (program.ProjectView, error) {
-	repository := projectRepositoryState{hasOrigin: gitx.HasOrigin(manifest.Repo)}
-	if manifest.BaseBranch == "" {
-		repository.defaultBranch = gitx.DetectDefaultBranch(manifest.Repo)
+	repository := loadProjectRepositoryState(manifest.Repo, manifest.BaseBranch == "")
+	if err := repository.errorFor(manifest.BaseBranch == ""); err != nil {
+		return program.ProjectView{}, err
 	}
 	return activeProjectViewWithRepository(manifest, statePath, repository)
 }
 
 type projectRepositoryState struct {
-	defaultBranch string
-	hasOrigin     bool
+	defaultBranch    string
+	defaultBranchErr error
+	err              error
+}
+
+func loadProjectRepositoryState(repo string, needsDefaultBranch bool) projectRepositoryState {
+	_, err := gitx.CanonicalRepositoryRoot(repo)
+	if err != nil {
+		return projectRepositoryState{err: err}
+	}
+	if !needsDefaultBranch {
+		return projectRepositoryState{}
+	}
+	defaultBranch, err := gitx.DetectDefaultBranchWithError(repo)
+	if err != nil {
+		return projectRepositoryState{defaultBranchErr: err}
+	}
+	return projectRepositoryState{defaultBranch: defaultBranch}
+}
+
+func (s projectRepositoryState) errorFor(needsDefaultBranch bool) error {
+	if s.err != nil {
+		return s.err
+	}
+	if needsDefaultBranch {
+		return s.defaultBranchErr
+	}
+	return nil
 }
 
 func activeProjectViewWithRepository(
@@ -279,13 +350,28 @@ func activeProjectViewWithRepository(
 		base = repository.defaultBranch
 	}
 	baseRef := base
-	if base != "" && repository.hasOrigin &&
-		gitx.RevParse(manifest.Repo, "refs/remotes/origin/"+base) != "" {
-		baseRef = "refs/remotes/origin/" + base
-	} else if base != "" {
-		baseRef = "refs/heads/" + base
+	if base != "" {
+		remoteRef := "refs/remotes/origin/" + base
+		remoteExists, err := gitx.RefExists(manifest.Repo, remoteRef)
+		if err != nil {
+			return program.ProjectView{}, fmt.Errorf("inspect base branch %q: %w", base, err)
+		}
+		if remoteExists {
+			baseRef = remoteRef
+		} else {
+			baseRef = "refs/heads/" + base
+		}
 	}
-	merged := baseRef != "" && gitx.IsWorkMerged(manifest.Repo, manifest.Branch, baseRef, manifest.StartSHA)
+	merged := false
+	if baseRef != "" {
+		merged, err = gitx.WorkMerged(manifest.Repo, manifest.Branch, baseRef, manifest.StartSHA)
+		if err != nil {
+			return program.ProjectView{}, fmt.Errorf(
+				"inspect merge state for branch %q against %q: %w",
+				manifest.Branch, baseRef, err,
+			)
+		}
+	}
 	return program.ProjectView{
 		Slug:   manifest.Slug,
 		Repo:   manifest.Repo,
@@ -293,6 +379,21 @@ func activeProjectViewWithRepository(
 		PRRef:  prRef,
 		Merged: merged,
 	}, nil
+}
+
+func validateLinkedChildManifest(
+	programSlug, linkedSlug, itemID, repo string,
+	manifest project.Manifest,
+) error {
+	if manifest.Slug != linkedSlug || manifest.Program != programSlug ||
+		manifest.ProgramItem != itemID || manifest.Repo != repo {
+		return fmt.Errorf(
+			"slug=%q program=%q item=%q repo=%q, want slug=%q program=%q item=%q repo=%q",
+			manifest.Slug, manifest.Program, manifest.ProgramItem, manifest.Repo,
+			linkedSlug, programSlug, itemID, repo,
+		)
+	}
+	return nil
 }
 
 // RecordedPR returns the pull request recorded in workflow state or the manifest.

@@ -41,9 +41,28 @@ type PRIndex interface {
 	Lookup(ref string) (PRState, bool)
 }
 
+// PRIndexLoadError identifies one recorded pull request whose authoritative
+// lifecycle state could not be loaded.
+type PRIndexLoadError struct {
+	Ref string
+	Err error
+}
+
+// PRIndexLoadResult carries successfully resolved state and scoped failures.
+type PRIndexLoadResult struct {
+	Index  PRIndex
+	Errors []PRIndexLoadError
+}
+
 // PRIndexLoader resolves authoritative state for the recorded pull request
 // references a program actually links.
-type PRIndexLoader func(repo string, refs []string) PRIndex
+type PRIndexLoader func(repo string, refs []string) PRIndexLoadResult
+
+// PullRequestKey identifies a repository-local pull request reference.
+type PullRequestKey struct {
+	Repo string
+	Ref  string
+}
 
 // PullRequestProof contains the GitHub fields needed to bind a merged pull
 // request to the recorded repository, base branch, head branch, and head SHA.
@@ -152,26 +171,27 @@ func (l ghPullRequestLookup) validate(repo, operation string) (string, error) {
 
 // Load resolves only the supplied recorded references, so programs whose
 // repositories carry more than one page of history stay correct and cheap.
-func (l ghPRIndexLoader) Load(repo string, refs []string) PRIndex {
+func (l ghPRIndexLoader) Load(repo string, refs []string) PRIndexLoadResult {
 	wanted := uniqueRefs(refs)
 	if len(wanted) == 0 {
-		return nil
+		return PRIndexLoadResult{}
 	}
 	if l.originURL == nil || l.lookPath == nil || l.run == nil {
-		return nil
+		return failedPRIndexLoad(repo, wanted, errors.New("GitHub pull request lookup is not configured"))
 	}
 	rawOrigin, err := l.originURL(repo)
 	if err != nil {
-		return nil
+		return failedPRIndexLoad(repo, wanted, fmt.Errorf("resolve origin URL: %w", err))
 	}
 	repository, err := gitHubRepositoryFromRemote(rawOrigin)
 	if err != nil {
-		return nil
+		return failedPRIndexLoad(repo, wanted, fmt.Errorf("resolve origin repository: %w", err))
 	}
 	if _, err := l.lookPath("gh"); err != nil {
-		return nil
+		return failedPRIndexLoad(repo, wanted, fmt.Errorf("find gh: %w", err))
 	}
 	index := githubPRIndex{byNumber: map[int]PRState{}, byURL: map[string]PRState{}}
+	loadErrors := make([]PRIndexLoadError, 0)
 	var mutex sync.Mutex
 	var wait sync.WaitGroup
 	limit := l.parallelism
@@ -182,6 +202,12 @@ func (l ghPRIndexLoader) Load(repo string, refs []string) PRIndex {
 	for _, ref := range wanted {
 		selector, err := normalizePullRequestReference(ref, repository)
 		if err != nil {
+			mutex.Lock()
+			loadErrors = append(loadErrors, PRIndexLoadError{
+				Ref: ref,
+				Err: fmt.Errorf("load pull request %q in repository %s: %w", ref, repo, err),
+			})
+			mutex.Unlock()
 			continue
 		}
 		if state, found := l.cache.get(repo, ref); found {
@@ -197,6 +223,15 @@ func (l ghPRIndexLoader) Load(repo string, refs []string) PRIndex {
 				context.Background(), repo, repository, selector, ref, l.run,
 			)
 			if err != nil {
+				mutex.Lock()
+				loadErrors = append(loadErrors, PRIndexLoadError{
+					Ref: ref,
+					Err: fmt.Errorf(
+						"load pull request %q in repository %s: %w",
+						ref, repo, err,
+					),
+				})
+				mutex.Unlock()
 				return
 			}
 			l.cache.put(repo, ref, state)
@@ -206,10 +241,28 @@ func (l ghPRIndexLoader) Load(repo string, refs []string) PRIndex {
 		}(ref, selector)
 	}
 	wait.Wait()
-	if len(index.byNumber) == 0 && len(index.byURL) == 0 {
-		return nil
+	result := PRIndexLoadResult{Errors: loadErrors}
+	if len(index.byNumber) > 0 || len(index.byURL) > 0 {
+		result.Index = index
 	}
-	return index
+	sort.Slice(result.Errors, func(i, j int) bool {
+		if result.Errors[i].Ref != result.Errors[j].Ref {
+			return result.Errors[i].Ref < result.Errors[j].Ref
+		}
+		return result.Errors[i].Err.Error() < result.Errors[j].Err.Error()
+	})
+	return result
+}
+
+func failedPRIndexLoad(repo string, refs []string, err error) PRIndexLoadResult {
+	result := PRIndexLoadResult{Errors: make([]PRIndexLoadError, 0, len(refs))}
+	for _, ref := range refs {
+		result.Errors = append(result.Errors, PRIndexLoadError{
+			Ref: ref,
+			Err: fmt.Errorf("load pull request %q in repository %s: %w", ref, repo, err),
+		})
+	}
+	return result
 }
 
 func (i githubPRIndex) record(ref, url string, number int, state PRState) {
@@ -391,6 +444,12 @@ func pullRequestRepository(rawURL string) (string, error) {
 		return "", fmt.Errorf("URL %q has an invalid pull request number", gitx.SanitizeDiagnostic(rawURL))
 	}
 	return repositoryIdentity(rawURL, segments[0]+"/"+segments[1])
+}
+
+// PullRequestRepository returns the canonical host/owner/name identity from a
+// pull request URL.
+func PullRequestRepository(rawURL string) (string, error) {
+	return pullRequestRepository(rawURL)
 }
 
 func normalizePullRequestReference(ref, repository string) (string, error) {
@@ -642,7 +701,7 @@ func GitHubRepository(repo string) (string, error) {
 	}.Repository(repo)
 }
 
-func githubPRIndexForRefs(repo string, refs []string) PRIndex {
+func githubPRIndexForRefs(repo string, refs []string) PRIndexLoadResult {
 	return ghPRIndexLoader{
 		originURL: gitx.OriginURL,
 		lookPath:  exec.LookPath,
@@ -680,13 +739,25 @@ func (f *GHFetcher) Fetch(ctx context.Context, repo, ref string) (PullRequestDTO
 		return PullRequestDTO{}, fmt.Errorf("GitHub command runner is not configured")
 	}
 	safeRef := gitx.SanitizeDiagnostic(ref)
+	repository, err := GitHubRepository(repo)
+	if err != nil {
+		return PullRequestDTO{}, fmt.Errorf("fetch pull request %q in %s: %w", safeRef, repo, err)
+	}
+	selector, err := normalizePullRequestReference(ref, repository)
+	if err != nil {
+		return PullRequestDTO{}, fmt.Errorf("fetch pull request %q in %s: %w", safeRef, repo, err)
+	}
+	expectedNumber, err := strconv.Atoi(selector)
+	if err != nil {
+		return PullRequestDTO{}, fmt.Errorf("fetch pull request %q in %s: parse normalized number: %w", safeRef, repo, err)
+	}
 	timeoutContext, cancel := context.WithTimeout(ctx, githubTimeout)
 	defer cancel()
 	output, err := f.run(
 		timeoutContext,
 		repo,
 		"gh",
-		"pr", "view", ref, "--json",
+		"pr", "view", selector, "--repo", repository, "--json",
 		"number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup,title,updatedAt",
 	)
 	if err != nil {
@@ -709,6 +780,29 @@ func (f *GHFetcher) Fetch(ctx context.Context, repo, ref string) (PullRequestDTO
 	}
 	if err := json.Unmarshal(output, &response); err != nil {
 		return PullRequestDTO{}, fmt.Errorf("parse pull request %q JSON: %w", safeRef, err)
+	}
+	responseRepository, err := pullRequestRepository(response.URL)
+	if err != nil {
+		return PullRequestDTO{}, fmt.Errorf("parse pull request %q repository: %w", safeRef, err)
+	}
+	responseNumber, ok := PullRequestNumber(response.URL)
+	if !ok {
+		return PullRequestDTO{}, fmt.Errorf(
+			"pull request %q returned invalid URL %q",
+			safeRef, gitx.SanitizeDiagnostic(response.URL),
+		)
+	}
+	if !strings.EqualFold(responseRepository, repository) {
+		return PullRequestDTO{}, fmt.Errorf(
+			"pull request %q belongs to repository %q, want %q",
+			safeRef, responseRepository, repository,
+		)
+	}
+	if response.Number != expectedNumber || responseNumber != expectedNumber {
+		return PullRequestDTO{}, fmt.Errorf(
+			"pull request %q returned number #%d and URL number #%d, want #%d",
+			safeRef, response.Number, responseNumber, expectedNumber,
+		)
 	}
 	return PullRequestDTO{
 		Number:         response.Number,

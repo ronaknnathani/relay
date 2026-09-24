@@ -272,7 +272,7 @@ func startProgramWorker(
 					itemID, err,
 				)
 			}
-			if err := validateProgramWorkerStartIdentity(p, target.item, target.manifest); err != nil {
+			if err := validateProgramWorkerStartIdentity(target.item, target.manifest); err != nil {
 				return programWorkerOutput{}, fmt.Errorf(
 					"program worker %q resource identity is not safe to start: %w; "+
 						"no Herdr state was changed",
@@ -333,7 +333,7 @@ func repairLegacyProgramWorkerStartIdentity(
 	if !branchMissing {
 		return target, p, nil
 	}
-	if err := validateLegacyProgramWorkerRepairIdentity(p, target.item, target.manifest); err != nil {
+	if err := validateLegacyProgramWorkerRepairIdentity(target.item, target.manifest); err != nil {
 		return programWorkerTarget{}, program.Program{}, fmt.Errorf(
 			"validate legacy child project %q resources: %w",
 			target.manifest.Slug, err,
@@ -391,9 +391,7 @@ func repairLegacyProgramWorkerStartIdentity(
 			target.manifest.Slug,
 		)
 	}
-	if err := validateProgramWorkerStartIdentity(
-		stored, storedTarget.item, storedTarget.manifest,
-	); err != nil {
+	if err := validateProgramWorkerStartIdentity(storedTarget.item, storedTarget.manifest); err != nil {
 		return programWorkerTarget{}, program.Program{}, fmt.Errorf(
 			"revalidate repaired child project %q resources: %w",
 			target.manifest.Slug, err,
@@ -403,7 +401,7 @@ func repairLegacyProgramWorkerStartIdentity(
 }
 
 func validateLegacyProgramWorkerRepairIdentity(
-	p program.Program, item program.WorkItem, manifest project.Manifest,
+	item program.WorkItem, manifest project.Manifest,
 ) error {
 	repoRoot, err := gitx.CanonicalRepositoryRoot(manifest.Repo)
 	if err != nil {
@@ -425,11 +423,11 @@ func validateLegacyProgramWorkerRepairIdentity(
 			worktree, expectedWorktree, manifest.Branch,
 		)
 	}
-	return validateManagedChildResourceIdentity(p, item, manifest)
+	return validateManagedChildResourceIdentity(item, manifest)
 }
 
 func validateProgramWorkerStartIdentity(
-	p program.Program, item program.WorkItem, manifest project.Manifest,
+	item program.WorkItem, manifest project.Manifest,
 ) error {
 	worktree := worktreeValue(manifest)
 	if item.ProjectBranch == "" || item.ProjectWorktree == "" {
@@ -445,7 +443,7 @@ func validateProgramWorkerStartIdentity(
 			item.ProjectBranch, item.ProjectWorktree,
 		)
 	}
-	return validateManagedChildResourceIdentity(p, item, manifest)
+	return validateManagedChildResourceIdentity(item, manifest)
 }
 
 func startProgramWorkerLocked(
@@ -962,11 +960,11 @@ func loadProgramWorkerManifest(p program.Program, item program.WorkItem) (projec
 			item.ID, manifest.Slug, item.ProjectSlug,
 		)
 	}
-	if item.Repo != p.Repo || manifest.Repo != p.Repo {
+	if manifest.Repo != item.Repo {
 		return project.Manifest{}, fmt.Errorf(
 			"program worker %q: child project repository identity does not match dispatch "+
-				"(manifest %q, item %q, program %q)",
-			item.ID, manifest.Repo, item.Repo, p.Repo,
+				"(manifest %q, item %q)",
+			item.ID, manifest.Repo, item.Repo,
 		)
 	}
 	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {

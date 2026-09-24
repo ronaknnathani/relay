@@ -297,11 +297,21 @@ partial run finishes the job, and the work item stays `merged` throughout.
 
 3. **Decompose into senior-engineer assignments.**
    - Create the smallest independently reviewable work items.
+   - Assign the correct repository to every work item. Omit `--repo` only when the item belongs in the
+     program's primary repository.
+   - Before adding an item for another repository, reuse a known valid checkout wherever it already
+     exists; never clone a duplicate merely to place it beside the primary repository.
+   - If no checkout exists, clone the known remote directly beneath the primary repository's parent,
+     verify the result with `git -C <path> rev-parse --show-toplevel`, and pass that canonical root to
+     `--repo`. Never infer a remote from a directory name.
+   - If clone or Git-root validation fails, stop. Do not add or dispatch the item until the checkout is
+     valid.
    - Express ordering with dependency IDs and pin approved contract versions:
 
      ```bash
      relay program item add "$PROGRAM" "<title>" \
-       --priority P1 --depends-on w1,w2 --contract architecture@v1
+       --priority P1 --depends-on w1,w2 --contract architecture@v1 \
+       --repo "<canonical-repository-root>"
      ```
 
    - Use `item update` to adjust priority, dependencies, contracts, title, or notes. Never hand-edit

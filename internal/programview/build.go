@@ -67,7 +67,10 @@ type Options struct {
 	GitHub Fetcher
 	// PRIndex overrides the authoritative pull request lifecycle source. When
 	// it is nil, snapshots resolve the same GitHub state the strict CLI uses.
-	PRIndex       PRIndex
+	// It applies to the program's primary repository for compatibility.
+	PRIndex PRIndex
+	// PRIndexes supplies repository-scoped lifecycle sources for mixed-repository programs.
+	PRIndexes     map[string]PRIndex
 	Agents        AgentLister
 	ArtifactLimit int64
 	DetailItem    string
@@ -132,9 +135,7 @@ func Build(slug string, options Options) (Snapshot, error) {
 			channel <- agentResult{snapshot: agentSnapshot, err: err}
 		}()
 	}
-	prefetched := prefetchPullRequests(
-		context.Background(), p.Repo, recordedPullRequestRefs(p.Items), options.GitHub,
-	)
+	prefetched := prefetchPullRequests(context.Background(), recordedPullRequestKeys(p.Items), options.GitHub)
 	views, projectWarnings, err := projectViewsForSnapshot(p, options)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load child project views: %w", err)
@@ -206,62 +207,67 @@ func listAgents(lister AgentLister, generatedAt time.Time) (AgentSnapshot, error
 	return result, err
 }
 
-func recordedPullRequestRefs(items []program.WorkItem) []string {
-	seen := make(map[string]bool)
-	refs := make([]string, 0)
+func recordedPullRequestKeys(items []program.WorkItem) []PullRequestKey {
+	seen := make(map[PullRequestKey]bool)
+	keys := make([]PullRequestKey, 0)
 	for _, item := range items {
 		ref := strings.TrimSpace(item.PRRef)
-		if ref == "" || seen[ref] {
+		key := PullRequestKey{Repo: item.Repo, Ref: ref}
+		if ref == "" || seen[key] {
 			continue
 		}
-		seen[ref] = true
-		refs = append(refs, ref)
+		seen[key] = true
+		keys = append(keys, key)
 	}
-	sort.Strings(refs)
-	return refs
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Repo != keys[j].Repo {
+			return keys[i].Repo < keys[j].Repo
+		}
+		return keys[i].Ref < keys[j].Ref
+	})
+	return keys
 }
 
 func prefetchPullRequests(
 	ctx context.Context,
-	repo string,
-	refs []string,
+	keys []PullRequestKey,
 	fetcher Fetcher,
-) map[string]memoResult {
-	results := make(map[string]memoResult, len(refs))
-	if fetcher == nil || len(refs) == 0 {
+) map[PullRequestKey]memoResult {
+	results := make(map[PullRequestKey]memoResult, len(keys))
+	if fetcher == nil || len(keys) == 0 {
 		return results
 	}
 	const parallelism = 4
 	type fetchedResult struct {
-		ref    string
+		key    PullRequestKey
 		result memoResult
 	}
-	jobs := make(chan string)
+	jobs := make(chan PullRequestKey)
 	fetched := make(chan fetchedResult)
 	var wait sync.WaitGroup
-	workers := min(parallelism, len(refs))
+	workers := min(parallelism, len(keys))
 	wait.Add(workers)
 	for range workers {
 		go func() {
 			defer wait.Done()
-			for ref := range jobs {
-				pullRequest, err := fetcher.Fetch(ctx, repo, ref)
+			for key := range jobs {
+				pullRequest, err := fetcher.Fetch(ctx, key.Repo, key.Ref)
 				fetched <- fetchedResult{
-					ref: ref, result: memoResult{pullRequest: pullRequest, err: err},
+					key: key, result: memoResult{pullRequest: pullRequest, err: err},
 				}
 			}
 		}()
 	}
 	go func() {
-		for _, ref := range refs {
-			jobs <- ref
+		for _, key := range keys {
+			jobs <- key
 		}
 		close(jobs)
 		wait.Wait()
 		close(fetched)
 	}()
 	for entry := range fetched {
-		results[entry.ref] = entry.result
+		results[entry.key] = entry.result
 	}
 	return results
 }
@@ -274,12 +280,16 @@ func projectViewsForSnapshot(p program.Program, options Options) ([]program.Proj
 	if options.LocalOnly {
 		return projectViews(p, nil)
 	}
-	index := options.PRIndex
-	if index == nil {
-		index = NewFetcherPRIndex(context.Background(), p.Repo, options.GitHub)
-	}
-	if index != nil {
-		return ProjectViewsWithPRIndex(p, index)
+	if options.PRIndex != nil || len(options.PRIndexes) > 0 || options.GitHub != nil {
+		return projectViews(p, func(repo string, _ []string) PRIndexLoadResult {
+			if index := options.PRIndexes[repo]; index != nil {
+				return PRIndexLoadResult{Index: index}
+			}
+			if repo == p.Repo && options.PRIndex != nil {
+				return PRIndexLoadResult{Index: options.PRIndex}
+			}
+			return PRIndexLoadResult{Index: NewFetcherPRIndex(context.Background(), repo, options.GitHub)}
+		})
 	}
 	return ProjectViews(p)
 }
@@ -620,7 +630,7 @@ func buildItems(
 	limit int64,
 	includeArtifacts bool,
 	github Fetcher,
-	prefetched map[string]memoResult,
+	prefetched map[PullRequestKey]memoResult,
 	agents []herdr.Agent,
 	agentSnapshot AgentSnapshot,
 	agentsErr error,
@@ -695,7 +705,7 @@ func buildItem(
 	limit int64,
 	includeArtifacts bool,
 	github Fetcher,
-	prefetched map[string]memoResult,
+	prefetched map[PullRequestKey]memoResult,
 	agents []herdr.Agent,
 	agentSnapshot AgentSnapshot,
 	agentsErr error,
@@ -749,6 +759,18 @@ func buildItem(
 		dto.Grant = &GrantDTO{GrantedAt: item.PRGrantedAt, GrantedBy: item.PRGrantedBy}
 	}
 	childDir, manifest, archived, childErr := loadChild(item.ProjectSlug)
+	if childErr == nil && item.ProjectSlug != "" {
+		childErr = validateLinkedChildManifest(
+			p.Slug, item.ProjectSlug, item.ID, item.Repo, manifest,
+		)
+		if childErr != nil {
+			childErr = fmt.Errorf(
+				"load child project %q: does not match linked item %s: %w",
+				item.ProjectSlug, item.ID, childErr,
+			)
+			addSourceWarning(snapshot, &snapshot.SourceHealth.Projects, childErr.Error())
+		}
+	}
 	if childErr != nil && item.ProjectSlug != "" {
 		dto.Warnings = append(dto.Warnings, childErr.Error())
 	}
@@ -779,9 +801,10 @@ func buildItem(
 			fmt.Sprintf("item %s mailbox unavailable: child project %q not found", item.ID, item.ProjectSlug))
 	}
 	if github != nil && dto.RecordedPR != nil {
-		result, ok := prefetched[dto.RecordedPR.Ref]
+		key := PullRequestKey{Repo: item.Repo, Ref: dto.RecordedPR.Ref}
+		result, ok := prefetched[key]
 		if !ok {
-			result.pullRequest, result.err = github.Fetch(ctx, p.Repo, dto.RecordedPR.Ref)
+			result.pullRequest, result.err = github.Fetch(ctx, item.Repo, dto.RecordedPR.Ref)
 		}
 		live, err := result.pullRequest, result.err
 		snapshot.SourceHealth.GitHub.FetchedAt = live.FetchedAt

@@ -157,6 +157,19 @@ func RevParse(repo, ref string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// RefExists reports whether an exact Git ref exists without discarding Git failures.
+func RefExists(repo, ref string) (bool, error) {
+	_, err := exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", ref).Output()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, gitOutputError("git show-ref --verify "+ref, err)
+}
+
 // LocalBranchTip resolves a local branch tip. A missing branch is returned as
 // found=false; other Git failures are returned to the caller.
 func LocalBranchTip(repo, branch string) (sha string, found bool, err error) {
@@ -506,16 +519,7 @@ func IsWorkMerged(repo, branch, base, startSHA string) bool {
 }
 
 func localBranchExists(repo, branch string) (bool, error) {
-	ref := "refs/heads/" + branch
-	_, err := exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", ref).Output()
-	if err == nil {
-		return true, nil
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-		return false, nil
-	}
-	return false, gitOutputError("git show-ref --verify "+ref, err)
+	return RefExists(repo, "refs/heads/"+branch)
 }
 
 func gitCommandError(command string, err error, output []byte) error {

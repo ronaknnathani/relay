@@ -279,6 +279,7 @@ type programDetailOutput struct {
 
 type programQueueOutput struct {
 	Program     string        `json:"program"`
+	Repo        string        `json:"repo"`
 	State       program.State `json:"state"`
 	View        program.View  `json:"view"`
 	OrphanIDs   []string      `json:"orphan_ids,omitempty"`
@@ -890,6 +891,7 @@ func printProgramQueueResult(
 ) error {
 	queue := programQueueOutput{
 		Program:     p.Slug,
+		Repo:        p.Repo,
 		State:       p.State,
 		View:        view,
 		OrphanIDs:   orphanIDs,
@@ -960,6 +962,7 @@ func renderProgramList(out io.Writer, label string, programs []program.Program) 
 func renderProgramDetail(out io.Writer, detail programDetailOutput) {
 	renderProgramView(out, programQueueOutput{
 		Program:     detail.Program.Slug,
+		Repo:        detail.Program.Repo,
 		State:       detail.Program.State,
 		View:        detail.Plan,
 		Warnings:    detail.Warnings,
@@ -975,8 +978,8 @@ func renderProgramView(out io.Writer, queue programQueueOutput) {
 	fmt.Fprintf(out, "Capacity: %d/%d open, %d reserved, %d available\n",
 		queue.View.Capacity.Open, queue.View.Capacity.Limit,
 		queue.View.Capacity.Reserved, queue.View.Capacity.Available)
-	fmt.Fprintf(out, "Ready: %s\n", workItemSummary(queue.View.Ready))
-	fmt.Fprintf(out, "In flight: %s\n", workItemSummary(queue.View.InFlight))
+	fmt.Fprintf(out, "Ready: %s\n", workItemSummary(queue.View.Ready, queue.Repo))
+	fmt.Fprintf(out, "In flight: %s\n", workItemSummary(queue.View.InFlight, queue.Repo))
 	fmt.Fprintf(out, "Blocked: %d\n", len(queue.View.Blocked))
 	if len(queue.OrphanIDs) > 0 {
 		fmt.Fprintf(out, "Orphaned: %s\n", strings.Join(queue.OrphanIDs, ", "))
@@ -988,15 +991,22 @@ func renderProgramView(out io.Writer, queue programQueueOutput) {
 	fmt.Fprintf(out, "Next: %s\n", queue.NextCommand)
 }
 
-func workItemSummary(items []program.WorkItem) string {
+func workItemSummary(items []program.WorkItem, primaryRepo string) string {
 	if len(items) == 0 {
 		return "-"
 	}
 	parts := make([]string, 0, len(items))
 	for _, item := range items {
-		parts = append(parts, item.ID+" "+item.Title)
+		parts = append(parts, item.ID+" "+item.Title+workItemRepoSuffix(item.Repo, primaryRepo))
 	}
 	return strings.Join(parts, "; ")
+}
+
+func workItemRepoSuffix(repo, primaryRepo string) string {
+	if repo == "" || repo == primaryRepo {
+		return ""
+	}
+	return " [repo: " + repo + "]"
 }
 
 func ensureProgramDoesNotExist(slug string) error {

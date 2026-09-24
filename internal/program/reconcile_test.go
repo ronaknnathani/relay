@@ -144,6 +144,7 @@ func TestPlanCapacityCountsOnlyLinkedRecordedOpenPRs(t *testing.T) {
 		{Slug: "other-program", Repo: p.Repo, HasPR: true, PRRef: "#3"},
 		{Slug: "other-repo", Repo: "other/repo", HasPR: true, PRRef: "other"},
 	}
+
 	plan := p.Plan(views)
 	if plan.Capacity != (Capacity{Limit: 2, Open: 1, Available: 1}) {
 		t.Fatalf("capacity = %+v", plan.Capacity)
@@ -159,6 +160,74 @@ func TestPlanCapacityCountsOnlyLinkedRecordedOpenPRs(t *testing.T) {
 	}
 }
 
+func TestReconcileAndCapacityUseLinkedItemRepositories(t *testing.T) {
+	p := newTestProgram(t)
+	p.MaxOpenPRs = 2
+	activateTestProgram(t, &p)
+	secondary, err := p.AddItem(WorkItem{
+		Title:    "secondary",
+		Priority: PriorityP0,
+		Repo:     "/repo/secondary",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.LinkItem(secondary.ID, "secondary-child"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(secondary.ID); err != nil {
+		t.Fatal(err)
+	}
+	primary := dispatchedTestItem(t, &p, "primary", "primary-child")
+	if err := p.GrantOpenPR(primary.ID, "tl", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	views := []ProjectView{
+		{Slug: "secondary-child", Repo: "/repo/secondary", HasPR: true, PRRef: "#42", Merged: true},
+		{Slug: "unrelated", Repo: "/repo/secondary", HasPR: true, PRRef: "#42"},
+	}
+	result, err := p.Reconcile(views)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := p.Item(secondary.ID)
+	if !result.Changed || got.Status != ItemMerged || got.PRRef != "#42" {
+		t.Fatalf("result = %+v, item = %+v", result, got)
+	}
+	if capacity := p.Plan(views).Capacity; capacity != (Capacity{
+		Limit: 2, Reserved: 1, Available: 1,
+	}) {
+		t.Fatalf("capacity = %+v", capacity)
+	}
+}
+
+func TestReconcileRejectsChildRepositoryMismatch(t *testing.T) {
+	p := newTestProgram(t)
+	activateTestProgram(t, &p)
+	item, err := p.AddItem(WorkItem{
+		Title:    "secondary",
+		Priority: PriorityP0,
+		Repo:     "/repo/secondary",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.LinkItem(item.ID, "secondary-child"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(item.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = p.Reconcile([]ProjectView{{
+		Slug: "secondary-child", Repo: p.Repo, HasPR: true, PRRef: "#42",
+	}})
+	if err == nil || !strings.Contains(err.Error(), `does not match item repo "/repo/secondary"`) {
+		t.Fatalf("Reconcile error = %v", err)
+	}
+}
+
 func TestPlanCapacityIsEmptyWithoutProgramItems(t *testing.T) {
 	p := newTestProgram(t)
 	activateTestProgram(t, &p)
@@ -169,6 +238,38 @@ func TestPlanCapacityIsEmptyWithoutProgramItems(t *testing.T) {
 	})
 	if plan.Capacity != (Capacity{Limit: 2, Available: 2}) {
 		t.Fatalf("capacity = %+v", plan.Capacity)
+	}
+
+}
+
+func TestPlanCapacityCombinesOpenPullRequestsAndReservationsAcrossRepositories(t *testing.T) {
+	p := newTestProgram(t)
+	p.MaxOpenPRs = 2
+	activateTestProgram(t, &p)
+	secondary, err := p.AddItem(WorkItem{
+		Title: "secondary open", Priority: PriorityP0, Repo: "/repo/secondary",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.LinkItem(secondary.ID, "secondary-open"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(secondary.ID); err != nil {
+		t.Fatal(err)
+	}
+	primary := dispatchedTestItem(t, &p, "primary reserved", "primary-reserved")
+	if err := p.GrantOpenPR(primary.ID, "tl", []ProjectView{{
+		Slug: "secondary-open", Repo: "/repo/secondary", HasPR: true, PRRef: "#7",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	capacity := p.Plan([]ProjectView{{
+		Slug: "secondary-open", Repo: "/repo/secondary", HasPR: true, PRRef: "#7",
+	}}).Capacity
+	if capacity != (Capacity{Limit: 2, Open: 1, Reserved: 1, Available: 0}) {
+		t.Fatalf("capacity = %+v", capacity)
 	}
 }
 
