@@ -87,22 +87,24 @@ func requireAbsent(t *testing.T, name, content string, unwanted []string) {
 
 func TestOverviewAssetsExposeProgramsAndAttentionBoard(t *testing.T) {
 	index := readAsset(t, "assets/overview.html")
-	requireContains(t, "overview.html", index, []string{
-		`<main id="overview">`,
-		`id="programs"`,
-		`id="program-list"`,
-		`id="program-empty"`,
-		`id="work"`,
-		`id="work-empty"`,
-		`id="diagnostics"`,
-		`id="diagnostic-list"`,
-		`aria-live="polite"`,
-		`data-status="dispatched"`,
-		`data-status="in-review"`,
-		`data-status="blocked"`,
-		`<link rel="stylesheet" href="overview.css">`,
-		`<script src="overview.js" defer></script>`,
-	})
+	for _, name := range []string{"assets/overview.html", "assets/overview.min.html"} {
+		requireContains(t, name, readAsset(t, name), []string{
+			`<main id="overview">`,
+			`id="programs"`,
+			`id="program-list"`,
+			`id="program-empty"`,
+			`id="work"`,
+			`id="work-empty"`,
+			`id="diagnostics"`,
+			`id="diagnostic-list"`,
+			`aria-live="polite"`,
+			`data-status="dispatched"`,
+			`data-status="in-review"`,
+			`data-status="blocked"`,
+			`href="overview.css"`,
+			`src="overview.js"`,
+		})
+	}
 	if strings.Index(index, `data-status="dispatched"`) >
 		strings.Index(index, `data-status="in-review"`) ||
 		strings.Index(index, `data-status="in-review"`) >
@@ -116,14 +118,30 @@ func TestOverviewAssetsExposeProgramsAndAttentionBoard(t *testing.T) {
 		"window.setInterval(refresh, 3000)",
 		`link.href = ` + "`programs/${encodeURIComponent(program.slug)}/`",
 		`link.href = ` + "`programs/${encodeURIComponent(item.program_slug)}/#task=${encodeURIComponent(item.id)}`",
+		`make("p", "program-meta program-slug", program.slug)`,
+		`${program.progress.merged} of ${program.progress.total} merged`,
+		`make("span", "work-card__status", item.status.replaceAll("-", " "))`,
+		`${item.program_title} · ${item.program_slug}`,
 		"textContent",
 		"replaceChildren",
 		`["dispatched", "in-review", "blocked"]`,
 	})
-	requireContains(t, "overview.html", index, []string{
-		"No active programs.",
-		"No attention items.",
-		"No items in this lane.",
+	requireAbsent(t, "overview.js", script, []string{
+		`link.setAttribute("aria-label"`,
+		"program.progress.completed",
+	})
+	for _, name := range []string{"assets/overview.html", "assets/overview.min.html"} {
+		requireContains(t, name, readAsset(t, name), []string{
+			"No active programs.",
+			"No attention items.",
+			"No items in this lane.",
+		})
+	}
+	requireContains(t, "overview.min.js", readAsset(t, "assets/overview.min.js"), []string{
+		"program-slug",
+		"work-card__status",
+		"program_slug",
+		"progress.merged",
 	})
 	styles := readAsset(t, "assets/overview.css")
 	requireContains(t, "overview.css", styles, []string{

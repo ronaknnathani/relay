@@ -113,12 +113,11 @@ func (r *unifiedRouter) serveDetail(response http.ResponseWriter, request *http.
 		return
 	}
 	remainder := strings.TrimPrefix(request.URL.Path, prefix)
-	encodedSlug, detailPath, hasDetailPath := strings.Cut(remainder, "/")
+	slug, detailPath, hasDetailPath := strings.Cut(remainder, "/")
 	if hasDetailPath {
 		detailPath = "/" + detailPath
 	}
-	slug, err := url.PathUnescape(encodedSlug)
-	if err != nil || slug == "" || strings.Contains(slug, "/") || !r.active(slug) {
+	if slug == "" || !r.active(slug) {
 		http.NotFound(response, request)
 		return
 	}

@@ -15,8 +15,12 @@ import (
 func TestUnifiedRouterServesOverviewAndPrefixedDetail(t *testing.T) {
 	feed := newOverviewFeed(
 		programview.OverviewSnapshot{
-			Schema:      programview.OverviewSchemaVersion,
-			Programs:    []programview.ProgramOverviewDTO{{Slug: "alpha"}},
+			Schema: programview.OverviewSchemaVersion,
+			Programs: []programview.ProgramOverviewDTO{
+				{Slug: "alpha"},
+				{Slug: "100%-done"},
+				{Slug: "a%41b"},
+			},
 			Work:        []programview.OverviewWorkItemDTO{},
 			Diagnostics: []programview.OverviewDiagnosticDTO{},
 		},
@@ -27,12 +31,12 @@ func TestUnifiedRouterServesOverviewAndPrefixedDetail(t *testing.T) {
 	var created atomic.Int32
 	router := newUnifiedRouter("4321", feed, func(slug string) (http.Handler, error) {
 		created.Add(1)
-		if slug != "alpha" {
+		if slug != "alpha" && slug != "100%-done" && slug != "a%41b" {
 			return nil, errors.New("unexpected slug")
 		}
 		return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			response.Header().Set("Content-Type", "text/plain")
-			_, _ = response.Write([]byte(request.URL.Path))
+			_, _ = response.Write([]byte(slug + ":" + request.URL.Path))
 		}), nil
 	})
 
@@ -53,12 +57,21 @@ func TestUnifiedRouterServesOverviewAndPrefixedDetail(t *testing.T) {
 		t.Fatalf("redirect = %d %q", redirect.Code, redirect.Header().Get("Location"))
 	}
 	detail := serveUnifiedRequest(router, http.MethodGet, "/programs/alpha/api/program", "localhost:4321")
-	if detail.Code != http.StatusOK || detail.Body.String() != "/api/program" {
+	if detail.Code != http.StatusOK || detail.Body.String() != "alpha:/api/program" {
 		t.Fatalf("detail = %d %q", detail.Code, detail.Body.String())
 	}
 	second := serveUnifiedRequest(router, http.MethodGet, "/programs/alpha/app.js", "localhost:4321")
-	if second.Code != http.StatusOK || second.Body.String() != "/app.js" || created.Load() != 1 {
+	if second.Code != http.StatusOK || second.Body.String() != "alpha:/app.js" || created.Load() != 1 {
 		t.Fatalf("second detail = %d %q, created %d", second.Code, second.Body.String(), created.Load())
+	}
+	for path, expected := range map[string]string{
+		"/programs/100%25-done/api/program": "100%-done:/api/program",
+		"/programs/a%2541b/api/program":     "a%41b:/api/program",
+	} {
+		response := serveUnifiedRequest(router, http.MethodGet, path, "localhost:4321")
+		if response.Code != http.StatusOK || response.Body.String() != expected {
+			t.Errorf("GET %s = %d %q, want 200 %q", path, response.Code, response.Body.String(), expected)
+		}
 	}
 	if response := serveUnifiedRequest(router, http.MethodGet, "/programs/missing/", "localhost:4321"); response.Code != http.StatusNotFound {
 		t.Fatalf("unknown detail status = %d", response.Code)
