@@ -177,6 +177,13 @@ func loadProgramChangeTarget(programSlug, itemID string) (programChangeTarget, e
 			programSlug, itemID, manifest.Slug, manifest.Program, manifest.ProgramItem,
 		)
 	}
+	if manifest.Repo != item.Repo {
+		return programChangeTarget{}, fmt.Errorf(
+			"request change for %s/%s: child project repository identity does not match dispatch "+
+				"(manifest %q, item %q)",
+			programSlug, itemID, manifest.Repo, item.Repo,
+		)
+	}
 	inspection, err := inspectProjectPR(context.Background(), item.ProjectSlug)
 	if err != nil {
 		return programChangeTarget{}, fmt.Errorf(

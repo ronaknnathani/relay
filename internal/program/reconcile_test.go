@@ -239,6 +239,38 @@ func TestPlanCapacityIsEmptyWithoutProgramItems(t *testing.T) {
 	if plan.Capacity != (Capacity{Limit: 2, Available: 2}) {
 		t.Fatalf("capacity = %+v", plan.Capacity)
 	}
+
+}
+
+func TestPlanCapacityCombinesOpenPullRequestsAndReservationsAcrossRepositories(t *testing.T) {
+	p := newTestProgram(t)
+	p.MaxOpenPRs = 2
+	activateTestProgram(t, &p)
+	secondary, err := p.AddItem(WorkItem{
+		Title: "secondary open", Priority: PriorityP0, Repo: "/repo/secondary",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.LinkItem(secondary.ID, "secondary-open"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(secondary.ID); err != nil {
+		t.Fatal(err)
+	}
+	primary := dispatchedTestItem(t, &p, "primary reserved", "primary-reserved")
+	if err := p.GrantOpenPR(primary.ID, "tl", []ProjectView{{
+		Slug: "secondary-open", Repo: "/repo/secondary", HasPR: true, PRRef: "#7",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	capacity := p.Plan([]ProjectView{{
+		Slug: "secondary-open", Repo: "/repo/secondary", HasPR: true, PRRef: "#7",
+	}}).Capacity
+	if capacity != (Capacity{Limit: 2, Open: 1, Reserved: 1, Available: 0}) {
+		t.Fatalf("capacity = %+v", capacity)
+	}
 }
 
 func TestGrantOpenPRSerializesReservedCapacity(t *testing.T) {

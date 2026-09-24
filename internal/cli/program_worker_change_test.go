@@ -843,3 +843,23 @@ func TestRequestChangeRefusesAnUnparsableRecordedReference(t *testing.T) {
 		t.Fatalf("GitHub reads = %d, want exactly the one fail-closed read", *calls)
 	}
 }
+
+func TestRequestChangeRejectsRepositoryMismatchBeforeGitHubRead(t *testing.T) {
+	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+	p = recordItemPR(t, p, item.ID, "#7")
+	manifest.Repo = newTestRepo(t)
+	if err := project.Save(project.ManifestPath(project.ActiveDir(), manifest.Slug), manifest); err != nil {
+		t.Fatal(err)
+	}
+	installManagedHerdrFakes(t, &fakeHerdrClient{})
+	calls := installFakePRInspection(t, openPRInspection("REVIEW_REQUIRED"), nil)
+
+	_, err := runProgramCommand(t, "worker", "request-change", p.Slug, item.ID,
+		"--body", "Rename the token field", "--json")
+	if err == nil || !strings.Contains(err.Error(), "repository identity does not match dispatch") {
+		t.Fatalf("request-change error = %v", err)
+	}
+	if *calls != 0 {
+		t.Fatalf("GitHub reads = %d, want none", *calls)
+	}
+}

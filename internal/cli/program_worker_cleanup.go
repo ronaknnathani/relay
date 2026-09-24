@@ -368,11 +368,11 @@ func loadProgramCleanupTarget(
 			p.Slug, itemID, manifest.Slug, manifest.Program, manifest.ProgramItem,
 		)
 	}
-	if manifest.Repo != item.Repo || item.Repo != p.Repo {
+	if manifest.Repo != item.Repo {
 		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(
 			"cleanup %s/%s: child project repository identity does not match dispatch "+
-				"(manifest %q, item %q, program %q)",
-			p.Slug, itemID, manifest.Repo, item.Repo, p.Repo,
+				"(manifest %q, item %q)",
+			p.Slug, itemID, manifest.Repo, item.Repo,
 		)
 	}
 	if item.ProjectBranch == "" || item.ProjectWorktree == "" {
@@ -539,7 +539,6 @@ func upgradeLegacyProgramCleanupTarget(
 	if storedItem.Status != program.ItemMerged ||
 		storedItem.ProjectSlug != manifest.Slug ||
 		storedItem.Repo != manifest.Repo ||
-		stored.Repo != manifest.Repo ||
 		storedItem.ProjectBranch != manifest.Branch ||
 		storedItem.ProjectWorktree != worktree {
 		return program.WorkItem{}, project.Manifest{}, archiveProofSnapshot{}, false, fmt.Errorf(

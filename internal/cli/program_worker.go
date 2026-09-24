@@ -962,11 +962,11 @@ func loadProgramWorkerManifest(p program.Program, item program.WorkItem) (projec
 			item.ID, manifest.Slug, item.ProjectSlug,
 		)
 	}
-	if item.Repo != p.Repo || manifest.Repo != p.Repo {
+	if manifest.Repo != item.Repo {
 		return project.Manifest{}, fmt.Errorf(
 			"program worker %q: child project repository identity does not match dispatch "+
-				"(manifest %q, item %q, program %q)",
-			item.ID, manifest.Repo, item.Repo, p.Repo,
+				"(manifest %q, item %q)",
+			item.ID, manifest.Repo, item.Repo,
 		)
 	}
 	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" {

@@ -89,6 +89,7 @@ func TestProgramDispatchCreatesManagedChildWithoutLaunch(t *testing.T) {
 		launched = true
 		return nil
 	}
+
 	t.Cleanup(func() { launchAgent = previousLaunch })
 
 	out, err := runProgramCommand(t, "dispatch", p.Slug, item.ID)
@@ -196,6 +197,52 @@ func TestProgramDispatchCreatesManagedChildWithoutLaunch(t *testing.T) {
 	}
 	if !strings.Contains(string(progress), "Dispatched item "+item.ID+" to project "+childSlug) {
 		t.Fatalf("progress = %q", progress)
+	}
+}
+
+func TestProgramDispatchCreatesChildInSecondaryRepository(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HERDR_ENV", "")
+	saveProgramTestConfig(t)
+	p, item, _ := createDispatchProgram(t, "governance", 3)
+	secondary, err := filepath.EvalSymlinks(newTestRepo(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := program.ManifestPath(program.ActiveDir(), p.Slug)
+	loaded, err := program.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range loaded.Items {
+		if loaded.Items[i].ID == item.ID {
+			loaded.Items[i].Repo = secondary
+		}
+	}
+	if err := program.Save(path, loaded); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runProgramCommand(t, "dispatch", p.Slug, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	childSlug := "governance-" + item.ID
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), childSlug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Repo != secondary || manifest.Worktree == nil ||
+		filepath.Dir(filepath.Dir(*manifest.Worktree)) != secondary {
+		t.Fatalf("child manifest = %+v", manifest)
+	}
+	persisted, err := program.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := persisted.Item(item.ID)
+	if got.Repo != secondary || got.ProjectBranch != manifest.Branch ||
+		got.ProjectWorktree != *manifest.Worktree {
+		t.Fatalf("item = %+v, manifest = %+v", got, manifest)
 	}
 }
 

@@ -190,6 +190,7 @@ func createWorkerFixture(t *testing.T, status program.ItemStatus) (program.Progr
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	p, err := program.New("governance", "Ship governed changes", repo, "copilot", 3)
 	if err != nil {
 		t.Fatal(err)
@@ -217,6 +218,66 @@ func createWorkerFixture(t *testing.T, status program.ItemStatus) (program.Progr
 	worktree := addArchiveWorktree(t, repo, childSlug, branch)
 	manifest := project.Manifest{
 		Slug: childSlug, Title: item.Title, Repo: repo, Agent: "copilot",
+		Branch: branch, Worktree: &worktree,
+		Program: p.Slug, ProgramItem: item.ID, Phase: "implement",
+	}
+	if err := bindDispatchIdentity(&p, item.ID, manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := program.Create(p); err != nil {
+		t.Fatal(err)
+	}
+	loadedItem, _ := p.Item(item.ID)
+	manifestPath := project.ManifestPath(project.ActiveDir(), childSlug)
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	return p, loadedItem, manifest
+}
+
+func createSecondaryWorkerFixture(t *testing.T, status program.ItemStatus) (program.Program, program.WorkItem, project.Manifest) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	primary, err := filepath.EvalSymlinks(newTestRepo(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondary, err := filepath.EvalSymlinks(newTestRepo(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := program.New("governance", "Ship governed changes", primary, "copilot", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StatePendingApproval, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StateActive, "ceo"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := p.AddItem(program.WorkItem{
+		Title: "Build secondary runtime", Priority: program.PriorityP1, Repo: secondary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childSlug := "governance-" + item.ID
+	if err := p.DispatchItem(item.ID, childSlug); err != nil {
+		t.Fatal(err)
+	}
+	if status == program.ItemBlocked {
+		if err := p.BlockItem(item.ID, "waiting for decision"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	branch := "test/" + childSlug
+	worktree := addArchiveWorktree(t, secondary, childSlug, branch)
+	manifest := project.Manifest{
+		Slug: childSlug, Title: item.Title, Repo: secondary, Agent: "copilot",
 		Branch: branch, Worktree: &worktree,
 		Program: p.Slug, ProgramItem: item.ID, Phase: "implement",
 	}
@@ -325,6 +386,7 @@ func TestProgramWorkerStartCreatesRunsPollsAndRenames(t *testing.T) {
 		TerminalTitle: "relay:" + manifest.Slug + " - GitHub Copilot",
 		ForegroundCWD: *manifest.Worktree, NativeSessionID: "session-9",
 	}
+
 	client := &fakeHerdrClient{
 		agentResponses: [][]herdr.Agent{nil, nil, {worker}},
 		tab:            herdr.Tab{ID: "w7:t9", RootPaneID: "w7:p9"},
@@ -376,6 +438,19 @@ func TestProgramWorkerStartCreatesRunsPollsAndRenames(t *testing.T) {
 	}
 	if !reflect.DeepEqual(programAfter, programBefore) || !reflect.DeepEqual(projectAfter, projectBefore) {
 		t.Fatal("worker start persisted runtime state")
+	}
+}
+
+func TestProgramWorkerTargetAcceptsSecondaryRepository(t *testing.T) {
+	p, item, manifest := createSecondaryWorkerFixture(t, program.ItemDispatched)
+
+	target, err := loadProgramWorkerTarget(p.Slug, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.item.Repo != manifest.Repo || target.manifest.Repo != manifest.Repo ||
+		target.manifest.Worktree == nil || *target.manifest.Worktree != *manifest.Worktree {
+		t.Fatalf("target = %+v", target)
 	}
 }
 

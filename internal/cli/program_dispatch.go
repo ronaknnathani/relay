@@ -181,7 +181,7 @@ func prepareDispatchChild(
 				name:        childSlug,
 				agent:       agentName,
 				workflow:    defaultWorkflow,
-				repo:        p.Repo,
+				repo:        item.Repo,
 				program:     p.Slug,
 				programItem: item.ID,
 			}, childSlug)
@@ -210,9 +210,9 @@ func adoptDispatchChild(
 			"active child manifest %s has slug %q, want %q", manifestPath, childSlug, expectedSlug,
 		)
 	}
-	if manifest.Repo != p.Repo {
+	if manifest.Repo != item.Repo {
 		return projectCreateResult{}, fmt.Errorf(
-			"active child %q repo %q does not match program repo %q", expectedSlug, manifest.Repo, p.Repo,
+			"active child %q repo %q does not match item repo %q", expectedSlug, manifest.Repo, item.Repo,
 		)
 	}
 	if manifest.Program != "" && manifest.Program != p.Slug {
@@ -263,10 +263,10 @@ func adoptDispatchChild(
 func validateManagedChildResourceIdentity(
 	p program.Program, item program.WorkItem, manifest project.Manifest,
 ) error {
-	if manifest.Repo != p.Repo || item.Repo != p.Repo {
+	if manifest.Repo != item.Repo {
 		return fmt.Errorf(
-			"repository identity does not match dispatch (manifest %q, item %q, program %q)",
-			manifest.Repo, item.Repo, p.Repo,
+			"repository identity does not match dispatch (manifest %q, item %q)",
+			manifest.Repo, item.Repo,
 		)
 	}
 	if manifest.Worktree == nil || strings.TrimSpace(*manifest.Worktree) == "" ||
@@ -335,7 +335,7 @@ func createDispatchChild(
 		name:        childSlug,
 		agent:       agentName,
 		workflow:    defaultWorkflow,
-		repo:        p.Repo,
+		repo:        item.Repo,
 		program:     p.Slug,
 		programItem: item.ID,
 	})
