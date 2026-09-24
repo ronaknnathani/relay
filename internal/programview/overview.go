@@ -1,9 +1,7 @@
 package programview
 
 import (
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"time"
@@ -99,20 +97,25 @@ func overviewProgramState(
 }
 
 func overviewDisplayIdentity(current program.Program) (string, string, *OverviewDiagnosticDTO) {
-	path := filepath.Join(program.ProgramDir(program.ActiveDir(), current.Slug), "goal.md")
-	data, err := os.ReadFile(path)
-	if err == nil {
-		title, summary := displayIdentity(current.Title, string(data))
-		return title, summary, nil
+	programDir := program.ProgramDir(program.ActiveDir(), current.Slug)
+	artifact, err := readArtifact(programDir, "goal.md", defaultArtifactLimit, true)
+	if err != nil {
+		title, summary := displayIdentity(current.Title, "")
+		return title, summary, &OverviewDiagnosticDTO{
+			Directory: current.Slug,
+			Message: fmt.Sprintf(
+				"read program goal %s: %v",
+				filepath.Join(programDir, "goal.md"),
+				err,
+			),
+		}
 	}
-	title, summary := displayIdentity(current.Title, "")
-	if errors.Is(err, os.ErrNotExist) {
-		return title, summary, nil
+	goal := ""
+	if artifact.Text != nil {
+		goal = *artifact.Text
 	}
-	return title, summary, &OverviewDiagnosticDTO{
-		Directory: current.Slug,
-		Message:   fmt.Sprintf("read program goal %s: %v", path, err),
-	}
+	title, summary := displayIdentity(current.Title, goal)
+	return title, summary, nil
 }
 
 func appendOverviewWork(

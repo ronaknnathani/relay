@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -168,6 +169,64 @@ func TestBuildOverviewIsolatesProgramGoalFailure(t *testing.T) {
 	if len(got.Diagnostics) != 1 ||
 		got.Diagnostics[0].Directory != "broken" ||
 		!strings.Contains(got.Diagnostics[0].Message, "read program goal") {
+		t.Fatalf("diagnostics = %+v", got.Diagnostics)
+	}
+}
+
+func TestBuildOverviewUsesSafeBoundedGoalReader(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	at := "2026-09-24T16:00:00Z"
+	programs := []program.Program{
+		overviewTestProgram("fifo", "FIFO fallback", filepath.Join(home, "fifo-repo"), at),
+		overviewTestProgram("healthy", "Healthy", filepath.Join(home, "healthy-repo"), at),
+		overviewTestProgram("oversized", "Oversized fallback", filepath.Join(home, "oversized-repo"), at),
+	}
+	for _, current := range programs {
+		if err := os.MkdirAll(current.Repo, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := program.Create(current); err != nil {
+			t.Fatalf("Create(%s): %v", current.Slug, err)
+		}
+	}
+	writeTestFile(
+		t,
+		filepath.Join(program.ProgramDir(program.ActiveDir(), "healthy"), "goal.md"),
+		"# Healthy display\n\nHealthy summary.\n",
+	)
+	writeTestFile(
+		t,
+		filepath.Join(program.ProgramDir(program.ActiveDir(), "oversized"), "goal.md"),
+		strings.Repeat("x", int(defaultArtifactLimit))+"\n# Beyond limit\n",
+	)
+	fifoPath := filepath.Join(program.ProgramDir(program.ActiveDir(), "fifo"), "goal.md")
+	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := make(chan OverviewSnapshot, 1)
+	go func() {
+		result <- BuildOverview(programs, nil, time.Now)
+	}()
+
+	var got OverviewSnapshot
+	select {
+	case got = <-result:
+	case <-time.After(time.Second):
+		t.Fatal("BuildOverview blocked while reading a goal.md FIFO")
+	}
+	if len(got.Programs) != 3 {
+		t.Fatalf("programs = %+v", got.Programs)
+	}
+	if got.Programs[0].DisplayTitle != "FIFO fallback" ||
+		got.Programs[1].DisplayTitle != "Healthy display" ||
+		got.Programs[2].DisplayTitle != "Oversized fallback" {
+		t.Fatalf("display identities = %+v", got.Programs)
+	}
+	if len(got.Diagnostics) != 1 ||
+		got.Diagnostics[0].Directory != "fifo" ||
+		!strings.Contains(got.Diagnostics[0].Message, "not a regular file") {
 		t.Fatalf("diagnostics = %+v", got.Diagnostics)
 	}
 }
