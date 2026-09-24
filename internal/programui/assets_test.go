@@ -1274,8 +1274,8 @@ func TestStylesGateHoverStayResponsiveAndRespectReducedMotion(t *testing.T) {
 func TestScriptKeepsPollingSelectionAndLinkSafety(t *testing.T) {
 	script := readScriptAssets(t)
 	requireContains(t, "app.js", script, []string{
-		"/api/program",
-		"/api/artifact",
+		"api/program",
+		"api/artifact",
 		"AbortController",
 		"programGeneration",
 		"artifactGeneration",
