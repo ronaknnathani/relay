@@ -363,105 +363,104 @@ func archiveProject(slug string, force bool) (archiveResult, error) {
 }
 
 func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision, error) {
+	if m.Program != "" || m.ProgramItem != "" {
+		if m.Program != "" && m.ProgramItem != "" {
+			return archiveDecision{}, fmt.Errorf(
+				"active project %q is managed by program %s/%s; use: relay program worker cleanup %s %s",
+				slug, m.Program, m.ProgramItem, m.Program, m.ProgramItem,
+			)
+		}
+		return archiveDecision{}, fmt.Errorf(
+			"active project %q has incomplete program ownership metadata; inspect %s and use the program worker cleanup lifecycle",
+			slug, project.ManifestPath(project.ActiveDir(), slug),
+		)
+	}
 	proof, err := newArchiveProofSnapshot(m, archiveProofForced, false)
 	if err != nil {
 		return archiveDecision{}, err
 	}
 	proof.ForceAuthorized = force
 	recordedMerge := recordedPullRequestMergeOnce(m, slug)
-	reachable := false
-	workMerged := false
 	var warnings []string
-	if proof.BranchPresent {
-		proof.AuthoritativeCommit = proof.ExpectedBranchTip
-		base := m.BaseBranch
-		if base == "" {
-			base = gitx.DetectDefaultBranch(m.Repo)
-		}
-		if base != "" {
-			for _, baseRef := range []string{
-				"refs/remotes/origin/" + base,
-				"refs/heads/" + base,
-			} {
-				if gitx.RevParse(m.Repo, baseRef) == "" {
-					continue
-				}
-				reachable, err = gitx.CommitReachable(
-					m.Repo, proof.ExpectedBranchTip, baseRef,
+
+	base := m.BaseBranch
+	var evaluationErr error
+	if base == "" {
+		base, evaluationErr = gitx.DetectDefaultBranchWithError(m.Repo)
+	}
+	if evaluationErr == nil {
+		baseRef := "refs/remotes/origin/" + base
+		if gitx.RevParse(m.Repo, baseRef) == "" {
+			evaluationErr = fmt.Errorf("configured upstream base %s is unavailable", baseRef)
+		} else {
+			var (
+				tip    string
+				merged bool
+			)
+			tip, merged, evaluationErr = gitx.WorkMergedInto(
+				m.Repo, m.Branch, baseRef, m.StartSHA,
+			)
+			if evaluationErr == nil && merged {
+				proof, evaluationErr = newMergedBranchArchiveProof(
+					m, archiveProofReachable, tip,
 				)
-				if err != nil {
-					return archiveDecision{}, fmt.Errorf(
-						"evaluate branch %q against %s: %w", m.Branch, baseRef, err,
-					)
+				if evaluationErr == nil {
+					proof.ForceAuthorized = force
+					return archiveDecision{proof: proof}, nil
 				}
-				if !workMerged {
-					tip, merged, mergeErr := gitx.WorkMergedTip(
-						m.Repo, m.Branch, baseRef, m.StartSHA,
-					)
-					if mergeErr != nil {
-						warnings = append(warnings, fmt.Sprintf(
-							"evaluate merged work for branch %q against %s: %s",
-							m.Branch, baseRef, mergeErr,
-						))
-					} else if tip == proof.ExpectedBranchTip {
-						workMerged = merged
-					}
+			}
+			if evaluationErr == nil && proof.BranchPresent &&
+				tip == gitx.RevParse(m.Repo, strings.TrimSpace(m.StartSHA)+"^{commit}") {
+				proof.AuthoritativeCommit = tip
+				proof.Kind = archiveProofReachable
+				if err := validateArchiveWorktreeBinding(proof); err != nil {
+					return archiveDecision{}, err
 				}
-				if reachable {
-					break
-				}
+				return archiveDecision{proof: proof}, nil
 			}
 		}
-		switch {
-		case !force && !reachable:
-			evidence, evidenceErr := recordedMerge()
-			if evidenceErr != nil {
-				return archiveDecision{}, fmt.Errorf(
-					"branch %q has unmerged work; re-run with --force to delete it anyway, or merge it first; recorded pull request lookup failed: %w",
-					m.Branch, evidenceErr,
-				)
-			}
-			if !evidence.Merged {
-				return archiveDecision{}, fmt.Errorf(
-					"branch %q has unmerged work; re-run with --force to delete it anyway, or merge it first",
-					m.Branch,
-				)
-			}
-			if err := validatePullRequestProofTips(proof, evidence.HeadSHA); err != nil {
-				return archiveDecision{}, err
-			}
-			proof.AuthoritativeCommit = evidence.HeadSHA
-			proof.Kind = archiveProofPullRequest
-			workMerged = true
-		case force:
-			proof.Kind = archiveProofForced
-		default:
-			proof.Kind = archiveProofReachable
-		}
-	} else {
-		proof.Kind = archiveProofMissingBranch
 	}
 
-	if !workMerged {
-		evidence, evidenceErr := recordedMerge()
-		if evidenceErr != nil {
-			warnings = append(warnings, evidenceErr.Error())
-		} else if evidence.Merged {
-			candidate := proof
-			candidate.AuthoritativeCommit = evidence.HeadSHA
-			if err := validatePullRequestProofTips(candidate, evidence.HeadSHA); err != nil {
-				warnings = append(warnings, err.Error())
-			} else {
-				proof = candidate
-				workMerged = true
-				proof.Kind = archiveProofPullRequest
-			}
+	evidence, prErr := recordedMerge()
+	if prErr == nil && evidence.Merged {
+		candidate := proof
+		candidate.AuthoritativeCommit = evidence.HeadSHA
+		prErr = validatePullRequestProofTips(candidate, evidence.HeadSHA)
+		if prErr == nil {
+			candidate.Kind = archiveProofPullRequest
+			candidate.Merged = true
+			candidate.ForceAuthorized = force
+			return archiveDecision{proof: candidate}, nil
 		}
+	}
+	if !force {
+		detail := ""
+		if evaluationErr != nil {
+			detail = fmt.Sprintf("; Git verification detail: %s", evaluationErr)
+		}
+		if prErr != nil {
+			detail += fmt.Sprintf("; recorded pull request lookup detail: %s", prErr)
+		}
+		return archiveDecision{}, fmt.Errorf(
+			"branch %q merge could not be verified; merge it first or re-run with --force to delete it anyway%s",
+			m.Branch, detail,
+		)
+	}
+	if evaluationErr != nil {
+		warnings = append(warnings, evaluationErr.Error())
+	}
+	if prErr != nil {
+		warnings = append(warnings, prErr.Error())
 	}
 	if err := validateArchiveWorktreeBinding(proof); err != nil {
 		return archiveDecision{}, err
 	}
-	proof.Merged = workMerged
+	if proof.BranchPresent {
+		proof.AuthoritativeCommit = proof.ExpectedBranchTip
+		proof.Kind = archiveProofForced
+	} else {
+		proof.Kind = archiveProofMissingBranch
+	}
 	return archiveDecision{proof: proof, warnings: warnings}, nil
 }
 
