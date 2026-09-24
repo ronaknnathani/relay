@@ -43,7 +43,7 @@ func TestOverviewBrowser(t *testing.T) {
 					Slug: "alpha", Title: "Alpha", DisplayTitle: "Alpha program",
 					Summary: "The first active program.", State: "active",
 					UpdatedAt: "2026-09-24T16:00:00Z",
-					Progress:  programview.ProgressDTO{Total: 2, Merged: 1, Completed: 1, Percent: 50},
+					Progress:  programview.ProgressDTO{Total: 2, Merged: 1, Completed: 2, Percent: 50},
 					InFlight:  1, NextAction: "reconcile in-flight work",
 				},
 				{
@@ -61,14 +61,29 @@ func TestOverviewBrowser(t *testing.T) {
 			},
 			Diagnostics: []programview.OverviewDiagnosticDTO{},
 		}
-		if phase.Load() > 0 {
+		switch phase.Load() {
+		case 1:
 			snapshot.Programs = append(snapshot.Programs, programview.ProgramOverviewDTO{
 				Slug: "gamma", Title: "Gamma", DisplayTitle: "Gamma program",
 				State: "draft", UpdatedAt: "2026-09-24T17:01:00Z",
 				Progress: programview.ProgressDTO{}, NextAction: "request approval",
 			})
 			snapshot.Work = snapshot.Work[:1]
+			snapshot.Diagnostics = []programview.OverviewDiagnosticDTO{{
+				Directory: "malformed-program",
+				Message:   "parse program manifest",
+			}}
 			snapshot.GeneratedAt = "2026-09-24T17:01:00Z"
+		case 2:
+			return programview.OverviewSnapshot{}, errors.New("overview refresh unavailable")
+		case 3:
+			snapshot.Programs = append(snapshot.Programs, programview.ProgramOverviewDTO{
+				Slug: "gamma", Title: "Gamma", DisplayTitle: "Gamma program",
+				State: "draft", UpdatedAt: "2026-09-24T17:03:00Z",
+				Progress: programview.ProgressDTO{}, NextAction: "request approval",
+			})
+			snapshot.Work = []programview.OverviewWorkItemDTO{}
+			snapshot.GeneratedAt = "2026-09-24T17:03:00Z"
 		}
 		return snapshot, nil
 	}
@@ -116,7 +131,7 @@ func TestOverviewBrowser(t *testing.T) {
 	defer cancelAllocator()
 	browser, cancelBrowser := chromedp.NewContext(allocator)
 	defer cancelBrowser()
-	browser, cancelTimeout := context.WithTimeout(browser, 20*time.Second)
+	browser, cancelTimeout := context.WithTimeout(browser, 40*time.Second)
 	defer cancelTimeout()
 
 	if err := chromedp.Run(browser,
@@ -124,6 +139,14 @@ func TestOverviewBrowser(t *testing.T) {
 		chromedp.Poll(`document.querySelectorAll(".program-card").length === 2`, nil),
 		chromedp.Poll(`document.querySelectorAll(".work-card").length === 3`, nil),
 		chromedp.Poll(`document.querySelector('[data-status="blocked"]').textContent.includes("owner needed")`, nil),
+		chromedp.Poll(`document.querySelector(".program-card").textContent.includes("alpha") &&
+			document.querySelector(".program-card").textContent.includes("1 of 2 merged") &&
+			!document.querySelector(".program-card").textContent.includes("complete")`, nil),
+		chromedp.Poll(`document.querySelector('[data-status="blocked"] .work-card').textContent.includes("P2") &&
+			document.querySelector('[data-status="blocked"] .work-card').textContent.includes("blocked") &&
+			document.querySelector('[data-status="blocked"] .work-card').textContent.includes("Beta program · beta") &&
+			document.querySelector('[data-status="blocked"] .work-card').textContent.includes("owner needed") &&
+			!document.querySelector('[data-status="blocked"] .work-card').hasAttribute("aria-label")`, nil),
 	); err != nil {
 		t.Fatalf("render overview: %v", err)
 	}
@@ -142,11 +165,9 @@ func TestOverviewBrowser(t *testing.T) {
 	if err := chromedp.Run(browser,
 		chromedp.Focus(".work-card"),
 		chromedp.Poll(`document.activeElement?.matches("a.work-card")`, nil),
+		chromedp.KeyEvent(kb.Enter),
 	); err != nil {
-		t.Fatalf("focus work card: %v", err)
-	}
-	if err := chromedp.Run(browser, chromedp.Click(".work-card")); err != nil {
-		t.Fatalf("activate work card: %v", err)
+		t.Fatalf("activate focused work card with Enter: %v", err)
 	}
 	var detailLocation string
 	if err := chromedp.Run(browser,
@@ -165,9 +186,12 @@ func TestOverviewBrowser(t *testing.T) {
 	}
 	if err := chromedp.Run(browser,
 		chromedp.Reload(),
-		chromedp.Poll(`location.hash === "#task=w1"`, nil),
+		chromedp.Poll(`location.hash === "#task=w1" &&
+			typeof state !== "undefined" &&
+			state.selected === "w1" &&
+			document.querySelector("#drawer-title").textContent === "First task"`, nil),
 	); err != nil {
-		t.Fatalf("reload selected detail: %v", err)
+		t.Fatalf("reload hydrated selected detail: %v", err)
 	}
 	if err := chromedp.Run(browser,
 		chromedp.NavigateBack(),
@@ -182,17 +206,56 @@ func TestOverviewBrowser(t *testing.T) {
 			chromedp.WithPollingTimeout(10*time.Second)),
 		chromedp.Poll(`document.querySelectorAll(".work-card").length === 1`, nil,
 			chromedp.WithPollingTimeout(10*time.Second)),
+		chromedp.Poll(`document.querySelector("#lane-dispatched-count").textContent === "1" &&
+			document.querySelector("#lane-in-review-count").textContent === "0" &&
+			document.querySelector("#lane-blocked-count").textContent === "0" &&
+			document.querySelector("#lane-dispatched-empty").hidden &&
+			!document.querySelector("#lane-in-review-empty").hidden &&
+			!document.querySelector("#lane-blocked-empty").hidden &&
+			document.querySelector("#diagnostics").hidden === false &&
+			document.querySelector("#diagnostic-list").textContent.includes("malformed-program")`, nil),
 	); err != nil {
-		t.Fatalf("live refresh: %v", err)
+		t.Fatalf("partial overview state: %v", err)
 	}
-	if err := chromedp.Run(browser, chromedp.Click(".program-card:nth-child(2)")); err != nil {
-		t.Fatalf("pointer navigation: %v", err)
+
+	phase.Store(2)
+	if err := chromedp.Run(browser,
+		chromedp.Poll(`document.querySelectorAll(".work-card").length === 1 &&
+			document.querySelector("#connection-status").textContent.includes("Showing the last local snapshot.") &&
+			document.querySelector("#connection-status").textContent.includes("overview refresh unavailable") &&
+			document.querySelector("#diagnostic-list").textContent.includes("malformed-program") &&
+			document.querySelector("#diagnostic-list").textContent.includes("refresh program overview")`, nil,
+			chromedp.WithPollingTimeout(10*time.Second)),
+	); err != nil {
+		t.Fatalf("failed overview refresh retention: %v", err)
+	}
+
+	phase.Store(3)
+	if err := chromedp.Run(browser,
+		chromedp.Poll(`document.querySelectorAll(".work-card").length === 0 &&
+			!document.querySelector("#work-empty").hidden &&
+			!document.querySelector("#lane-dispatched-empty").hidden &&
+			!document.querySelector("#lane-in-review-empty").hidden &&
+			!document.querySelector("#lane-blocked-empty").hidden &&
+			document.querySelector("#diagnostics").hidden`, nil,
+			chromedp.WithPollingTimeout(10*time.Second)),
+	); err != nil {
+		t.Fatalf("fully empty overview work state: %v", err)
 	}
 	if err := chromedp.Run(browser,
+		chromedp.Focus(".program-card:nth-child(2)"),
+		chromedp.Poll(`document.activeElement?.matches(".program-card:nth-child(2)")`, nil),
+		chromedp.KeyEvent(kb.Enter),
+	); err != nil {
+		t.Fatalf("activate focused program card with Enter: %v", err)
+	}
+	var programLocation string
+	if err := chromedp.Run(browser,
 		chromedp.Sleep(250*time.Millisecond),
+		chromedp.Location(&programLocation),
 		chromedp.Poll(`location.pathname === "/programs/beta/"`, nil),
 	); err != nil {
-		t.Fatalf("pointer detail location: %v", err)
+		t.Fatalf("keyboard detail location %q: %v", programLocation, err)
 	}
 	if err := chromedp.Run(browser,
 		chromedp.NavigateBack(),
@@ -327,7 +390,6 @@ func TestBrowserHydratesAndPollsWhenDeferredBundleFails(t *testing.T) {
 	phase.Store(1)
 	nowNanos.Store(initialNow.Add(6 * time.Second).UnixNano())
 	if err := chromedp.Run(browser,
-		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
 		chromedp.Poll(`document.querySelector("#task-total").textContent === "7" &&
 			document.querySelector('.card[data-item="w1"]').textContent.includes(
 				"Updated roadmap task") &&
