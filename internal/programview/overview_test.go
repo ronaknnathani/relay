@@ -40,7 +40,7 @@ func TestBuildOverviewDerivesProgramsAndAttentionWork(t *testing.T) {
 		overviewTestItem("w2", "review", program.PriorityP0, program.ItemInReview, repo, at),
 		overviewTestItem("w3", "dispatch first", program.PriorityP0, program.ItemDispatched, repo, at),
 		overviewTestItem("w4", "done", program.PriorityP0, program.ItemMerged, repo, at),
-		overviewTestItem("w5", "cancelled", program.PriorityP0, program.ItemCancelled, repo, at),
+		overviewTestItem("w5", "canceled", program.PriorityP0, program.ItemCancelled, repo, at),
 	}
 	beta.Items[0].ProjectSlug = "beta-review"
 	beta.Items[0].PRRef = "#2"
