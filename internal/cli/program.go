@@ -997,13 +997,16 @@ func workItemSummary(items []program.WorkItem, primaryRepo string) string {
 	}
 	parts := make([]string, 0, len(items))
 	for _, item := range items {
-		summary := item.ID + " " + item.Title
-		if item.Repo != "" && item.Repo != primaryRepo {
-			summary += " [repo: " + item.Repo + "]"
-		}
-		parts = append(parts, summary)
+		parts = append(parts, item.ID+" "+item.Title+workItemRepoSuffix(item.Repo, primaryRepo))
 	}
 	return strings.Join(parts, "; ")
+}
+
+func workItemRepoSuffix(repo, primaryRepo string) string {
+	if repo == "" || repo == primaryRepo {
+		return ""
+	}
+	return " [repo: " + repo + "]"
 }
 
 func ensureProgramDoesNotExist(slug string) error {

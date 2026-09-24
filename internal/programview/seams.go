@@ -88,10 +88,10 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 		itemID string
 		repo   string
 	}
-	linkedSlugs := make(map[string]linkedChild)
+	linkedChildren := make(map[string]linkedChild)
 	for _, item := range p.Items {
 		if item.ProjectSlug != "" {
-			linkedSlugs[item.ProjectSlug] = linkedChild{itemID: item.ID, repo: item.Repo}
+			linkedChildren[item.ProjectSlug] = linkedChild{itemID: item.ID, repo: item.Repo}
 		}
 	}
 
@@ -100,7 +100,7 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 	active := make(map[string]bool, len(entries))
 	repositories := make(map[string]projectRepositoryState)
 	for _, entry := range entries {
-		expected, linked := linkedSlugs[entry.Name()]
+		expected, linked := linkedChildren[entry.Name()]
 		if !entry.IsDir() || !linked {
 			continue
 		}
@@ -152,7 +152,7 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 	}
 
 	archivedSlugs := make(map[string]bool)
-	for slug := range linkedSlugs {
+	for slug := range linkedChildren {
 		if !active[slug] {
 			archivedSlugs[slug] = true
 		}
@@ -170,7 +170,7 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 		}
 	}
 	for slug := range archivedSlugs {
-		expected := linkedSlugs[slug]
+		expected := linkedChildren[slug]
 		if !archivedEntries[slug] {
 			views = append(views, program.ProjectView{Slug: slug, Repo: expected.repo, Orphaned: true})
 			continue

@@ -15,12 +15,12 @@ func resolveProgramItemRepo(primaryRepo, cwd, requested string) (string, error) 
 	}
 
 	candidate := requested
-	switch {
-	case filepath.IsAbs(requested):
-	case strings.ContainsRune(requested, filepath.Separator):
-		candidate = filepath.Join(cwd, requested)
-	default:
-		candidate = filepath.Join(filepath.Dir(primaryRepo), requested)
+	if !filepath.IsAbs(requested) {
+		if strings.ContainsRune(requested, filepath.Separator) {
+			candidate = filepath.Join(cwd, requested)
+		} else {
+			candidate = filepath.Join(filepath.Dir(primaryRepo), requested)
+		}
 	}
 	candidate = filepath.Clean(candidate)
 	repo, err := gitx.CanonicalRepositoryRoot(candidate)

@@ -126,11 +126,11 @@ func runProgramItemList(out io.Writer, slug, status string, jsonOutput bool) err
 		return writeProgramJSON(out, items)
 	}
 	for _, item := range items {
-		repo := ""
-		if item.Repo != p.Repo {
-			repo = " [repo: " + item.Repo + "]"
-		}
-		fmt.Fprintf(out, "%s  %-10s %-2s %s%s\n", item.ID, item.Status, item.Priority, item.Title, repo)
+		fmt.Fprintf(
+			out, "%s  %-10s %-2s %s%s\n",
+			item.ID, item.Status, item.Priority, item.Title,
+			workItemRepoSuffix(item.Repo, p.Repo),
+		)
 	}
 	return nil
 }
