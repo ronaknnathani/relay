@@ -169,6 +169,10 @@ func prepareDispatchChild(
 		created, err := createDispatchChild(p, item, childSlug, agentName)
 		return created, false, err
 	}
+	repoRoot, err := resolveDispatchItemRepository(item)
+	if err != nil {
+		return projectCreateResult{}, false, err
+	}
 	prepared, err := withProjectLifecycleLock(childSlug, func() (dispatchChildPreparation, error) {
 		manifestPath := project.ManifestPath(project.ActiveDir(), childSlug)
 		manifest, err := project.Load(manifestPath)
@@ -181,7 +185,7 @@ func prepareDispatchChild(
 				name:        childSlug,
 				agent:       agentName,
 				workflow:    defaultWorkflow,
-				repo:        item.Repo,
+				repo:        repoRoot,
 				program:     p.Slug,
 				programItem: item.ID,
 			}, childSlug)
@@ -330,11 +334,9 @@ func createDispatchChild(
 	item program.WorkItem,
 	childSlug, agentName string,
 ) (projectCreateResult, error) {
-	repoRoot, err := gitx.CanonicalRepositoryRoot(item.Repo)
+	repoRoot, err := resolveDispatchItemRepository(item)
 	if err != nil {
-		return projectCreateResult{}, fmt.Errorf(
-			"resolve item repository %s: %w", item.Repo, err,
-		)
+		return projectCreateResult{}, err
 	}
 	return createProject(projectCreateOpts{
 		task:        item.Title,
@@ -345,6 +347,16 @@ func createDispatchChild(
 		program:     p.Slug,
 		programItem: item.ID,
 	})
+}
+
+func resolveDispatchItemRepository(item program.WorkItem) (string, error) {
+	repoRoot, err := gitx.CanonicalRepositoryRoot(item.Repo)
+	if err != nil {
+		return "", fmt.Errorf(
+			"resolve item repository %s: %w", item.Repo, err,
+		)
+	}
+	return repoRoot, nil
 }
 
 func defaultDispatchSlug(programSlug, itemID string) string {

@@ -356,6 +356,95 @@ func TestProgramDispatchFailsClosedWhenSecondaryCheckoutDisappears(t *testing.T)
 	}
 }
 
+func TestProgramDispatchRecreatesPreLinkedChildInSecondaryRepository(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	p, item, _ := createDispatchProgram(t, "governance", 3)
+	secondary, err := filepath.EvalSymlinks(newTestRepo(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	childSlug := "secondary-recreated"
+	for i := range p.Items {
+		if p.Items[i].ID == item.ID {
+			p.Items[i].Repo = secondary
+			item = p.Items[i]
+		}
+	}
+	if err := p.LinkItem(item.ID, childSlug); err != nil {
+		t.Fatal(err)
+	}
+	programPath := program.ManifestPath(program.ActiveDir(), p.Slug)
+	if err := program.Save(programPath, p); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runProgramCommand(t, "dispatch", p.Slug, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), childSlug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Repo != secondary || manifest.Program != p.Slug ||
+		manifest.ProgramItem != item.ID || manifest.Worktree == nil {
+		t.Fatalf("manifest = %+v", manifest)
+	}
+	loaded, err := program.Load(programPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := loaded.Item(item.ID)
+	if got.Status != program.ItemDispatched || got.ProjectSlug != childSlug ||
+		got.ProjectBranch != manifest.Branch || got.ProjectWorktree != *manifest.Worktree {
+		t.Fatalf("item = %+v, manifest = %+v", got, manifest)
+	}
+}
+
+func TestProgramDispatchPreLinkedRecoveryValidatesMissingCheckout(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saveProgramTestConfig(t)
+	p, item, _ := createDispatchProgram(t, "governance", 3)
+	secondary, err := filepath.EvalSymlinks(newTestRepo(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	childSlug := "secondary-missing"
+	for i := range p.Items {
+		if p.Items[i].ID == item.ID {
+			p.Items[i].Repo = secondary
+			item = p.Items[i]
+		}
+	}
+	if err := p.LinkItem(item.ID, childSlug); err != nil {
+		t.Fatal(err)
+	}
+	programPath := program.ManifestPath(program.ActiveDir(), p.Slug)
+	if err := program.Save(programPath, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(secondary); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = runProgramCommand(t, "dispatch", p.Slug, item.ID)
+	if err == nil || !strings.Contains(err.Error(), "resolve item repository "+secondary+":") {
+		t.Fatalf("dispatch error = %v, want repository-qualified validation failure", err)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), childSlug)) {
+		t.Fatalf("failed dispatch created child %q", childSlug)
+	}
+	loaded, loadErr := program.Load(programPath)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	got, _ := loaded.Item(item.ID)
+	if got.Status != program.ItemPending || got.ProjectSlug != childSlug ||
+		got.ProjectBranch != "" || got.ProjectWorktree != "" {
+		t.Fatalf("failed dispatch persisted success state: %+v", got)
+	}
+}
+
 func TestProgramDispatchInsideHerdrPrintsExplicitWorkerStart(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("HERDR_ENV", "1")
