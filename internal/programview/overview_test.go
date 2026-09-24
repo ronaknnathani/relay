@@ -118,6 +118,33 @@ func TestBuildOverviewEmpty(t *testing.T) {
 	}
 }
 
+func TestSortOverviewWorkOrdersPriorityBeforeProgramAndNumericID(t *testing.T) {
+	work := []OverviewWorkItemDTO{
+		{ProgramSlug: "beta", ID: "w1", Status: "blocked", Priority: "P3"},
+		{ProgramSlug: "alpha", ID: "w10", Status: "blocked", Priority: "P1"},
+		{ProgramSlug: "zeta", ID: "w1", Status: "blocked", Priority: "P0"},
+		{ProgramSlug: "alpha", ID: "w2", Status: "blocked", Priority: "P1"},
+		{ProgramSlug: "alpha", ID: "w1", Status: "blocked", Priority: "P2"},
+	}
+
+	sortOverviewWork(work)
+
+	got := make([]string, 0, len(work))
+	for _, item := range work {
+		got = append(got, item.Priority+":"+item.ProgramSlug+":"+item.ID)
+	}
+	want := []string{
+		"P0:zeta:w1",
+		"P1:alpha:w2",
+		"P1:alpha:w10",
+		"P2:alpha:w1",
+		"P3:beta:w1",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
 func TestBuildOverviewIsolatesProgramGoalFailure(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
