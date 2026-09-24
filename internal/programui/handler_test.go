@@ -565,28 +565,41 @@ func TestGitHubCacheTTLAndStaleFallback(t *testing.T) {
 	}
 }
 
-func TestGitHubCacheDeduplicatesEquivalentReferences(t *testing.T) {
+func TestGitHubCacheKeepsPullRequestRepositoryIdentity(t *testing.T) {
 	var calls int
 	cache := newGitHubCache(
 		fetcherFunc(func(context.Context, string, string) (programview.PullRequestDTO, error) {
 			calls++
-			return programview.PullRequestDTO{Number: 42, State: "open"}, nil
+			return programview.PullRequestDTO{Number: calls, State: "open"}, nil
 		}),
 		time.Minute,
 		time.Now,
 	)
-	if _, err := cache.Fetch(context.Background(), "/repo", "#42"); err != nil {
+	local, err := cache.Fetch(context.Background(), "/repo", "#42")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.Fetch(
+	foreign, err := cache.Fetch(
 		context.Background(),
 		"/repo",
-		"https://github.example/pr/42",
-	); err != nil {
+		"https://github.example/other/repo/pull/42",
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 {
-		t.Fatalf("fetch calls = %d, want 1", calls)
+	foreignFiles, err := cache.Fetch(
+		context.Background(),
+		"/repo",
+		"https://github.example/other/repo/pull/42/files",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || local.Number != 1 || foreign.Number != 2 || foreignFiles.Number != 2 {
+		t.Fatalf(
+			"fetch calls = %d, local = %d, foreign = %d, foreign files = %d",
+			calls, local.Number, foreign.Number, foreignFiles.Number,
+		)
 	}
 }
 
