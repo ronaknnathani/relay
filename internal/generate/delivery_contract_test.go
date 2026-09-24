@@ -15,6 +15,7 @@ func TestValidationOwnershipContracts(t *testing.T) {
 		"review owner", "mandatory review axes", "without a separate review worker",
 		"targeted checks", "legacy seven-phase", "standard route",
 		"may legitimately omit `plan`", "--dispatch-token", "route-selected specialist lens",
+		"inline implementation map",
 		"reusable exploration handoff in `route.md`",
 		"relay gate run", "--gate-file", "never a shell",
 	} {
@@ -45,6 +46,22 @@ func TestValidationOwnershipContracts(t *testing.T) {
 		}
 	}
 
+}
+
+func TestPlanningContractIsDecisionDrivenAndCompact(t *testing.T) {
+	root := repoRoot(t)
+	plan := readFile(t, filepath.Join(root, "skills", "plan", "SKILL.md"))
+	for _, want := range []string{
+		"size alone does not justify", "architecture decision", "dependency order",
+		"Testing Decisions", "Implementation Map", "Build Sequence", "Out of Scope",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("plan missing compact decision contract %q", want)
+		}
+	}
+	if got := len(strings.Fields(plan)); got > 800 {
+		t.Errorf("plan skill words = %d, want <= 800", got)
+	}
 }
 
 func TestReviewUsesRouteSelectedRolesAndMandatoryAxes(t *testing.T) {

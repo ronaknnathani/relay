@@ -93,13 +93,18 @@ Each record uses the same fields so additions and retirements remain reviewable.
 - Migration impact: No second local review; successful PR recording is guarded.
 
 ### `plan`
-- Observed aggregate use: Material for broader design work and often redundant for explicit small changes.
+- Observed aggregate use: Material for broader design and dependency work, but planning commonly
+  matched implementation time on short mechanical changes.
 - Distinct contribution: Commits architecture and an executable task sequence.
-- Overlap: Repeated exploration and trivial restatement.
+- Overlap: Repeated exploration, trivial restatement, and detailed task boilerplate that
+  implementation could derive directly for settled mechanical work.
 - Feedback relevance: Captures rationale, alternatives, and dependencies.
 - Safety role: Prevents silent design invention.
 - Decision: Conditionally routed.
-- Migration impact: Skipped for easy work; selected plans still require the normal handoff.
+- Migration impact: Skipped for easy work and for size-only standard work. Selected plans remain for
+  unresolved architecture, dependency-sensitive sequencing, planning-relevant risk, stacks, or an
+  explicitly forced full workflow. Standard work without a plan records a lightweight implementation
+  map under the implementation owner.
 
 ### `pr-fix`
 - Observed aggregate use: Review, CI, and conflict remediation.

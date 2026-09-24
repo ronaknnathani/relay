@@ -1264,8 +1264,8 @@ func TestRouteRefreshEscalatesOnActualDiffAndNeverDowngrades(t *testing.T) {
 		!slices.Contains(got.Route.EscalationReasons, "current repository facts require a more conservative route") {
 		t.Fatalf("equal-class refresh erased escalation history: %+v", got.Route)
 	}
-	if got.Phases["plan"].Status != project.PhasePending {
-		t.Fatalf("refresh removed a conservatively selected plan phase: %+v", got.Phases["plan"])
+	if got.Phases["plan"].Status != project.PhaseSkipped {
+		t.Fatalf("size-only refresh selected a standalone plan phase: %+v", got.Phases["plan"])
 	}
 }
 

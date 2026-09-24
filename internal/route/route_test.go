@@ -286,18 +286,28 @@ func TestSelectionAndOwnershipByClass(t *testing.T) {
 	standardInput := easyInput()
 	standardInput.PredictedChangedLines = 200
 	standardInput.ActualChangedLines = 200
-	standardInput.RequestedBehaviorExplicit = false
 	standard, err := Classify(standardInput)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if standard.Class != ClassStandard ||
-		!slices.Contains(standard.SelectedPhases, "clarify") ||
-		!slices.Contains(standard.SelectedPhases, "plan") ||
+		slices.Contains(standard.SelectedPhases, "clarify") ||
+		slices.Contains(standard.SelectedPhases, "plan") ||
 		slices.Contains(standard.SelectedPhases, "simplify") ||
 		standard.ReviewOwner != project.EvidenceOwnerReview ||
 		standard.ValidationOwner != project.EvidenceOwnerValidate {
 		t.Fatalf("standard decision = %+v", standard)
+	}
+
+	plannedInput := easyInput()
+	plannedInput.UnresolvedDecision = true
+	planned, err := Classify(plannedInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(planned.SelectedPhases, "clarify") ||
+		!slices.Contains(planned.SelectedPhases, "plan") {
+		t.Fatalf("unresolved decision did not select clarification and planning: %+v", planned)
 	}
 
 	highInput := easyInput()

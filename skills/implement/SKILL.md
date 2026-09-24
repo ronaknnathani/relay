@@ -29,7 +29,10 @@ did.
    route, use the task, requirements, and reusable exploration handoff in `route.md`; routing already performed the one allowed
    exploration. On another route without `plan`, also consume its fresh exploration artifact. If
    those selected inputs leave an unresolved design choice or omit a necessary step, surface the gap
-   rather than inventing a design. Turn the settled work into an ordered checklist of slices.
+   rather than inventing a design. Turn the settled work into an ordered checklist of slices. When a
+   standard route legitimately omits `plan`, first write a lightweight inline implementation map in
+   `implementation.md`: the files/components to change, the highest useful test seam, and the
+   dependency order. This is implementation bookkeeping, not a new architecture phase.
 2. **Load coding guidance.** Read the repo's `AGENTS.md` when present, then read global guidance from
    `~/AGENTS.md` or `~/.config/agents/AGENTS.md` when present. Repo guidance takes precedence over
    global guidance. Treat these files as implementation constraints for scope, style, tests, errors,

@@ -217,8 +217,7 @@ func RequiredRoutePhases(class string, facts RouteFacts, forcedFull bool) []stri
 		if !facts.RequestedBehaviorExplicit || facts.UnresolvedDecision {
 			selected = append(selected, "clarify")
 		}
-		if facts.UnresolvedDecision || RouteSizeExceedsEasy(facts) ||
-			hasPlanningRisk(facts.RiskTriggers) {
+		if facts.UnresolvedDecision || hasPlanningRisk(facts.RiskTriggers) {
 			selected = append(selected, "plan")
 		}
 		selected = append(selected, "implement")
@@ -231,7 +230,7 @@ func RequiredRoutePhases(class string, facts RouteFacts, forcedFull bool) []stri
 		if !facts.RequestedBehaviorExplicit || facts.UnresolvedDecision {
 			selected = append(selected, "clarify")
 		}
-		if facts.UnresolvedDecision || RouteSizeExceedsEasy(facts) {
+		if facts.UnresolvedDecision {
 			selected = append(selected, "plan")
 		}
 		selected = append(selected, "implement")

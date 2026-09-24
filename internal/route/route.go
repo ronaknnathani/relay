@@ -238,7 +238,7 @@ func phaseReasons(class string, selected []string, input Input) map[string]strin
 	reasons["plan"] = selectedReason(
 		selected,
 		"plan",
-		"design or change breadth requires a plan",
+		"an unresolved architecture, dependency, or risk decision requires a plan",
 		"no separate design decision is required",
 	)
 	reasons["simplify"] = selectedReason(
