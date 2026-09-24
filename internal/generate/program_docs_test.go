@@ -277,6 +277,65 @@ func TestProgramDocsDescribeChangeRoutingAndMergedCleanup(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+
+			body := string(data)
+			for _, want := range test.required {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s is missing %q", test.path, want)
+				}
+			}
+
+			for _, forbidden := range test.forbidden {
+				if strings.Contains(body, forbidden) {
+					t.Errorf("%s still contains %q", test.path, forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestProgramDocsDescribeMultiRepositoryPreparation(t *testing.T) {
+	root := repoRoot(t)
+	for _, test := range []struct {
+		path      string
+		required  []string
+		forbidden []string
+	}{
+		{
+			path: filepath.Join("docs", "programs.md"),
+			required: []string{
+				"--repo /path/to/client-repository",
+				"program's primary repository",
+				"Dependencies and the program-wide",
+				"Reuse an existing valid checkout",
+				"clone its known remote as a sibling",
+				"git -C \"$TARGET\" rev-parse --show-toplevel",
+				"checkout validation fails",
+				"repository-local pull-request numbers remain distinct",
+			},
+			forbidden: []string{
+				"No multi-repository execution",
+				"Later: multi-repository programs",
+			},
+		},
+		{
+			path: filepath.Join("skills", "tl", "SKILL.md"),
+			required: []string{
+				"Assign the correct repository to every work item",
+				"reuse a known valid checkout",
+				"never clone a duplicate",
+				"beneath the primary repository's parent",
+				"git -C <path> rev-parse --show-toplevel",
+				`--repo "<canonical-repository-root>"`,
+				"Do not add or dispatch the item",
+			},
+		},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(root, test.path))
+			if err != nil {
+				t.Fatal(err)
+			}
 			body := string(data)
 			for _, want := range test.required {
 				if !strings.Contains(body, want) {

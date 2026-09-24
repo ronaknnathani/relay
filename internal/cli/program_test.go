@@ -756,3 +756,15 @@ func TestManagedProgramCommandsRejectAgentsWithoutHerdrIntegration(t *testing.T)
 		t.Fatalf("program new with codex error = %v", err)
 	}
 }
+
+func TestWorkItemSummaryLabelsSecondaryRepositories(t *testing.T) {
+	items := []program.WorkItem{
+		{ID: "w1", Title: "Primary", Repo: "/repos/primary"},
+		{ID: "w2", Title: "Secondary", Repo: "/repos/secondary"},
+	}
+	got := workItemSummary(items, "/repos/primary")
+	want := "w1 Primary; w2 Secondary [repo: /repos/secondary]"
+	if got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+}

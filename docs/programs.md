@@ -821,7 +821,32 @@ relay program item add auth-platform \
   --priority P1 \
   --depends-on w1 \
   --contract architecture@v1
+
+relay program item add auth-platform \
+  "Publish the client integration" \
+  --priority P1 \
+  --depends-on w2 \
+  --repo /path/to/client-repository
 ```
+
+`--repo` selects an existing local Git repository for that item. Relay records its canonical root;
+when omitted, the item uses the program's primary repository. Dependencies and the program-wide
+open-PR capacity limit span all item repositories.
+
+Reuse an existing valid checkout wherever it already lives. If the required repository is absent,
+clone its known remote as a sibling beneath the primary repository's parent, verify that the target
+is the Git root, then pass that canonical path to `item add`:
+
+```bash
+PRIMARY="$(git -C /path/to/primary rev-parse --show-toplevel)"
+TARGET="$(dirname "$PRIMARY")/client-repository"
+git clone <known-remote> "$TARGET"
+TARGET="$(git -C "$TARGET" rev-parse --show-toplevel)"
+relay program item add auth-platform "Publish the client integration" --repo "$TARGET"
+```
+
+Relay does not infer a remote or create a success-shaped item when checkout validation fails. Fix the
+checkout and retry before dispatching the affected item.
 
 Adjust work when needed:
 
@@ -991,10 +1016,18 @@ worker is still running: retry later rather than forcing it.
 - No Beads or Dolt integration.
 - No scheduled or standing QA agent.
 - No explicit QA work-item type.
-- No multi-repository execution, despite reserving a repository field in the model.
 
 These limitations are deliberate. V1.1 proves the governance, contract, dependency, and delegation
 model before adding unattended machinery.
+
+## Multi-repository execution
+
+The program's `repo` remains its primary repository and the working directory for the tech lead and
+program-level runtime. Each work item may record a different canonical local repository. Dispatch,
+workers, pull-request observation, requested-change follow-ups, archival, branch cleanup, and
+worktree cleanup use the linked item's repository. Dependency ordering and `max_open_prs` remain
+program-wide, so a merged item in one repository can ready a dependent item in another, and equal
+repository-local pull-request numbers remain distinct.
 
 ## Deferred roadmap
 
@@ -1045,11 +1078,6 @@ If adopted:
 - Beads owns goals, work items, dependencies, priorities, gates, messages, and provenance.
 - Relay continues to own contracts, worktrees, branches, sessions, workflow phases, PR capacity,
   controller cursors, process leases, and GitHub reconciliation.
-
-### Later: multi-repository programs
-
-Permit work items to target different repositories, then add cross-repository dependency and capacity
-semantics only after a real program requires them.
 
 ## Design invariants
 
