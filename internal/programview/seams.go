@@ -129,16 +129,17 @@ func projectViews(p program.Program, load PRIndexLoader) ([]program.ProjectView,
 		if !found {
 			repository = loadProjectRepositoryState(manifest.Repo, manifest.BaseBranch == "")
 			repositories[manifest.Repo] = repository
-		} else if manifest.BaseBranch == "" && repository.defaultBranch == "" && repository.err == nil {
+		} else if manifest.BaseBranch == "" && repository.defaultBranch == "" &&
+			repository.err == nil && repository.defaultBranchErr == nil {
 			repository = loadProjectRepositoryState(manifest.Repo, true)
 			repositories[manifest.Repo] = repository
 		}
-		if repository.err != nil {
+		if repositoryErr := repository.errorFor(manifest.BaseBranch == ""); repositoryErr != nil {
 			warnings = append(warnings, ProjectWarning{
 				ProjectSlug: entry.Name(),
 				Message: fmt.Sprintf(
 					"inspect active project %q repository %s: %v",
-					entry.Name(), manifest.Repo, repository.err,
+					entry.Name(), manifest.Repo, repositoryErr,
 				),
 			})
 			views = append(views, unavailableProjectView(p, entry.Name(), expected.repo, manifest))
@@ -314,15 +315,16 @@ func ActiveProjectView(manifest project.Manifest) (program.ProjectView, error) {
 
 func activeProjectView(manifest project.Manifest, statePath string) (program.ProjectView, error) {
 	repository := loadProjectRepositoryState(manifest.Repo, manifest.BaseBranch == "")
-	if repository.err != nil {
-		return program.ProjectView{}, repository.err
+	if err := repository.errorFor(manifest.BaseBranch == ""); err != nil {
+		return program.ProjectView{}, err
 	}
 	return activeProjectViewWithRepository(manifest, statePath, repository)
 }
 
 type projectRepositoryState struct {
-	defaultBranch string
-	err           error
+	defaultBranch    string
+	defaultBranchErr error
+	err              error
 }
 
 func loadProjectRepositoryState(repo string, needsDefaultBranch bool) projectRepositoryState {
@@ -335,9 +337,19 @@ func loadProjectRepositoryState(repo string, needsDefaultBranch bool) projectRep
 	}
 	defaultBranch, err := gitx.DetectDefaultBranchWithError(repo)
 	if err != nil {
-		return projectRepositoryState{err: err}
+		return projectRepositoryState{defaultBranchErr: err}
 	}
 	return projectRepositoryState{defaultBranch: defaultBranch}
+}
+
+func (s projectRepositoryState) errorFor(needsDefaultBranch bool) error {
+	if s.err != nil {
+		return s.err
+	}
+	if needsDefaultBranch {
+		return s.defaultBranchErr
+	}
+	return nil
 }
 
 func activeProjectViewWithRepository(

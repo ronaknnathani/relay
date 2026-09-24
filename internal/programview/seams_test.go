@@ -475,6 +475,64 @@ func TestProjectViewsMarksDeletedItemRepositoryUnavailable(t *testing.T) {
 	}
 }
 
+func TestProjectViewsDefaultBranchFailureDoesNotDisableRepositorySiblings(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := t.TempDir()
+	runProgramViewTestGit(t, repo, "init", "-b", "develop")
+	runProgramViewTestGit(t, repo, "config", "user.name", "Relay Test")
+	runProgramViewTestGit(t, repo, "config", "user.email", "relay@example.com")
+	runProgramViewTestGit(t, repo, "commit", "--allow-empty", "-m", "initial")
+
+	p, err := program.New("program", "Program", repo, "copilot", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StatePendingApproval, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StateActive, "ceo"); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := p.AddItem(program.WorkItem{Title: "Legacy", Priority: program.PriorityP0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicit, err := p.AddItem(program.WorkItem{Title: "Explicit", Priority: program.PriorityP0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(legacy.ID, "a-legacy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(explicit.ID, "z-explicit"); err != nil {
+		t.Fatal(err)
+	}
+	saveProjectManifest(t, project.ActiveDir(), project.Manifest{
+		Slug: "a-legacy", Repo: repo, Branch: "develop",
+		Program: p.Slug, ProgramItem: legacy.ID,
+	})
+	saveProjectManifest(t, project.ActiveDir(), project.Manifest{
+		Slug: "z-explicit", Repo: repo, Branch: "develop", BaseBranch: "develop",
+		Program: p.Slug, ProgramItem: explicit.ID,
+	})
+
+	views, warnings, err := projectViews(p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []program.ProjectView{
+		{Slug: "a-legacy", Repo: repo, Unavailable: true},
+		{Slug: "z-explicit", Repo: repo},
+	}
+	if !reflect.DeepEqual(views, want) {
+		t.Fatalf("views = %+v, want %+v", views, want)
+	}
+	if len(warnings) != 1 || warnings[0].ProjectSlug != "a-legacy" ||
+		!strings.Contains(warnings[0].Message, "cannot determine default branch") {
+		t.Fatalf("warnings = %+v", warnings)
+	}
+}
+
 func TestProjectViewsWithPRIndexUsesGitHubLifecycleForLinkedCapacity(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newProgramViewTestRepo(t)
