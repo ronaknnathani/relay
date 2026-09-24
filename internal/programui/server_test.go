@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -154,6 +155,57 @@ func TestServeUnifiedModeIsLazyAndUsesOneServer(t *testing.T) {
 	}
 }
 
+func TestServeUnifiedModeDiscoversOnlyActivePrograms(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, fixture := range []struct {
+		slug  string
+		title string
+	}{
+		{slug: "beta", title: "Beta"},
+		{slug: "alpha", title: "Alpha"},
+		{slug: "archived", title: "Archived"},
+	} {
+		repo := filepath.Join(home, "repos", fixture.slug)
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		current, err := program.New(fixture.slug, fixture.title, repo, "copilot", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := program.Create(current); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(program.ArchivedDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(
+		program.ProgramDir(program.ActiveDir(), "archived"),
+		program.ProgramDir(program.ArchivedDir(), "archived"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := serveOverviewSnapshot(t)
+	if len(snapshot.Programs) != 2 {
+		t.Fatalf("overview program count = %d, want 2", len(snapshot.Programs))
+	}
+	if got := []string{snapshot.Programs[0].Slug, snapshot.Programs[1].Slug}; !slices.Equal(got, []string{"alpha", "beta"}) {
+		t.Fatalf("overview programs = %v, want [alpha beta]", got)
+	}
+}
+
+func TestServeUnifiedModeTreatsMissingActiveDirectoryAsEmpty(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	snapshot := serveOverviewSnapshot(t)
+	if len(snapshot.Programs) != 0 || len(snapshot.Work) != 0 || len(snapshot.Diagnostics) != 0 {
+		t.Fatalf("missing active directory overview = %+v, want empty", snapshot)
+	}
+}
+
 func TestServeUnifiedModeFailsBeforeListeningWhenOverviewFails(t *testing.T) {
 	output := newLineWriter()
 	err := Serve(context.Background(), Options{
@@ -171,6 +223,46 @@ func TestServeUnifiedModeFailsBeforeListeningWhenOverviewFails(t *testing.T) {
 		t.Fatalf("server printed URL before failed overview: %q", line)
 	default:
 	}
+}
+
+func serveOverviewSnapshot(t *testing.T) programview.OverviewSnapshot {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	output := newLineWriter()
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, Options{Port: 0, Open: false, Out: output})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("unified server did not stop")
+		}
+	})
+
+	url := waitForProgramURL(t, output, done)
+	response, err := http.Get(url + "/api/overview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Errorf("close overview response: %v", err)
+		}
+	}()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("overview status = %d", response.StatusCode)
+	}
+	var snapshot programview.OverviewSnapshot
+	if err := json.NewDecoder(response.Body).Decode(&snapshot); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
 }
 
 func TestServeWarnsAndContinuesWhenBrowserOpenFails(t *testing.T) {
