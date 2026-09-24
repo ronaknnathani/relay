@@ -176,7 +176,7 @@ func runGC() error {
 				evaluationErr = fmt.Errorf("project %s has no start_sha", m.Slug)
 			} else {
 				var branchTip string
-				branchTip, merged, evaluationErr = gitx.WorkMergedTip(
+				branchTip, merged, evaluationErr = gitx.WorkMergedInto(
 					m.Repo, m.Branch, refresh.baseCommit, m.StartSHA,
 				)
 				if merged {
@@ -188,7 +188,7 @@ func runGC() error {
 			}
 		}
 		var prErr error
-		if !merged && !errors.Is(evaluationErr, gitx.ErrInvalidWorkStart) {
+		if !merged {
 			var evidence recordedPullRequestEvidence
 			evidence, prErr = resolveRecordedPullRequestEvidence(m, m.Slug)
 			if evidence.Merged && prErr == nil {
@@ -197,16 +197,15 @@ func runGC() error {
 			}
 		}
 		if !merged {
-			if baseErr != nil || refresh.err != nil {
-				hadErrors = true
+			detail := ""
+			if evaluationErr != nil {
+				detail = ": " + evaluationErr.Error()
 			}
-			for _, err := range []error{evaluationErr, prErr} {
-				if err == nil {
-					continue
-				}
-				ui.Warn("evaluate project %s: %s", m.Slug, err)
-				hadErrors = true
+			ui.Warn("project %s: merge could not be verified%s", m.Slug, detail)
+			if prErr != nil {
+				ui.Warn("project %s recorded pull request lookup detail: %s", m.Slug, prErr)
 			}
+			hadErrors = true
 			continue
 		}
 		fmt.Printf("[relay] Branch %s is merged. Archiving project %s.\n", m.Branch, m.Slug)
