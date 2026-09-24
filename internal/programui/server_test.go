@@ -161,10 +161,15 @@ func TestServeUnifiedModeDiscoversOnlyActivePrograms(t *testing.T) {
 	for _, fixture := range []struct {
 		slug  string
 		title string
+		state program.State
 	}{
-		{slug: "beta", title: "Beta"},
-		{slug: "alpha", title: "Alpha"},
-		{slug: "archived", title: "Archived"},
+		{slug: "draft", title: "Draft", state: program.StateDraft},
+		{slug: "pending-approval", title: "Pending approval", state: program.StatePendingApproval},
+		{slug: "active", title: "Active", state: program.StateActive},
+		{slug: "held", title: "Held", state: program.StateHeld},
+		{slug: "completed", title: "Completed", state: program.StateCompleted},
+		{slug: "abandoned", title: "Abandoned", state: program.StateAbandoned},
+		{slug: "archived", title: "Archived", state: program.StateDraft},
 	} {
 		repo := filepath.Join(home, "repos", fixture.slug)
 		if err := os.MkdirAll(repo, 0o755); err != nil {
@@ -173,6 +178,31 @@ func TestServeUnifiedModeDiscoversOnlyActivePrograms(t *testing.T) {
 		current, err := program.New(fixture.slug, fixture.title, repo, "copilot", 1)
 		if err != nil {
 			t.Fatal(err)
+		}
+		switch fixture.state {
+		case program.StateDraft:
+		case program.StatePendingApproval:
+			if err := current.Transition(program.StatePendingApproval, ""); err != nil {
+				t.Fatal(err)
+			}
+		case program.StateActive, program.StateHeld, program.StateCompleted:
+			if err := current.Transition(program.StatePendingApproval, ""); err != nil {
+				t.Fatal(err)
+			}
+			if err := current.Transition(program.StateActive, "ceo"); err != nil {
+				t.Fatal(err)
+			}
+			if fixture.state != program.StateActive {
+				if err := current.Transition(fixture.state, "tl"); err != nil {
+					t.Fatal(err)
+				}
+			}
+		case program.StateAbandoned:
+			if err := current.Transition(program.StateAbandoned, "tl"); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatalf("unsupported fixture state %q", fixture.state)
 		}
 		if err := program.Create(current); err != nil {
 			t.Fatal(err)
@@ -189,11 +219,23 @@ func TestServeUnifiedModeDiscoversOnlyActivePrograms(t *testing.T) {
 	}
 
 	snapshot := serveOverviewSnapshot(t)
-	if len(snapshot.Programs) != 2 {
-		t.Fatalf("overview program count = %d, want 2", len(snapshot.Programs))
+	if len(snapshot.Programs) != 6 {
+		t.Fatalf("overview program count = %d, want 6", len(snapshot.Programs))
 	}
-	if got := []string{snapshot.Programs[0].Slug, snapshot.Programs[1].Slug}; !slices.Equal(got, []string{"alpha", "beta"}) {
-		t.Fatalf("overview programs = %v, want [alpha beta]", got)
+	got := make([]string, 0, len(snapshot.Programs))
+	for _, current := range snapshot.Programs {
+		got = append(got, current.Slug+":"+current.State)
+	}
+	want := []string{
+		"abandoned:abandoned",
+		"active:active",
+		"completed:completed",
+		"draft:draft",
+		"held:held",
+		"pending-approval:pending-approval",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("overview programs = %v, want %v", got, want)
 	}
 }
 

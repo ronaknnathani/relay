@@ -44,7 +44,8 @@ func TestOverviewBrowser(t *testing.T) {
 					Summary: "The first active program.", State: "active",
 					UpdatedAt: "2026-09-24T16:00:00Z",
 					Progress:  programview.ProgressDTO{Total: 2, Merged: 1, Completed: 2, Percent: 50},
-					InFlight:  1, NextAction: "reconcile in-flight work",
+					Ready:     3, InFlight: 1, Blocked: 2, OpenDecisions: 4,
+					NextAction: "reconcile in-flight work",
 				},
 				{
 					Slug: "beta", Title: "Beta", DisplayTitle: "Beta program",
@@ -159,10 +160,28 @@ func TestOverviewBrowser(t *testing.T) {
 		programs: Array.from(document.querySelectorAll(".program-card h3"), (node) => node.textContent),
 		lanes: Array.from(document.querySelectorAll(".lane > header h3"), (node) => node.textContent),
 		work: Array.from(document.querySelectorAll(".work-card"), (node) => node.getAttribute("href")),
+		alpha: (() => {
+			const card = document.querySelector('.program-card[href="programs/alpha/"]');
+			return {
+				href: card.getAttribute("href"),
+				state: card.querySelector(".program-state").textContent,
+				updated: card.querySelector(".program-updated").textContent,
+				title: card.querySelector("h3").textContent,
+				slug: card.querySelector(".program-slug").textContent,
+				summary: card.querySelector(".program-summary").textContent,
+				stats: Array.from(card.querySelectorAll(".program-card__stats span"), (stat) => ({
+					value: stat.querySelector("strong").textContent,
+					label: stat.querySelector("small").textContent,
+				})),
+				progress: card.querySelector(".program-progress").getAttribute("aria-label"),
+				next: card.querySelectorAll(":scope > .program-meta")[1].textContent,
+				queue: card.querySelectorAll(":scope > .program-meta")[2].textContent,
+			};
+		})(),
 	})`, &initial)); err != nil {
 		t.Fatal(err)
 	}
-	if initial != `{"programs":["Alpha program","Beta program"],"lanes":["Dispatched","In review","Blocked"],"work":["programs/alpha/#task=w1","programs/alpha/#task=w2","programs/beta/#task=w3"]}` {
+	if initial != `{"programs":["Alpha program","Beta program"],"lanes":["Dispatched","In review","Blocked"],"work":["programs/alpha/#task=w1","programs/alpha/#task=w2","programs/beta/#task=w3"],"alpha":{"href":"programs/alpha/","state":"active","updated":"2026-09-24T16:00:00Z","title":"Alpha program","slug":"alpha","summary":"The first active program.","stats":[{"value":"50%","label":"merged"},{"value":"1","label":"in flight"},{"value":"2","label":"blocked"},{"value":"4","label":"decisions"}],"progress":"50% merged","next":"Next: reconcile in-flight work","queue":"3 ready · 1 of 2 merged"}}` {
 		t.Fatalf("overview DOM = %s", initial)
 	}
 
