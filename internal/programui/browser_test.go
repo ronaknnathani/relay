@@ -84,6 +84,10 @@ func TestOverviewBrowser(t *testing.T) {
 			})
 			snapshot.Work = []programview.OverviewWorkItemDTO{}
 			snapshot.GeneratedAt = "2026-09-24T17:03:00Z"
+		case 4:
+			snapshot.Programs = []programview.ProgramOverviewDTO{}
+			snapshot.Work = []programview.OverviewWorkItemDTO{}
+			snapshot.GeneratedAt = "2026-09-24T17:04:00Z"
 		}
 		return snapshot, nil
 	}
@@ -262,6 +266,17 @@ func TestOverviewBrowser(t *testing.T) {
 		chromedp.Poll(`location.pathname === "/"`, nil),
 	); err != nil {
 		t.Fatalf("return from pointer navigation: %v", err)
+	}
+
+	phase.Store(4)
+	if err := chromedp.Run(browser,
+		chromedp.Poll(`document.querySelector("#program-count").textContent === "0" &&
+			document.querySelectorAll(".program-card").length === 0 &&
+			!document.querySelector("#program-empty").hidden &&
+			document.querySelector("#program-empty").textContent === "No active programs."`, nil,
+			chromedp.WithPollingTimeout(10*time.Second)),
+	); err != nil {
+		t.Fatalf("empty program overview state: %v", err)
 	}
 }
 
