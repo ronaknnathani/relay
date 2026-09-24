@@ -15,9 +15,7 @@ func TestBuildDoesNotCreateMissingMailboxDirectories(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	repo := filepath.Join(home, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initProgramViewTestRepo(t, repo)
 	p, err := program.New("readonly", "Read only", repo, "copilot", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +36,7 @@ func TestBuildDoesNotCreateMissingMailboxDirectories(t *testing.T) {
 	worktree := filepath.Join(repo, ".worktrees", "child")
 	if err := project.Save(project.ManifestPath(project.ActiveDir(), "child"), project.Manifest{
 		Slug: "child", Repo: repo, Branch: "feature", Worktree: &worktree,
+		Program: "readonly", ProgramItem: "w1",
 		PhasesCompleted: []string{}, PhasesRemaining: []string{},
 	}); err != nil {
 		t.Fatal(err)

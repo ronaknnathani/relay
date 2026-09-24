@@ -184,6 +184,19 @@ func loadProgramChangeTarget(programSlug, itemID string) (programChangeTarget, e
 			programSlug, itemID, manifest.Repo, item.Repo,
 		)
 	}
+	if err := validateProgramWorkerStartIdentity(item, manifest); err != nil {
+		return programChangeTarget{}, fmt.Errorf(
+			"request change for %s/%s: child project resource identity is unsafe: %w",
+			programSlug, itemID, err,
+		)
+	}
+	expectedRepository, err := programview.GitHubRepository(item.Repo)
+	if err != nil {
+		return programChangeTarget{}, fmt.Errorf(
+			"request change for %s/%s: resolve item GitHub repository: %w",
+			programSlug, itemID, err,
+		)
+	}
 	inspection, err := inspectProjectPR(context.Background(), item.ProjectSlug)
 	if err != nil {
 		return programChangeTarget{}, fmt.Errorf(
@@ -210,6 +223,14 @@ func loadProgramChangeTarget(programSlug, itemID string) (programChangeTarget, e
 			programSlug, itemID, inspection.Number, item.PRRef, programSlug,
 		)
 	}
+	if err := validateProgramChangePullRequestIdentity(
+		expectedRepository, item.PRRef, inspection,
+	); err != nil {
+		return programChangeTarget{}, fmt.Errorf(
+			"request change for %s/%s: %w",
+			programSlug, itemID, err,
+		)
+	}
 	return programChangeTarget{
 		program:    p,
 		path:       path,
@@ -219,6 +240,45 @@ func loadProgramChangeTarget(programSlug, itemID string) (programChangeTarget, e
 		archived:   pathWithinDir(manifestPath, project.ArchivedDir()),
 		inspection: inspection,
 	}, nil
+}
+
+func validateProgramChangePullRequestIdentity(
+	expectedRepository, recordedRef string,
+	inspection prwatch.Inspection,
+) error {
+	_, expectedName, found := strings.Cut(expectedRepository, "/")
+	if !found || expectedName == "" {
+		return fmt.Errorf("resolved GitHub repository %q has no owner/name identity", expectedRepository)
+	}
+	if !strings.EqualFold(strings.TrimSpace(inspection.Repo), expectedName) {
+		return fmt.Errorf(
+			"GitHub inspected repository %q, want %q",
+			inspection.Repo, expectedName,
+		)
+	}
+	inspectionRepository, err := programview.PullRequestRepository(inspection.URL)
+	if err != nil {
+		return fmt.Errorf("inspect pull request URL %q: %w", inspection.URL, err)
+	}
+	if !strings.EqualFold(inspectionRepository, expectedRepository) {
+		return fmt.Errorf(
+			"GitHub inspected pull request URL repository %q, want %q",
+			inspectionRepository, expectedRepository,
+		)
+	}
+	if strings.HasPrefix(strings.TrimSpace(recordedRef), "https://") {
+		recordedRepository, err := programview.PullRequestRepository(recordedRef)
+		if err != nil {
+			return fmt.Errorf("recorded pull request URL %q: %w", recordedRef, err)
+		}
+		if !strings.EqualFold(recordedRepository, expectedRepository) {
+			return fmt.Errorf(
+				"recorded pull request URL repository %q, want %q",
+				recordedRepository, expectedRepository,
+			)
+		}
+	}
+	return nil
 }
 
 // routeChangeToSameWorker keeps one work item, one branch, and one worker. The

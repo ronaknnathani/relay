@@ -3,6 +3,7 @@ package patrol
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,7 +30,7 @@ func (i mergedPRIndex) Lookup(string) (programview.PRState, bool) {
 // without the patrol itself writing a single program file.
 func TestMergedPullRequestUnlocksDependentWorkAndWakesTheLiveTL(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	repo := t.TempDir()
+	repo := newMergeProgressionRepo(t)
 	p := mergeProgressionProgram(t, repo)
 	manifestPath := program.ManifestPath(program.ActiveDir(), p.Slug)
 	before, err := os.ReadFile(manifestPath)
@@ -132,7 +133,7 @@ func TestMergedPullRequestUnlocksDependentWorkAndWakesTheLiveTL(t *testing.T) {
 // there is no ready work and no reason to wake anyone.
 func TestOpenPullRequestLeavesDependentWorkBlockedAndTheTLAsleep(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	repo := t.TempDir()
+	repo := newMergeProgressionRepo(t)
 	p := mergeProgressionProgram(t, repo)
 
 	start := time.Date(2026, 9, 1, 4, 45, 0, 0, time.UTC)
@@ -245,4 +246,21 @@ func mergeProgressionProgram(t *testing.T, repo string) program.Program {
 		t.Fatal(err)
 	}
 	return p
+}
+
+func newMergeProgressionRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.name", "Relay Test"},
+		{"config", "user.email", "relay@example.com"},
+		{"commit", "--allow-empty", "-m", "initial"},
+	} {
+		commandArgs := append([]string{"-C", repo}, args...)
+		if output, err := exec.Command("git", commandArgs...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	return repo
 }

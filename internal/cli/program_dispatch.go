@@ -330,12 +330,18 @@ func createDispatchChild(
 	item program.WorkItem,
 	childSlug, agentName string,
 ) (projectCreateResult, error) {
+	repoRoot, err := gitx.CanonicalRepositoryRoot(item.Repo)
+	if err != nil {
+		return projectCreateResult{}, fmt.Errorf(
+			"resolve item repository %s: %w", item.Repo, err,
+		)
+	}
 	return createProject(projectCreateOpts{
 		task:        item.Title,
 		name:        childSlug,
 		agent:       agentName,
 		workflow:    defaultWorkflow,
-		repo:        item.Repo,
+		repo:        repoRoot,
 		program:     p.Slug,
 		programItem: item.ID,
 	})

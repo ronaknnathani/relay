@@ -100,7 +100,11 @@ func TestGHPRIndexLoaderQueriesOnlyRecordedReferences(t *testing.T) {
 		cache: newPRStateCache(time.Minute, time.Now),
 	}
 
-	index := loader.Load("/repo", []string{"#7", "https://github.example/acme/repo/pull/2048", "#7", "  "})
+	result := loader.Load("/repo", []string{"#7", "https://github.example/acme/repo/pull/2048", "#7", "  "})
+	if result.Index == nil || len(result.Errors) != 0 {
+		t.Fatalf("load result = %+v, want resolved recorded references", result)
+	}
+	index := result.Index
 	if index == nil {
 		t.Fatal("index = nil, want resolved recorded references")
 	}
@@ -156,7 +160,7 @@ func TestGHPRIndexLoaderReusesCachedStateWithinTTL(t *testing.T) {
 	}
 
 	for range 3 {
-		index := loader.Load("/repo", []string{"#7"})
+		index := loader.Load("/repo", []string{"#7"}).Index
 		if state, found := index.Lookup("#7"); !found || state != PRStateOpen {
 			t.Fatalf("cached lookup = (%q, %t)", state, found)
 		}
@@ -166,14 +170,14 @@ func TestGHPRIndexLoaderReusesCachedStateWithinTTL(t *testing.T) {
 	}
 
 	now = now.Add(31 * time.Second)
-	if index := loader.Load("/repo", []string{"#7"}); index == nil {
+	if index := loader.Load("/repo", []string{"#7"}).Index; index == nil {
 		t.Fatal("index = nil after TTL expiry")
 	}
 	if runs != 2 {
 		t.Fatalf("gh runs after the TTL = %d, want 2", runs)
 	}
 
-	if index := loader.Load("/other-repo", []string{"#7"}); index == nil {
+	if index := loader.Load("/other-repo", []string{"#7"}).Index; index == nil {
 		t.Fatal("index = nil for a second repository")
 	}
 	if runs != 3 {
@@ -214,7 +218,11 @@ func TestGHPRIndexLoaderBoundsConcurrentSubprocesses(t *testing.T) {
 		parallelism: 4,
 	}
 
-	index := loader.Load("/repo", refs)
+	result := loader.Load("/repo", refs)
+	if len(result.Errors) != 0 {
+		t.Fatalf("load errors = %+v", result.Errors)
+	}
+	index := result.Index
 	if index == nil {
 		t.Fatal("index = nil")
 	}
@@ -230,27 +238,28 @@ func TestGHPRIndexLoaderBoundsConcurrentSubprocesses(t *testing.T) {
 
 func TestGHPRIndexLoaderFallsBackConservatively(t *testing.T) {
 	tests := []struct {
-		name      string
-		refs      []string
-		originErr error
-		lookErr   error
-		runErr    error
-		output    string
-		wantRuns  int
+		name       string
+		refs       []string
+		originErr  error
+		lookErr    error
+		runErr     error
+		output     string
+		wantRuns   int
+		wantErrors int
 	}{
 		{name: "no recorded refs"},
-		{name: "no origin", refs: []string{"#12"}, originErr: errors.New("no origin")},
-		{name: "gh unavailable", refs: []string{"#12"}, lookErr: exec.ErrNotFound},
+		{name: "no origin", refs: []string{"#12"}, originErr: errors.New("no origin"), wantErrors: 1},
+		{name: "gh unavailable", refs: []string{"#12"}, lookErr: exec.ErrNotFound, wantErrors: 1},
 		{
 			name: "view error", refs: []string{"#12"},
-			runErr: errors.New("authentication failed"), wantRuns: 1,
+			runErr: errors.New("authentication failed"), wantRuns: 1, wantErrors: 1,
 		},
-		{name: "malformed JSON", refs: []string{"#12"}, output: "{", wantRuns: 1},
+		{name: "malformed JSON", refs: []string{"#12"}, output: "{", wantRuns: 1, wantErrors: 1},
 		{
 			name: "unknown state", refs: []string{"#12"},
-			output: `{"number":12,"state":"MYSTERY","url":"https://github.example/pull/12"}`, wantRuns: 1,
+			output: `{"number":12,"state":"MYSTERY","url":"https://github.example/pull/12"}`, wantRuns: 1, wantErrors: 1,
 		},
-		{name: "malformed reference", refs: []string{"--repo"}, wantRuns: 0},
+		{name: "malformed reference", refs: []string{"--repo"}, wantRuns: 0, wantErrors: 1},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -270,8 +279,19 @@ func TestGHPRIndexLoaderFallsBackConservatively(t *testing.T) {
 				},
 				cache: newPRStateCache(time.Minute, time.Now),
 			}
-			if index := loader.Load("/repo", test.refs); index != nil {
-				t.Fatalf("index = %#v, want conservative nil fallback", index)
+			result := loader.Load("/repo", test.refs)
+			if result.Index != nil {
+				t.Fatalf("index = %#v, want conservative nil fallback", result.Index)
+			}
+			if len(result.Errors) != test.wantErrors {
+				t.Fatalf("load errors = %+v, want %d", result.Errors, test.wantErrors)
+			}
+			for _, loadErr := range result.Errors {
+				if loadErr.Ref == "" || loadErr.Err == nil ||
+					!strings.Contains(loadErr.Err.Error(), loadErr.Ref) ||
+					!strings.Contains(loadErr.Err.Error(), "/repo") {
+					t.Fatalf("unscoped load error = %+v", loadErr)
+				}
 			}
 			if runs != test.wantRuns {
 				t.Fatalf("gh runs = %d, want %d", runs, test.wantRuns)
@@ -339,6 +359,8 @@ echo 'gh debug: request completed' >&2
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("GH_DEBUG", "api")
 	repoDir := t.TempDir()
+	runGitHubTestGit(t, repoDir, "init")
+	runGitHubTestGit(t, repoDir, "remote", "add", "origin", "https://github.example/acme/widgets.git")
 
 	originURL := func(string) (string, error) {
 		return "https://github.example/acme/widgets.git", nil
@@ -349,7 +371,11 @@ echo 'gh debug: request completed' >&2
 		run:       runGHCommand,
 		cache:     newPRStateCache(time.Minute, time.Now),
 	}
-	index := loader.Load(repoDir, []string{"#42"})
+	result := loader.Load(repoDir, []string{"#42"})
+	if len(result.Errors) != 0 {
+		t.Fatalf("load errors = %+v", result.Errors)
+	}
+	index := result.Index
 	if index == nil {
 		t.Fatal("index = nil")
 	}
@@ -612,13 +638,16 @@ func TestGHPullRequestLookupRepositoryPreservesOriginFailure(t *testing.T) {
 }
 
 func TestGHFetcherFetchesAndNormalizesChecks(t *testing.T) {
+	repo := t.TempDir()
+	runGitHubTestGit(t, repo, "init")
+	runGitHubTestGit(t, repo, "remote", "add", "origin", "https://github.example/acme/widgets.git")
 	var gotDir, gotName string
 	var gotArgs []string
 	fetcher := NewGHFetcherWithRunner(func(_ context.Context, dir, name string, args ...string) ([]byte, error) {
 		gotDir, gotName, gotArgs = dir, name, append([]string(nil), args...)
 		return []byte(`{
 			"number":42,
-			"url":"https://github.example/pr/42",
+			"url":"https://github.example/acme/widgets/pull/42",
 			"state":"OPEN",
 			"isDraft":false,
 			"mergeable":"MERGEABLE",
@@ -632,19 +661,80 @@ func TestGHFetcherFetchesAndNormalizesChecks(t *testing.T) {
 		}`), nil
 	})
 
-	got, err := fetcher.Fetch(context.Background(), "/repo", "#42")
+	got, err := fetcher.Fetch(context.Background(), repo, "#42")
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantArgs := []string{
-		"pr", "view", "#42", "--json",
+		"pr", "view", "42", "--repo", "github.example/acme/widgets", "--json",
 		"number,url,state,isDraft,mergeable,reviewDecision,statusCheckRollup,title,updatedAt",
 	}
-	if gotDir != "/repo" || gotName != "gh" || !reflect.DeepEqual(gotArgs, wantArgs) {
+	if gotDir != repo || gotName != "gh" || !reflect.DeepEqual(gotArgs, wantArgs) {
 		t.Fatalf("command = dir %q name %q args %v", gotDir, gotName, gotArgs)
 	}
 	if got.Number != 42 || got.State != "open" || got.Checks != "passing" {
 		t.Fatalf("pull request = %+v", got)
+	}
+}
+
+func TestGHFetcherRejectsMismatchedResponseIdentity(t *testing.T) {
+	repo := t.TempDir()
+	runGitHubTestGit(t, repo, "init")
+	runGitHubTestGit(t, repo, "remote", "add", "origin", "https://github.example/acme/widgets.git")
+	tests := []struct {
+		name       string
+		response   string
+		wantDetail string
+	}{
+		{
+			name: "foreign repository",
+			response: `{
+				"number":42,
+				"url":"https://github.example/acme/other/pull/42",
+				"state":"MERGED"
+			}`,
+			wantDetail: `belongs to repository "github.example/acme/other"`,
+		},
+		{
+			name: "response number",
+			response: `{
+				"number":99,
+				"url":"https://github.example/acme/widgets/pull/42",
+				"state":"MERGED"
+			}`,
+			wantDetail: "returned number #99 and URL number #42, want #42",
+		},
+		{
+			name: "URL number",
+			response: `{
+				"number":42,
+				"url":"https://github.example/acme/widgets/pull/99",
+				"state":"MERGED"
+			}`,
+			wantDetail: "returned number #42 and URL number #99, want #42",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fetcher := NewGHFetcherWithRunner(func(context.Context, string, string, ...string) ([]byte, error) {
+				return []byte(test.response), nil
+			})
+
+			_, err := fetcher.Fetch(
+				context.Background(), repo, "https://github.example/acme/widgets/pull/42",
+			)
+			if err == nil || !strings.Contains(err.Error(), test.wantDetail) {
+				t.Fatalf("Fetch error = %v, want %q", err, test.wantDetail)
+			}
+		})
+	}
+}
+
+func runGitHubTestGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	commandArgs := append([]string{"-C", dir}, args...)
+	if output, err := exec.Command("git", commandArgs...).CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
 }
 

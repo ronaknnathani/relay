@@ -99,9 +99,7 @@ func TestBuildPopulatesProgramDetailAndDegradesPerSource(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	repo := filepath.Join(home, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initProgramViewTestRepo(t, repo)
 
 	at := "2026-08-25T16:00:00Z"
 	p := program.Program{
@@ -245,9 +243,7 @@ func TestBuildPopulatesProgramDetailAndDegradesPerSource(t *testing.T) {
 func TestBuildLocalOnlySkipsExternalSourcesAndKeepsLocalProgramArtifacts(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := filepath.Join(t.TempDir(), "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initProgramViewTestRepo(t, repo)
 
 	at := "2026-09-14T20:00:00Z"
 	p := program.Program{
@@ -361,6 +357,61 @@ func TestBuildLocalOnlySkipsExternalSourcesAndKeepsLocalProgramArtifacts(t *test
 	}
 }
 
+func TestBuildRejectsUnownedLinkedChildDetails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newProgramViewTestRepo(t)
+	p, err := program.New("ownership", "Ownership", repo, "copilot", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StatePendingApproval, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StateActive, "ceo"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := p.AddItem(program.WorkItem{Title: "Child", Priority: program.PriorityP0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(item.ID, "linked-child"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range p.Items {
+		if p.Items[i].ID == item.ID {
+			p.Items[i].PRRef = "#42"
+		}
+	}
+	if err := program.Create(p); err != nil {
+		t.Fatal(err)
+	}
+	foreignPR := "https://github.example/acme/foreign/pull/99"
+	saveProjectManifest(t, project.ActiveDir(), project.Manifest{
+		Slug: "linked-child", Repo: repo, Branch: "feature",
+		Program: "other-program", ProgramItem: item.ID,
+		PR: project.PRInfo{URL: &foreignPR},
+	})
+	writeTestFile(t, filepath.Join(project.ActiveDir(), "linked-child", "assignment.md"), "foreign child")
+
+	snapshot, err := Build(p.Slug, Options{LocalOnly: true, DetailItem: item.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := findSnapshotItem(t, snapshot.Items, item.ID)
+	if got.ChildAvailable || got.Child != nil || got.Worker != nil ||
+		got.RecordedPR == nil || got.RecordedPR.Ref != "#42" {
+		t.Fatalf("item = %+v, want only the item-recorded pull request", got)
+	}
+	if len(got.Warnings) == 0 || !strings.Contains(got.Warnings[0], "does not match linked item") {
+		t.Fatalf("warnings = %+v", got.Warnings)
+	}
+	for _, artifact := range got.Artifacts {
+		if artifact.Text != nil {
+			t.Fatalf("unowned artifact exposed: %+v", artifact)
+		}
+	}
+}
+
 func TestBuildPrefetchesPullRequestsWithBoundedConcurrency(t *testing.T) {
 	release := make(chan struct{})
 	var active, maximum atomic.Int32
@@ -462,9 +513,7 @@ func TestBuildUsesStalePRAndReportsDegradedSources(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	repo := filepath.Join(home, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initProgramViewTestRepo(t, repo)
 	at := "2026-08-25T16:00:00Z"
 	p := program.Program{
 		Revision: 1, Slug: "degraded", Title: "Degraded", Repo: repo,
@@ -492,6 +541,7 @@ func TestBuildUsesStalePRAndReportsDegradedSources(t *testing.T) {
 	number := 7
 	if err := project.Save(project.ManifestPath(project.ActiveDir(), "child"), project.Manifest{
 		Slug: "child", Title: "Child", Repo: repo, Branch: "feature", Worktree: &worktree,
+		Program: p.Slug, ProgramItem: "w1",
 		Status: "active", Created: at, Updated: at, PR: project.PRInfo{Number: &number},
 		PhasesCompleted: []string{}, PhasesRemaining: []string{},
 	}); err != nil {
@@ -576,9 +626,7 @@ func TestBuildSkipsMalformedSiblingProjectStateWithoutFabricatingOrphansOrCapaci
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	repo := filepath.Join(home, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initProgramViewTestRepo(t, repo)
 	at := "2026-08-25T16:00:00Z"
 	p := program.Program{
 		Revision: 1, Slug: "tolerant", Title: "Tolerant", Repo: repo,
@@ -731,9 +779,7 @@ func TestBuildReusesOneGitHubFetchPerRecordedPullRequest(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	repo := filepath.Join(home, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initProgramViewTestRepo(t, repo)
 
 	number := 42
 	saveProjectManifest(t, project.ActiveDir(), project.Manifest{
@@ -782,8 +828,8 @@ func TestBuildReusesOneGitHubFetchPerRecordedPullRequest(t *testing.T) {
 
 func TestBuildMergesSecondaryRepositoryItemAndReadiesPrimaryDependent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	primary := t.TempDir()
-	secondary := t.TempDir()
+	primary := newProgramViewTestRepo(t)
+	secondary := newProgramViewTestRepo(t)
 	p, err := program.New("multi-repo", "Multi repo", primary, "copilot", 2)
 	if err != nil {
 		t.Fatal(err)
@@ -880,9 +926,7 @@ func newMailboxSnapshotProgram(t *testing.T) (program.Program, string) {
 		t.Fatal(err)
 	}
 	repo := filepath.Join(home, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initProgramViewTestRepo(t, repo)
 	at := "2026-08-26T12:00:00Z"
 	p := program.Program{
 		Revision: 1, Slug: "mail-ids", Title: "Mail ids", Repo: repo,
@@ -906,6 +950,7 @@ func newMailboxSnapshotProgram(t *testing.T) (program.Program, string) {
 	manifest := project.Manifest{
 		Slug: "mail-child", Title: "Mail child", Repo: repo, Branch: "feature",
 		BaseBranch: "main", Worktree: &worktree, Status: "active",
+		Program: p.Slug, ProgramItem: "w1",
 		Workflow: "deliver-pr", Phase: "implement", Created: at, Updated: at,
 		PhasesCompleted: []string{}, PhasesRemaining: []string{},
 	}

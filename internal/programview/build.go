@@ -281,14 +281,14 @@ func projectViewsForSnapshot(p program.Program, options Options) ([]program.Proj
 		return projectViews(p, nil)
 	}
 	if options.PRIndex != nil || len(options.PRIndexes) > 0 || options.GitHub != nil {
-		return projectViews(p, func(repo string, _ []string) PRIndex {
+		return projectViews(p, func(repo string, _ []string) PRIndexLoadResult {
 			if index := options.PRIndexes[repo]; index != nil {
-				return index
+				return PRIndexLoadResult{Index: index}
 			}
 			if repo == p.Repo && options.PRIndex != nil {
-				return options.PRIndex
+				return PRIndexLoadResult{Index: options.PRIndex}
 			}
-			return NewFetcherPRIndex(context.Background(), repo, options.GitHub)
+			return PRIndexLoadResult{Index: NewFetcherPRIndex(context.Background(), repo, options.GitHub)}
 		})
 	}
 	return ProjectViews(p)
@@ -759,6 +759,18 @@ func buildItem(
 		dto.Grant = &GrantDTO{GrantedAt: item.PRGrantedAt, GrantedBy: item.PRGrantedBy}
 	}
 	childDir, manifest, archived, childErr := loadChild(item.ProjectSlug)
+	if childErr == nil && item.ProjectSlug != "" {
+		childErr = validateLinkedChildManifest(
+			p.Slug, item.ProjectSlug, item.ID, item.Repo, manifest,
+		)
+		if childErr != nil {
+			childErr = fmt.Errorf(
+				"load child project %q: does not match linked item %s: %w",
+				item.ProjectSlug, item.ID, childErr,
+			)
+			addSourceWarning(snapshot, &snapshot.SourceHealth.Projects, childErr.Error())
+		}
+	}
 	if childErr != nil && item.ProjectSlug != "" {
 		dto.Warnings = append(dto.Warnings, childErr.Error())
 	}

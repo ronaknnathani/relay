@@ -1,7 +1,9 @@
 package programview
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -36,7 +38,7 @@ func TestNextCommand(t *testing.T) {
 
 func TestProjectViewsIgnoresMalformedUnrelatedState(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	repo := t.TempDir()
+	repo := newProgramViewTestRepo(t)
 	prNumber := 17
 	manifest := project.Manifest{
 		Slug: "unrelated", Repo: repo, Branch: "feature", BaseBranch: "main",
@@ -88,7 +90,7 @@ func TestProjectViewsIgnoreUnrelatedStaleDirectories(t *testing.T) {
 
 func TestProjectViewsDegradeUnreadableLinkedStateWithoutFailing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	repo := t.TempDir()
+	repo := newProgramViewTestRepo(t)
 	prNumber := 42
 	manifest := project.Manifest{
 		Slug: "linked", Repo: repo, Branch: "feature", BaseBranch: "main",
@@ -152,7 +154,7 @@ func TestProjectViewsDegradeUnreadableLinkedStateWithoutFailing(t *testing.T) {
 
 func TestProjectViewsReportUnavailableChildWithoutRecordedPRAsProgramRepo(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	repo := t.TempDir()
+	repo := newProgramViewTestRepo(t)
 	dir := filepath.Join(project.ActiveDir(), "broken")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -194,8 +196,8 @@ func TestProjectViewsReportUnavailableChildWithoutRecordedPRAsProgramRepo(t *tes
 
 func TestProjectViewsUseItemRepositoryAndRepositoryScopedPRIndexes(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	primary := t.TempDir()
-	secondary := t.TempDir()
+	primary := newProgramViewTestRepo(t)
+	secondary := newProgramViewTestRepo(t)
 	p, err := program.New("program", "Program", primary, "copilot", 2)
 	if err != nil {
 		t.Fatal(err)
@@ -233,13 +235,15 @@ func TestProjectViewsUseItemRepositoryAndRepositoryScopedPRIndexes(t *testing.T)
 	})
 
 	loadedRepos := map[string][]string{}
-	views, warnings, err := projectViews(p, func(repo string, refs []string) PRIndex {
+	views, warnings, err := projectViews(p, func(repo string, refs []string) PRIndexLoadResult {
 		loadedRepos[repo] = append([]string(nil), refs...)
 		state := PRStateOpen
 		if repo == secondary {
 			state = PRStateMerged
 		}
-		return prIndexFunc(func(string) (PRState, bool) { return state, true })
+		return PRIndexLoadResult{
+			Index: prIndexFunc(func(string) (PRState, bool) { return state, true }),
+		}
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -261,10 +265,81 @@ func TestProjectViewsUseItemRepositoryAndRepositoryScopedPRIndexes(t *testing.T)
 	}
 }
 
+func TestProjectViewsWarnsPerRepositoryLookupFailureAndPreservesCapacity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	primary := newProgramViewTestRepo(t)
+	secondary := newProgramViewTestRepo(t)
+	p, err := program.New("program", "Program", primary, "copilot", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StatePendingApproval, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StateActive, "ceo"); err != nil {
+		t.Fatal(err)
+	}
+	primaryItem, err := p.AddItem(program.WorkItem{Title: "Primary", Priority: program.PriorityP0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondaryItem, err := p.AddItem(program.WorkItem{
+		Title: "Secondary", Priority: program.PriorityP0, Repo: secondary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, linked := range []struct {
+		item program.WorkItem
+		slug string
+		repo string
+	}{
+		{item: primaryItem, slug: "primary-child", repo: primary},
+		{item: secondaryItem, slug: "secondary-child", repo: secondary},
+	} {
+		if err := p.DispatchItem(linked.item.ID, linked.slug); err != nil {
+			t.Fatal(err)
+		}
+		number := 42
+		saveProjectManifest(t, project.ActiveDir(), project.Manifest{
+			Slug: linked.slug, Repo: linked.repo, Branch: linked.slug,
+			Program: p.Slug, ProgramItem: linked.item.ID, PR: project.PRInfo{Number: &number},
+		})
+	}
+
+	views, warnings, err := projectViews(p, func(repo string, _ []string) PRIndexLoadResult {
+		if repo == secondary {
+			return PRIndexLoadResult{Errors: []PRIndexLoadError{{
+				Ref: "#42", Err: errors.New(`load pull request "#42": authentication failed`),
+			}}}
+		}
+		return PRIndexLoadResult{Index: prIndexFunc(func(string) (PRState, bool) {
+			return PRStateMerged, true
+		})}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []program.ProjectView{
+		{Slug: "primary-child", Repo: primary, PRRef: "#42", Merged: true},
+		{Slug: "secondary-child", Repo: secondary, HasPR: true, PRRef: "#42"},
+	}
+	if !reflect.DeepEqual(views, want) {
+		t.Fatalf("views = %+v, want %+v", views, want)
+	}
+	if len(warnings) != 1 || warnings[0].ProjectSlug != "secondary-child" ||
+		!strings.Contains(warnings[0].Message, "authentication failed") {
+		t.Fatalf("warnings = %+v", warnings)
+	}
+	if capacity := p.Plan(views).Capacity; capacity.Open != 1 {
+		t.Fatalf("capacity = %+v, want failed repository PR to remain open", capacity)
+	}
+}
+
 func TestProjectViewsRejectChildOwnershipMismatch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	primary := t.TempDir()
-	secondary := t.TempDir()
+	primary := newProgramViewTestRepo(t)
+	secondary := newProgramViewTestRepo(t)
 	p, err := program.New("program", "Program", primary, "copilot", 2)
 	if err != nil {
 		t.Fatal(err)
@@ -301,9 +376,108 @@ func TestProjectViewsRejectChildOwnershipMismatch(t *testing.T) {
 	}
 }
 
+func TestProjectViewsRejectManifestSlugMismatch(t *testing.T) {
+	for _, archived := range []bool{false, true} {
+		t.Run(map[bool]string{false: "active", true: "archived"}[archived], func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			repo := newProgramViewTestRepo(t)
+			p, err := program.New("program", "Program", repo, "copilot", 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := p.Transition(program.StatePendingApproval, ""); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.Transition(program.StateActive, "ceo"); err != nil {
+				t.Fatal(err)
+			}
+			item, err := p.AddItem(program.WorkItem{Title: "Child", Priority: program.PriorityP0})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := p.DispatchItem(item.ID, "linked-child"); err != nil {
+				t.Fatal(err)
+			}
+			root := project.ActiveDir()
+			if archived {
+				root = project.ArchivedDir()
+			}
+			path := project.ManifestPath(root, "linked-child")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := project.Save(path, project.Manifest{
+				Slug: "different-child", Repo: repo, Branch: "feature",
+				Program: p.Slug, ProgramItem: item.ID,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			views, warnings, err := projectViews(p, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(views) != 0 || len(warnings) != 1 ||
+				warnings[0].ProjectSlug != "linked-child" ||
+				!strings.Contains(warnings[0].Message, `slug="different-child"`) {
+				t.Fatalf("views = %+v, warnings = %+v", views, warnings)
+			}
+		})
+	}
+}
+
+func TestProjectViewsMarksDeletedItemRepositoryUnavailable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	primary := newProgramViewTestRepo(t)
+	secondary := newProgramViewTestRepo(t)
+	p, err := program.New("program", "Program", primary, "copilot", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StatePendingApproval, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StateActive, "ceo"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := p.AddItem(program.WorkItem{
+		Title: "Secondary", Priority: program.PriorityP0, Repo: secondary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(item.ID, "secondary-child"); err != nil {
+		t.Fatal(err)
+	}
+	number := 42
+	saveProjectManifest(t, project.ActiveDir(), project.Manifest{
+		Slug: "secondary-child", Repo: secondary, Branch: "feature",
+		Program: p.Slug, ProgramItem: item.ID, PR: project.PRInfo{Number: &number},
+	})
+	if err := os.RemoveAll(secondary); err != nil {
+		t.Fatal(err)
+	}
+
+	views, warnings, err := ProjectViewsWithPRIndex(p, prIndexFunc(func(string) (PRState, bool) {
+		return PRStateMerged, true
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []program.ProjectView{{
+		Slug: "secondary-child", Repo: secondary, HasPR: true, PRRef: "#42", Unavailable: true,
+	}}
+	if !reflect.DeepEqual(views, want) {
+		t.Fatalf("views = %+v, want %+v", views, want)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0].Message, secondary) {
+		t.Fatalf("warnings = %+v", warnings)
+	}
+}
+
 func TestProjectViewsWithPRIndexUsesGitHubLifecycleForLinkedCapacity(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	repo := t.TempDir()
+	repo := newProgramViewTestRepo(t)
 	refs := map[string]string{"closed": "https://github.example/acme/repo/pull/103", "merged": "#102", "open": "#101"}
 	p, err := program.New("program", "Program", repo, "copilot", 3)
 	if err != nil {
@@ -367,7 +541,7 @@ func TestProjectViewsWithPRIndexUsesGitHubLifecycleForLinkedCapacity(t *testing.
 
 func TestProjectViewsWithPRIndexKeepsRecordedPROpenWhenUnavailableOrAbsent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	repo := t.TempDir()
+	repo := newProgramViewTestRepo(t)
 	number := 17
 	saveProjectManifest(t, project.ActiveDir(), project.Manifest{
 		Slug: "child", Repo: repo, Branch: "feature",
@@ -419,7 +593,7 @@ func TestProjectViewsWithPRIndexKeepsRecordedPROpenWhenUnavailableOrAbsent(t *te
 
 func TestProjectViewsWithPRIndexReconcilesMergedAndClosedLinkedItems(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	repo := t.TempDir()
+	repo := newProgramViewTestRepo(t)
 	p, err := program.New("program", "Program", repo, "copilot", 2)
 	if err != nil {
 		t.Fatal(err)
@@ -500,6 +674,35 @@ func saveProjectManifest(t *testing.T, root string, manifest project.Manifest) {
 	}
 }
 
+func newProgramViewTestRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	runProgramViewTestGit(t, repo, "init", "-b", "main")
+	runProgramViewTestGit(t, repo, "config", "user.name", "Relay Test")
+	runProgramViewTestGit(t, repo, "config", "user.email", "relay@example.com")
+	runProgramViewTestGit(t, repo, "commit", "--allow-empty", "-m", "initial")
+	return repo
+}
+
+func initProgramViewTestRepo(t *testing.T, repo string) {
+	t.Helper()
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runProgramViewTestGit(t, repo, "init", "-b", "main")
+	runProgramViewTestGit(t, repo, "config", "user.name", "Relay Test")
+	runProgramViewTestGit(t, repo, "config", "user.email", "relay@example.com")
+	runProgramViewTestGit(t, repo, "commit", "--allow-empty", "-m", "initial")
+}
+
+func runProgramViewTestGit(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	commandArgs := append([]string{"-C", repo}, args...)
+	if output, err := exec.Command("git", commandArgs...).CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+}
+
 func archivedChildProgram(t *testing.T, repo string, merged bool, number int) (program.Program, program.WorkItem) {
 	t.Helper()
 	p, err := program.New("program", "Program", repo, "copilot", 2)
@@ -568,7 +771,7 @@ func TestArchivedLinkedChildReconcilesFromGitHubPullRequestState(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
-			repo := t.TempDir()
+			repo := newProgramViewTestRepo(t)
 			p, item := archivedChildProgram(t, repo, false, 301)
 
 			views, warnings, err := ProjectViewsWithPRIndex(p, test.index)
@@ -602,7 +805,7 @@ func TestArchivedLinkedChildReconcilesFromGitHubPullRequestState(t *testing.T) {
 
 func TestArchivedLinkedChildKeepsManifestMergeWhenPullRequestWasClosed(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	repo := t.TempDir()
+	repo := newProgramViewTestRepo(t)
 	p, item := archivedChildProgram(t, repo, true, 302)
 
 	views, _, err := ProjectViewsWithPRIndex(p, prIndexFunc(func(string) (PRState, bool) {
@@ -623,6 +826,54 @@ func TestArchivedLinkedChildKeepsManifestMergeWhenPullRequestWasClosed(t *testin
 	}
 }
 
+func TestArchivedSecondaryChildUsesRepositoryScopedPullRequestState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	primary := newProgramViewTestRepo(t)
+	secondary := newProgramViewTestRepo(t)
+	p, err := program.New("program", "Program", primary, "copilot", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StatePendingApproval, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Transition(program.StateActive, "ceo"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := p.AddItem(program.WorkItem{
+		Title: "Archived secondary", Priority: program.PriorityP0, Repo: secondary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DispatchItem(item.ID, "archived-secondary"); err != nil {
+		t.Fatal(err)
+	}
+	number := 42
+	saveProjectManifest(t, project.ArchivedDir(), project.Manifest{
+		Slug: "archived-secondary", Repo: secondary, Branch: "feature",
+		Program: p.Slug, ProgramItem: item.ID, PR: project.PRInfo{Number: &number},
+	})
+
+	loadedRepo := ""
+	views, warnings, err := projectViews(p, func(repo string, refs []string) PRIndexLoadResult {
+		loadedRepo = repo
+		if !reflect.DeepEqual(refs, []string{"#42"}) {
+			t.Fatalf("refs = %v", refs)
+		}
+		return PRIndexLoadResult{Index: prIndexFunc(func(string) (PRState, bool) {
+			return PRStateMerged, true
+		})}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedRepo != secondary || len(warnings) != 0 || len(views) != 1 ||
+		!views[0].Archived || !views[0].Merged || views[0].Repo != secondary {
+		t.Fatalf("repo = %q, views = %+v, warnings = %+v", loadedRepo, views, warnings)
+	}
+}
+
 func TestReadOnlySnapshotMatchesStrictCLICapacity(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -636,7 +887,7 @@ func TestReadOnlySnapshotMatchesStrictCLICapacity(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
-			repo := t.TempDir()
+			repo := newProgramViewTestRepo(t)
 			number := 404
 			saveProjectManifest(t, project.ActiveDir(), project.Manifest{
 				Slug: "child", Repo: repo, Branch: "feature",
