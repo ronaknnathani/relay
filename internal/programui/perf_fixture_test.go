@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -92,6 +93,9 @@ func newReferenceProgramFixture(t *testing.T) referenceProgramFixture {
 	repo := filepath.Join(home, "repo")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "-C", repo, "init", "-q", "-b", "main").CombinedOutput(); err != nil {
+		t.Fatalf("initialize reference repository: %v\n%s", err, output)
 	}
 
 	at := "2026-09-14T20:00:00Z"
