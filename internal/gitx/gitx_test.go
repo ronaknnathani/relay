@@ -3,6 +3,7 @@ package gitx
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1173,6 +1174,220 @@ func TestWorkMerged(t *testing.T) {
 	}
 }
 
+func TestWorkMergedIntoExactSquash(t *testing.T) {
+	repo := initRepo(t)
+	base := currentBranchInRepo(t, repo)
+	start := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "-q", "-b", "squashed-work")
+	if err := os.WriteFile(filepath.Join(repo, "squashed.txt"), []byte("one\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "squashed.txt")
+	runGit(t, repo, "commit", "-q", "-m", "first")
+	if err := os.WriteFile(filepath.Join(repo, "squashed.txt"), []byte("one\ntwo\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "squashed.txt")
+	runGit(t, repo, "commit", "-q", "-m", "second")
+	tip := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "-q", base)
+	runGit(t, repo, "merge", "-q", "--squash", "squashed-work")
+	runGit(t, repo, "commit", "-q", "-m", "squash work")
+
+	gotTip, merged, err := WorkMergedInto(repo, "squashed-work", "refs/heads/"+base, start)
+	if err != nil {
+		t.Fatalf("WorkMergedInto: %v", err)
+	}
+	if gotTip != tip {
+		t.Fatalf("WorkMergedInto tip = %s, want %s", gotTip, tip)
+	}
+	if !merged {
+		t.Fatal("WorkMergedInto = false, want true")
+	}
+}
+
+func TestWorkMergedIntoExactRebase(t *testing.T) {
+	repo := initRepo(t)
+	base := currentBranchInRepo(t, repo)
+	start := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "-q", "-b", "rebased-work")
+	commitFile(t, repo, "first.txt", "first\n", "first")
+	first := gitOutput(t, repo, "rev-parse", "HEAD")
+	commitFile(t, repo, "second.txt", "second\n", "second")
+	tip := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "-q", base)
+	runGit(t, repo, "cherry-pick", first)
+	runGit(t, repo, "cherry-pick", tip)
+
+	gotTip, merged, err := WorkMergedInto(repo, "rebased-work", "refs/heads/"+base, start)
+	if err != nil {
+		t.Fatalf("WorkMergedInto: %v", err)
+	}
+	if gotTip != tip {
+		t.Fatalf("WorkMergedInto tip = %s, want %s", gotTip, tip)
+	}
+	if !merged {
+		t.Fatal("WorkMergedInto = false, want true")
+	}
+}
+
+func TestWorkMergedIntoOrdinaryAncestry(t *testing.T) {
+	repo := initRepo(t)
+	base := currentBranchInRepo(t, repo)
+	start := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "-q", "-b", "ordinary-work")
+	commitFile(t, repo, "ordinary.txt", "ordinary\n", "ordinary")
+	tip := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "-q", base)
+	runGit(t, repo, "merge", "-q", "--ff-only", "ordinary-work")
+
+	gotTip, merged, err := WorkMergedInto(repo, "ordinary-work", "refs/heads/"+base, start)
+	if err != nil {
+		t.Fatalf("WorkMergedInto: %v", err)
+	}
+	if gotTip != tip || !merged {
+		t.Fatalf("WorkMergedInto = (%s, %t), want (%s, true)", gotTip, merged, tip)
+	}
+}
+
+func TestWorkMergedIntoHistoricalSquashAfterLaterEdit(t *testing.T) {
+	repo := initRepo(t)
+	base := currentBranchInRepo(t, repo)
+	start := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "-q", "-b", "historical-work")
+	commitFile(t, repo, "historical.txt", "project\n", "project")
+	runGit(t, repo, "checkout", "-q", base)
+	runGit(t, repo, "merge", "-q", "--squash", "historical-work")
+	runGit(t, repo, "commit", "-q", "-m", "squash project")
+	commitFile(t, repo, "historical.txt", "project\nlater\n", "later edit")
+
+	_, merged, err := WorkMergedInto(repo, "historical-work", "refs/heads/"+base, start)
+	if err != nil {
+		t.Fatalf("WorkMergedInto: %v", err)
+	}
+	if !merged {
+		t.Fatal("WorkMergedInto = false after later upstream edit, want true")
+	}
+}
+
+func TestWorkMergedIntoRejectsIncompleteOrDifferentWork(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		project    []string
+		upstream   string
+		upstreamAt int
+	}{
+		{
+			name:       "partial",
+			project:    []string{"one\n", "one\ntwo\n"},
+			upstream:   "one\n",
+			upstreamAt: 1,
+		},
+		{
+			name:       "different",
+			project:    []string{"project\n"},
+			upstream:   "different\n",
+			upstreamAt: 1,
+		},
+		{
+			name:       "whitespace different",
+			project:    []string{"project\n"},
+			upstream:   "project \n",
+			upstreamAt: 1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := initRepo(t)
+			base := currentBranchInRepo(t, repo)
+			start := gitOutput(t, repo, "rev-parse", "HEAD")
+			runGit(t, repo, "checkout", "-q", "-b", "unverified-work")
+			for i, content := range test.project {
+				commitFile(t, repo, "work.txt", content, fmt.Sprintf("project %d", i))
+			}
+			runGit(t, repo, "checkout", "-q", base)
+			commitFile(t, repo, "work.txt", test.upstream, fmt.Sprintf("upstream %d", test.upstreamAt))
+
+			_, merged, err := WorkMergedInto(
+				repo, "unverified-work", "refs/heads/"+base, start,
+			)
+			if err != nil {
+				t.Fatalf("WorkMergedInto: %v", err)
+			}
+			if merged {
+				t.Fatal("WorkMergedInto = true, want false")
+			}
+		})
+	}
+}
+
+func TestWorkMergedIntoRejectsNonlinearWork(t *testing.T) {
+	repo := initRepo(t)
+	base := currentBranchInRepo(t, repo)
+	start := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "-q", "-b", "side-work")
+	commitFile(t, repo, "side.txt", "side\n", "side")
+	runGit(t, repo, "checkout", "-q", "-b", "nonlinear-work", start)
+	commitFile(t, repo, "main.txt", "main\n", "main")
+	runGit(t, repo, "merge", "-q", "--no-ff", "side-work", "-m", "merge side")
+	runGit(t, repo, "checkout", "-q", base)
+	runGit(t, repo, "merge", "-q", "--squash", "nonlinear-work")
+	runGit(t, repo, "commit", "-q", "-m", "squash nonlinear")
+
+	_, merged, err := WorkMergedInto(repo, "nonlinear-work", "refs/heads/"+base, start)
+	if err != nil {
+		t.Fatalf("WorkMergedInto: %v", err)
+	}
+	if merged {
+		t.Fatal("WorkMergedInto = true for nonlinear work")
+	}
+}
+
+func TestWorkMergedIntoRejectsInvalidOrUnboundedStart(t *testing.T) {
+	repo := initRepo(t)
+	base := currentBranchInRepo(t, repo)
+	start := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "-q", "-b", "work")
+	commitFile(t, repo, "work.txt", "work\n", "work")
+	runGit(t, repo, "checkout", "-q", base)
+
+	for _, test := range []struct {
+		name      string
+		startSHA  string
+		wantError bool
+	}{
+		{name: "missing", startSHA: ""},
+		{name: "invalid", startSHA: "not-a-commit", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, merged, err := WorkMergedInto(repo, "work", "refs/heads/"+base, test.startSHA)
+			if test.wantError && !errors.Is(err, ErrInvalidWorkStart) {
+				t.Fatalf("WorkMergedInto error = %v, want %v", err, ErrInvalidWorkStart)
+			}
+			if !test.wantError && err != nil {
+				t.Fatalf("WorkMergedInto: %v", err)
+			}
+			if merged {
+				t.Fatal("WorkMergedInto = true for invalid or missing start")
+			}
+		})
+	}
+
+	runGit(t, repo, "checkout", "-q", "--orphan", "unrelated-base")
+	runGit(t, repo, "rm", "-q", "-rf", ".")
+	commitFile(t, repo, "unrelated.txt", "unrelated\n", "unrelated")
+	runGit(t, repo, "merge", "-q", "--allow-unrelated-histories", "--no-ff", base, "-m", "merge old base")
+	runGit(t, repo, "merge", "-q", "--squash", "work")
+	runGit(t, repo, "commit", "-q", "-m", "squash work")
+
+	_, merged, err := WorkMergedInto(repo, "work", "refs/heads/unrelated-base", start)
+	if err != nil {
+		t.Fatalf("WorkMergedInto unbounded start: %v", err)
+	}
+	if merged {
+		t.Fatal("WorkMergedInto = true when start is not on base first-parent history")
+	}
+}
+
 func TestWorkMergedUsesQualifiedBranchRefWhenTagConflicts(t *testing.T) {
 	repo := initRepo(t)
 	base := currentBranchInRepo(t, repo)
@@ -1359,12 +1574,17 @@ func initRemoteRepo(t *testing.T, base string) (remote, source, repo string) {
 
 func advanceRepo(t *testing.T, repo, name, content, message string) {
 	t.Helper()
+	commitFile(t, repo, name, content, message)
+	runGit(t, repo, "push", "-q", "origin", "HEAD")
+}
+
+func commitFile(t *testing.T, repo, name, content, message string) {
+	t.Helper()
 	if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
 	runGit(t, repo, "add", name)
 	runGit(t, repo, "commit", "-q", "-m", message)
-	runGit(t, repo, "push", "-q", "origin", "HEAD")
 }
 
 func runGit(t *testing.T, dir string, args ...string) {

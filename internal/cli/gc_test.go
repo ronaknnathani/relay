@@ -163,6 +163,139 @@ func TestGCArchivesUpstreamMergedMainAndMaster(t *testing.T) {
 	}
 }
 
+func TestGCArchivesSquashMergedProjectWhenGitHubIsUnavailable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "turn-off-auto-responder"
+	branch, worktree := addGCProject(t, fixture, slug)
+	commitArchiveFile(t, worktree, "second.txt", "second\n", "second change")
+	recordArchiveManifestPR(t, slug, 700)
+	installArchivePRLookupError(t, errors.New("GitHub unavailable"))
+	runArchiveGit(t, fixture.repo, "push", "-q", "origin", branch)
+	runArchiveGit(t, fixture.upstream, "fetch", "-q", "origin", branch)
+	runArchiveGit(t, fixture.upstream, "merge", "-q", "--squash", "origin/"+branch)
+	runArchiveGit(t, fixture.upstream, "commit", "-q", "-m", "squash project")
+	runArchiveGit(t, fixture.upstream, "push", "-q", "origin", fixture.base)
+
+	if _, stderr, err := captureGCOutput(t, runGC); err != nil {
+		t.Fatalf("runGC squash merge: %v\nstderr: %s", err, stderr)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		pathExists(worktree) ||
+		gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC left squash-merged project resources behind")
+	}
+	if archived := loadArchivedManifest(t, slug); !archived.Merged {
+		t.Fatal("GC did not record squash-merged project as merged")
+	}
+}
+
+func TestGCArchivesRebasedProjectWhenGitHubIsUnavailable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "rebased-project"
+	branch, worktree := addGCProject(t, fixture, slug)
+	first := gitx.RevParse(fixture.repo, "refs/heads/"+branch)
+	commitArchiveFile(t, worktree, "second.txt", "second\n", "second change")
+	second := gitx.RevParse(fixture.repo, "refs/heads/"+branch)
+	recordArchiveManifestPR(t, slug, 707)
+	installArchivePRLookupError(t, errors.New("GitHub unavailable"))
+	runArchiveGit(t, fixture.repo, "push", "-q", "origin", branch)
+	runArchiveGit(t, fixture.upstream, "fetch", "-q", "origin", branch)
+	runArchiveGit(t, fixture.upstream, "cherry-pick", first)
+	runArchiveGit(t, fixture.upstream, "cherry-pick", second)
+	runArchiveGit(t, fixture.upstream, "push", "-q", "origin", fixture.base)
+
+	if _, stderr, err := captureGCOutput(t, runGC); err != nil {
+		t.Fatalf("runGC rebase merge: %v\nstderr: %s", err, stderr)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		pathExists(worktree) ||
+		gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC left rebased project resources behind")
+	}
+}
+
+func TestGCArchivesHistoricalSquashAfterLaterUpstreamEdit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "historical-squash"
+	branch, worktree := addGCProject(t, fixture, slug)
+	runArchiveGit(t, fixture.repo, "push", "-q", "origin", branch)
+	runArchiveGit(t, fixture.upstream, "fetch", "-q", "origin", branch)
+	runArchiveGit(t, fixture.upstream, "merge", "-q", "--squash", "origin/"+branch)
+	runArchiveGit(t, fixture.upstream, "commit", "-q", "-m", "squash project")
+	commitArchiveFile(
+		t, fixture.upstream, slug+".txt", slug+"\nlater\n", "later upstream edit",
+	)
+	runArchiveGit(t, fixture.upstream, "push", "-q", "origin", fixture.base)
+
+	if _, stderr, err := captureGCOutput(t, runGC); err != nil {
+		t.Fatalf("runGC historical squash: %v\nstderr: %s", err, stderr)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		pathExists(worktree) ||
+		gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC left historically squash-merged project resources behind")
+	}
+}
+
+func TestGCRetainsPartialMergeAndReturnsAggregateError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	slug := "partial-merge"
+	branch, worktree := addGCProject(t, fixture, slug)
+	first := gitx.RevParse(fixture.repo, "refs/heads/"+branch)
+	commitArchiveFile(t, worktree, "second.txt", "second\n", "second change")
+	runArchiveGit(t, fixture.repo, "push", "-q", "origin", branch)
+	runArchiveGit(t, fixture.upstream, "fetch", "-q", "origin", branch)
+	runArchiveGit(t, fixture.upstream, "cherry-pick", first)
+	runArchiveGit(t, fixture.upstream, "push", "-q", "origin", fixture.base)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "merge could not be verified") {
+		t.Fatalf("stderr %q is missing merge verification failure", stderr)
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		!pathExists(worktree) ||
+		!gitx.BranchExists(fixture.repo, branch) {
+		t.Fatal("GC changed a partially merged project")
+	}
+}
+
+func TestGCContinuesAfterUnverifiedProject(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fixture := newGCRepoFixture(t, "main")
+	mergedBranch, mergedWorktree := addGCProject(t, fixture, "a-merged")
+	unverifiedBranch, unverifiedWorktree := addGCProject(t, fixture, "z-unverified")
+	runArchiveGit(t, fixture.repo, "push", "-q", "origin", mergedBranch)
+	runArchiveGit(t, fixture.upstream, "fetch", "-q", "origin", mergedBranch)
+	runArchiveGit(t, fixture.upstream, "merge", "-q", "--squash", "origin/"+mergedBranch)
+	runArchiveGit(t, fixture.upstream, "commit", "-q", "-m", "squash merged project")
+	runArchiveGit(t, fixture.upstream, "push", "-q", "origin", fixture.base)
+
+	_, stderr, err := captureGCOutput(t, runGC)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "project z-unverified: merge could not be verified") {
+		t.Fatalf("stderr %q is missing unverified project diagnostic", stderr)
+	}
+	if pathExists(filepath.Join(project.ActiveDir(), "a-merged")) ||
+		pathExists(mergedWorktree) ||
+		gitx.BranchExists(fixture.repo, mergedBranch) {
+		t.Fatal("unverified project blocked independent merged cleanup")
+	}
+	if !pathExists(filepath.Join(project.ActiveDir(), "z-unverified")) ||
+		!pathExists(unverifiedWorktree) ||
+		!gitx.BranchExists(fixture.repo, unverifiedBranch) {
+		t.Fatal("GC changed the unverified project")
+	}
+}
+
 func TestGCStoredBaseBranchOverridesOriginHEAD(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	fixture := newGCRepoFixture(t, "main")
@@ -349,8 +482,11 @@ func TestGCKeepsBranchMergedOnlyIntoLocalBase(t *testing.T) {
 			runArchiveGit(t, fixture.repo, "merge", "-q", "--no-edit", "refs/heads/"+branch)
 
 			_, stderr, err := captureGCOutput(t, runGC)
-			if err != nil {
-				t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+			if !errors.Is(err, errGCCompletedWithErrors) {
+				t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+			}
+			if !strings.Contains(stderr, "merge could not be verified") {
+				t.Fatalf("stderr %q is missing merge verification failure", stderr)
 			}
 			if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
 				!pathExists(worktree) ||
@@ -625,11 +761,14 @@ func TestGCKeepsUnmergedOpenAndClosedPullRequestProjects(t *testing.T) {
 	})
 
 	stdout, stderr, err := captureGCOutput(t, runGC)
-	if err != nil {
-		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
 	}
 	if stdout != "" {
 		t.Fatalf("runGC wrote unexpected output: %q", stdout)
+	}
+	if count := strings.Count(stderr, "merge could not be verified"); count != 3 {
+		t.Fatalf("merge verification warning count = %d, want 3\nstderr: %s", count, stderr)
 	}
 	for slug, state := range map[string]struct {
 		branch   string
@@ -662,11 +801,14 @@ func TestGCKeepsMissingBranchWithoutPullRequest(t *testing.T) {
 	runArchiveGit(t, fixture.repo, "branch", "-D", branch)
 
 	stdout, stderr, err := captureGCOutput(t, runGC)
-	if err != nil {
-		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
 	}
 	if stdout != "" {
 		t.Fatalf("runGC wrote unexpected output: %q", stdout)
+	}
+	if !strings.Contains(stderr, "merge could not be verified") {
+		t.Fatalf("stderr %q is missing merge verification failure", stderr)
 	}
 	if !pathExists(filepath.Join(project.ActiveDir(), slug)) {
 		t.Fatalf("GC removed unresolved project %s", slug)
@@ -765,18 +907,16 @@ func TestGCMissingStartSHARequiresMergedPullRequest(t *testing.T) {
 	}
 }
 
-func TestGCRejectsInvalidStartSHAEvenWithMergedPullRequestAndDirtyWorktree(t *testing.T) {
+func TestGCValidMergedPullRequestOverridesInvalidStartSHA(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		startSHA func(*testing.T, gcRepoFixture) string
-		want     string
 	}{
 		{
 			name: "invalid",
 			startSHA: func(_ *testing.T, _ gcRepoFixture) string {
 				return "not-a-commit"
 			},
-			want: "does not resolve to a commit",
 		},
 		{
 			name: "non-commit",
@@ -787,7 +927,6 @@ func TestGCRejectsInvalidStartSHAEvenWithMergedPullRequestAndDirtyWorktree(t *te
 				}
 				return gitOutput(t, fixture.repo, "hash-object", "-w", path)
 			},
-			want: "does not resolve to a commit",
 		},
 		{
 			name: "not branch ancestor",
@@ -797,7 +936,6 @@ func TestGCRejectsInvalidStartSHAEvenWithMergedPullRequestAndDirtyWorktree(t *te
 				runArchiveGit(t, fixture.repo, "worktree", "remove", "--force", worktree)
 				return sha
 			},
-			want: "not an ancestor",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -813,20 +951,16 @@ func TestGCRejectsInvalidStartSHAEvenWithMergedPullRequestAndDirtyWorktree(t *te
 			})
 
 			_, stderr, err := captureGCOutput(t, runGC)
-			if !errors.Is(err, errGCCompletedWithErrors) {
-				t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+			if err != nil {
+				t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
 			}
-			if !strings.Contains(stderr, test.want) {
-				t.Fatalf("stderr %q is missing %q", stderr, test.want)
+			if pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+				pathExists(worktree) ||
+				gitx.BranchExists(fixture.repo, branch) {
+				t.Fatal("GC left a project with independently verified merged PR proof")
 			}
-			if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
-				!pathExists(worktree) ||
-				!gitx.BranchExists(fixture.repo, branch) {
-				t.Fatal("GC destructively cleaned a project with invalid start_sha")
-			}
-			if data, readErr := os.ReadFile(filepath.Join(worktree, "dirty.txt")); readErr != nil ||
-				string(data) != "uncommitted work\n" {
-				t.Fatalf("dirty worktree changed: data=%q err=%v", data, readErr)
+			if archived := loadArchivedManifest(t, slug); !archived.Merged {
+				t.Fatal("GC did not record merged PR proof")
 			}
 		})
 	}
@@ -1041,8 +1175,11 @@ func TestGCLinkedWorktreeOriginCannotReuseAnotherOriginMergeProof(t *testing.T) 
 	})
 
 	_, stderr, err := captureGCOutput(t, runGC)
-	if err != nil {
-		t.Fatalf("runGC: %v\nstderr: %s", err, stderr)
+	if !errors.Is(err, errGCCompletedWithErrors) {
+		t.Fatalf("runGC error = %v, want %v", err, errGCCompletedWithErrors)
+	}
+	if !strings.Contains(stderr, "merge could not be verified") {
+		t.Fatalf("stderr %q is missing merge verification failure", stderr)
 	}
 	if pathExists(filepath.Join(project.ActiveDir(), "a-origin-a")) ||
 		pathExists(firstWorktree) ||

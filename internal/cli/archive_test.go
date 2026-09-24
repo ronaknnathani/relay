@@ -712,6 +712,28 @@ func TestArchiveForceRejectsDetachedWorktreeWithoutAuthoritativeCommit(t *testin
 	}
 }
 
+func TestArchiveForceRemovesDetachedWorktreeAtBranchTip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "detached-at-branch-tip"
+	branch := "user/detached-at-branch-tip"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "unmerged\n", "unmerged work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, worktree, "checkout", "-q", "--detach")
+
+	result, err := archiveProject(slug, true)
+	if err != nil {
+		t.Fatalf("archiveProject --force: %v", err)
+	}
+	if !result.WorktreeRemoved || !result.BranchDeleted {
+		t.Fatalf("archive result = %+v, want detached worktree and branch removed", result)
+	}
+	if pathExists(worktree) || gitx.BranchExists(repo, branch) {
+		t.Fatal("forced archive left the detached worktree or branch behind")
+	}
+}
+
 func TestArchiveRejectsDanglingWorktreeSymlink(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
@@ -1191,8 +1213,8 @@ func TestArchiveRejectsUnmergedBranchBeforeDirtyWorktree(t *testing.T) {
 	_, err := captureStdout(t, func() error {
 		return runArchive(slug, false)
 	})
-	if err == nil || !strings.Contains(err.Error(), "unmerged work") {
-		t.Fatalf("runArchive error = %v, want unmerged branch protection", err)
+	if err == nil || !strings.Contains(err.Error(), "merge could not be verified") {
+		t.Fatalf("runArchive error = %v, want merge verification protection", err)
 	}
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
@@ -1214,7 +1236,9 @@ func TestArchiveUnmergedBranchIncludesPullRequestLookupFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("runArchive succeeded for an unmerged branch")
 	}
-	for _, want := range []string{"unmerged work", "re-run with --force", "GitHub unavailable"} {
+	for _, want := range []string{
+		"merge could not be verified", "re-run with --force", "GitHub unavailable",
+	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("runArchive error %q is missing %q", err, want)
 		}
@@ -1321,6 +1345,53 @@ func TestArchiveForceKeepsAuthorityWhenOptionalPullRequestValidationFails(t *tes
 	}
 }
 
+func TestArchiveForceKeepsSnapshotWhenMergedProofRevalidationFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "force-merged-proof-revalidation"
+	branch := "user/force-merged-proof-revalidation"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "merged\n", "merged work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, repo, "merge", "-q", "--squash", branch)
+	runArchiveGit(t, repo, "commit", "-q", "-m", "squash project")
+	runArchiveGit(t, repo, "update-ref", "refs/remotes/origin/main", "refs/heads/main")
+
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalTip := gitx.RevParse(repo, "refs/heads/"+branch)
+	branchChecks := 0
+	previousBranchExists := archiveBranchExists
+	archiveBranchExists = func(repoPath, branchName string) (bool, error) {
+		branchChecks++
+		if branchChecks == 2 {
+			runArchiveGit(t, worktree, "checkout", "-q", "--detach")
+			commitArchiveFile(t, worktree, "later.txt", "later\n", "later work")
+			runArchiveGit(t, repo, "branch", "-f", branch, "HEAD")
+		}
+		return previousBranchExists(repoPath, branchName)
+	}
+	t.Cleanup(func() { archiveBranchExists = previousBranchExists })
+
+	decision, err := decideArchive(manifest, slug, true)
+	if err != nil {
+		t.Fatalf("decideArchive --force: %v", err)
+	}
+	if decision.proof.Slug != slug ||
+		!decision.proof.BranchPresent ||
+		decision.proof.ExpectedBranchTip != originalTip ||
+		!decision.proof.WorktreePresent ||
+		decision.proof.ExpectedWorktreeTip != originalTip {
+		t.Fatalf("proof = %+v, want original project snapshot at %s", decision.proof, originalTip)
+	}
+	if len(decision.warnings) == 0 ||
+		!strings.Contains(decision.warnings[0], "branch tip changed") {
+		t.Fatalf("warnings = %v, want merge-proof revalidation failure", decision.warnings)
+	}
+}
+
 func TestArchiveRecordsVerifiedMergedBranch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
@@ -1330,6 +1401,7 @@ func TestArchiveRecordsVerifiedMergedBranch(t *testing.T) {
 	commitArchiveFile(t, worktree, "feature.txt", "merged\n", "merged work")
 	writeArchiveManifest(t, slug, repo, branch, worktree)
 	runArchiveGit(t, repo, "merge", "-q", "--ff-only", branch)
+	runArchiveGit(t, repo, "update-ref", "refs/remotes/origin/main", "refs/heads/main")
 
 	if _, err := captureStdout(t, func() error {
 		return runArchive(slug, false)
@@ -1359,6 +1431,28 @@ func TestArchiveDoesNotMarkEmptyReachableBranchMerged(t *testing.T) {
 	}
 }
 
+func TestArchivePreservesEmptyBranchWhenUpstreamWasRewritten(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "empty-work-rewritten-upstream"
+	branch := "user/empty-work-rewritten-upstream"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+
+	start := gitx.RevParse(repo, "refs/heads/"+branch)
+	tree := gitOutput(t, repo, "rev-parse", start+"^{tree}")
+	rewritten := gitOutput(t, repo, "commit-tree", tree, "-m", "rewritten upstream")
+	runArchiveGit(t, repo, "update-ref", "refs/remotes/origin/main", rewritten)
+
+	_, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	})
+	if err == nil || !strings.Contains(err.Error(), "merge could not be verified") {
+		t.Fatalf("runArchive error = %v, want rewritten-upstream verification failure", err)
+	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
+}
+
 func TestArchiveWarnsWhenOptionalPullRequestLookupFailsForReachableBranch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
@@ -1375,8 +1469,8 @@ func TestArchiveWarnsWhenOptionalPullRequestLookupFailsForReachableBranch(t *tes
 	if err != nil {
 		t.Fatalf("runArchive reachable branch: %v", err)
 	}
-	if !strings.Contains(stderr, "GitHub unavailable") {
-		t.Fatalf("stderr %q is missing the optional lookup warning", stderr)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want no GitHub lookup after Git proof", stderr)
 	}
 	if strings.Contains(stdout, "Branch still present:") {
 		t.Fatalf("stdout %q falsely reports the deleted branch as present", stdout)
@@ -1399,6 +1493,9 @@ func addArchiveWorktree(t *testing.T, repo, slug, branch string) string {
 
 func writeArchiveManifest(t *testing.T, slug, repo, branch, worktree string) {
 	t.Helper()
+	if gitx.RevParse(repo, "refs/remotes/origin/main") == "" {
+		runArchiveGit(t, repo, "update-ref", "refs/remotes/origin/main", "refs/heads/main")
+	}
 	projDir := filepath.Join(project.ActiveDir(), slug)
 	if err := os.MkdirAll(projDir, 0755); err != nil {
 		t.Fatalf("create project dir: %v", err)
@@ -1538,6 +1635,7 @@ func TestArchiveDiagnosticSanitizesRemoteHelperPullRequestRef(t *testing.T) {
 			slug := "remote-helper-proof-error"
 			branch := "user/remote-helper-proof-error"
 			worktree := addArchiveWorktree(t, repo, slug, branch)
+			commitArchiveFile(t, worktree, "feature.txt", "unmerged\n", "unmerged work")
 			writeArchiveManifest(t, slug, repo, branch, worktree)
 			updateGCManifest(t, slug, func(manifest *project.Manifest) {
 				manifest.PR = project.PRInfo{URL: &test.ref}
@@ -1622,6 +1720,201 @@ func TestArchiveRecordsSquashMergedPullRequestFromGitHub(t *testing.T) {
 	}
 }
 
+func TestArchiveProvesSquashMergeWhenGitHubIsUnavailable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "turn-off-auto-responder"
+	branch := "user/turn-off-auto-responder"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "one\n", "first change")
+	commitArchiveFile(t, worktree, "feature.txt", "one\ntwo\n", "second change")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	recordArchiveManifestPR(t, slug, 504)
+	installArchivePRLookupError(t, errors.New("GitHub unavailable"))
+	runArchiveGit(t, repo, "merge", "-q", "--squash", branch)
+	runArchiveGit(t, repo, "commit", "-q", "-m", "squash project")
+	runArchiveGit(t, repo, "update-ref", "refs/remotes/origin/main", "refs/heads/main")
+
+	if _, _, err := captureGCOutput(t, func() error {
+		return runArchive(slug, false)
+	}); err != nil {
+		t.Fatalf("runArchive squash merge with unavailable GitHub: %v", err)
+	}
+	archived := loadArchivedManifest(t, slug)
+	if !archived.Merged {
+		t.Fatal("squash-merged project was not recorded as merged")
+	}
+	if pathExists(worktree) || gitx.BranchExists(repo, branch) {
+		t.Fatal("squash-merged project resources survived archive")
+	}
+}
+
+func TestArchiveProvesRebaseMergeWhenGitHubIsUnavailable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "rebased-project"
+	branch := "user/rebased-project"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "first.txt", "first\n", "first change")
+	first := gitx.RevParse(repo, "refs/heads/"+branch)
+	commitArchiveFile(t, worktree, "second.txt", "second\n", "second change")
+	second := gitx.RevParse(repo, "refs/heads/"+branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	recordArchiveManifestPR(t, slug, 505)
+	installArchivePRLookupError(t, errors.New("GitHub unavailable"))
+	runArchiveGit(t, repo, "cherry-pick", first)
+	runArchiveGit(t, repo, "cherry-pick", second)
+	runArchiveGit(t, repo, "update-ref", "refs/remotes/origin/main", "refs/heads/main")
+
+	if _, _, err := captureGCOutput(t, func() error {
+		return runArchive(slug, false)
+	}); err != nil {
+		t.Fatalf("runArchive rebase merge with unavailable GitHub: %v", err)
+	}
+	if archived := loadArchivedManifest(t, slug); !archived.Merged {
+		t.Fatal("rebased project was not recorded as merged")
+	}
+}
+
+func TestArchiveProvesHistoricalSquashAfterLaterUpstreamEdit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "historical-squash"
+	branch := "user/historical-squash"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "project\n", "project change")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, repo, "merge", "-q", "--squash", branch)
+	runArchiveGit(t, repo, "commit", "-q", "-m", "squash project")
+	commitArchiveFile(t, repo, "feature.txt", "project\nlater\n", "later upstream edit")
+	runArchiveGit(t, repo, "update-ref", "refs/remotes/origin/main", "refs/heads/main")
+
+	if _, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	}); err != nil {
+		t.Fatalf("runArchive historical squash: %v", err)
+	}
+	if archived := loadArchivedManifest(t, slug); !archived.Merged {
+		t.Fatal("historical squash was not recorded as merged")
+	}
+}
+
+func TestArchiveInvalidStartUsesVerifiedPullRequestProof(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "invalid-start-valid-pr"
+	branch := "user/invalid-start-valid-pr"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "merged\n", "merged work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	recordArchiveManifestPR(t, slug, 506)
+	updateGCManifest(t, slug, func(manifest *project.Manifest) {
+		manifest.StartSHA = "not-a-commit"
+	})
+	installArchivePRIndex(t, map[string]programview.PRState{"#506": programview.PRStateMerged})
+
+	if _, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	}); err != nil {
+		t.Fatalf("runArchive invalid start with valid PR: %v", err)
+	}
+	if archived := loadArchivedManifest(t, slug); !archived.Merged {
+		t.Fatal("verified pull request did not record merged state")
+	}
+}
+
+func TestArchiveInvalidStartWithoutProofPreservesProject(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "invalid-start-no-proof"
+	branch := "user/invalid-start-no-proof"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "unverified\n", "unverified work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	updateGCManifest(t, slug, func(manifest *project.Manifest) {
+		manifest.StartSHA = "not-a-commit"
+	})
+
+	_, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	})
+	if err == nil || !strings.Contains(err.Error(), "merge could not be verified") ||
+		!strings.Contains(err.Error(), "invalid work start") {
+		t.Fatalf("runArchive error = %v, want invalid-start verification failure", err)
+	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
+}
+
+func TestArchiveMissingStartWithoutProofPreservesProject(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "missing-start-no-proof"
+	branch := "user/missing-start-no-proof"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "unverified\n", "unverified work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	updateGCManifest(t, slug, func(manifest *project.Manifest) {
+		manifest.StartSHA = ""
+	})
+
+	_, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	})
+	if err == nil || !strings.Contains(err.Error(), "merge could not be verified") {
+		t.Fatalf("runArchive error = %v, want missing-start verification failure", err)
+	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
+}
+
+func TestArchiveRejectsActiveProgramManagedProject(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "managed-active"
+	branch := "user/managed-active"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	updateGCManifest(t, slug, func(manifest *project.Manifest) {
+		manifest.Program = "release-train"
+		manifest.ProgramItem = "w1"
+	})
+
+	_, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	})
+	if err == nil || !strings.Contains(
+		err.Error(), "relay program worker cleanup release-train w1",
+	) {
+		t.Fatalf("runArchive error = %v, want program cleanup guidance", err)
+	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
+}
+
+func TestArchiveUsesConfiguredMasterRemoteBase(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := newTestRepo(t)
+	slug := "master-base"
+	branch := "user/master-base"
+	worktree := addArchiveWorktree(t, repo, slug, branch)
+	commitArchiveFile(t, worktree, "feature.txt", "master\n", "master work")
+	writeArchiveManifest(t, slug, repo, branch, worktree)
+	runArchiveGit(t, repo, "branch", "-m", "main", "master")
+	updateGCManifest(t, slug, func(manifest *project.Manifest) {
+		manifest.BaseBranch = "master"
+	})
+	runArchiveGit(t, repo, "merge", "-q", "--squash", branch)
+	runArchiveGit(t, repo, "commit", "-q", "-m", "squash master work")
+	runArchiveGit(t, repo, "update-ref", "refs/remotes/origin/master", "refs/heads/master")
+
+	if _, err := captureStdout(t, func() error {
+		return runArchive(slug, false)
+	}); err != nil {
+		t.Fatalf("runArchive configured master: %v", err)
+	}
+	if archived := loadArchivedManifest(t, slug); !archived.Merged {
+		t.Fatal("master-based project was not recorded as merged")
+	}
+}
+
 func TestArchiveStillProtectsUnmergedPullRequest(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
@@ -1636,8 +1929,8 @@ func TestArchiveStillProtectsUnmergedPullRequest(t *testing.T) {
 	_, err := captureStdout(t, func() error {
 		return runArchive(slug, false)
 	})
-	if err == nil || !strings.Contains(err.Error(), "unmerged work") {
-		t.Fatalf("runArchive error = %v, want unmerged branch protection", err)
+	if err == nil || !strings.Contains(err.Error(), "merge could not be verified") {
+		t.Fatalf("runArchive error = %v, want merge verification protection", err)
 	}
 	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
@@ -1700,7 +1993,7 @@ func TestArchiveRecordsMergedPullRequestWhenDeletedBranchLeavesDetachedWorktree(
 	}
 }
 
-func TestArchiveWarnsAndContinuesWhenDeletedBranchProofFails(t *testing.T) {
+func TestArchivePreservesDeletedBranchProjectWhenProofFails(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
 	slug := "deleted-branch-proof-error"
@@ -1716,34 +2009,29 @@ func TestArchiveWarnsAndContinuesWhenDeletedBranchProofFails(t *testing.T) {
 	runArchiveGit(t, repo, "worktree", "remove", "--force", worktree)
 	runArchiveGit(t, repo, "branch", "-D", branch)
 
-	stdout, stderr, err := captureGCOutput(t, func() error {
+	_, _, err := captureGCOutput(t, func() error {
 		return runArchive(slug, false)
 	})
-	if err != nil {
-		t.Fatalf("runArchive with unavailable proof lookup: %v", err)
-	}
-	if strings.Contains(stdout, "Branch still present:") {
-		t.Fatalf("stdout %q falsely reports the already absent branch as present", stdout)
-	}
-	for _, secret := range []string{"ref-user", "ref-secret", "query-secret", "fragment-secret", "access_token"} {
-		if strings.Contains(stderr, secret) {
-			t.Fatalf("stderr %q leaked %q", stderr, secret)
-		}
+	if err == nil {
+		t.Fatal("runArchive succeeded without Git or pull request proof")
 	}
 	for _, want := range []string{
+		"merge could not be verified",
 		"GitHub unavailable",
 		"https://[redacted]@example.com/acme/widgets/pull/408",
 	} {
-		if !strings.Contains(stderr, want) {
-			t.Fatalf("stderr %q is missing %q", stderr, want)
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("runArchive error %q is missing %q", err, want)
 		}
 	}
-	if pathExists(filepath.Join(project.ActiveDir(), slug)) {
-		t.Fatal("archive left project metadata active after proof lookup failed")
+	for _, secret := range []string{"ref-user", "ref-secret", "query-secret", "fragment-secret", "access_token"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("runArchive error %q leaked %q", err, secret)
+		}
 	}
-	archived := loadArchivedManifest(t, slug)
-	if archived.Merged {
-		t.Fatal("archive recorded unavailable pull request proof as merged")
+	if !pathExists(filepath.Join(project.ActiveDir(), slug)) ||
+		pathExists(filepath.Join(project.ArchivedDir(), slug)) {
+		t.Fatal("archive moved project metadata without merge proof")
 	}
 }
 
@@ -2852,7 +3140,7 @@ func TestArchiveForceDeletesBranchMergedOnlyIntoRemoteBase(t *testing.T) {
 	}
 }
 
-func TestArchiveDeletesLocallyReachableBranchWhenOriginBaseIsStale(t *testing.T) {
+func TestArchivePreservesLocallyReachableBranchWhenOriginBaseIsStale(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := newTestRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
@@ -2867,16 +3155,11 @@ func TestArchiveDeletesLocallyReachableBranchWhenOriginBaseIsStale(t *testing.T)
 	writeArchiveManifest(t, slug, repo, branch, worktree)
 	runArchiveGit(t, repo, "merge", "-q", "--no-edit", branch)
 
-	result, err := archiveProject(slug, false)
-	if err != nil {
-		t.Fatalf("archiveProject: %v", err)
+	_, err := archiveProject(slug, false)
+	if err == nil || !strings.Contains(err.Error(), "merge could not be verified") {
+		t.Fatalf("archiveProject error = %v, want remote-base-only protection", err)
 	}
-	if result.BranchDeletionWarning != "" {
-		t.Fatalf("branch deletion warning = %q, want none", result.BranchDeletionWarning)
-	}
-	if !result.BranchDeleted || gitx.BranchExists(repo, branch) {
-		t.Fatalf("locally reachable branch %q survived archive", branch)
-	}
+	assertArchivePreserved(t, repo, slug, branch, worktree)
 }
 
 func recordArchiveManifestPR(t *testing.T, slug string, number int) {
