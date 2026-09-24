@@ -443,60 +443,188 @@ func WorkMerged(repo, branch, base, startSHA string) (bool, error) {
 	return merged, err
 }
 
+// WorkMergedInto reports whether the branch's complete work range is present
+// in base through ordinary ancestry or an exact squash/rebase-equivalent patch.
+func WorkMergedInto(repo, branch, base, startSHA string) (tip string, merged bool, err error) {
+	startCommit, branchTip, exists, err := workRange(repo, branch, startSHA)
+	if err != nil || !exists || branchTip == startCommit {
+		return branchTip, false, err
+	}
+	reachable, err := CommitReachable(repo, branchTip, base)
+	if err != nil || reachable {
+		return branchTip, reachable, err
+	}
+
+	projectCommits, linear, err := linearCommitRange(repo, startCommit, branchTip)
+	if err != nil || !linear {
+		return branchTip, false, err
+	}
+	baseCommits, bounded, err := firstParentCommitsAfter(repo, startCommit, base)
+	if err != nil || !bounded {
+		return branchTip, false, err
+	}
+	projectFingerprint, err := patchFingerprint(repo, startCommit, branchTip)
+	if err != nil || projectFingerprint == "" {
+		return branchTip, false, err
+	}
+
+	for i, commit := range baseCommits {
+		parent := startCommit
+		if i > 0 {
+			parent = baseCommits[i-1]
+		}
+		fingerprint, fingerprintErr := patchFingerprint(repo, parent, commit)
+		if fingerprintErr != nil {
+			return branchTip, false, fingerprintErr
+		}
+		if fingerprint == projectFingerprint {
+			return branchTip, true, nil
+		}
+	}
+	for end := len(projectCommits); end <= len(baseCommits); end++ {
+		start := end - len(projectCommits)
+		parent := startCommit
+		if start > 0 {
+			parent = baseCommits[start-1]
+		}
+		fingerprint, fingerprintErr := patchFingerprint(repo, parent, baseCommits[end-1])
+		if fingerprintErr != nil {
+			return branchTip, false, fingerprintErr
+		}
+		if fingerprint == projectFingerprint {
+			return branchTip, true, nil
+		}
+	}
+	return branchTip, false, nil
+}
+
 // WorkMergedTip reports whether the exact returned branch tip contains work
 // beyond startSHA and is reachable from base.
 func WorkMergedTip(repo, branch, base, startSHA string) (tip string, merged bool, err error) {
+	startCommit, branchTip, exists, err := workRange(repo, branch, startSHA)
+	if err != nil || !exists || branchTip == startCommit {
+		return branchTip, false, err
+	}
+	reachable, err := CommitReachable(repo, branchTip, base)
+	return branchTip, reachable, err
+}
+
+func workRange(repo, branch, startSHA string) (startCommit, branchTip string, exists bool, err error) {
 	if startSHA == "" {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	startExpression := strings.TrimSpace(startSHA) + "^{commit}"
 	startOutput, err := exec.Command(
 		"git", "-C", repo, "rev-parse", "--verify", "--end-of-options", startExpression,
 	).Output()
 	if err != nil {
-		return "", false, fmt.Errorf(
+		return "", "", false, fmt.Errorf(
 			"%w: start_sha %q in %s does not resolve to a commit: %v",
 			ErrInvalidWorkStart, startSHA, repo,
 			gitOutputError("git rev-parse --verify --end-of-options "+startExpression, err),
 		)
 	}
-	startCommit := strings.TrimSpace(string(startOutput))
+	startCommit = strings.TrimSpace(string(startOutput))
 
-	exists, err := localBranchExists(repo, branch)
+	exists, err = localBranchExists(repo, branch)
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	if !exists {
-		return "", false, nil
+		return startCommit, "", false, nil
 	}
 	ref := "refs/heads/" + branch
 	out, err := exec.Command("git", "-C", repo, "rev-parse", "--verify", ref+"^{commit}").Output()
 	if err != nil {
-		return "", false, gitOutputError("git rev-parse --verify "+ref+"^{commit}", err)
+		return "", "", false, gitOutputError("git rev-parse --verify "+ref+"^{commit}", err)
 	}
-	branchTip := strings.TrimSpace(string(out))
+	branchTip = strings.TrimSpace(string(out))
 	_, err = exec.Command(
 		"git", "-C", repo, "merge-base", "--is-ancestor", startCommit, branchTip,
 	).Output()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return branchTip, false, fmt.Errorf(
+			return "", branchTip, false, fmt.Errorf(
 				"%w: start_sha %q resolves to %s, which is not an ancestor of branch %q",
 				ErrInvalidWorkStart, startSHA, startCommit, branch,
 			)
 		}
-		return branchTip, false, fmt.Errorf(
+		return "", branchTip, false, fmt.Errorf(
 			"%w: verify start_sha %q against branch %q: %v",
 			ErrInvalidWorkStart, startSHA, branch,
 			gitOutputError("git merge-base --is-ancestor "+startCommit+" "+branchTip, err),
 		)
 	}
-	if branchTip == startCommit {
-		return branchTip, false, nil
+	return startCommit, branchTip, true, nil
+}
+
+func linearCommitRange(repo, start, tip string) ([]string, bool, error) {
+	out, err := exec.Command(
+		"git", "-C", repo, "rev-list", "--reverse", "--topo-order", "--parents", start+".."+tip,
+	).Output()
+	if err != nil {
+		return nil, false, gitOutputError("git rev-list linear work range", err)
 	}
-	reachable, err := CommitReachable(repo, branchTip, base)
-	return branchTip, reachable, err
+	expectedParent := start
+	var commits []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[1] != expectedParent {
+			return nil, false, nil
+		}
+		commits = append(commits, fields[0])
+		expectedParent = fields[0]
+	}
+	return commits, len(commits) > 0, nil
+}
+
+func firstParentCommitsAfter(repo, start, base string) ([]string, bool, error) {
+	out, err := exec.Command(
+		"git", "-C", repo, "rev-list", "--first-parent", "--reverse", start+".."+base,
+	).Output()
+	if err != nil {
+		return nil, false, gitOutputError("git rev-list first-parent base range", err)
+	}
+	commits := strings.Fields(string(out))
+	if len(commits) == 0 {
+		return nil, base == start, nil
+	}
+	parentOutput, err := exec.Command(
+		"git", "-C", repo, "rev-list", "--parents", "-n", "1", commits[0],
+	).Output()
+	if err != nil {
+		return nil, false, gitOutputError("git rev-list first-parent base boundary", err)
+	}
+	parentFields := strings.Fields(string(parentOutput))
+	if len(parentFields) < 2 || parentFields[1] != start {
+		return nil, false, nil
+	}
+	return commits, true, nil
+}
+
+func patchFingerprint(repo, from, to string) (string, error) {
+	diff, err := exec.Command(
+		"git", "-C", repo, "diff", "--binary", "--full-index", "--no-ext-diff",
+		"--no-renames", from, to,
+	).Output()
+	if err != nil {
+		return "", gitOutputError("git diff complete work range", err)
+	}
+	command := exec.Command("git", "-C", repo, "patch-id", "--verbatim")
+	command.Stdin = bytes.NewReader(diff)
+	out, err := command.Output()
+	if err != nil {
+		return "", gitOutputError("git patch-id --verbatim", err)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		return "", nil
+	}
+	return fields[0], nil
 }
 
 // IsWorkMerged preserves the conservative boolean interface for existing callers.
