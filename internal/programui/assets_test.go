@@ -110,7 +110,7 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		`class="visually-hidden"`,
 		"<caption",
 		`<a class="skip-link"`,
-		`<link rel="preload" href="/app.js" as="script">`,
+		`<link rel="preload" href="app.js" as="script">`,
 	})
 
 	if strings.Count(index, "<script") != 3 ||
@@ -123,6 +123,42 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		!strings.Contains(index, `<style>/*!__RELAY_CSS__*/</style>`) {
 		t.Error("index.html must embed the minified core stylesheet")
 	}
+}
+
+func TestDetailAssetsUseRelativeURLs(t *testing.T) {
+	for _, name := range []string{
+		"assets/index.html",
+		"assets/index.min.html",
+		"assets/roadmap.js",
+		"assets/roadmap.min.js",
+		"assets/app.js",
+		"assets/app.min.js",
+		"assets/app-deferred.js",
+		"assets/app-deferred.min.js",
+	} {
+		requireAbsent(t, name, readAsset(t, name), []string{
+			`"/app.js"`,
+			`"/app-deferred.css"`,
+			`"/app-deferred.js"`,
+			`"/api/program`,
+			`"/api/artifact`,
+			`href="/app.js"`,
+		})
+	}
+	requireContains(t, "index.html", readAsset(t, "assets/index.html"), []string{
+		`<link rel="preload" href="app.js" as="script">`,
+	})
+	requireContains(t, "roadmap.js", readAsset(t, "assets/roadmap.js"), []string{
+		`script.src = "app.js"`,
+	})
+	requireContains(t, "app.js", readAsset(t, "assets/app.js"), []string{
+		`styles.href = "app-deferred.css"`,
+		`script.src = "app-deferred.js"`,
+		`fetch(view ? ` + "`api/program?view=${view}`" + ` : "api/program"`,
+	})
+	requireContains(t, "app-deferred.js", readAsset(t, "assets/app-deferred.js"), []string{
+		"return `api/artifact?${query.toString()}`;",
+	})
 }
 
 func TestOverviewRendersMergedProgressContract(t *testing.T) {

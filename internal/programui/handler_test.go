@@ -40,7 +40,7 @@ func TestHandlerCachesRenderedIndex(t *testing.T) {
 		bytes.Contains(response.Body.Bytes(), []byte(cssTemplateToken)) ||
 		bytes.Contains(response.Body.Bytes(), []byte("<style></style>")) ||
 		!bytes.Contains(response.Body.Bytes(), []byte("--canvas:")) ||
-		!bytes.Contains(response.Body.Bytes(), []byte("/app.js")) {
+		!bytes.Contains(response.Body.Bytes(), []byte(`href="app.js"`)) {
 		t.Fatal("rendered index must contain the complete first-paint CSS and bootstrap with no template token")
 	}
 }

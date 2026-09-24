@@ -19,7 +19,7 @@ const LANES = ["pending", "dispatched", "in-review", "blocked", "merged", "cance
 const TABS = ["roadmap", "kanban", "tasks", "decisions", "goal"];
 const ACTIVE_STATUSES = ["dispatched", "in-review"];
 
-/* Work item IDs must match what /api/program accepts, or a stale hash makes
+/* Work item IDs must match what api/program accepts, or a stale hash makes
    every poll fail with 400 and the view never recovers. Keep in sync with
    normalizeDetailItem in cache.go. */
 const ITEM_ID = /^w[1-9][0-9]*$/;
@@ -115,7 +115,7 @@ function loadDeferredStyle() {
   deferredStylePromise = new Promise((resolve, reject) => {
     const styles = document.createElement("link");
     styles.rel = "stylesheet";
-    styles.href = "/app-deferred.css";
+    styles.href = "app-deferred.css";
     styles.onload = () => {
       deferredStyleReady = true;
       resolve();
@@ -139,7 +139,7 @@ function loadDeferredScript() {
   }
   deferredScriptPromise = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "/app-deferred.js";
+    script.src = "app-deferred.js";
     script.onload = () => {
       deferredScriptReady = true;
       resolve();
@@ -1594,7 +1594,7 @@ let pollTimer = null;
 let programController = null;
 
 function requestProgram(controller, view) {
-  return fetch(view ? `/api/program?view=${view}` : "/api/program", {
+  return fetch(view ? `api/program?view=${view}` : "api/program", {
     cache: "no-store",
     signal: controller.signal,
     headers: { Accept: "application/json" },
