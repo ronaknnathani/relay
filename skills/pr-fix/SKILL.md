@@ -52,9 +52,9 @@ validated `owner_slug`; the stack orchestrator is the sole auto-merge owner. In 
 mode, the policy-permitted behavior below remains available.
 
 Return a structured result, one entry per supplied item: `id`, action, status
-(`fixed|replied|ready-for-owner|escalated|ignored_non_actionable|failed`), reason, pushed commit, and
-new head SHA. Do not omit an item. `ignored_non_actionable` means no reply, reaction, resolution, or
-other GitHub mutation was made.
+(`fixed|replied|ready-for-owner|escalated|failed`), reason, pushed commit, and new head SHA. Do not
+omit an item. Use the additional status `ignored_non_actionable` when no reply, reaction, resolution,
+or other GitHub mutation was made.
 
 ### Direct mode
 

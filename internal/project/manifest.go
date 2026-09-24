@@ -1,6 +1,11 @@
 // Package project defines the relay project data model and on-disk storage.
 package project
 
+const (
+	DeliveryModeAdaptive = "adaptive"
+	DeliveryModeFull     = "full"
+)
+
 // Manifest is the on-disk representation of a relay project. JSON tags
 // match the existing schema; do not rename without migrating existing files
 // under ~/.relay.
@@ -62,4 +67,48 @@ type PRInfo struct {
 	Number   *int    `json:"number"`
 	URL      *string `json:"url"`
 	CIStatus *string `json:"ci_status"`
+}
+
+// EffectiveManifest overlays adaptive workflow state onto an in-memory
+// manifest without rewriting the historical manifest on disk.
+func EffectiveManifest(manifest Manifest, state WorkflowState) Manifest {
+	if !state.UsesAdaptiveDelivery() {
+		return manifest
+	}
+	effective := manifest
+	effective.PhasesCompleted = nil
+	effective.PhasesRemaining = nil
+	for _, name := range state.Order {
+		switch state.Phases[name].Status {
+		case PhaseDone, PhaseSkipped:
+			effective.PhasesCompleted = append(effective.PhasesCompleted, name)
+		default:
+			effective.PhasesRemaining = append(effective.PhasesRemaining, name)
+		}
+	}
+	current := state.Current()
+	if state.Route != nil {
+		current = state.currentSelectedPhase()
+	}
+	if current == "" {
+		effective.Phase = "done"
+		effective.Status = "done"
+	} else {
+		effective.Phase = current
+		effective.Status = state.Phases[current].Status
+	}
+	if manifest.Archived != nil {
+		effective.Status = "archived"
+	}
+	effective.PR.Number = nil
+	effective.PR.URL = nil
+	if state.PR.Number > 0 {
+		number := state.PR.Number
+		effective.PR.Number = &number
+	}
+	if state.PR.URL != "" {
+		url := state.PR.URL
+		effective.PR.URL = &url
+	}
+	return effective
 }
