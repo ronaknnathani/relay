@@ -2095,6 +2095,8 @@ func initCLIGitRepo(t *testing.T) string {
 		}
 	}
 	run("init", "-q", "-b", "main")
+	run("config", "user.name", "relay")
+	run("config", "user.email", "relay@example.com")
 	if err := os.WriteFile(filepath.Join(repo, "README"), []byte("relay\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
