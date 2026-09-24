@@ -29,6 +29,179 @@ const (
 	canonicalCancelledHeading = "Cancelled" //nolint:misspell // Display spelling for the persisted Relay status.
 )
 
+func TestOverviewBrowser(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	var phase atomic.Int32
+	overview := func() (programview.OverviewSnapshot, error) {
+		snapshot := programview.OverviewSnapshot{
+			Schema:      programview.OverviewSchemaVersion,
+			GeneratedAt: "2026-09-24T17:00:00Z",
+			Programs: []programview.ProgramOverviewDTO{
+				{
+					Slug: "alpha", Title: "Alpha", DisplayTitle: "Alpha program",
+					Summary: "The first active program.", State: "active",
+					UpdatedAt: "2026-09-24T16:00:00Z",
+					Progress:  programview.ProgressDTO{Total: 2, Merged: 1, Completed: 1, Percent: 50},
+					InFlight:  1, NextAction: "reconcile in-flight work",
+				},
+				{
+					Slug: "beta", Title: "Beta", DisplayTitle: "Beta program",
+					Summary: "The second active program.", State: "held",
+					UpdatedAt: "2026-09-24T16:30:00Z",
+					Progress:  programview.ProgressDTO{Total: 2, Blocked: 1},
+					Blocked:   1, NextAction: "resume program",
+				},
+			},
+			Work: []programview.OverviewWorkItemDTO{
+				{ProgramSlug: "alpha", ProgramTitle: "Alpha program", ID: "w1", Title: "First task", Priority: "P0", Status: "dispatched"},
+				{ProgramSlug: "alpha", ProgramTitle: "Alpha program", ID: "w2", Title: "Review task", Priority: "P1", Status: "in-review"},
+				{ProgramSlug: "beta", ProgramTitle: "Beta program", ID: "w3", Title: "Blocked task", Priority: "P2", Status: "blocked", Reasons: []string{"owner needed"}},
+			},
+			Diagnostics: []programview.OverviewDiagnosticDTO{},
+		}
+		if phase.Load() > 0 {
+			snapshot.Programs = append(snapshot.Programs, programview.ProgramOverviewDTO{
+				Slug: "gamma", Title: "Gamma", DisplayTitle: "Gamma program",
+				State: "draft", UpdatedAt: "2026-09-24T17:01:00Z",
+				Progress: programview.ProgressDTO{}, NextAction: "request approval",
+			})
+			snapshot.Work = snapshot.Work[:1]
+			snapshot.GeneratedAt = "2026-09-24T17:01:00Z"
+		}
+		return snapshot, nil
+	}
+	detail := func(slug, item string) (programview.Snapshot, error) {
+		snapshot := browserTestSnapshot()
+		snapshot.Program.Slug = slug
+		snapshot.Program.Title = strings.ToUpper(slug)
+		snapshot.Program.DisplayTitle = strings.ToUpper(slug)
+		snapshot.DetailItem = item
+		return snapshot, nil
+	}
+
+	output := newLineWriter()
+	serverContext, cancelServer := context.WithCancel(context.Background())
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- Serve(serverContext, Options{
+			Port: 0, Open: false, Out: output,
+			OverviewBuilder: overview,
+			LocalBuilder:    detail,
+			Builder:         detail,
+		})
+	}()
+	t.Cleanup(func() {
+		cancelServer()
+		select {
+		case err := <-serverDone:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("unified program UI did not stop")
+		}
+	})
+	url := waitForProgramURL(t, output, serverDone)
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 20*time.Second)
+	defer cancelTimeout()
+
+	if err := chromedp.Run(browser,
+		chromedp.Navigate(url),
+		chromedp.Poll(`document.querySelectorAll(".program-card").length === 2`, nil),
+		chromedp.Poll(`document.querySelectorAll(".work-card").length === 3`, nil),
+		chromedp.Poll(`document.querySelector('[data-status="blocked"]').textContent.includes("owner needed")`, nil),
+	); err != nil {
+		t.Fatalf("render overview: %v", err)
+	}
+	var initial string
+	if err := chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+		programs: Array.from(document.querySelectorAll(".program-card h3"), (node) => node.textContent),
+		lanes: Array.from(document.querySelectorAll(".lane > header h3"), (node) => node.textContent),
+		work: Array.from(document.querySelectorAll(".work-card"), (node) => node.getAttribute("href")),
+	})`, &initial)); err != nil {
+		t.Fatal(err)
+	}
+	if initial != `{"programs":["Alpha program","Beta program"],"lanes":["Dispatched","In review","Blocked"],"work":["programs/alpha/#task=w1","programs/alpha/#task=w2","programs/beta/#task=w3"]}` {
+		t.Fatalf("overview DOM = %s", initial)
+	}
+
+	if err := chromedp.Run(browser,
+		chromedp.Focus(".work-card"),
+		chromedp.Poll(`document.activeElement?.matches("a.work-card")`, nil),
+	); err != nil {
+		t.Fatalf("focus work card: %v", err)
+	}
+	if err := chromedp.Run(browser, chromedp.Click(".work-card")); err != nil {
+		t.Fatalf("activate work card: %v", err)
+	}
+	var detailLocation string
+	if err := chromedp.Run(browser,
+		chromedp.Sleep(500*time.Millisecond),
+		chromedp.Location(&detailLocation),
+		chromedp.Poll(`location.pathname === "/programs/alpha/" && location.hash === "#task=w1"`, nil),
+	); err != nil {
+		t.Fatalf("detail location %q: %v", detailLocation, err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Poll(`typeof state !== "undefined" &&
+			state.selected === "w1" &&
+			document.querySelector("#drawer-title").textContent === "First task"`, nil),
+	); err != nil {
+		t.Fatalf("detail hydration at %q: %v", detailLocation, err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Reload(),
+		chromedp.Poll(`location.hash === "#task=w1"`, nil),
+	); err != nil {
+		t.Fatalf("reload selected detail: %v", err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.NavigateBack(),
+		chromedp.Poll(`location.pathname === "/" && document.querySelectorAll(".program-card").length === 2`, nil),
+	); err != nil {
+		t.Fatalf("return to overview: %v", err)
+	}
+
+	phase.Store(1)
+	if err := chromedp.Run(browser,
+		chromedp.Poll(`document.querySelectorAll(".program-card").length === 3`, nil,
+			chromedp.WithPollingTimeout(10*time.Second)),
+		chromedp.Poll(`document.querySelectorAll(".work-card").length === 1`, nil,
+			chromedp.WithPollingTimeout(10*time.Second)),
+	); err != nil {
+		t.Fatalf("live refresh: %v", err)
+	}
+	if err := chromedp.Run(browser, chromedp.Click(".program-card:nth-child(2)")); err != nil {
+		t.Fatalf("pointer navigation: %v", err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Sleep(250*time.Millisecond),
+		chromedp.Poll(`location.pathname === "/programs/beta/"`, nil),
+	); err != nil {
+		t.Fatalf("pointer detail location: %v", err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.NavigateBack(),
+		chromedp.Poll(`location.pathname === "/"`, nil),
+	); err != nil {
+		t.Fatalf("return from pointer navigation: %v", err)
+	}
+}
+
 func TestBrowserHydratesAndPollsWhenDeferredBundleFails(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")

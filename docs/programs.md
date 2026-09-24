@@ -639,17 +639,24 @@ working so the tech lead can fix the child.
 
 ### Local program UI
 
-Each program has a live, read-only mission-control view:
+Relay provides one live, read-only overview for every active program:
 
 ```bash
-relay program ui auth-platform
+relay program ui
 ```
 
 Relay binds an embedded web application to `127.0.0.1` on an available port, opens the browser, and
 serves until interrupted with Ctrl-C. Use `--no-open` when another process will open the URL, or
 `--port <number>` to request a fixed local port.
 
-The UI refreshes automatically and visualizes:
+The overview discovers membership from `~/.relay/programs/active/`; archived programs are excluded.
+It summarizes lifecycle state, progress, planning queues, open decisions, and next action for each
+program. Its Work in progress board contains only dispatched, in-review, and blocked items, grouped
+into those three fixed lanes with blocked reasons. Local discovery and status refresh every three
+seconds, and a temporary refresh failure preserves the last visible snapshot with a diagnostic.
+
+Open a program or work card to enter that program's existing mission-control view on the same local
+server. The detail UI refreshes automatically and visualizes:
 
 - The approved goal and background from program artifacts.
 - Overall completion and pull-request capacity.
@@ -666,9 +673,15 @@ reconnecting. GitHub reads are cached and shared, so one snapshot performs at mo
 recorded pull request and the UI reports exactly the capacity, status, and readiness the strict CLI
 reports.
 
+Use the compatibility form to open one active or archived program directly at the server root:
+
+```bash
+relay program ui auth-platform
+```
+
 The server accepts only `GET` and `HEAD`, binds only to loopback, rejects unexpected Host headers,
 loads no external assets, and never changes program, project, mailbox, git, Herdr, or GitHub state.
-Archived programs are viewable with the same command.
+Archived programs remain available only through the direct form.
 
 ## State ownership
 

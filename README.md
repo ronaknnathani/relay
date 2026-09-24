@@ -120,7 +120,8 @@ relay program queue <program-slug>           # ready, active, and blocked work
 relay program resume <program-slug>          # reopen the tech lead session
 relay program worker list <program-slug>     # live worker sessions
 relay program worker cleanup <program-slug> <item>  # retire a merged item's runtime
-relay program ui <program-slug>              # localhost read-only UI
+relay program ui                             # unified active-program UI
+relay program ui <program-slug>              # direct active or archived program UI
 relay program patrol status <program-slug>   # scheduler and wake status
 relay program patrol start <program-slug>    # start the program patrol
 ```
@@ -128,7 +129,8 @@ relay program patrol start <program-slug>    # start the program patrol
 Program state lives under `~/.relay/programs/`. Worker state remains under
 `~/.relay/projects/`. Communication between the tech lead and workers uses durable inboxes and
 outboxes. GitHub pull requests remain the review boundary, and a real human approval remains the
-merge gate.
+merge gate. The unified UI discovers programs from the active storage tree, refreshes automatically,
+and highlights dispatched, in-review, and blocked work across programs.
 
 Read [Relay Programs](docs/programs.md) for the full model and command reference.
 
