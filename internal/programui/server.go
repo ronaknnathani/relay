@@ -39,7 +39,8 @@ type Options struct {
 	OpenBrowser     func(string) error
 }
 
-// Serve verifies the program, listens on loopback, and blocks until cancellation.
+// Serve starts the loopback Program UI and blocks until cancellation. A non-empty
+// slug serves one verified program; an empty slug serves the unified overview.
 func Serve(ctx context.Context, options Options) error {
 	if options.Port < 0 || options.Port > 65535 {
 		return fmt.Errorf("program UI port %d is outside 0-65535", options.Port)
@@ -102,7 +103,6 @@ func Serve(ctx context.Context, options Options) error {
 			scheduleDetailRefresh(ctx, feed)
 			return detail, nil
 		})
-		go refreshOverview(ctx, overview)
 	} else {
 		detail, feed := newDetailRuntime(options.Slug, actualPort, detailSeed, builder, now)
 		handler = detail
@@ -236,19 +236,6 @@ func scheduleDetailRefresh(ctx context.Context, feed *snapshotFeed) {
 			feed.Refresh()
 		}
 	}()
-}
-
-func refreshOverview(ctx context.Context, feed *overviewFeed) {
-	ticker := time.NewTicker(overviewRefreshTTL)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			feed.Refresh()
-		}
-	}
 }
 
 func stopServer(server *http.Server, serveError <-chan error) error {

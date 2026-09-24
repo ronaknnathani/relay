@@ -206,6 +206,48 @@ func TestServeUnifiedModeTreatsMissingActiveDirectoryAsEmpty(t *testing.T) {
 	}
 }
 
+func TestServeUnifiedModeDoesNotRefreshOverviewWhileIdle(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	output := newLineWriter()
+	done := make(chan error, 1)
+	refreshed := make(chan struct{}, 1)
+	var calls atomic.Int32
+	go func() {
+		done <- Serve(ctx, Options{
+			Port: 0, Open: false, Out: output,
+			OverviewBuilder: func() (programview.OverviewSnapshot, error) {
+				if calls.Add(1) > 1 {
+					refreshed <- struct{}{}
+				}
+				return programview.OverviewSnapshot{
+					Schema:      programview.OverviewSchemaVersion,
+					Programs:    []programview.ProgramOverviewDTO{},
+					Work:        []programview.OverviewWorkItemDTO{},
+					Diagnostics: []programview.OverviewDiagnosticDTO{},
+				}, nil
+			},
+		})
+	}()
+
+	_ = waitForProgramURL(t, output, done)
+	select {
+	case <-refreshed:
+		t.Fatal("overview refreshed without a browser request")
+	case <-time.After(overviewRefreshTTL + 500*time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not stop after cancellation")
+	}
+}
+
 func TestServeUnifiedModeFailsBeforeListeningWhenOverviewFails(t *testing.T) {
 	output := newLineWriter()
 	err := Serve(context.Background(), Options{
