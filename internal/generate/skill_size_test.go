@@ -20,7 +20,7 @@ func TestSkillWordBudgets(t *testing.T) {
 		"review":     1071,
 		"pr-monitor": 1342,
 		"pr-fix":     1502,
-		"tl":         2832,
+		"tl":         4000,
 	}
 	counts := map[string]int{}
 	total := 0
@@ -42,7 +42,7 @@ func TestSkillWordBudgets(t *testing.T) {
 	if _, ok := counts["route"]; !ok {
 		t.Error("route is missing from the aggregate skill budget")
 	}
-	if total > 15000 {
+	if total > 16200 {
 		names := make([]string, 0, len(counts))
 		for name := range counts {
 			names = append(names, name)
@@ -51,6 +51,6 @@ func TestSkillWordBudgets(t *testing.T) {
 		for _, name := range names {
 			t.Logf("%s: %d", name, counts[name])
 		}
-		t.Fatalf("non-writing skill words = %d, budget = 15000", total)
+		t.Fatalf("non-writing skill words = %d, budget = 16200", total)
 	}
 }

@@ -69,7 +69,7 @@ func TestAdaptiveWorkflowAndRetiredWrapperDocs(t *testing.T) {
 		}
 	}
 	tl := readFile(t, filepath.Join(root, "skills", "tl", "SKILL.md"))
-	if !strings.Contains(tl, "Process every usable entry even when another entry has a warning") {
+	if !strings.Contains(tl, "Process every usable message or worker entry even when another") {
 		t.Error("tech-lead contract does not preserve partial successful results")
 	}
 	stackState := readFile(t, filepath.Join(root, "skills", "stack-ship", "references", "state-files.md"))
