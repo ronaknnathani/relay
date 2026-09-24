@@ -1,78 +1,80 @@
 ---
 name: validate
-description: Verify a change is ready to ship by checking it against its acceptance criteria and running the repo's own quality gates in order, then report a pass/fail verdict with the exact failures. Use to decide go/no-go right before shipping — when you want a pass/fail verdict against acceptance criteria and the repo's quality gates (lint/build/test), not a code critique (use `review` for that). It reports — it does not fix (route failures to `pr-fix`/`implement`) and does not ship.
+description: Verify acceptance criteria and repository gates for the exact current snapshot, reusing only fresh evidence, recording normalized results, and returning failures to implementation without editing.
 ---
 
 # Validate
 
-Decide whether a change is ready to ship and report the verdict — pass, or fail with the exact
-failures someone else can act on. The bar: every acceptance criterion from `clarify`/`plan` is
-demonstrably met, and every quality gate the repo defines is green, each shown by a command or
-observation rather than asserted. This skill is a gate, not a fixer: on failure it hands precise
-error-feedback to `pr-fix` or `implement` and stops. It does **not** edit code and does **not** ship.
+Produce a pass/fail shipping verdict for the exact repository snapshot. This phase does not edit,
+commit, push, review, or ship.
 
 ## Process
 
-1. **Gather the acceptance criteria.** Read the Success criteria from the `clarify`/`plan` artifacts.
-   These are the goal-backward targets — what must be TRUE about the codebase. If no artifact exists,
-   reconstruct the criteria from the task description and list them, so the verdict is checkable.
-2. **Discover the repo's own gate commands.** Find how *this* repo lints, type-checks, tests, builds,
-   and audits — from its scripts/manifest/CI config (`explore` when it isn't obvious). Use the repo's
-   actual commands; never substitute a generic command or invent a gate the repo doesn't define. A
-   gate the repo doesn't have is skipped as not-applicable (and noted), not faked.
-3. **Run every applicable quality gate — none skippable.** The gates, in report order:
-   **lint → typecheck → unit tests → build → integration → e2e → security/audit → bundle-size**. This
-   sequence is the *reporting/intent order*, not a stop-on-first-failure barrier: run independent gates
-   in parallel when the tooling allows (dispatch sub-agents when available; otherwise inline), **never
-   stop at the first failure**, and capture every gate's output so the report is complete in one pass.
-4. **Check each acceptance criterion, goal-backward.** For each criterion, name the test, command, or
-   direct observation that demonstrates it holds — and run/observe it. A criterion with no evidence is
-   a FAIL, not a pass-by-assertion; "looks done" is not evidence.
-5. **Render the verdict.** PASS only if every applicable gate is green AND every acceptance criterion
-   has passing evidence. Otherwise FAIL. Report, for each failure: the **exact command run**, its
-   **error output**, and the **location** (file/line/criterion) — this is the error-feedback `pr-fix`
-   or `implement` consumes. Do not attempt deep fixes here; a one-line obvious typo is still routed
-   out, not silently patched.
+1. Read the task, acceptance criteria, route decision, repository snapshot, and existing normalized
+   validation evidence. Confirm `validate` is the route's validation owner; unforced easy routes normally skip
+   this phase because `implement` owns their final gates. If an easy route escalated, require
+   `validate` ownership and independently run or reuse the now-required gate evidence.
+   For a route-less legacy seven-phase project, `validate` owns the complete repository gate set,
+   reconstructs criteria when artifacts are absent, writes the same verdict, and uses the legacy
+   `relay state set`/`advance` flow without requiring route or evidence records.
+2. Read the exact gate IDs and structured-argv digests bound to the route. Confirm the repository's current
+   manifest, scripts, Makefile, and CI still define that set; reclassify if it changed. Do not invent a
+   generic gate or treat an undefined gate as passing. Write the gate definitions to a private JSON
+   file with a file-writing tool, never a shell heredoc or interpolated command string.
+3. Compare the required gate set with evidence for the exact repository snapshot. Reuse a passing
+   gate only when its ID, command digest, route revision, and snapshot are unchanged. Run stale or missing gates
+   only through `relay gate run "$SLUG" <gate-id> --file "$GATE_FILE"`; Relay executes the validated
+   argv directly and rejects shell command strings. Never run repository-derived command text through
+   `sh -c`, `bash -c`, backticks, command substitution, or `eval`;
+   never rerun an unchanged passing command merely because this phase started.
+4. Check every acceptance criterion with a named test, command, or direct observation. Missing
+   evidence is a failure.
+5. Record normalized command strings and exit statuses only:
 
-## Never mask a failure to go green
-
-Disabling a test, skipping a spec, loosening a lint rule, or lowering a threshold to make a gate pass
-is a hard red flag — it converts a real failure into a hidden one. If a gate fails, report it as a
-FAIL with its evidence and route it out. The only legitimate "skip" is a gate the repo genuinely does
-not define, recorded as not-applicable.
-
-## Output schema (the verdict)
-
-```markdown
-# Validation: <task>  — VERDICT: PASS | FAIL
-## Gates
-  - <gate>: PASS | FAIL | N/A — `<exact command>`  (on FAIL: error + location)
-## Acceptance criteria
-  - [x] <criterion> — evidence: <test/command/observation>
-  - [ ] <criterion> — FAIL: <what's missing + where>
-## Failures (for pr-fix / implement)
-  - `<exact command>` → <error output> @ <file:line | criterion>
+```bash
+relay state evidence record "$SLUG" validation \
+  --result passed \
+  --artifact validation.md \
+  --gate-file "$GATE_FILE" --exit-status 0 \
+  --dispatch-token "$VALIDATION_TOKEN"
 ```
 
-A PASS verdict means nothing in the Failures section. List every failure, not just the first — one
-pass should give the fixer everything to act on.
+Repeat `--gate` and `--exit-status` in matching order. Relay requires exact set equality with the
+route policy and stores only the gate ID, redacted display, command digest, and exit status. Never
+store output, environment values, transcript text, or secrets in state.
+When the repository defines no gates, record the explicit normalized form
+`--result passed --no-gates` only when the route policy is `none`; do not invent a command or treat
+missing discovery as no gates.
+6. PASS only when every required command and criterion passes. On failure, write exact command,
+   relevant error excerpt, and location to `validation.md`, then record `--result failed`. Relay marks
+   `validate` escalated and reopens `implement` with that artifact. Return the failure; do not edit or
+   advance to `open-pr`.
+   If validation cannot run because authentication, tooling, or required input is unavailable,
+   record `--result blocked --blocker-category <category> --blocker-reason "<reason>"`. Relay blocks
+   the canonical validation owner for coordinator recovery instead of treating the blocker as a
+   failed code gate.
+
+## Verdict
+
+```markdown
+# Validation: <task> - VERDICT: PASS | FAIL
+Snapshot: <fingerprint>
+## Gates
+- <gate>: PASS | FAIL | REUSED | N/A - `<command>`
+## Acceptance criteria
+- [x] <criterion> - <evidence>
+- [ ] <criterion> - <failure and location>
+## Failures
+- `<command>` -> <error excerpt> @ <location>
+```
+
+N/A means the repository does not define that gate. It never means a required check was skipped.
+Independent failing gates may run in parallel so one pass returns the full failure set.
 
 ## Red flags
 
-- Skipping a gate that applies, or running them out of order, instead of the full lint→…→bundle-size sequence.
-- Disabling/loosening a test, spec, lint rule, or threshold to turn a gate green.
-- Substituting a generic command for the repo's own gate command, or inventing a gate the repo lacks.
-- Marking an acceptance criterion PASS without a test/command/observation behind it.
-- Editing code to fix a failure here instead of routing it to `pr-fix`/`implement`.
-- Reporting only the first failure when later gates also failed — the fixer needs the whole set.
-- Shipping, merging, or invoking the next skill — `validate` returns a verdict and stops.
-
-## Verification checklist
-
-- [ ] Acceptance criteria came from the `clarify`/`plan` artifact (or were reconstructed and listed).
-- [ ] Gate commands are the repo's own, discovered from its config — not generic or invented.
-- [ ] Every applicable gate ran in order; results captured; none skipped or masked to go green.
-- [ ] Each acceptance criterion is backed by a named test/command/observation, not assertion.
-- [ ] The verdict is PASS only with all gates green and all criteria evidenced; else FAIL.
-- [ ] Each failure reports exact command + error + location for `pr-fix`/`implement` to consume.
-- [ ] No code was edited, nothing was shipped, and no next skill was invoked.
+- Editing code or weakening a test, lint rule, or threshold.
+- Reusing evidence from a different snapshot or command.
+- Rerunning all passing checks without determining which are stale or missing.
+- Claiming an acceptance criterion passed without observable evidence.
+- Advancing after failed or blocked evidence.

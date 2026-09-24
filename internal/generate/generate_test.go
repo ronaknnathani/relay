@@ -1,8 +1,10 @@
 package generate
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -11,8 +13,70 @@ import (
 
 // coreSkills are foundation skills that must always render into the package.
 var coreSkills = []string{
-	"explore", "clarify", "plan", "implement", "simplify", "review",
+	"route", "explore", "clarify", "plan", "implement", "simplify", "review",
 	"validate", "commit", "rebase", "open-pr", "pr-fix",
+}
+
+func TestRouteSkillUsesDeterministicClassifier(t *testing.T) {
+	for _, agentName := range []string{"claude", "copilot", "codex"} {
+		t.Run(agentName, func(t *testing.T) {
+			_, out := generateAgent(t, agentName)
+			body := readFile(t, filepath.Join(out, "skills", "route", "SKILL.md"))
+			for _, want := range []string{
+				"at most one broad repository exploration",
+				"relay route classify",
+				"relay route refresh",
+				"relay route escalate",
+				"pass that freshness context to `explore` and `clarify`",
+				"never downgrades automatically",
+			} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s route skill missing %q", agentName, want)
+				}
+			}
+		})
+	}
+}
+
+func TestExplorationArtifactIsSnapshotBoundAndReusable(t *testing.T) {
+	root := repoRoot(t)
+	checks := map[string][]string{
+		filepath.Join("skills", "explore", "SKILL.md"): {
+			"source identity", "caller-supplied freshness context", "relevant files", "exploration.md",
+		},
+		filepath.Join("skills", "clarify", "SKILL.md"): {
+			"fresh `exploration.md`", "Do not repeat broad discovery", "replacement exploration",
+			"caller-supplied freshness context",
+		},
+		filepath.Join("skills", "plan", "SKILL.md"): {
+			"fresh `exploration.md`", "Do not repeat broad discovery", "replacement exploration",
+		},
+	}
+	for path, required := range checks {
+		body := readFile(t, filepath.Join(root, path))
+		for _, want := range required {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s missing exploration contract %q", path, want)
+			}
+		}
+	}
+}
+
+func TestFoundationalSkillsDoNotRequireRelayCLI(t *testing.T) {
+	root := repoRoot(t)
+	for _, name := range []string{"explore", "clarify"} {
+		body := readFile(t, filepath.Join(root, "skills", name, "SKILL.md"))
+		for _, forbidden := range []string{"relay ", "$SLUG", ".relay/", "`input_revision`"} {
+			if strings.Contains(body, forbidden) {
+				t.Errorf("%s requires Relay-specific input %q", name, forbidden)
+			}
+		}
+		for _, want := range []string{"standalone", "caller-supplied freshness context"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s missing standalone contract %q", name, want)
+			}
+		}
+	}
 }
 
 // repoRoot returns the module root (two levels up from internal/generate).
@@ -72,36 +136,96 @@ func TestClaudePackageMatchesSource(t *testing.T) {
 	assertNoUnexpectedFiles(t, out, expectedSkillFiles(src, ".claude-plugin/plugin.json"))
 }
 
-func TestGeneratedRecurringCommands(t *testing.T) {
-	tests := []struct {
-		name      string
-		generate  func(*testing.T) (string, string)
-		want      string
-		forbidden string
-	}{
-		{name: "copilot", generate: generateCopilot, want: "/every", forbidden: "/loop"},
-		{name: "claude", generate: generateClaude, want: "/loop", forbidden: "/every"},
-		{name: "codex", generate: generateCodex, want: "/loop", forbidden: "/every"},
+func TestStackStateDocsAvoidHarnessSchedulerState(t *testing.T) {
+	root := repoRoot(t)
+	body := readFile(t, filepath.Join(root, "skills", "stack-ship", "references", "state-files.md"))
+	for _, obsolete := range []string{"/loop", "/every", "monitorMode", "next tick set"} {
+		if strings.Contains(body, obsolete) {
+			t.Errorf("stack state docs contain obsolete scheduler state %q", obsolete)
+		}
 	}
-	// pr-monitor is deliberately absent: it no longer runs a recurring loop, so
-	// it names no recurring command for the generator to translate.
+}
+
+func TestStackWorkflowDocsUseStableNamedReferences(t *testing.T) {
+	root := repoRoot(t)
 	files := []string{
+		filepath.Join("skills", "stack-ship", "references", "decomposition.md"),
+		filepath.Join("skills", "stack-ship", "references", "monitor-loop.md"),
+		filepath.Join("skills", "stack-ship", "references", "stacked-mechanics.md"),
 		filepath.Join("skills", "stack-ship", "references", "state-files.md"),
 	}
+	forbidden := []string{
+		"Phase 0", "Phase 2", "Phase-3",
+		"guardrail 2", "guardrail 4", "guardrail 12",
+		"guardrails.md #5", "guardrails.md #10",
+	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, out := tt.generate(t)
-			for _, rel := range files {
-				body := readFile(t, filepath.Join(out, rel))
-				if !strings.Contains(body, tt.want) {
-					t.Errorf("%s does not contain %q", rel, tt.want)
-				}
-				if strings.Contains(body, tt.forbidden) {
-					t.Errorf("%s contains forbidden command %q", rel, tt.forbidden)
-				}
+	for _, rel := range files {
+		body := readFile(t, filepath.Join(root, rel))
+		for _, phrase := range forbidden {
+			if strings.Contains(body, phrase) {
+				t.Errorf("%s contains stale numbered reference %q", rel, phrase)
 			}
+		}
+	}
+}
+
+func TestSkillMarkdownLinksResolveInSourceAndRenderedPackages(t *testing.T) {
+	root := repoRoot(t)
+	assertSkillMarkdownLinks(t, filepath.Join(root, "skills"))
+	for _, agentName := range []string{"claude", "copilot", "codex"} {
+		t.Run(agentName, func(t *testing.T) {
+			_, out := generateAgent(t, agentName)
+			assertSkillMarkdownLinks(t, filepath.Join(out, "skills"))
 		})
+	}
+}
+
+var markdownLinkPattern = regexp.MustCompile(`\[[^\]]+\]\(([^)]+)\)`)
+
+func assertSkillMarkdownLinks(t *testing.T, skillsRoot string) {
+	t.Helper()
+	err := filepath.WalkDir(skillsRoot, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".md" {
+			return nil
+		}
+		relative, err := filepath.Rel(skillsRoot, path)
+		if err != nil {
+			return err
+		}
+		parts := strings.Split(filepath.ToSlash(relative), "/")
+		if len(parts) < 2 {
+			return nil
+		}
+		skillRoot := filepath.Join(skillsRoot, parts[0])
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, match := range markdownLinkPattern.FindAllStringSubmatch(string(body), -1) {
+			target := strings.TrimSpace(match[1])
+			if target == "" || strings.HasPrefix(target, "#") ||
+				strings.Contains(target, "://") || strings.HasPrefix(target, "mailto:") {
+				continue
+			}
+			target = strings.SplitN(target, "#", 2)[0]
+			resolved := filepath.Clean(filepath.Join(filepath.Dir(path), filepath.FromSlash(target)))
+			within, err := filepath.Rel(skillRoot, resolved)
+			if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
+				t.Errorf("%s link %q escapes owning skill directory", path, match[1])
+				continue
+			}
+			if _, err := os.Stat(resolved); err != nil {
+				t.Errorf("%s link %q does not resolve: %v", path, match[1], err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk skill Markdown under %s: %v", skillsRoot, err)
 	}
 }
 
@@ -169,6 +293,36 @@ func TestDeliverPRGoalGuidanceIsGeneratedForEveryHarness(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDeliverPRUsesAdaptiveRoutingAndLegacyResume(t *testing.T) {
+	root := repoRoot(t)
+	body := readFile(t, filepath.Join(root, "skills", "deliver-pr", "SKILL.md"))
+	for _, want := range []string{
+		`--phases "route,clarify,plan,implement,simplify,review,validate,open-pr"`,
+		`relay state dispatch "$SLUG" route --inline`,
+		`relay route refresh "$SLUG"`,
+		"legacy seven-phase state",
+		"exact required gate set",
+		"two selected delivery phases",
+		"one worker dispatch",
+		"no inter-worker handoff",
+		"relay state evidence fresh",
+		"open-pr` performs no second review",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("deliver-pr missing adaptive contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"clarify → plan → implement → simplify → review → validate → open-pr",
+		"Each phase ran as a delegated sub-agent",
+		"two delivery workers",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("deliver-pr retains fixed-pipeline contract %q", forbidden)
+		}
 	}
 }
 

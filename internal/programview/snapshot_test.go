@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ronaknnathani/relay/internal/gitx"
 	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/mailbox"
 	"github.com/ronaknnathani/relay/internal/program"
@@ -728,6 +730,7 @@ func TestBuildReturnsReadOnlySnapshotWithNonNilArrays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if err := program.Create(p); err != nil {
 		t.Fatal(err)
 	}
@@ -759,6 +762,259 @@ func TestBuildReturnsReadOnlySnapshotWithNonNilArrays(t *testing.T) {
 	if got.ProgramArtifacts[0].Name != "goal.md" || artifactText(got.ProgramArtifacts[0]) != "Ship Relay.\n" {
 		t.Fatalf("goal artifact = %+v, warnings = %v", got.ProgramArtifacts[0], got.Warnings)
 	}
+}
+
+func TestBuildMapsRoutedWorkflowState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p, childDir := newMailboxSnapshotProgram(t)
+	manifestPath := project.ManifestPath(project.ActiveDir(), "mail-child")
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := initProgramViewGitRepo(t, *manifest.Worktree)
+	manifest.StartSHA = head
+	if err := project.Save(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	state, err := project.NewState("mail-child", "deliver-pr", project.AdaptiveDeliveryPhases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := gitx.Snapshot(*manifest.Worktree, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := project.RepositorySnapshot{
+		BaseSHA: current.BaseSHA, HeadSHA: current.HeadSHA, Fingerprint: current.Fingerprint,
+		FileCount: current.FileCount, ChangedLines: current.ChangedLines,
+	}
+	snapshot.InputRevision, err = project.ProjectInputRevision(childDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasons := make(map[string]string, len(project.AdaptiveDeliveryPhases))
+	for _, phase := range project.AdaptiveDeliveryPhases {
+		reasons[phase] = "test route decision"
+	}
+	state.Route = &project.RouteDecision{
+		Class:           project.RouteEasy,
+		SelectedPhases:  []string{"route", "implement", "open-pr"},
+		PhaseReasons:    reasons,
+		ReviewRoles:     []string{project.ReviewRoleCodeReviewer},
+		ReviewOwner:     project.EvidenceOwnerImplement,
+		ValidationOwner: "implement",
+		Snapshot:        snapshot,
+		EvaluatedAt:     "2026-09-15T00:00:00Z",
+		Facts: project.RouteFacts{
+			RequestedBehaviorExplicit: true,
+			GatePolicy:                project.GatePolicy{Mode: project.GatePolicyNone},
+			RiskAssessmentComplete:    true,
+			AssessmentFingerprint:     snapshot.Revision(),
+			PredictedSizeKnown:        true,
+			PredictedFileCount:        1,
+			PredictedChangedLines:     10,
+		},
+	}
+	state.Route.Revision = 1
+	digest, err := project.RouteDigest(*state.Route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Route.Digest = digest
+	state.SubagentCount = 1
+	state.Phases["route"] = project.PhaseState{
+		Status: project.PhaseDone, Outcome: project.PhaseOutcomeMaterial,
+		StartedAt: "2026-09-15T00:00:00Z", EndedAt: "2026-09-15T00:01:00Z",
+	}
+	state.Phases["clarify"] = project.PhaseState{
+		Status: project.PhaseSkipped, Reason: "requirements are explicit",
+		Outcome: project.PhaseOutcomeNoOp,
+	}
+	state.Evidence.Review = &project.EvidenceRecord{
+		Snapshot: snapshot, Result: project.EvidencePassed,
+		RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
+		DispatchID:  "review-dispatch",
+		Owner:       project.EvidenceOwnerImplement,
+		CompletedAt: "2026-09-15T00:02:00Z",
+		Roles:       []string{project.ReviewRoleCodeReviewer},
+	}
+	state.Evidence.Validation = &project.EvidenceRecord{
+		Snapshot: project.RepositorySnapshot{
+			BaseSHA: "base", HeadSHA: "head", Fingerprint: "older",
+		},
+		RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
+		DispatchID: "validation-dispatch",
+		Result:     project.EvidencePassed, Owner: project.EvidenceOwnerImplement,
+		CompletedAt: "2026-09-15T00:03:00Z",
+		NoGates:     true,
+	}
+	if err := project.SaveState(filepath.Join(childDir, "state.json"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	item := findSnapshotItem(t, mustBuild(t, p.Slug).Items, "w1")
+	workflow := item.Child.Workflow
+	if workflow == nil || workflow.RouteClass != project.RouteEasy || workflow.SubagentCount != 1 ||
+		!workflow.ReviewFresh || workflow.ValidationFresh || workflow.CurrentPhase != "implement" {
+		t.Fatalf("routed workflow = %+v", workflow)
+	}
+	if workflow.Phases[1].Reason != "requirements are explicit" ||
+		workflow.Phases[1].Outcome != project.PhaseOutcomeNoOp {
+		t.Fatalf("routed clarify phase = %+v", workflow.Phases[1])
+	}
+
+	if err := os.WriteFile(filepath.Join(*manifest.Worktree, "new.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workflow = findSnapshotItem(t, mustBuild(t, p.Slug).Items, "w1").Child.Workflow
+	if workflow.ReviewFresh || workflow.ValidationFresh {
+		t.Fatalf("workflow freshness ignored current worktree changes: %+v", workflow)
+	}
+}
+
+func TestChildRepositorySnapshotUsesPinnedRemoteBase(t *testing.T) {
+	worktree := t.TempDir()
+	baseSHA := initProgramViewGitRepo(t, worktree)
+	run := func(args ...string) string {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", worktree}, args...)...)
+		command.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=relay", "GIT_AUTHOR_EMAIL=relay@example.com",
+			"GIT_COMMITTER_NAME=relay", "GIT_COMMITTER_EMAIL=relay@example.com",
+		)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	run("branch", "-M", "main")
+	run("remote", "add", "origin", "https://example.invalid/repo.git")
+	run("update-ref", "refs/remotes/origin/main", baseSHA)
+	run("checkout", "-q", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(worktree, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "feature.txt")
+	run("commit", "-q", "-m", "feature")
+	tree := run("rev-parse", baseSHA+"^{tree}")
+	moved := run("commit-tree", tree, "-p", baseSHA, "-m", "remote moved")
+	run("update-ref", "refs/remotes/origin/main", moved)
+
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "task.md"), []byte("task\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := childRepositorySnapshot(project.Manifest{
+		Slug: "child", Worktree: &worktree, BaseBranch: "main",
+		StartSHA: baseSHA, RemoteBaseSHA: baseSHA,
+	}, projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.BaseRef != "main" || snapshot.BaseTipSHA != baseSHA {
+		t.Fatalf("program snapshot followed moving base: %+v, remote moved to %s", snapshot, moved)
+	}
+}
+
+func TestChildDTOSkipsFreshnessSnapshotWithoutEvidenceOrWhenArchived(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		archived bool
+		evidence bool
+	}{
+		{name: "no evidence"},
+		{name: "archived with evidence", archived: true, evidence: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			childDir := t.TempDir()
+			missingWorktree := filepath.Join(t.TempDir(), "removed")
+			manifest := project.Manifest{
+				Slug: "child", Worktree: &missingWorktree, Status: "active",
+				Workflow: "deliver-pr",
+			}
+			state, err := project.NewState("child", "deliver-pr", project.AdaptiveDeliveryPhases)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reasons := make(map[string]string, len(project.AdaptiveDeliveryPhases))
+			for _, phase := range project.AdaptiveDeliveryPhases {
+				reasons[phase] = "test route"
+			}
+			state.Route = &project.RouteDecision{
+				Class:           project.RouteEasy,
+				SelectedPhases:  []string{"route", "implement", "open-pr"},
+				PhaseReasons:    reasons,
+				ReviewRoles:     []string{project.ReviewRoleCodeReviewer},
+				ReviewOwner:     project.EvidenceOwnerImplement,
+				ValidationOwner: "implement",
+				Snapshot: project.RepositorySnapshot{
+					BaseSHA: "base", HeadSHA: "head", Fingerprint: "fingerprint",
+				},
+				EvaluatedAt: "2026-09-15T00:00:00Z",
+				Facts: project.RouteFacts{
+					RequestedBehaviorExplicit: true,
+					GatePolicy:                project.GatePolicy{Mode: project.GatePolicyNone},
+					RiskAssessmentComplete:    true,
+					AssessmentFingerprint:     "fingerprint",
+					PredictedSizeKnown:        true,
+				},
+			}
+			state.Route.Revision = 1
+			digest, err := project.RouteDigest(*state.Route)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.Route.Digest = digest
+			if test.evidence {
+				state.Evidence.Review = &project.EvidenceRecord{
+					Snapshot: state.Route.Snapshot, Result: project.EvidencePassed,
+					RouteRevision: state.Route.Revision, RouteDigest: state.Route.Digest,
+					DispatchID:  "review-dispatch",
+					Owner:       project.EvidenceOwnerImplement,
+					CompletedAt: "2026-09-15T00:01:00Z",
+					Roles:       []string{project.ReviewRoleCodeReviewer},
+				}
+			}
+			if err := project.SaveState(filepath.Join(childDir, "state.json"), state); err != nil {
+				t.Fatal(err)
+			}
+
+			var warnings []string
+			child := childDTO(manifest, childDir, test.archived, &warnings)
+			if child.Workflow == nil || len(warnings) != 0 {
+				t.Fatalf("child = %+v, warnings = %v", child, warnings)
+			}
+		})
+	}
+}
+
+func initProgramViewGitRepo(t *testing.T, repo string) string {
+	t.Helper()
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		command.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=relay", "GIT_AUTHOR_EMAIL=relay@example.com",
+			"GIT_COMMITTER_NAME=relay", "GIT_COMMITTER_EMAIL=relay@example.com",
+		)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	run("init", "-q")
+	if err := os.WriteFile(filepath.Join(repo, "README"), []byte("relay\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "README")
+	run("commit", "-q", "-m", "init")
+	return run("rev-parse", "HEAD")
 }
 
 // countingFetcher records how many GitHub subprocesses one snapshot would run.

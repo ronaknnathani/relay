@@ -319,19 +319,22 @@ func (c *Client) repo(ctx context.Context) (string, string, error) {
 // the rest — including failing ones. Checks are read through their own
 // paginated connection instead.
 const pullRequestFields = "number,url,title,state,isDraft,baseRefName,baseRefOid," +
-	"headRefName,headRefOid,mergeStateStatus,mergeable,reviewDecision,autoMergeRequest,author"
+	"headRefName,headRefOid,headRepository,mergeStateStatus,mergeable,reviewDecision,autoMergeRequest,author"
 
 func (c *Client) pullRequest(ctx context.Context, number int) (PullRequest, error) {
 	var response struct {
-		Number           int    `json:"number"`
-		URL              string `json:"url"`
-		Title            string `json:"title"`
-		State            string `json:"state"`
-		IsDraft          bool   `json:"isDraft"`
-		BaseRefName      string `json:"baseRefName"`
-		BaseRefOid       string `json:"baseRefOid"`
-		HeadRefName      string `json:"headRefName"`
-		HeadRefOid       string `json:"headRefOid"`
+		Number         int    `json:"number"`
+		URL            string `json:"url"`
+		Title          string `json:"title"`
+		State          string `json:"state"`
+		IsDraft        bool   `json:"isDraft"`
+		BaseRefName    string `json:"baseRefName"`
+		BaseRefOid     string `json:"baseRefOid"`
+		HeadRefName    string `json:"headRefName"`
+		HeadRefOid     string `json:"headRefOid"`
+		HeadRepository struct {
+			NameWithOwner string `json:"nameWithOwner"`
+		} `json:"headRepository"`
 		MergeStateStatus string `json:"mergeStateStatus"`
 		Mergeable        string `json:"mergeable"`
 		ReviewDecision   string `json:"reviewDecision"`
@@ -360,6 +363,7 @@ func (c *Client) pullRequest(ctx context.Context, number int) (PullRequest, erro
 		BaseSHA:          response.BaseRefOid,
 		HeadRef:          response.HeadRefName,
 		HeadSHA:          response.HeadRefOid,
+		HeadRepo:         response.HeadRepository.NameWithOwner,
 		MergeStateStatus: strings.ToUpper(response.MergeStateStatus),
 		Mergeable:        strings.ToUpper(response.Mergeable),
 		ReviewDecision:   strings.ToUpper(response.ReviewDecision),
@@ -367,6 +371,72 @@ func (c *Client) pullRequest(ctx context.Context, number int) (PullRequest, erro
 		Author:           response.Author.Login,
 	}
 	return pr, nil
+}
+
+func (c *Client) findOpenPullRequests(
+	ctx context.Context,
+	head string,
+	base string,
+) ([]PullRequest, error) {
+	output, err := c.run(
+		ctx,
+		"pr", "list",
+		"--state", "open",
+		"--head", head,
+		"--base", base,
+		"--json", pullRequestFields,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var responses []struct {
+		Number         int    `json:"number"`
+		URL            string `json:"url"`
+		Title          string `json:"title"`
+		State          string `json:"state"`
+		IsDraft        bool   `json:"isDraft"`
+		BaseRefName    string `json:"baseRefName"`
+		BaseRefOid     string `json:"baseRefOid"`
+		HeadRefName    string `json:"headRefName"`
+		HeadRefOid     string `json:"headRefOid"`
+		HeadRepository struct {
+			NameWithOwner string `json:"nameWithOwner"`
+		} `json:"headRepository"`
+		MergeStateStatus string `json:"mergeStateStatus"`
+		Mergeable        string `json:"mergeable"`
+		ReviewDecision   string `json:"reviewDecision"`
+		AutoMergeRequest *struct {
+			EnabledAt string `json:"enabledAt"`
+		} `json:"autoMergeRequest"`
+		Author struct {
+			Login string `json:"login"`
+			IsBot bool   `json:"is_bot"`
+		} `json:"author"`
+	}
+	if err := json.Unmarshal(output, &responses); err != nil {
+		return nil, fmt.Errorf("parse gh pr list JSON for %s -> %s: %w", head, base, err)
+	}
+	prs := make([]PullRequest, 0, len(responses))
+	for _, response := range responses {
+		prs = append(prs, PullRequest{
+			Number:           response.Number,
+			URL:              response.URL,
+			Title:            response.Title,
+			State:            strings.ToUpper(response.State),
+			Draft:            response.IsDraft,
+			BaseRef:          response.BaseRefName,
+			BaseSHA:          response.BaseRefOid,
+			HeadRef:          response.HeadRefName,
+			HeadSHA:          response.HeadRefOid,
+			HeadRepo:         response.HeadRepository.NameWithOwner,
+			MergeStateStatus: strings.ToUpper(response.MergeStateStatus),
+			Mergeable:        strings.ToUpper(response.Mergeable),
+			ReviewDecision:   strings.ToUpper(response.ReviewDecision),
+			AutoMerge:        response.AutoMergeRequest != nil,
+			Author:           response.Author.Login,
+		})
+	}
+	return prs, nil
 }
 
 // checkQuery reads every check context on the pull request's newest commit

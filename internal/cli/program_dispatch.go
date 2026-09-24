@@ -104,7 +104,9 @@ func runProgramDispatch(out io.Writer, programSlug, itemID string, opts programD
 	if err != nil {
 		return fmt.Errorf("dispatch item %q: %w", itemID, err)
 	}
-	if err := writeDispatchAssignment(created.projectDir, p, item, contracts); err != nil {
+	if err := writeDispatchAssignment(
+		created.projectDir, p, item, contracts, created.manifest.DeliveryMode,
+	); err != nil {
 		return fmt.Errorf("dispatch item %q: %w", itemID, err)
 	}
 
@@ -129,7 +131,10 @@ func runProgramDispatch(out io.Writer, programSlug, itemID string, opts programD
 		return nil
 	}
 	fmt.Fprintf(out, "Launching %s...\n", created.agent.Name())
-	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s. Mode: full.", childSlug, defaultWorkflow)
+	systemPrompt := fmt.Sprintf(
+		"Active relay project: %s. Workflow: %s. Delivery mode: %s.",
+		childSlug, defaultWorkflow, deliveryModeForPrompt(created.manifest.DeliveryMode),
+	)
 	launchOpts := relayLaunchOptions(
 		created.worktreeDir,
 		created.projectDir,
@@ -437,7 +442,13 @@ func verifyContractBytes(ref string, data []byte, want string) error {
 	return nil
 }
 
-func writeDispatchAssignment(projectDir string, p program.Program, item program.WorkItem, contracts []program.Contract) error {
+func writeDispatchAssignment(
+	projectDir string,
+	p program.Program,
+	item program.WorkItem,
+	contracts []program.Contract,
+	deliveryMode string,
+) error {
 	dependencies := "-"
 	if len(item.Dependencies) > 0 {
 		dependencies = strings.Join(item.Dependencies, ", ")
@@ -449,6 +460,13 @@ func writeDispatchAssignment(projectDir string, p program.Program, item program.
 	for _, contract := range contracts {
 		fmt.Fprintf(&contractLines, "- `%s`\n  - SHA-256: `%s`\n  - Local metadata path: `%s`\n",
 			contract.Ref, contract.SHA256, filepath.ToSlash(contract.Path))
+	}
+	deliveryInstructions := `Run adaptive delivery route-first. Perform clarification and planning only when the persisted route
+selects those phases. If planning is selected, send the required plan-review message below and stop
+for the response before implementation. If planning is skipped, do not synthesize that handoff.`
+	if deliveryModeForPrompt(deliveryMode) == "legacy" {
+		deliveryInstructions = `Resume the legacy seven-phase delivery order recorded in state. Do not classify a route,
+rewrite the phase order, or use adaptive dispatch commands. Preserve the existing set/advance contract.`
 	}
 	content := fmt.Sprintf(`# Managed work assignment
 
@@ -463,7 +481,8 @@ Dependency IDs: %s
 
 %s
 These contracts define architecture and constraints, not a line-level implementation plan.
-You own clarify and plan and must perform both independently within the binding contracts.
+%s
+You remain responsible for repository delivery within the binding contracts.
 
 ## Escalation
 
@@ -490,6 +509,7 @@ For every issue, deviation, review request, or pre-PR request, send durable mail
 - A tech lead-worker conflict is escalated to the CEO for resolution. Do not continue the affected work while it is unresolved.
 `,
 		p.Slug, p.Title, item.ID, item.Title, item.Priority, dependencies, contractLines.String(),
+		deliveryInstructions,
 		p.Slug, item.ID,
 		p.Slug, item.ID,
 		p.Slug, item.ID,

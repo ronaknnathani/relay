@@ -6,19 +6,35 @@ project workflow state, and program state: it never reruns a check, rebases, pus
 a thread, arms auto-merge, approves, or merges. Every mutation belongs to the woken owner, which runs
 `pr-monitor` once and delegates the fixing to `pr-fix`.
 
+The handoff has one owner at each boundary: `pr-monitor` reads one CLI-validated handoff, sends one
+authoritative worklist, and re-observes once; delegated `pr-fix` is the only branch/GitHub writer and
+returns one per-item result. The envelope copies canonical `watcher_mode`, `owner_slug`, head SHA,
+and `handoff_capability`. It does not repeat
+the watcher's broad assessment or run watcher commands. In stack mode, `pr-fix` returns
+auto-merge readiness without mutation; the named stack orchestrator is the sole auto-merge owner.
+
 ## Commands
 
 ```bash
-relay pr watch start <project-slug> [--mode standalone|managed|stack] [--owner <session-slug>] [--json]
+relay pr watch start <project-slug> [--json]
+relay pr watch start <project-slug> --mode managed [--json]
+relay pr watch start <project-slug> --mode stack --owner <stack-orchestrator-slug> [--json]
 relay pr watch status <project-slug> [--json]
 relay pr watch stop <project-slug> [--json]
 relay pr watch tick <project-slug> [--json]
 relay pr watch digest <project-slug> --fingerprint <64-hex> [--json]
+relay pr watch handoff <project-slug> --fingerprint <64-hex> [--json]
 ```
+
+These start forms are mutually exclusive. Standalone and managed mode always wake the project
+session; they accept `--owner <project-slug>` only as a redundant spelling of that same owner and
+reject every other value. Stack mode requires the orchestrator slug. Starting while a watcher is
+already running adopts it only when both mode and owner match exactly. A mismatch is an error that
+requires `relay pr watch stop <project-slug>` before retargeting.
 
 `start` and the hidden `run` process require Herdr: `start` hosts the watcher as a plain Herdr tab
 labelled `relay-pr-watch:<project-slug>` and the watcher wakes a live pane. `status`, `stop`, `tick`, and
-`digest` work with no Herdr, which is the manual path.
+`digest` and `handoff` work with no Herdr, which is the manual path.
 
 When no watcher process is running, `start` inventories the current Herdr workspace before creating
 anything. It reuses only the exact tab, pane, workspace, and terminal identity in Relay's previous
@@ -340,6 +356,11 @@ a title, an author, or a whole fingerprint.
 A fingerprint is the SHA-256 of the digest's sorted unique item keys, so it is stable across
 re-observation of the same activity and never covers a body. No actionable items means an empty
 fingerprint and no digest file.
+
+`handoff` independently joins that digest to the current watcher or validated manual mode and emits
+the canonical owner plus a capability covering the full digest, including untrusted review bodies,
+PR number, and head SHA. Delegated remediation re-runs this command rather than trusting caller-
+supplied mode, owner, or body text.
 
 ## Digests
 

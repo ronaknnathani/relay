@@ -30,12 +30,22 @@ cd <your-repository>
 relay "Add retry logic to the HTTP client"
 ```
 
-Relay creates a branch, a worktree, and a project. It then launches `deliver-pr`, which drives the
-change through:
+Relay creates a branch, a worktree, and a project. `deliver-pr` first classifies the change as
+easy, standard, high-risk, or stack-candidate, then selects only the phases justified by the task and
+repository evidence. Genuinely easy changes use `implement -> open-pr`: implementation performs the
+proportional correctness/scope/clarity review and required gates, then records both results for the
+same final snapshot. Easy eligibility depends only on current task, repository, size, gate, and risk
+facts. Broader or riskier work retains clarification, planning, independent specialist review, and
+separate validation.
 
-```text
-clarify -> plan -> implement -> simplify -> review -> validate -> open-pr
+Force every phase when needed:
+
+```bash
+relay --full "Add retry logic to the HTTP client"
 ```
+
+`--quick` remains accepted as a deprecated alias for the default adaptive mode; it never bypasses a
+safety trigger.
 
 Resume it later with:
 
@@ -47,8 +57,13 @@ relay resume <project-slug>
 
 ### Deliver one pull request
 
-`deliver-pr` is the default workflow. It delegates each phase to a focused subagent and records the
-result under `~/.relay/projects/`.
+`deliver-pr` is the default workflow. It records route reasons, selected/skipped phases, phase
+outcomes, complete subagent count, and review/validation evidence bound to the active phase dispatch,
+route revision, and exact repository snapshot under
+`~/.relay/projects/`. Classification only escalates automatically; unknown checks, larger actual
+diffs, failed gates, or risky surfaces cannot remain on the easy path. `simplify` is conditional and
+review effort is proportional to the recorded risk. A later mutation or stale easy-path evidence
+automatically reopens independent review and validation before a PR can be opened.
 
 ```bash
 relay "Add request validation to the API"
@@ -87,7 +102,7 @@ Tech lead session
  |  goal, priorities, contracts, decisions
  v
 Worker projects
- |  clarify, plan, implement, review, validate
+ |  route, then selected delivery phases
  v
 Pull requests
 ```
@@ -157,15 +172,24 @@ Skills are authored once under `skills/` and generated for each supported agent.
 
 The library has three layers:
 
-1. **Foundation skills** handle one phase, such as `clarify`, `plan`, `implement`, `review`,
-   `validate`, `pr-fix`, and `open-pr`.
-2. **Workflow skills** compose phases. `deliver-pr` owns one pull request and `pr-monitor` handles one
-   watcher event.
+1. **Foundation skills** handle one phase, including `route`, `clarify`, `plan`, `implement`,
+   `simplify`, `review`, `validate`, `pr-fix`, and `open-pr`.
+2. **Workflow skills** compose selected phases. `deliver-pr` owns one pull request and `pr-monitor`
+   handles one watcher event.
 3. **Orchestrators** coordinate larger goals. `stack-ship` manages a PR stack and `tl` manages a
    Relay program.
 
 Run `relay setup <agent>` after changing skills or updating Relay. Setup generates the agent package
 and links Relay-managed skills into the agent's personal skill directory.
+
+### Retired wrapper migration
+
+- `/relay-status <args>` -> `relay status <args>`
+- `/relay-archive <args>` -> `relay archive <args>`
+- `/todo <args>` -> `relay todo <args>`
+
+Setup and upgrade remove only Relay-managed symlinks for these retired wrappers. User-owned files,
+directories, and foreign symlinks with the same names are preserved.
 
 ## Installation and configuration
 

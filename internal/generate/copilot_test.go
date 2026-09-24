@@ -62,9 +62,9 @@ func TestCopilotPackageInvariants(t *testing.T) {
 	}
 
 	// The subagent directive renders to Copilot's task mechanism, never inline.
-	todo := readFile(t, filepath.Join(out, "skills", "todo", "SKILL.md"))
-	if !strings.Contains(todo, "Launch a subagent (task tool) with this prompt") {
-		t.Errorf("todo did not render a plain task subagent")
+	delegatingSkill := readFile(t, filepath.Join(out, "skills", "build-write-like-me", "SKILL.md"))
+	if !strings.Contains(delegatingSkill, "Launch a subagent (task tool)") {
+		t.Errorf("delegating skill did not render a plain task subagent")
 	}
 
 	// Claude-only frontmatter dropped: both argument-hint AND disable-model-invocation
@@ -83,7 +83,7 @@ func TestCopilotPackageInvariants(t *testing.T) {
 
 	prMonitor := readFile(t, filepath.Join(out, "skills", "pr-monitor", "SKILL.md"))
 	for _, snippet := range []string{
-		`relay pr watch digest "$SLUG" --fingerprint "$FP" --json`,
+		`relay pr watch handoff "$SLUG" --fingerprint "$FP" --json`,
 		`relay pr watch tick "$SLUG" --json`,
 		"One digest, one run, one exit",
 	} {

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -898,22 +899,65 @@ func childDTO(manifest project.Manifest, childDir string, archived bool, warning
 		}
 		return child
 	}
-	phases := make([]WorkflowPhaseDTO, 0, len(state.Order))
-	current := ""
+	workflow := &WorkflowStateDTO{
+		Workflow: state.Workflow, Order: nonNilStrings(state.Order),
+		Phases:        make([]WorkflowPhaseDTO, 0, len(state.Order)),
+		SubagentCount: state.SubagentCount, UpdatedAt: state.Updated,
+	}
 	for _, name := range state.Order {
 		phase := state.Phases[name]
-		phases = append(phases, WorkflowPhaseDTO{
+		workflow.Phases = append(workflow.Phases, WorkflowPhaseDTO{
 			Name: name, Status: phase.Status, Artifact: phase.Artifact, Task: phase.Task,
+			Reason: phase.Reason, Outcome: phase.Outcome,
+			StartedAt: phase.StartedAt, EndedAt: phase.EndedAt,
 		})
-		if current == "" && phase.Status != project.PhaseDone {
-			current = name
+	}
+	if state.Route != nil {
+		workflow.RouteClass = state.Route.Class
+		for _, name := range state.Order {
+			phase := state.Phases[name]
+			if slices.Contains(state.Route.SelectedPhases, name) &&
+				phase.Status != project.PhaseDone && phase.Status != project.PhaseSkipped {
+				workflow.CurrentPhase = name
+				break
+			}
+		}
+		hasEvidence := state.Evidence.Review != nil || state.Evidence.Validation != nil
+		if !hasEvidence || archived || !child.Manifest.WorktreePresent {
+			child.Workflow = workflow
+			return child
+		}
+		current, err := childRepositorySnapshot(manifest, childDir)
+		if err != nil {
+			*warnings = append(*warnings, fmt.Sprintf(
+				"compute current workflow snapshot for project %q: %v",
+				manifest.Slug, err,
+			))
+		} else {
+			workflow.ReviewFresh = state.Evidence.Review != nil &&
+				state.Evidence.Review.FreshForReviewRoute(
+					current, *state.Route, state.Route.ReviewRoles, state.Route.EffectiveReviewOwner(),
+				)
+			workflow.ValidationFresh = state.Evidence.Validation != nil &&
+				state.Evidence.Validation.FreshForValidationRoute(
+					current, *state.Route, state.Route.ValidationOwner,
+				)
+		}
+	} else {
+		for _, name := range state.Order {
+			phase := state.Phases[name]
+			if phase.Status != project.PhaseDone && phase.Status != project.PhaseSkipped {
+				workflow.CurrentPhase = name
+				break
+			}
 		}
 	}
-	child.Workflow = &WorkflowStateDTO{
-		Workflow: state.Workflow, CurrentPhase: current, Order: nonNilStrings(state.Order),
-		Phases: phases, UpdatedAt: state.Updated,
-	}
+	child.Workflow = workflow
 	return child
+}
+
+func childRepositorySnapshot(manifest project.Manifest, projectDir string) (project.RepositorySnapshot, error) {
+	return project.RepositorySnapshotForManifest(manifest, projectDir)
 }
 
 // worktreePresent reports whether a child's recorded checkout still exists.

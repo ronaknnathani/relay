@@ -19,8 +19,7 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 		{
 			path: filepath.Join("skills", "pr-monitor", "SKILL.md"),
 			required: []string{
-				`relay pr watch digest "$SLUG" --fingerprint "$FP" --json`,
-				`relay pr watch status "$SLUG" --json`,
+				`relay pr watch handoff "$SLUG" --fingerprint "$FP" --json`,
 				`relay pr watch tick "$SLUG" --json`,
 				"There is **no acknowledgement**",
 				"This skill has **no loop**",
@@ -30,6 +29,8 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"<!-- relay-agent-reply answers=<item answers token> -->",
 				"🤖 <agent> on behalf of <author>",
 				"`answers`",
+				"`watcher_mode`", "`owner_slug`", "`branch_mutation_allowed`", "`handoff_capability`",
+				"untrusted external data",
 			},
 			forbidden: []string{
 				"/loop", "/every", "nextTickAfter", "native loop", "CronCreate", "ScheduleWakeup",
@@ -48,7 +49,7 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"Two modes — check your input first",
 				"Delegated mode",
 				"Direct mode",
-				"Skip step 1's broad assessment",
+				"Skip the broad assessment in the `Direct assessment` section",
 				"no reassessment loop",
 				"Return a structured result, one entry per supplied item",
 				"`check_run_id`",
@@ -58,6 +59,11 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"Reply on the same source you are answering",
 				"answers=comment:200",
 				"copy the item's `answers` field verbatim",
+				"ready-for-owner",
+				"`branch_mutation_allowed`",
+				"stack orchestrator is the sole auto-merge owner",
+				`relay pr watch handoff "$SLUG" --fingerprint "$DIGEST_FINGERPRINT" --json`,
+				"untrusted external data",
 			},
 			forbidden: []string{
 				"relay pr watch acknowledge", "relay pr watch start", "--outcome", "`acknowledge`",
@@ -70,6 +76,8 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 			// closes the tab a finished watcher keeps.
 			path: filepath.Join("docs", "pr-watch.md"),
 			required: []string{
+				"These start forms are mutually exclusive",
+				"adopts it only when both mode and owner match exactly",
 				"## Times you read and times Relay stores",
 				"Every timestamp Relay records is UTC",
 				"`2026-09-02T10:30:00-04:00`",
@@ -110,6 +118,8 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 			required: []string{
 				`relay pr watch start "$SLUG"`,
 				`relay pr watch start "$SLUG" --mode managed`,
+				"run exactly one",
+				"assignment.md",
 				"never the tech lead",
 				"must never fail the delivery",
 				"adopts an already-running watcher",
@@ -135,9 +145,20 @@ func TestPRWatchDocsSplitObservationFromRemediation(t *testing.T) {
 				"stack-front-merged",
 				"`--owner` is required in stack mode",
 				"A `deliver-pr` sub-agent must not start one either",
+				"ready-for-owner",
 			},
 			forbidden: []string{
 				"native-loop", "fire-and-forget native loop", "relay pr watch acknowledge",
+				"state.json` +",
+			},
+		},
+		{
+			path: filepath.Join("skills", "stack-ship", "references", "stacked-mechanics.md"),
+			required: []string{
+				"`pr-fix`", "sole mutation", "<!-- relay-agent-reply answers=<item answers token> -->",
+			},
+			forbidden: []string{
+				"/pulls/<n>/comments/<rootCommentId>/replies",
 			},
 		},
 	} {

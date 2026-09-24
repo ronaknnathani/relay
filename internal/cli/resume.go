@@ -1,8 +1,13 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/ronaknnathani/relay/internal/agent"
 	"github.com/ronaknnathani/relay/internal/config"
@@ -28,14 +33,18 @@ func runResume(slug string) error {
 	if err != nil {
 		return err
 	}
-	m, err := project.Load(path)
+	m, state, err := project.LoadEffectiveProject(path)
 	if err != nil {
 		return err
 	}
 	if m.Worktree == nil || *m.Worktree == "" {
 		return fmt.Errorf("project %q has no worktree", slug)
 	}
-	if m.Phase == "done" {
+	complete, err := resumeCompletionIsFresh(path, m, state)
+	if err != nil {
+		return err
+	}
+	if complete {
 		return fmt.Errorf("project %q is complete. Run: relay archive %s", slug, slug)
 	}
 	if err := guardManagedHerdrResume(m); err != nil {
@@ -56,6 +65,10 @@ func runResume(slug string) error {
 	// its position from `relay state`. Fall back to the legacy phase→batch
 	// mapping for older manifests written before the workflow field existed.
 	cmd := resumeCommand(m)
+	coordinatorToken, err := rotateCoordinatorForResume(path, cmd)
+	if err != nil {
+		return err
+	}
 	fmt.Println()
 	fmt.Printf("  %s\n", ui.Color(ui.Bold+ui.White, "Resuming project"))
 	ui.PrintField("Slug", slug)
@@ -64,9 +77,127 @@ func runResume(slug string) error {
 	fmt.Printf("  %s\n", ui.Color(ui.Dim, fmt.Sprintf("Launching %s…", a.Name())))
 	fmt.Println()
 
-	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s.", slug, cmd)
+	deliveryMode := deliveryModeForPrompt(m.DeliveryMode)
+	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s. Delivery mode: %s.", slug, cmd, deliveryMode)
+	if coordinatorToken != "" {
+		handoffPath, err := writeCoordinatorHandoff(filepath.Dir(path), coordinatorToken)
+		if err != nil {
+			return err
+		}
+		systemPrompt += " Read and delete the coordinator capability file before continuing: " +
+			handoffPath + ". Keep its contents out of worker prompts."
+	}
 	o := relayLaunchOptions(*m.Worktree, filepath.Dir(path), systemPrompt, slug, cmd, m.Title, cfg.PermissionModeFor(a.Name()))
 	return launchAgent(a, o)
+}
+
+func resumeCompletionIsFresh(
+	manifestPath string,
+	manifest project.Manifest,
+	state *project.WorkflowState,
+) (bool, error) {
+	if manifest.Phase != "done" {
+		return false, nil
+	}
+	if state == nil || !state.UsesAdaptiveDelivery() {
+		return true, nil
+	}
+	raw, err := project.Load(manifestPath)
+	if err != nil {
+		return false, err
+	}
+	snapshot, err := project.RepositorySnapshotForManifest(raw, filepath.Dir(manifestPath))
+	if err != nil {
+		return false, err
+	}
+	return state.Route != nil &&
+		state.FinalResult != nil &&
+		state.FinalResult.Status == "opened" &&
+		state.Route.Snapshot == snapshot &&
+		state.FinalResult.RouteRevision == state.Route.Revision &&
+		state.FinalResult.RouteDigest == state.Route.Digest &&
+		state.FinalResult.Snapshot == snapshot, nil
+}
+
+func writeCoordinatorHandoff(projectDir, token string) (string, error) {
+	path := filepath.Join(projectDir, ".coordinator-capability")
+	file, err := os.CreateTemp(projectDir, ".coordinator-capability-*")
+	if err != nil {
+		return "", fmt.Errorf("create coordinator capability handoff in %s: %w", projectDir, err)
+	}
+	tempPath := file.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return "", fmt.Errorf("secure coordinator capability handoff %s: %w", tempPath, err)
+	}
+	if _, err := file.WriteString(token + "\n"); err != nil {
+		_ = file.Close()
+		return "", fmt.Errorf("write coordinator capability handoff %s: %w", tempPath, err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("close coordinator capability handoff %s: %w", tempPath, err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return "", fmt.Errorf("publish coordinator capability handoff %s: %w", path, err)
+	}
+	return path, nil
+}
+
+func rotateCoordinatorForResume(manifestPath, workflow string) (string, error) {
+	if workflow != "deliver-pr" {
+		return "", nil
+	}
+	manifest, err := project.Load(manifestPath)
+	if err != nil {
+		return "", err
+	}
+	statePath := filepath.Join(filepath.Dir(manifestPath), "state.json")
+	if _, err := os.Stat(statePath); errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	} else if err != nil {
+		return "", fmt.Errorf("inspect workflow state %s: %w", statePath, err)
+	}
+	var token string
+	err = withLockedState(manifest.Slug, func(state *project.WorkflowState, lockedPath string) error {
+		adaptiveManifest := manifest.DeliveryMode == project.DeliveryModeAdaptive ||
+			manifest.DeliveryMode == project.DeliveryModeFull
+		if adaptiveManifest && !slices.Equal(state.Order, project.AdaptiveDeliveryPhases) {
+			return fmt.Errorf(
+				"adaptive project %q has noncanonical phase order; refusing unguarded resume",
+				state.Slug,
+			)
+		}
+		if adaptiveManifest && state.Workflow == "deliver-pr" && state.Version == 0 {
+			state.Version = project.WorkflowStateVersion
+		}
+		if !state.UsesAdaptiveDelivery() {
+			return nil
+		}
+		snapshot, err := project.RepositorySnapshotForManifest(manifest, filepath.Dir(manifestPath))
+		if err != nil {
+			return err
+		}
+		state.PrepareAdaptiveResume(snapshot)
+		token, err = randomToken(32)
+		if err != nil {
+			return fmt.Errorf("rotate coordinator capability for %q: %w", state.Slug, err)
+		}
+		sum := sha256.Sum256([]byte(token))
+		state.CoordinatorHash = fmt.Sprintf("%x", sum)
+		if err := project.SaveState(lockedPath, *state); err != nil {
+			return fmt.Errorf("persist coordinator capability for %q: %w", state.Slug, err)
+		}
+		return nil
+	})
+	return token, err
+}
+
+func deliveryModeForPrompt(mode string) string {
+	if mode == "" {
+		return "legacy"
+	}
+	return mode
 }
 
 // guardManagedHerdrResume enforces the managed-session contract: every managed

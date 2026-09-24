@@ -59,15 +59,51 @@ func RemoveRetiredSkill(a Agent, name string, opts SkillSyncOptions) error {
 	if err != nil {
 		return fmt.Errorf("readlink %s: %w", target, err)
 	}
-	if !isManagedTarget(current, opts.ManagedRoots) {
+	if !isRetiredManagedTarget(a, name, installedDir, current, opts) {
 		fmt.Fprintf(out, "  keeping %s: %s -> %s is not managed by relay\n", name, target, current)
 		return nil
 	}
+
 	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove retired skill link %s: %w", target, err)
 	}
 	fmt.Fprintf(out, "  removed retired %s\n", name)
 	return nil
+}
+
+func isRetiredManagedTarget(
+	a Agent,
+	name, installedDir, target string,
+	opts SkillSyncOptions,
+) bool {
+	if hasParentSegment(target) {
+		return false
+	}
+	resolved := target
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(installedDir, resolved)
+	}
+	resolved, err := filepath.Abs(resolved)
+	if err != nil {
+		return false
+	}
+	candidates := []string{filepath.Join(opts.PackageDir, "skills", name)}
+	for _, root := range opts.ManagedRoots {
+		candidates = append(candidates,
+			filepath.Join(root, "skills", name),
+			filepath.Join(root, "agents", a.Name(), "skills", name),
+		)
+		if a.Name() == "claude" {
+			candidates = append(candidates, filepath.Join(root, "dist", "claude", "skills", name))
+		}
+	}
+	for _, candidate := range candidates {
+		absolute, err := filepath.Abs(candidate)
+		if err == nil && filepath.Clean(resolved) == filepath.Clean(absolute) {
+			return true
+		}
+	}
+	return false
 }
 
 func syncSkills(a Agent, opts SkillSyncOptions, link bool) error {

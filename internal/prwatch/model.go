@@ -146,6 +146,7 @@ type PullRequest struct {
 	BaseSHA          string `json:"base_sha,omitempty"`
 	HeadRef          string `json:"head_ref"`
 	HeadSHA          string `json:"head_sha"`
+	HeadRepo         string `json:"head_repo,omitempty"`
 	MergeStateStatus string `json:"merge_state_status"`
 	Mergeable        string `json:"mergeable"`
 	ReviewDecision   string `json:"review_decision"`
@@ -160,16 +161,22 @@ type PullRequest struct {
 // set is fixed by its fingerprint; every other field is refreshed on every
 // observation so a reader never acts on stale pull request truth.
 type Digest struct {
-	Schema      string      `json:"schema"`
-	Version     int         `json:"version"`
-	Project     string      `json:"project"`
-	Mode        Mode        `json:"mode"`
-	Fingerprint string      `json:"fingerprint"`
-	ObservedAt  string      `json:"observed_at"`
-	HeadSHA     string      `json:"head_sha"`
-	PR          PullRequest `json:"pr"`
-	Items       []Item      `json:"items"`
-	Waiting     []string    `json:"waiting"`
+	Schema            string `json:"schema"`
+	Version           int    `json:"version"`
+	Project           string `json:"project"`
+	Mode              Mode   `json:"mode"`
+	OwnerSlug         string `json:"owner_slug,omitempty"`
+	HandoffCapability string `json:"handoff_capability,omitempty"`
+	// BranchMutationAllowed is set only by the validated handoff command. A
+	// protected or terminal PR can still carry reply or owner-action work
+	// without authorizing a branch write.
+	BranchMutationAllowed bool        `json:"branch_mutation_allowed"`
+	Fingerprint           string      `json:"fingerprint"`
+	ObservedAt            string      `json:"observed_at"`
+	HeadSHA               string      `json:"head_sha"`
+	PR                    PullRequest `json:"pr"`
+	Items                 []Item      `json:"items"`
+	Waiting               []string    `json:"waiting"`
 	// Complete reports that the pull request merged and no further attention is
 	// possible for this project.
 	Complete bool `json:"complete"`

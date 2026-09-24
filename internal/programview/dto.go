@@ -235,19 +235,27 @@ type ChildManifestDTO struct {
 
 // WorkflowStateDTO contains the current child workflow phase state.
 type WorkflowStateDTO struct {
-	Workflow     string             `json:"workflow"`
-	CurrentPhase string             `json:"current_phase"`
-	Order        []string           `json:"order"`
-	Phases       []WorkflowPhaseDTO `json:"phases"`
-	UpdatedAt    string             `json:"updated_at"`
+	Workflow        string             `json:"workflow"`
+	CurrentPhase    string             `json:"current_phase"`
+	Order           []string           `json:"order"`
+	Phases          []WorkflowPhaseDTO `json:"phases"`
+	RouteClass      string             `json:"route_class"`
+	ReviewFresh     bool               `json:"review_fresh"`
+	ValidationFresh bool               `json:"validation_fresh"`
+	SubagentCount   int                `json:"subagent_count"`
+	UpdatedAt       string             `json:"updated_at"`
 }
 
 // WorkflowPhaseDTO is one ordered workflow phase.
 type WorkflowPhaseDTO struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"`
-	Artifact string `json:"artifact"`
-	Task     string `json:"task"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	Artifact  string `json:"artifact"`
+	Task      string `json:"task"`
+	Reason    string `json:"reason"`
+	Outcome   string `json:"outcome"`
+	StartedAt string `json:"started_at"`
+	EndedAt   string `json:"ended_at"`
 }
 
 // PullRequestDTO contains a recorded or live pull request.

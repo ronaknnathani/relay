@@ -142,6 +142,7 @@ func TestLoadAllStillFiltersInvalidManifests(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+
 	valid := Manifest{Slug: "valid", Repo: "/repo", Branch: "user/valid"}
 	if err := Save(filepath.Join(validDir, "manifest.json"), valid); err != nil {
 		t.Fatal(err)
@@ -160,5 +161,75 @@ func TestLoadAllStillFiltersInvalidManifests(t *testing.T) {
 	}
 	if !reflect.DeepEqual(manifests, []Manifest{valid}) {
 		t.Fatalf("manifests = %+v, want %+v", manifests, []Manifest{valid})
+	}
+}
+
+func TestLoadAllEffectiveUsesDirectoryIdentityAndIsolatesInvalidProjects(t *testing.T) {
+	dir := t.TempDir()
+	for _, slug := range []string{"healthy", "mismatch", "invalid-state", "wrong-state"} {
+		if err := os.MkdirAll(filepath.Join(dir, slug), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Save(ManifestPath(dir, "healthy"), Manifest{Slug: "healthy", Title: "Healthy"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(ManifestPath(dir, "mismatch"), Manifest{Slug: "healthy", Title: "Wrong"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(ManifestPath(dir, "invalid-state"), Manifest{Slug: "invalid-state", Title: "Broken"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(ManifestPath(dir, "wrong-state"), Manifest{Slug: "wrong-state", Title: "Wrong state"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "invalid-state", "state.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state, err := NewState("another-project", "custom", []string{"work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(filepath.Join(dir, "wrong-state", "state.json"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	manifests, warnings, err := LoadAllEffective(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifests) != 1 || manifests[0].Slug != "healthy" {
+		t.Fatalf("isolated manifests = %+v", manifests)
+	}
+	if len(warnings) != 3 {
+		t.Fatalf("warnings = %v, want manifest, parse, and state slug warnings", warnings)
+	}
+}
+
+func TestLoadEffectivePreservesHistoricalStackState(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "stack")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "manifest.json")
+	manifest := Manifest{
+		Slug: "stack", Title: "Historical stack", Workflow: "stack-ship", Phase: "monitor",
+	}
+	if err := Save(path, manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(dir, "state.json"),
+		[]byte(`{"goalSlug":"stack","frontPr":42,"prs":[{"number":42}]}`),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadEffective(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Slug != manifest.Slug || got.Workflow != manifest.Workflow || got.Phase != manifest.Phase {
+		t.Fatalf("historical stack manifest changed: %+v", got)
 	}
 }

@@ -1,83 +1,69 @@
 ---
 name: open-pr
-description: Stage, commit, push, and open a pull request following the author's repository and AGENTS.md conventions — repo-style commit messages, a prose PR summary, and a Testing Done command list. Use when work is finished and the caller wants it committed and a PR opened. Supports --draft and an optional local review before push.
+description: Commit, push, and open a pull request after fresh review and validation evidence passes, using the authoritative commit/rebase contracts and repository PR conventions.
 ---
 
 # Open PR
 
-Take finished work from working tree to open pull request: stage specific files, commit with a
-repo-style message, push, and open the PR in the author's house style. Read `<repo>/AGENTS.md` and
-`~/.config/agents/AGENTS.md` first (repo-specific rules win) and follow those preferences for commit
-messages and PR descriptions. Execute git/`gh` operations through this skill's bundled
-`scripts/open-pr.sh` helper rather than inlining command sequences in the skill.
-
-## Flags
-
-- `--draft` — open the PR as a draft (`gh pr create --draft`). Default is open (ready for review).
-- `--no-review` — skip the optional local review before push.
+Open the finished change; performs no new review and reruns no passing gate.
 
 ## Process
 
-1. **Branch-if-on-default gate.** Never commit straight onto the default branch. Invoke the helper's
-   `ensure-branch <slug>` command. It hard-fails if the default branch cannot be detected and, when a
-   new branch is needed, reads the branch prefix from the first-time `relay` config
-   (`relay config branch-prefix`) rather than hardcoding a personal prefix.
+1. Read repository/global `AGENTS.md` and the PR template.
+2. Detect the current branch and the repository's default branch. If dynamic default-branch
+   detection fails or returns empty, stop with an actionable error; never guess `main` or `master`
+   and never continue without the default-branch guard. In standalone use from the
+   dynamically detected default branch, create and switch to a feature branch before invoking
+   `commit`: read the configured prefix with `relay config branch-prefix`, derive a concise task slug,
+   validate the full name with `git check-ref-format --branch`, verify it does not already exist
+   locally or at `origin`, then run `git switch -c <prefix><slug>`. This preserves the current working
+   changes without committing them to the default branch. Refuse a detached HEAD or a colliding branch
+   name rather than switching to unrelated existing work.
+3. Require a clean, fully committed feature branch. If intended changes remain, apply the standalone
+   `commit` contract for default-branch rejection, specific staging, secret inspection, message style,
+   commit separation, and automated co-authorship. In an adaptive project, return to the selected
+   review/validation owners because `HEAD` changed. In standalone use with no Relay state, continue in
+   this invocation: review the committed diff once, run the repository-required gates, then proceed
+   only if both pass.
+4. For an adaptive project, require the coordinator to refresh the route after the final commit and
+   before dispatching `open-pr`, then require evidence from the route's canonical owners for the
+   exact current snapshot and exact required gate set:
 
-2. **Stage specific files.** Invoke the helper's `status` command, then its `stage -- <files...>`
-   command for exactly what belongs in this change — never stage the whole tree. Confirm the diff carries
-   no secrets and no formatting churn mixed in with behavior.
+   ```bash
+   relay state evidence fresh "$SLUG" review
+   relay state evidence fresh "$SLUG" validation
+   ```
 
-3. **Commit in the repo's style.** Match the repository's recent commit style and the AGENTS.md
-   preferences. Do not force Conventional Commits unless the repo already uses them. The subject should
-   lead with what changed; include a body only when useful, and make it explain **why** the change exists
-   rather than restating the diff. Keep refactor commits separate from feature/fix commits (split with
-   separate `stage`/`commit` helper calls if both are present). End every message with a
-   `Co-authored-by` trailer for the actual model/agent currently doing the work; never hardcode a model.
-   Use the runtime-provided model identity when available, and the agent's verified no-reply identity for
-   the email. Then invoke the helper's `commit <message-file>` command.
+   Refuse stale, missing, failed, blocked, partial, extra, duplicate, or gate-digest-mismatched
+   evidence. A route refresh that escalates also blocks this phase. For a legacy seven-phase project
+   with no route, require its recorded review and validate
+   phases to be complete and do not call adaptive route/evidence commands.
+5. If the branch must be updated, apply the standalone `rebase` contract. Because rebasing changes
+   the snapshot, stop and obtain fresh adaptive review/validation evidence before continuing.
+6. Push the current feature branch. Ordinary first push uses `-u`; rewritten history uses only the
+   `rebase` contract's force-with-lease rule.
+7. Create the PR with the repository's base branch and template. The title follows local history.
+   The body is one or two short prose paragraphs explaining why and what, followed by `Testing Done`
+   containing only commands that actually ran. Clearly disclose automated authorship and whose behalf
+   the agent acts on.
+8. For a Relay project, while the current-route `open-pr` dispatch remains active, record the
+   returned PR number and URL with
+   `relay state pr "$SLUG" --number <n> --url <url> --dispatch-token "$RESULT_TOKEN"`.
+   The guarded command atomically completes the
+   phase, writes the production `FinalResult` telemetry, verifies the GitHub repository, URL, branch,
+   head SHA, base ref, and immutable remote base SHA, and rejects stale evidence or a
+   **superseded dispatch**. If PR creation succeeded but recording is ambiguous, do not create another PR: run
+   `relay state pr "$SLUG" --reconcile --dispatch-token "$RESULT_TOKEN"` to find and verify the unique
+   open PR for the recorded head/base or recover the persisted PR identity if it has already merged.
+   If the PR's creation-time base SHA differs, Relay returns labeled project, base, and SHA fields
+   instead of executable command text. The coordinator must pass those values as separate arguments
+   to `relay route base`, refresh the route without replacing that pending PR pin, rerun stale
+   evidence, redispatch `open-pr`, and reconcile the existing PR. Never execute or paste an error
+   string as a shell command.
+   If that pending PR closed without merging, verify the closed state and record terminal failure;
+   never discard a still-open pending PR. On terminal failure before a PR exists, record
+   `relay state final "$SLUG" failed --reason "<specific reason>" --dispatch-token "$RESULT_TOKEN"`.
+   Then return the PR URL or failure.
 
-4. **Local review before push (skip with `--no-review`).** Review the full diff from the helper's `diff`
-   command for correctness and leftover debris before it leaves your machine. Dispatch the `review` skill
-   as a sub-agent when available; otherwise scan it inline.
-
-5. **Push.** Invoke the helper's `push` command.
-
-6. **Prefer the repo's PR template.** Fetch it and fill each section from the actual change; only fall
-   back to the body in step 7 when none exists. Use the helper's `pr-template` command to fetch it.
-
-7. **Open the PR.** Title follows the repo's PR-title style. Body follows AGENTS.md: one or two short
-   prose paragraphs focused on why/what, no bullet list, no per-file walkthrough, and a `Testing Done`
-   section containing only the commands run. Disclose automated authorship with the actual agent/model
-   used, not a hardcoded Claude footer. Add `--draft` to the helper call only when the caller passed it,
-   and invoke `create-pr --title <title> --body-file <body-file>`.
-
-8. **Return the PR URL** that `gh pr create` prints, to the caller.
-
-## PR body conventions
-
-The body format is in step 7; the red flags and checklist below guard it. The one rule not covered
-there:
-
-- **Disclose agent authorship** in any PR comment you post — mark it as written by an automated agent on
-  the author's behalf; never phrase it as the author's own words.
-
-## Red flags
-
-- Committing onto the default branch instead of branching first.
-- `git add .` / `git add -A` instead of staging the specific files.
-- A PR summary that is a bullet list, or that enumerates each file/caller and how the code works.
-- A `Testing Done` section padded with prose or per-command descriptions instead of bare commands.
-- Refactor squashed into the same commit as a feature/fix; formatting churn mixed with behavior.
-- A commit body that restates the diff ("what") instead of the reason ("why").
-- Hand-rolling a body when the repo ships a PR template; assuming `main`/`master` as the base.
-- Missing the actual-model `Co-authored-by` trailer or automated-authorship disclosure.
-
-## Verification checklist
-
-- [ ] `HEAD` is on a branch using the configured `relay` branch prefix, not the default branch.
-- [ ] Only the intended files were staged (no `git add .`); diff has no secrets or stray formatting.
-- [ ] Commit message matches repo/AGENTS.md style, includes the actual-model `Co-authored-by` trailer, and keeps refactor separate.
-- [ ] PR summary is 1–2 prose paragraphs on why/what — not bullets, not a file-by-file how.
-- [ ] `Testing Done` is just the list of commands run; body discloses the actual automated agent/model.
-- [ ] Repo PR template used when present; base branch detected dynamically; `--draft` applied only if requested.
-- [ ] The PR URL was returned to the caller.
+`--draft` is supported when the caller requests a draft. Never merge, enable auto-merge, invent test
+results, post a second review, or open a duplicate PR.
