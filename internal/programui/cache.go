@@ -334,5 +334,5 @@ func pullRequestCacheKey(repo, ref string) string {
 	if err != nil {
 		return repo + "\x00" + trimmed
 	}
-	return strings.ToLower(repository) + "\x00" + strconv.Itoa(number)
+	return repo + "\x00" + strings.ToLower(repository) + "\x00" + strconv.Itoa(number)
 }

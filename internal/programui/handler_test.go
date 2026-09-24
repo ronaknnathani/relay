@@ -603,6 +603,32 @@ func TestGitHubCacheKeepsPullRequestRepositoryIdentity(t *testing.T) {
 	}
 }
 
+func TestGitHubCacheIsolatesPullRequestURLsByLocalRepository(t *testing.T) {
+	var calls int
+	cache := newGitHubCache(
+		fetcherFunc(func(_ context.Context, repo, _ string) (programview.PullRequestDTO, error) {
+			calls++
+			if repo == "/checkout/two" {
+				return programview.PullRequestDTO{}, errors.New("pull request repository does not match checkout")
+			}
+			return programview.PullRequestDTO{Number: 42, State: "merged"}, nil
+		}),
+		time.Minute,
+		time.Now,
+	)
+	ref := "https://github.example/acme/repo/pull/42"
+	if _, err := cache.Fetch(context.Background(), "/checkout/one", ref); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.Fetch(context.Background(), "/checkout/two", ref); err == nil ||
+		!strings.Contains(err.Error(), "does not match checkout") {
+		t.Fatalf("second checkout error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("fetch calls = %d, want 2", calls)
+	}
+}
+
 func TestAgentCacheTTLStaleFallbackAndRecovery(t *testing.T) {
 	now := time.Date(2026, 8, 25, 16, 0, 0, 0, time.UTC)
 	var calls int
