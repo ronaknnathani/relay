@@ -34,7 +34,7 @@ func TestSnapshotChangesForEveryRepositoryMutation(t *testing.T) {
 		t.Fatalf("unstaged counts = %+v, want 1 file and 1 line", unstaged)
 	}
 
-	runGit(t, repo, "add", "README")
+	runSnapshotGit(t, repo, "add", "README")
 	staged := mustSnapshot(t, repo, base)
 	assertFingerprintChanged(t, initial, staged)
 
@@ -55,8 +55,8 @@ func TestSnapshotChangesAfterCommitWithoutWorktreeChanges(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "README"), []byte("hi\ncommitted\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, repo, "add", "README")
-	runGit(t, repo, "commit", "-q", "-m", "change")
+	runSnapshotGit(t, repo, "add", "README")
+	runSnapshotGit(t, repo, "commit", "-q", "-m", "change")
 	committed := mustSnapshot(t, repo, base)
 	assertFingerprintChanged(t, initial, committed)
 	if committed.HeadSHA == initial.HeadSHA {
@@ -130,12 +130,12 @@ func TestSnapshotTreatsUntrackedNestedRepositoryAsOpaqueIdentity(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, nested, "init", "-q")
+	runSnapshotGit(t, nested, "init", "-q")
 	if err := os.WriteFile(filepath.Join(nested, "secret.txt"), []byte("private content\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, nested, "add", "secret.txt")
-	runGit(t, nested, "commit", "-q", "-m", "nested")
+	runSnapshotGit(t, nested, "add", "secret.txt")
+	runSnapshotGit(t, nested, "commit", "-q", "-m", "nested")
 
 	first := mustSnapshot(t, repo, base)
 	if first.FileCount != 1 || first.ChangedLines != 0 {
@@ -164,7 +164,7 @@ func TestSnapshotTreatsUntrackedNestedRepositoryAsOpaqueIdentity(t *testing.T) {
 	repeatedUnstaged := mustSnapshot(t, repo, base)
 	assertFingerprintChanged(t, unstaged, repeatedUnstaged)
 
-	runGit(t, nested, "add", "secret.txt")
+	runSnapshotGit(t, nested, "add", "secret.txt")
 	staged := mustSnapshot(t, repo, base)
 	assertFingerprintChanged(t, repeatedUnstaged, staged)
 
@@ -174,7 +174,7 @@ func TestSnapshotTreatsUntrackedNestedRepositoryAsOpaqueIdentity(t *testing.T) {
 	stagedAndUnstaged := mustSnapshot(t, repo, base)
 	assertFingerprintChanged(t, staged, stagedAndUnstaged)
 
-	runGit(t, nested, "add", "secret.txt")
+	runSnapshotGit(t, nested, "add", "secret.txt")
 	restaged := mustSnapshot(t, repo, base)
 	assertFingerprintChanged(t, stagedAndUnstaged, restaged)
 
@@ -190,7 +190,7 @@ func TestSnapshotTreatsUntrackedNestedRepositoryAsOpaqueIdentity(t *testing.T) {
 	repeatedUntracked := mustSnapshot(t, repo, base)
 	assertFingerprintChanged(t, untracked, repeatedUntracked)
 
-	runGit(t, nested, "commit", "-q", "-m", "nested change")
+	runSnapshotGit(t, nested, "commit", "-q", "-m", "nested change")
 	committed := mustSnapshot(t, repo, base)
 	assertFingerprintChanged(t, repeatedUntracked, committed)
 }
@@ -202,12 +202,12 @@ func TestSnapshotDoesNotExecuteTextconv(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch \"$1\"\ncat \"$2\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, repo, "config", "diff.relay.textconv", script+" "+marker)
+	runSnapshotGit(t, repo, "config", "diff.relay.textconv", script+" "+marker)
 	if err := os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte("README diff=relay\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, repo, "add", ".gitattributes")
-	runGit(t, repo, "commit", "-q", "-m", "configure textconv")
+	runSnapshotGit(t, repo, "add", ".gitattributes")
+	runSnapshotGit(t, repo, "commit", "-q", "-m", "configure textconv")
 	base := RevParse(repo, "HEAD")
 	if err := os.WriteFile(filepath.Join(repo, "README"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -228,7 +228,7 @@ func TestSnapshotDoesNotExecuteExternalDiff(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch \"$1\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, repo, "config", "diff.external", script+" "+marker)
+	runSnapshotGit(t, repo, "config", "diff.external", script+" "+marker)
 	t.Setenv("GIT_EXTERNAL_DIFF", script+" "+marker)
 	base := RevParse(repo, "HEAD")
 	if err := os.WriteFile(filepath.Join(repo, "README"), []byte("changed\n"), 0o644); err != nil {
@@ -246,14 +246,14 @@ func TestSnapshotDoesNotExecuteExternalDiff(t *testing.T) {
 func TestSnapshotChangesForRepeatedTrackedSubmoduleEdits(t *testing.T) {
 	repo := initRepo(t)
 	nestedSource := t.TempDir()
-	runGit(t, nestedSource, "init", "-q")
+	runSnapshotGit(t, nestedSource, "init", "-q")
 	if err := os.WriteFile(filepath.Join(nestedSource, "tracked.txt"), []byte("initial\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, nestedSource, "add", "tracked.txt")
-	runGit(t, nestedSource, "commit", "-q", "-m", "initial")
-	runGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", nestedSource, "nested")
-	runGit(t, repo, "commit", "-q", "-am", "add submodule")
+	runSnapshotGit(t, nestedSource, "add", "tracked.txt")
+	runSnapshotGit(t, nestedSource, "commit", "-q", "-m", "initial")
+	runSnapshotGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", nestedSource, "nested")
+	runSnapshotGit(t, repo, "commit", "-q", "-am", "add submodule")
 	base := RevParse(repo, "HEAD")
 	nested := filepath.Join(repo, "nested")
 
@@ -274,16 +274,16 @@ func TestSnapshotChangesForRepeatedTrackedSubmoduleEdits(t *testing.T) {
 func TestSnapshotAllowsUninitializedTrackedSubmodule(t *testing.T) {
 	repo := initRepo(t)
 	nestedSource := t.TempDir()
-	runGit(t, nestedSource, "init", "-q")
+	runSnapshotGit(t, nestedSource, "init", "-q")
 	if err := os.WriteFile(filepath.Join(nestedSource, "tracked.txt"), []byte("initial\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, nestedSource, "add", "tracked.txt")
-	runGit(t, nestedSource, "commit", "-q", "-m", "initial")
-	runGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", nestedSource, "nested")
-	runGit(t, repo, "commit", "-q", "-am", "add submodule")
+	runSnapshotGit(t, nestedSource, "add", "tracked.txt")
+	runSnapshotGit(t, nestedSource, "commit", "-q", "-m", "initial")
+	runSnapshotGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", nestedSource, "nested")
+	runSnapshotGit(t, repo, "commit", "-q", "-am", "add submodule")
 	base := RevParse(repo, "HEAD")
-	runGit(t, repo, "submodule", "deinit", "-q", "-f", "nested")
+	runSnapshotGit(t, repo, "submodule", "deinit", "-q", "-f", "nested")
 
 	first := mustSnapshot(t, repo, base)
 	second := mustSnapshot(t, repo, base)
@@ -295,21 +295,21 @@ func TestSnapshotAllowsUninitializedTrackedSubmodule(t *testing.T) {
 func TestSnapshotBaseRefPrefersCurrentBaseOverStartSHA(t *testing.T) {
 	repo := initRepo(t)
 	start := RevParse(repo, "HEAD")
-	runGit(t, repo, "branch", "-M", "main")
-	runGit(t, repo, "checkout", "-q", "-b", "feature")
+	runSnapshotGit(t, repo, "branch", "-M", "main")
+	runSnapshotGit(t, repo, "checkout", "-q", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, repo, "add", "feature.txt")
-	runGit(t, repo, "commit", "-q", "-m", "feature")
-	runGit(t, repo, "checkout", "-q", "main")
+	runSnapshotGit(t, repo, "add", "feature.txt")
+	runSnapshotGit(t, repo, "commit", "-q", "-m", "feature")
+	runSnapshotGit(t, repo, "checkout", "-q", "main")
 	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, repo, "add", "base.txt")
-	runGit(t, repo, "commit", "-q", "-m", "advance base")
-	runGit(t, repo, "checkout", "-q", "feature")
-	runGit(t, repo, "rebase", "-q", "main")
+	runSnapshotGit(t, repo, "add", "base.txt")
+	runSnapshotGit(t, repo, "commit", "-q", "-m", "advance base")
+	runSnapshotGit(t, repo, "checkout", "-q", "feature")
+	runSnapshotGit(t, repo, "rebase", "-q", "main")
 
 	baseRef := SnapshotBaseRef(repo, "main", start)
 	if baseRef != "main" {
@@ -323,20 +323,20 @@ func TestSnapshotBaseRefPrefersCurrentBaseOverStartSHA(t *testing.T) {
 
 func TestSnapshotBaseRefPrefersRemoteWhenLocalBaseDiverges(t *testing.T) {
 	repo := initRepo(t)
-	runGit(t, repo, "branch", "-M", "main")
+	runSnapshotGit(t, repo, "branch", "-M", "main")
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	if output, err := exec.Command("git", "init", "--bare", "-q", remote).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v\n%s", err, output)
 	}
-	runGit(t, repo, "remote", "add", "origin", remote)
-	runGit(t, repo, "push", "-q", "-u", "origin", "main")
+	runSnapshotGit(t, repo, "remote", "add", "origin", remote)
+	runSnapshotGit(t, repo, "push", "-q", "-u", "origin", "main")
 	remoteSHA := RevParse(repo, "origin/main")
 
 	if err := os.WriteFile(filepath.Join(repo, "local-only.txt"), []byte("local\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, repo, "add", "local-only.txt")
-	runGit(t, repo, "commit", "-q", "-m", "local main diverges")
+	runSnapshotGit(t, repo, "add", "local-only.txt")
+	runSnapshotGit(t, repo, "commit", "-q", "-m", "local main diverges")
 
 	if got := SnapshotBaseRef(repo, "main", remoteSHA); got != "origin/main" {
 		t.Fatalf("snapshot base ref = %q, want origin/main", got)
@@ -349,8 +349,8 @@ func TestSnapshotBaseRefResolvesHEADToStartSHA(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "later.txt"), []byte("later\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, repo, "add", "later.txt")
-	runGit(t, repo, "commit", "-q", "-m", "later")
+	runSnapshotGit(t, repo, "add", "later.txt")
+	runSnapshotGit(t, repo, "commit", "-q", "-m", "later")
 
 	if got := SnapshotBaseRef(repo, "HEAD", start); got != start {
 		t.Fatalf("snapshot base ref = %q, want immutable start %q", got, start)
@@ -363,22 +363,22 @@ func TestSnapshotBaseRefResolvesHEADToStartSHA(t *testing.T) {
 
 func TestSnapshotFingerprintTracksBaseTipBeyondMergeBase(t *testing.T) {
 	repo := initRepo(t)
-	runGit(t, repo, "branch", "-M", "main")
-	runGit(t, repo, "checkout", "-q", "-b", "feature")
+	runSnapshotGit(t, repo, "branch", "-M", "main")
+	runSnapshotGit(t, repo, "checkout", "-q", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, repo, "add", "feature.txt")
-	runGit(t, repo, "commit", "-q", "-m", "feature")
+	runSnapshotGit(t, repo, "add", "feature.txt")
+	runSnapshotGit(t, repo, "commit", "-q", "-m", "feature")
 	before := mustSnapshot(t, repo, "main")
 
-	runGit(t, repo, "checkout", "-q", "main")
+	runSnapshotGit(t, repo, "checkout", "-q", "main")
 	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, repo, "add", "base.txt")
-	runGit(t, repo, "commit", "-q", "-m", "advance base")
-	runGit(t, repo, "checkout", "-q", "feature")
+	runSnapshotGit(t, repo, "add", "base.txt")
+	runSnapshotGit(t, repo, "commit", "-q", "-m", "advance base")
+	runSnapshotGit(t, repo, "checkout", "-q", "feature")
 	after := mustSnapshot(t, repo, "main")
 
 	if before.BaseSHA != after.BaseSHA {
@@ -393,24 +393,24 @@ func TestSnapshotFingerprintTracksBaseTipBeyondMergeBase(t *testing.T) {
 func TestSnapshotIgnoresConfiguredSubmoduleExclusion(t *testing.T) {
 	repo := initRepo(t)
 	nestedSource := t.TempDir()
-	runGit(t, nestedSource, "init", "-q")
+	runSnapshotGit(t, nestedSource, "init", "-q")
 	if err := os.WriteFile(filepath.Join(nestedSource, "tracked.txt"), []byte("initial\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, nestedSource, "add", "tracked.txt")
-	runGit(t, nestedSource, "commit", "-q", "-m", "initial")
-	runGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", nestedSource, "nested")
-	runGit(t, repo, "commit", "-q", "-am", "add submodule")
+	runSnapshotGit(t, nestedSource, "add", "tracked.txt")
+	runSnapshotGit(t, nestedSource, "commit", "-q", "-m", "initial")
+	runSnapshotGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", nestedSource, "nested")
+	runSnapshotGit(t, repo, "commit", "-q", "-am", "add submodule")
 	base := RevParse(repo, "HEAD")
-	runGit(t, repo, "config", "diff.ignoreSubmodules", "all")
+	runSnapshotGit(t, repo, "config", "diff.ignoreSubmodules", "all")
 
 	nested := filepath.Join(repo, "nested")
 	if err := os.WriteFile(filepath.Join(nested, "tracked.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, nested, "add", "tracked.txt")
-	runGit(t, nested, "commit", "-q", "-m", "change")
-	runGit(t, repo, "add", "nested")
+	runSnapshotGit(t, nested, "add", "tracked.txt")
+	runSnapshotGit(t, nested, "commit", "-q", "-m", "change")
+	runSnapshotGit(t, repo, "add", "nested")
 
 	snapshot := mustSnapshot(t, repo, base)
 	if snapshot.FileCount != 1 || snapshot.ChangedLines != 2 {
@@ -427,14 +427,14 @@ func TestSnapshotRejectsInvalidRepository(t *testing.T) {
 func TestSnapshotPropagatesTrackedSubmoduleStatFailure(t *testing.T) {
 	repo := initRepo(t)
 	nestedSource := t.TempDir()
-	runGit(t, nestedSource, "init", "-q")
+	runSnapshotGit(t, nestedSource, "init", "-q")
 	if err := os.WriteFile(filepath.Join(nestedSource, "tracked.txt"), []byte("initial\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, nestedSource, "add", "tracked.txt")
-	runGit(t, nestedSource, "commit", "-q", "-m", "initial")
-	runGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", nestedSource, "nested")
-	runGit(t, repo, "commit", "-q", "-am", "add nested")
+	runSnapshotGit(t, nestedSource, "add", "tracked.txt")
+	runSnapshotGit(t, nestedSource, "commit", "-q", "-m", "initial")
+	runSnapshotGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", nestedSource, "nested")
+	runSnapshotGit(t, repo, "commit", "-q", "-am", "add nested")
 
 	original := snapshotStat
 	snapshotStat = func(path string) (os.FileInfo, error) {
@@ -466,7 +466,7 @@ func assertFingerprintChanged(t *testing.T, before, after RepoSnapshot) {
 	}
 }
 
-func runGit(t *testing.T, repo string, args ...string) {
+func runSnapshotGit(t *testing.T, repo string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
 	cmd.Env = append(os.Environ(),

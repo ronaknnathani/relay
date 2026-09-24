@@ -58,24 +58,24 @@ func SnapshotBaseRef(repo, baseBranch, startSHA string) string {
 // Snapshot fingerprints all committed, staged, unstaged, and untracked work
 // relative to baseRef.
 func Snapshot(repo, baseRef string) (RepoSnapshot, error) {
-	root, err := gitOutput(repo, "rev-parse", "--show-toplevel")
+	root, err := snapshotGitOutput(repo, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return RepoSnapshot{}, fmt.Errorf("locate repository %s: %w", repo, err)
 	}
 	root = strings.TrimSpace(root)
-	headSHA, err := gitOutput(root, "rev-parse", "HEAD")
+	headSHA, err := snapshotGitOutput(root, "rev-parse", "HEAD")
 	if err != nil {
 		return RepoSnapshot{}, fmt.Errorf("resolve HEAD in %s: %w", root, err)
 	}
 	if strings.TrimSpace(baseRef) == "" {
 		baseRef = "HEAD"
 	}
-	baseTipSHA, err := gitOutput(root, "rev-parse", baseRef)
+	baseTipSHA, err := snapshotGitOutput(root, "rev-parse", baseRef)
 	if err != nil {
 		return RepoSnapshot{}, fmt.Errorf("resolve base tip %q in %s: %w", baseRef, root, err)
 	}
 	baseTipSHA = strings.TrimSpace(baseTipSHA)
-	baseSHA, err := gitOutput(root, "merge-base", "HEAD", baseTipSHA)
+	baseSHA, err := snapshotGitOutput(root, "merge-base", "HEAD", baseTipSHA)
 	if err != nil {
 		return RepoSnapshot{}, fmt.Errorf("resolve base %q in %s: %w", baseRef, root, err)
 	}
@@ -86,7 +86,7 @@ func Snapshot(repo, baseRef string) (RepoSnapshot, error) {
 	if err != nil {
 		return RepoSnapshot{}, fmt.Errorf("read tracked diff in %s: %w", root, err)
 	}
-	numstat, err := gitOutput(root, "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--numstat", baseSHA, "--")
+	numstat, err := snapshotGitOutput(root, "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--numstat", baseSHA, "--")
 	if err != nil {
 		return RepoSnapshot{}, fmt.Errorf("measure tracked diff in %s: %w", root, err)
 	}
@@ -136,7 +136,7 @@ func Snapshot(repo, baseRef string) (RepoSnapshot, error) {
 	}, nil
 }
 
-func gitOutput(repo string, args ...string) (string, error) {
+func snapshotGitOutput(repo string, args ...string) (string, error) {
 	output, err := gitBytes(repo, args...)
 	return string(output), err
 }
@@ -214,7 +214,7 @@ func readUntracked(root, relative string) (untrackedFile, error) {
 		}, nil
 	}
 	if info.IsDir() {
-		top, err := gitOutput(path, "rev-parse", "--show-toplevel")
+		top, err := snapshotGitOutput(path, "rev-parse", "--show-toplevel")
 		topInfo, topErr := snapshotStat(strings.TrimSpace(top))
 		pathInfo, pathErr := snapshotStat(path)
 		if err != nil || topErr != nil || pathErr != nil || !os.SameFile(topInfo, pathInfo) {
@@ -257,9 +257,9 @@ func nestedRepositoryDigestVisited(repo string, visited map[string]bool) ([]byte
 	visited[canonical] = true
 	defer delete(visited, canonical)
 
-	head, err := gitOutput(repo, "rev-parse", "--verify", "HEAD")
+	head, err := snapshotGitOutput(repo, "rev-parse", "--verify", "HEAD")
 	if err != nil {
-		if _, symbolicErr := gitOutput(repo, "symbolic-ref", "-q", "HEAD"); symbolicErr != nil {
+		if _, symbolicErr := snapshotGitOutput(repo, "symbolic-ref", "-q", "HEAD"); symbolicErr != nil {
 			return nil, fmt.Errorf("resolve nested Git HEAD %s: %w", repo, err)
 		}
 		head = "unborn"
@@ -339,7 +339,7 @@ func writeTrackedGitlinkDigests(writer io.Writer, repo string, visited map[strin
 		if !info.IsDir() {
 			continue
 		}
-		top, err := gitOutput(path, "rev-parse", "--show-toplevel")
+		top, err := snapshotGitOutput(path, "rev-parse", "--show-toplevel")
 		if err != nil {
 			return fmt.Errorf("locate tracked nested Git repository %s: %w", path, err)
 		}
@@ -386,7 +386,7 @@ func nestedUntrackedDigest(root, relative string) (string, []byte, error) {
 		return "symlink", sum[:], nil
 	}
 	if info.IsDir() {
-		top, err := gitOutput(path, "rev-parse", "--show-toplevel")
+		top, err := snapshotGitOutput(path, "rev-parse", "--show-toplevel")
 		topInfo, topErr := os.Stat(strings.TrimSpace(top))
 		pathInfo, pathErr := os.Stat(path)
 		if err != nil || topErr != nil || pathErr != nil || !os.SameFile(topInfo, pathInfo) {
@@ -398,7 +398,7 @@ func nestedUntrackedDigest(root, relative string) (string, []byte, error) {
 	if !info.Mode().IsRegular() {
 		return "", nil, fmt.Errorf("nested Git untracked path %s is not a regular file", path)
 	}
-	objectID, err := gitOutput(root, "hash-object", "--no-filters", "--", relative)
+	objectID, err := snapshotGitOutput(root, "hash-object", "--no-filters", "--", relative)
 	if err != nil {
 		return "", nil, fmt.Errorf("hash nested Git untracked file %s: %w", path, err)
 	}
