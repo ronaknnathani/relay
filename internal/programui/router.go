@@ -28,7 +28,9 @@ func newUnifiedRouter(
 	factory detailHandlerFactory,
 ) http.Handler {
 	return &unifiedRouter{
-		port: port, overview: overview, factory: factory,
+		port:     port,
+		overview: overview,
+		factory:  factory,
 		handlers: make(map[string]http.Handler),
 	}
 }
@@ -111,19 +113,16 @@ func (r *unifiedRouter) serveDetail(response http.ResponseWriter, request *http.
 		return
 	}
 	remainder := strings.TrimPrefix(request.URL.Path, prefix)
-	slash := strings.IndexByte(remainder, '/')
-	encodedSlug := remainder
-	detailPath := ""
-	if slash >= 0 {
-		encodedSlug = remainder[:slash]
-		detailPath = remainder[slash:]
+	encodedSlug, detailPath, hasDetailPath := strings.Cut(remainder, "/")
+	if hasDetailPath {
+		detailPath = "/" + detailPath
 	}
 	slug, err := url.PathUnescape(encodedSlug)
 	if err != nil || slug == "" || strings.Contains(slug, "/") || !r.active(slug) {
 		http.NotFound(response, request)
 		return
 	}
-	if slash < 0 {
+	if !hasDetailPath {
 		http.Redirect(response, request, prefix+url.PathEscape(slug)+"/", http.StatusPermanentRedirect)
 		return
 	}
@@ -133,7 +132,8 @@ func (r *unifiedRouter) serveDetail(response http.ResponseWriter, request *http.
 		return
 	}
 	cloned := request.Clone(request.Context())
-	cloned.URL = cloneURL(request.URL)
+	clonedURL := *request.URL
+	cloned.URL = &clonedURL
 	cloned.URL.Path = detailPath
 	cloned.URL.RawPath = ""
 	handler.ServeHTTP(response, cloned)
@@ -160,9 +160,4 @@ func (r *unifiedRouter) detailHandler(slug string) (http.Handler, error) {
 	}
 	r.handlers[slug] = handler
 	return handler, nil
-}
-
-func cloneURL(source *url.URL) *url.URL {
-	cloned := *source
-	return &cloned
 }

@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"html"
 	"io/fs"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -157,7 +156,7 @@ type roadmapBootstrapConnectors struct {
 
 func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	setSecurityHeaders(response.Header())
-	if !h.allowedHost(request.Host) {
+	if !allowedLoopbackHost(request.Host, h.port) {
 		http.Error(response, "forbidden host", http.StatusForbidden)
 		return
 	}
@@ -384,14 +383,6 @@ func pluralSuffix(count int) string {
 		return ""
 	}
 	return "s"
-}
-
-func (h *handler) allowedHost(hostport string) bool {
-	host, port, err := net.SplitHostPort(hostport)
-	if err != nil || port != h.port {
-		return false
-	}
-	return host == "127.0.0.1" || strings.EqualFold(host, "localhost")
 }
 
 func (h *handler) serveAsset(response http.ResponseWriter, request *http.Request, name, contentType string) {

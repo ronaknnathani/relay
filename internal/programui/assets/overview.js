@@ -1,11 +1,6 @@
 "use strict";
 
 const STATUSES = ["dispatched", "in-review", "blocked"];
-const STATUS_LABELS = {
-  dispatched: "Dispatched",
-  "in-review": "In review",
-  blocked: "Blocked",
-};
 
 const byID = (id) => document.getElementById(id);
 const dom = {

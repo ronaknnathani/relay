@@ -49,12 +49,12 @@ func Serve(ctx context.Context, options Options) error {
 		now = time.Now
 	}
 	builder, localBuilder := detailBuilders(ctx, options, now)
+	overviewBuilder := options.OverviewBuilder
 
 	var detailSeed programview.Snapshot
 	var overviewSeed programview.OverviewSnapshot
 	var err error
 	if options.Slug == "" {
-		overviewBuilder := options.OverviewBuilder
 		if overviewBuilder == nil {
 			overviewBuilder = func() (programview.OverviewSnapshot, error) {
 				programs, diagnostics, discoverErr := program.Discover(program.ActiveDir())
@@ -68,7 +68,6 @@ func Serve(ctx context.Context, options Options) error {
 		if err != nil {
 			return fmt.Errorf("build program overview: %w", err)
 		}
-		options.OverviewBuilder = overviewBuilder
 	} else {
 		detailSeed, err = localBuilder(options.Slug, "")
 		if err != nil {
@@ -92,7 +91,7 @@ func Serve(ctx context.Context, options Options) error {
 	var handler http.Handler
 	if options.Slug == "" {
 		overview := newOverviewFeed(
-			overviewSeed, overviewRefreshTTL, now, options.OverviewBuilder,
+			overviewSeed, overviewRefreshTTL, now, overviewBuilder,
 		)
 		handler = newUnifiedRouter(actualPort, overview, func(slug string) (http.Handler, error) {
 			seed, buildErr := localBuilder(slug, "")
