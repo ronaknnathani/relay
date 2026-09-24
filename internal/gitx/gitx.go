@@ -455,47 +455,50 @@ func WorkMergedInto(repo, branch, base, startSHA string) (tip string, merged boo
 		return branchTip, reachable, err
 	}
 
-	projectCommits, linear, err := linearCommitRange(repo, startCommit, branchTip)
+	workCommits, linear, err := linearCommitRange(repo, startCommit, branchTip)
 	if err != nil || !linear {
 		return branchTip, false, err
 	}
-	baseCommits, bounded, err := firstParentCommitsAfter(repo, startCommit, base)
+	upstreamCommits, bounded, err := firstParentCommitsAfter(repo, startCommit, base)
 	if err != nil || !bounded {
 		return branchTip, false, err
 	}
-	projectFingerprint, err := patchFingerprint(repo, startCommit, branchTip)
-	if err != nil || projectFingerprint == "" {
+	workFingerprint, err := patchFingerprint(repo, startCommit, branchTip)
+	if err != nil || workFingerprint == "" {
 		return branchTip, false, err
 	}
 
-	for i, commit := range baseCommits {
-		parent := startCommit
-		if i > 0 {
-			parent = baseCommits[i-1]
-		}
-		fingerprint, fingerprintErr := patchFingerprint(repo, parent, commit)
-		if fingerprintErr != nil {
-			return branchTip, false, fingerprintErr
-		}
-		if fingerprint == projectFingerprint {
-			return branchTip, true, nil
-		}
+	squashed, err := containsPatchFingerprint(
+		repo, startCommit, upstreamCommits, 1, workFingerprint,
+	)
+	if err != nil || squashed {
+		return branchTip, squashed, err
 	}
-	for end := len(projectCommits); end <= len(baseCommits); end++ {
-		start := end - len(projectCommits)
-		parent := startCommit
+
+	rebased, err := containsPatchFingerprint(
+		repo, startCommit, upstreamCommits, len(workCommits), workFingerprint,
+	)
+	return branchTip, rebased, err
+}
+
+func containsPatchFingerprint(
+	repo, rangeStart string, commits []string, windowSize int, expected string,
+) (bool, error) {
+	for end := windowSize; end <= len(commits); end++ {
+		start := end - windowSize
+		parent := rangeStart
 		if start > 0 {
-			parent = baseCommits[start-1]
+			parent = commits[start-1]
 		}
-		fingerprint, fingerprintErr := patchFingerprint(repo, parent, baseCommits[end-1])
-		if fingerprintErr != nil {
-			return branchTip, false, fingerprintErr
+		fingerprint, err := patchFingerprint(repo, parent, commits[end-1])
+		if err != nil {
+			return false, err
 		}
-		if fingerprint == projectFingerprint {
-			return branchTip, true, nil
+		if fingerprint == expected {
+			return true, nil
 		}
 	}
-	return branchTip, false, nil
+	return false, nil
 }
 
 // WorkMergedTip reports whether the exact returned branch tip contains work
