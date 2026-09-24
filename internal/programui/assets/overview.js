@@ -29,6 +29,7 @@ const make = (tag, className, text) => {
 function programCard(program) {
   const link = make("a", "program-card");
   link.href = `programs/${encodeURIComponent(program.slug)}/`;
+  link.dataset.focusKey = `program:${program.slug}`;
 
   const top = make("div", "program-card__top");
   top.append(
@@ -67,6 +68,7 @@ function programCard(program) {
 function workCard(item) {
   const link = make("a", "work-card");
   link.href = `programs/${encodeURIComponent(item.program_slug)}/#task=${encodeURIComponent(item.id)}`;
+  link.dataset.focusKey = `work:${item.program_slug}:${item.id}`;
   const meta = make("div", "work-card__meta");
   meta.append(
     make("span", "priority", item.priority),
@@ -112,9 +114,19 @@ function renderDiagnostics(diagnostics) {
 }
 
 function render(snapshot) {
+  const focusedKey = document.activeElement?.dataset.focusKey || "";
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
   renderPrograms(snapshot.programs || []);
   renderWork(snapshot.work || []);
   renderDiagnostics(snapshot.diagnostics || []);
+  const focusTarget = Array.from(document.querySelectorAll("[data-focus-key]")).find(
+    (node) => node.dataset.focusKey === focusedKey,
+  );
+  if (focusTarget) {
+    focusTarget.focus({ preventScroll: true });
+  }
+  window.scrollTo(scrollX, scrollY);
   const refreshed = new Date(snapshot.generated_at).toLocaleTimeString();
   if (snapshot.refresh.status === "failed") {
     dom.connectionStatus.textContent = `Showing the last local snapshot. ${snapshot.refresh.error}`;

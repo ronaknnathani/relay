@@ -200,6 +200,8 @@ func TestOverviewBrowser(t *testing.T) {
 	if err := chromedp.Run(browser,
 		chromedp.NavigateBack(),
 		chromedp.Poll(`location.pathname === "/" && document.querySelectorAll(".program-card").length === 2`, nil),
+		chromedp.Focus(`.program-card[href="programs/beta/"]`),
+		chromedp.Poll(`document.activeElement?.getAttribute("href") === "programs/beta/"`, nil),
 	); err != nil {
 		t.Fatalf("return to overview: %v", err)
 	}
@@ -207,6 +209,8 @@ func TestOverviewBrowser(t *testing.T) {
 	phase.Store(1)
 	if err := chromedp.Run(browser,
 		chromedp.Poll(`document.querySelectorAll(".program-card").length === 3`, nil,
+			chromedp.WithPollingTimeout(10*time.Second)),
+		chromedp.Poll(`document.activeElement?.getAttribute("href") === "programs/beta/"`, nil,
 			chromedp.WithPollingTimeout(10*time.Second)),
 		chromedp.Poll(`document.querySelectorAll(".work-card").length === 1`, nil,
 			chromedp.WithPollingTimeout(10*time.Second)),
