@@ -82,6 +82,27 @@ func TestProgramUICommandStartsUnifiedModeWithoutSlug(t *testing.T) {
 	}
 }
 
+func TestProgramUICommandOpensUnifiedModeByDefault(t *testing.T) {
+	originalServe := serveProgramUI
+	t.Cleanup(func() { serveProgramUI = originalServe })
+	var got programui.Options
+	serveProgramUI = func(_ context.Context, options programui.Options) error {
+		got = options
+		return nil
+	}
+
+	command := newRootCmd()
+	command.SetArgs([]string{"program", "ui"})
+	command.SetOut(io.Discard)
+	command.SetErr(io.Discard)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got.Slug != "" || !got.Open {
+		t.Fatalf("server options = %+v", got)
+	}
+}
+
 func TestProgramUICommandOpensByDefaultAndRejectsUnknownSlug(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

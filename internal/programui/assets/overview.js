@@ -136,6 +136,7 @@ function render(snapshot) {
 }
 
 async function refresh() {
+  let snapshot;
   try {
     const response = await fetch("api/overview", {
       cache: "no-store",
@@ -144,13 +145,19 @@ async function refresh() {
     if (!response.ok) {
       throw new Error(`Overview request failed with ${response.status}`);
     }
-    const snapshot = await response.json();
+    snapshot = await response.json();
     if (snapshot.schema !== "relay.program.overview.v1") {
       throw new Error(`Unsupported overview schema ${snapshot.schema}`);
     }
-    render(snapshot);
   } catch (error) {
     dom.connectionStatus.textContent = `Unable to refresh. ${error.message}`;
+    return;
+  }
+  try {
+    render(snapshot);
+  } catch (error) {
+    console.error("Unable to render program overview.", error);
+    dom.connectionStatus.textContent = `Unable to render overview. ${error.message}`;
   }
 }
 

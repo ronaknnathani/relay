@@ -19,9 +19,8 @@ const LANES = ["pending", "dispatched", "in-review", "blocked", "merged", "cance
 const TABS = ["roadmap", "kanban", "tasks", "decisions", "goal"];
 const ACTIVE_STATUSES = ["dispatched", "in-review"];
 
-/* Work item IDs must match what api/program accepts, or a stale hash makes
-   every poll fail with 400 and the view never recovers. Keep in sync with
-   normalizeDetailItem in cache.go. */
+/* Hash task IDs become api/artifact selectors. Keep this validation aligned
+   with normalizeDetailItem in cache.go. */
 const ITEM_ID = /^w[1-9][0-9]*$/;
 const MAX_ITEM_ID = 32;
 

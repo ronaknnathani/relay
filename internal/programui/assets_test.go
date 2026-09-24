@@ -125,6 +125,8 @@ func TestOverviewAssetsExposeProgramsAndAttentionBoard(t *testing.T) {
 		"data-focus-key",
 		"focus({ preventScroll: true })",
 		"window.scrollTo(scrollX, scrollY)",
+		`console.error("Unable to render program overview.", error)`,
+		"`Unable to render overview. ${error.message}`",
 		"textContent",
 		"replaceChildren",
 		`["dispatched", "in-review", "blocked"]`,

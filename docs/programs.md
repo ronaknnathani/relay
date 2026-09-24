@@ -652,8 +652,9 @@ serves until interrupted with Ctrl-C. Use `--no-open` when another process will 
 The overview discovers membership from `~/.relay/programs/active/`; archived programs are excluded.
 It summarizes lifecycle state, progress, planning queues, open decisions, and next action for each
 program. Its Work in progress board contains only dispatched, in-review, and blocked items, grouped
-into those three fixed lanes with blocked reasons. Local discovery and status refresh every three
-seconds, and a temporary refresh failure preserves the last visible snapshot with a diagnostic.
+into those three fixed lanes with blocked reasons. The browser polls every three seconds. When the
+cached overview expires, a poll starts a background discovery and status refresh while returning the
+last snapshot; a temporary refresh failure preserves that snapshot with a diagnostic.
 
 Open a program or work card to enter that program's existing mission-control view on the same local
 server. The detail UI refreshes automatically and visualizes:
