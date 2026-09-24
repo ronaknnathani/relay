@@ -20,9 +20,10 @@ func BuildOverview(
 	if now == nil {
 		now = time.Now
 	}
+	generatedAt := now().UTC()
 	snapshot := OverviewSnapshot{
 		Schema:      OverviewSchemaVersion,
-		GeneratedAt: now().UTC().Format(time.RFC3339),
+		GeneratedAt: generatedAt.Format(time.RFC3339),
 		Refresh:     RefreshDTO{Status: "fresh"},
 		Programs:    []ProgramOverviewDTO{},
 		Work:        []OverviewWorkItemDTO{},
@@ -39,7 +40,6 @@ func BuildOverview(
 	sort.Slice(sortedPrograms, func(i, j int) bool {
 		return sortedPrograms[i].Slug < sortedPrograms[j].Slug
 	})
-	generatedAt, _ := time.Parse(time.RFC3339, snapshot.GeneratedAt)
 	for _, current := range sortedPrograms {
 		observed, plan, diagnostics := overviewProgramState(current, generatedAt)
 		snapshot.Diagnostics = append(snapshot.Diagnostics, diagnostics...)
