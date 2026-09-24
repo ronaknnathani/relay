@@ -18,11 +18,15 @@ func newCmdProgramUI() *cobra.Command {
 	var port int
 	var noOpen bool
 	command := &cobra.Command{
-		Use:   "ui <slug>",
+		Use:   "ui [slug]",
 		Short: "Serve the live local Program UI",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			return runProgramUI(command.Context(), command.OutOrStdout(), args[0], port, !noOpen)
+			slug := ""
+			if len(args) == 1 {
+				slug = args[0]
+			}
+			return runProgramUI(command.Context(), command.OutOrStdout(), slug, port, !noOpen)
 		},
 	}
 	command.Flags().IntVar(&port, "port", 0, "localhost port (0 chooses an available port)")
@@ -31,12 +35,14 @@ func newCmdProgramUI() *cobra.Command {
 }
 
 func runProgramUI(parent context.Context, out io.Writer, slug string, port int, open bool) error {
-	path, err := program.Find(slug)
-	if err != nil {
-		return err
-	}
-	if _, err := program.Load(path); err != nil {
-		return err
+	if slug != "" {
+		path, err := program.Find(slug)
+		if err != nil {
+			return err
+		}
+		if _, err := program.Load(path); err != nil {
+			return err
+		}
 	}
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()

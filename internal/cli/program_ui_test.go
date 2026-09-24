@@ -61,6 +61,27 @@ func TestProgramUICommandPassesOpenFlagsAndAllowsArchivedPrograms(t *testing.T) 
 	}
 }
 
+func TestProgramUICommandStartsUnifiedModeWithoutSlug(t *testing.T) {
+	originalServe := serveProgramUI
+	t.Cleanup(func() { serveProgramUI = originalServe })
+	var got programui.Options
+	serveProgramUI = func(_ context.Context, options programui.Options) error {
+		got = options
+		return nil
+	}
+
+	command := newRootCmd()
+	command.SetArgs([]string{"program", "ui", "--port", "1234", "--no-open"})
+	command.SetOut(io.Discard)
+	command.SetErr(io.Discard)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got.Slug != "" || got.Port != 1234 || got.Open {
+		t.Fatalf("server options = %+v", got)
+	}
+}
+
 func TestProgramUICommandOpensByDefaultAndRejectsUnknownSlug(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

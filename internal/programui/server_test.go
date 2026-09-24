@@ -77,6 +77,102 @@ func TestServeUsesLoopbackDynamicPortOpensAndStopsOnContext(t *testing.T) {
 	}
 }
 
+func TestServeUnifiedModeIsLazyAndUsesOneServer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	output := newLineWriter()
+	done := make(chan error, 1)
+	var localCalls atomic.Int32
+	var fullCalls atomic.Int32
+	go func() {
+		done <- Serve(ctx, Options{
+			Port: 0, Open: false, Out: output,
+			OverviewBuilder: func() (programview.OverviewSnapshot, error) {
+				return programview.OverviewSnapshot{
+					Schema:      programview.OverviewSchemaVersion,
+					Programs:    []programview.ProgramOverviewDTO{{Slug: "alpha"}},
+					Work:        []programview.OverviewWorkItemDTO{},
+					Diagnostics: []programview.OverviewDiagnosticDTO{},
+				}, nil
+			},
+			LocalBuilder: func(slug, detail string) (programview.Snapshot, error) {
+				localCalls.Add(1)
+				return programview.Snapshot{
+					Schema:     programview.SchemaVersion,
+					Program:    programview.ProgramDTO{Slug: slug},
+					DetailItem: detail,
+					Items:      []programview.ItemDTO{}, Contracts: []programview.ContractDTO{},
+					Warnings: []string{},
+				}, nil
+			},
+			Builder: func(slug, detail string) (programview.Snapshot, error) {
+				fullCalls.Add(1)
+				return programview.Snapshot{
+					Schema:     programview.SchemaVersion,
+					Program:    programview.ProgramDTO{Slug: slug},
+					DetailItem: detail,
+					Items:      []programview.ItemDTO{}, Contracts: []programview.ContractDTO{},
+					Warnings: []string{},
+				}, nil
+			},
+		})
+	}()
+
+	url := waitForProgramURL(t, output, done)
+	if localCalls.Load() != 0 || fullCalls.Load() != 0 {
+		t.Fatalf("detail builders ran before navigation: local=%d full=%d", localCalls.Load(), fullCalls.Load())
+	}
+	response, err := http.Get(url + "/api/overview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("overview status = %d", response.StatusCode)
+	}
+	response, err = http.Get(url + "/programs/alpha/api/program")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || localCalls.Load() != 1 {
+		t.Fatalf("detail status = %d, local calls = %d", response.StatusCode, localCalls.Load())
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("unified server did not stop after cancellation")
+	}
+}
+
+func TestServeUnifiedModeFailsBeforeListeningWhenOverviewFails(t *testing.T) {
+	output := newLineWriter()
+	err := Serve(context.Background(), Options{
+		OverviewBuilder: func() (programview.OverviewSnapshot, error) {
+			return programview.OverviewSnapshot{}, errors.New("active root unreadable")
+		},
+		Open: false,
+		Out:  output,
+	})
+	if err == nil || !strings.Contains(err.Error(), "active root unreadable") {
+		t.Fatalf("Serve error = %v", err)
+	}
+	select {
+	case line := <-output.lines:
+		t.Fatalf("server printed URL before failed overview: %q", line)
+	default:
+	}
+}
+
 func TestServeWarnsAndContinuesWhenBrowserOpenFails(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
