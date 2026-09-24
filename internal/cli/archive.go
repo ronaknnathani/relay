@@ -350,6 +350,18 @@ func archiveProject(slug string, force bool) (archiveResult, error) {
 			"project manifest slug %q does not match requested slug %q", m.Slug, slug,
 		)
 	}
+	if m.Program != "" || m.ProgramItem != "" {
+		if m.Program != "" && m.ProgramItem != "" {
+			return archiveResult{}, fmt.Errorf(
+				"active project %q is managed by program %s/%s; use: relay program worker cleanup %s %s",
+				slug, m.Program, m.ProgramItem, m.Program, m.ProgramItem,
+			)
+		}
+		return archiveResult{}, fmt.Errorf(
+			"active project %q has incomplete program ownership metadata; inspect %s and use the program worker cleanup lifecycle",
+			slug, manifestPath,
+		)
+	}
 	decision, err := decideArchive(m, slug, force)
 	if err != nil {
 		return archiveResult{}, err
@@ -363,18 +375,6 @@ func archiveProject(slug string, force bool) (archiveResult, error) {
 }
 
 func decideArchive(m project.Manifest, slug string, force bool) (archiveDecision, error) {
-	if m.Program != "" || m.ProgramItem != "" {
-		if m.Program != "" && m.ProgramItem != "" {
-			return archiveDecision{}, fmt.Errorf(
-				"active project %q is managed by program %s/%s; use: relay program worker cleanup %s %s",
-				slug, m.Program, m.ProgramItem, m.Program, m.ProgramItem,
-			)
-		}
-		return archiveDecision{}, fmt.Errorf(
-			"active project %q has incomplete program ownership metadata; inspect %s and use the program worker cleanup lifecycle",
-			slug, project.ManifestPath(project.ActiveDir(), slug),
-		)
-	}
 	proof, err := newArchiveProofSnapshot(m, archiveProofForced, false)
 	if err != nil {
 		return archiveDecision{}, err
