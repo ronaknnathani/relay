@@ -44,6 +44,17 @@ func (f *overviewFeed) Get() programview.OverviewSnapshot {
 	return snapshot
 }
 
+func (f *overviewFeed) hasProgram(slug string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, current := range f.snapshot.Programs {
+		if current.Slug == slug {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *overviewFeed) response() (programview.OverviewSnapshot, []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

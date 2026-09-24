@@ -119,6 +119,49 @@ func TestUnifiedRouterRejectsInvalidHostMethodAndPaths(t *testing.T) {
 	}
 }
 
+func TestUnifiedRouterDetailRequestsDoNotRefreshOverview(t *testing.T) {
+	now := time.Date(2026, 9, 24, 18, 0, 0, 0, time.UTC)
+	refreshed := make(chan struct{}, 1)
+	feed := newOverviewFeed(
+		programview.OverviewSnapshot{
+			Schema:      programview.OverviewSchemaVersion,
+			Programs:    []programview.ProgramOverviewDTO{{Slug: "alpha"}},
+			Work:        []programview.OverviewWorkItemDTO{},
+			Diagnostics: []programview.OverviewDiagnosticDTO{},
+		},
+		time.Second,
+		func() time.Time { return now },
+		func() (programview.OverviewSnapshot, error) {
+			refreshed <- struct{}{}
+			return programview.OverviewSnapshot{}, nil
+		},
+	)
+	router := newUnifiedRouter("4321", feed, func(string) (http.Handler, error) {
+		return http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			response.WriteHeader(http.StatusOK)
+		}), nil
+	})
+	now = now.Add(2 * time.Second)
+
+	for range 3 {
+		response := serveUnifiedRequest(
+			router,
+			http.MethodGet,
+			"/programs/alpha/api/program",
+			"localhost:4321",
+		)
+		if response.Code != http.StatusOK {
+			t.Fatalf("detail status = %d", response.Code)
+		}
+	}
+
+	select {
+	case <-refreshed:
+		t.Fatal("detail request refreshed the cross-program overview")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func serveUnifiedRequest(handler http.Handler, method, path, host string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, "http://"+host+path, nil)
 	request.Host = host

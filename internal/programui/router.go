@@ -139,12 +139,7 @@ func (r *unifiedRouter) serveDetail(response http.ResponseWriter, request *http.
 }
 
 func (r *unifiedRouter) active(slug string) bool {
-	for _, current := range r.overview.Get().Programs {
-		if current.Slug == slug {
-			return true
-		}
-	}
-	return false
+	return r.overview.hasProgram(slug)
 }
 
 func (r *unifiedRouter) detailHandler(slug string) (http.Handler, error) {
