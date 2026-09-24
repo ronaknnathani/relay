@@ -12,7 +12,9 @@ accepted by `relay route classify`.
 ## First classification
 
 Obtain the initial snapshot with `relay route snapshot "$SLUG"` before exploration; it does not
-require a persisted route. Use at most one broad repository exploration for that snapshot. Reuse task, assignment,
+require a persisted route. Treat its repository and input revisions as opaque caller-supplied
+freshness metadata and pass that freshness context to `explore` and `clarify`; those foundational
+skills never invoke Relay commands themselves. Use at most one broad repository exploration for that snapshot. Reuse task, assignment,
 requirements, and repository facts instead of asking routine questions they already answer. Record:
 whether requested behavior is explicit; unresolved product/design decisions; the exact required
 repository gate set or an explicit verified no-gates result;

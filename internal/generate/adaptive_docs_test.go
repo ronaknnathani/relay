@@ -39,11 +39,23 @@ func TestAdaptiveWorkflowAndRetiredWrapperDocs(t *testing.T) {
 	}
 	explore := readFile(t, filepath.Join(root, "skills", "explore", "SKILL.md"))
 	for _, want := range []string{
-		`relay route snapshot "$SLUG"`,
-		"scoped task and requirements input digest",
+		"source identity",
+		"caller-supplied freshness context",
 	} {
 		if !strings.Contains(explore, want) {
 			t.Errorf("explore freshness contract missing %q", want)
+		}
+	}
+	if strings.Contains(explore, `relay route snapshot "$SLUG"`) {
+		t.Error("explore still requires the Relay CLI for freshness")
+	}
+	route := readFile(t, filepath.Join(root, "skills", "route", "SKILL.md"))
+	for _, want := range []string{
+		`relay route snapshot "$SLUG"`,
+		"pass that freshness context to `explore` and `clarify`",
+	} {
+		if !strings.Contains(route, want) {
+			t.Errorf("route freshness integration missing %q", want)
 		}
 	}
 

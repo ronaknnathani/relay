@@ -86,6 +86,9 @@ Ask `relay state next "$SLUG"` after every state change.
   `relay state finish --dispatch-token "$FINISH_TOKEN"`. Reuse the same stable worker identity only
   when resuming the same worker; a replacement gets a new identity. Give workers the worktree/branch and require an artifact path, material/no-op
   outcome, checks, and blocking question; never ask for file dumps.
+  For `explore` or `clarify`, also pass the route's snapshot and input revisions as opaque
+  caller-supplied freshness context plus the requested artifact path. The foundational skill must not
+  call Relay or depend on the Relay project directory; the coordinator owns persistence and state.
 - **Other subagents:** only after classification, on non-easy or forced-full routes, record helpers not represented by a phase dispatch with
   `relay state worker "$SLUG" --task "<purpose>" --coordinator-token "$COORDINATOR_TOKEN"`.
   An unforced easy route launches no off-route helper; stale

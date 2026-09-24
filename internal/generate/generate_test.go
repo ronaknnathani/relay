@@ -27,6 +27,7 @@ func TestRouteSkillUsesDeterministicClassifier(t *testing.T) {
 				"relay route classify",
 				"relay route refresh",
 				"relay route escalate",
+				"pass that freshness context to `explore` and `clarify`",
 				"never downgrades automatically",
 			} {
 				if !strings.Contains(body, want) {
@@ -41,11 +42,11 @@ func TestExplorationArtifactIsSnapshotBoundAndReusable(t *testing.T) {
 	root := repoRoot(t)
 	checks := map[string][]string{
 		filepath.Join("skills", "explore", "SKILL.md"): {
-			"repository snapshot fingerprint", "relevant files", "exploration.md",
+			"source identity", "caller-supplied freshness context", "relevant files", "exploration.md",
 		},
 		filepath.Join("skills", "clarify", "SKILL.md"): {
 			"fresh `exploration.md`", "Do not repeat broad discovery", "replacement exploration",
-			"`input_revision`", "`task.md`", "`requirements.md`", "`assignment.md`",
+			"caller-supplied freshness context",
 		},
 		filepath.Join("skills", "plan", "SKILL.md"): {
 			"fresh `exploration.md`", "Do not repeat broad discovery", "replacement exploration",
@@ -56,6 +57,23 @@ func TestExplorationArtifactIsSnapshotBoundAndReusable(t *testing.T) {
 		for _, want := range required {
 			if !strings.Contains(body, want) {
 				t.Errorf("%s missing exploration contract %q", path, want)
+			}
+		}
+	}
+}
+
+func TestFoundationalSkillsDoNotRequireRelayCLI(t *testing.T) {
+	root := repoRoot(t)
+	for _, name := range []string{"explore", "clarify"} {
+		body := readFile(t, filepath.Join(root, "skills", name, "SKILL.md"))
+		for _, forbidden := range []string{"relay ", "$SLUG", ".relay/", "`input_revision`"} {
+			if strings.Contains(body, forbidden) {
+				t.Errorf("%s requires Relay-specific input %q", name, forbidden)
+			}
+		}
+		for _, want := range []string{"standalone", "caller-supplied freshness context"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s missing standalone contract %q", name, want)
 			}
 		}
 	}

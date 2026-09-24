@@ -46,6 +46,8 @@ Each record uses the same fields so additions and retirements remain reviewable.
 - Safety role: Prevents guessed product decisions.
 - Decision: Conditionally routed.
 - Migration impact: Skipped with a reason for explicit easy tasks; retained when uncertainty exists.
+  The skill remains standalone. Relay-specific freshness and artifact persistence belong to the
+  orchestrator, which passes opaque context when it invokes the skill.
 
 ### `commit`
 - Observed aggregate use: Standalone use and shared use from delivery workflows.
@@ -72,7 +74,9 @@ Each record uses the same fields so additions and retirements remain reviewable.
 - Feedback relevance: Supports explicit rationale and codebase grounding.
 - Safety role: Prevents assumption-driven changes.
 - Decision: Retained and reusable.
-- Migration impact: One snapshot-bound exploration result is reused until relevant inputs change.
+- Migration impact: One source-bound exploration result is reused until relevant inputs change. The
+  skill works outside Relay from ordinary Git identity, while Relay callers may supply opaque
+  snapshot and input revisions without making the skill invoke the CLI.
 
 ### `implement`
 - Observed aggregate use: Core delivery phase and ordinary mutation owner.
