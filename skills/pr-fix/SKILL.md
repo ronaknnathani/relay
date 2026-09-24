@@ -26,8 +26,9 @@ authoritative**:
 - **Fix once, then return** — no reassessment loop. The watcher re-observes after your push, and the
   next attention event carries whatever is left.
 - **Return a structured result, one entry per supplied item:** the item id, what you did, `fixed`,
-  `replied`, `escalated`, or `failed`, and the reason when it is not `fixed`. Report pushed commits and
-  the new head SHA.
+  `replied`, `escalated`, `ignored_non_actionable`, or `failed`, and the reason when it is not
+  `fixed`. Report pushed commits and the new head SHA. `ignored_non_actionable` means no reply,
+  reaction, resolution, or other GitHub mutation was made for that item.
 - **Never** run `relay pr watch tick` or `status`, and never schedule anything. The caller owns the
   watcher record.
 
@@ -126,6 +127,12 @@ item the watcher must still be able to surface.
    | Environment | passes locally, fails only in CI | align runtime/version/env vars with CI |
 
 3. **Review comments — classify each, then act.**
+   - **Non-actionable** (praise, thanks, FYI/status-only notes, approvals, duplicate summaries,
+     automated "no findings" / "no important findings" reports, or any comment with no concrete
+     defect, question, requested change, requested decision, or blocker): do nothing on GitHub. Do
+     not post an acknowledgment such as "Acknowledged", do not react, and do not resolve an
+     unresolved thread merely to clear it. In delegated mode return `ignored_non_actionable` with a
+     short reason; in direct mode exclude it from the actionable worklist.
    - **Obvious gap-fix** (a clear bug, a missing test, a style/rule violation, a one-right-answer
      mechanical change): implement it, reply describing exactly what changed, and resolve the thread
      (GraphQL `resolveReviewThread` — see Quick commands). Only mark a thread resolved once the fix is
@@ -145,10 +152,11 @@ item the watcher must still be able to surface.
    resolve-forward can silently drop a hunk even when validation passes.
 
 5. **Loop until clear.** *(Direct mode only.)* Commit and push fixes, then re-assess (step 1). Repeat
-   until CI is green and every comment is addressed — fixed+resolved, or replied+flagged. Surface the
-   flagged decisions to the caller as the remaining blockers. **In delegated mode, stop after one
-   pass** and return the per-item result instead; the watcher re-observes and the caller decides what
-   happens next.
+   until CI is green and every actionable comment is addressed — fixed+resolved, or
+   replied+flagged. Non-actionable comments require no acknowledgment and do not block completion.
+   Surface the flagged decisions to the caller as the remaining blockers. **In delegated mode, stop
+   after one pass** and return the per-item result instead; the watcher re-observes and the caller
+   decides what happens next.
 
 ## Red flags
 
@@ -156,6 +164,8 @@ item the watcher must still be able to surface.
 - Deleting/skipping a test, suppressing a lint, or weakening an assertion to turn a check green.
 - Editing a failing test instead of the code it caught — a red test means behavior changed.
 - Guessing an author-decision comment instead of replying and flagging it.
+- Replying to a non-actionable comment just to acknowledge it, including "no findings" or "no
+  important findings" review summaries.
 - A reply that reads as the human author's own words, with no automated-agent disclosure.
 - A reply missing the marker, naming no `answers` token, naming an id you invented instead of the
   item's own, or posted on a different source than the one it answers — every one of those either
@@ -174,7 +184,8 @@ item the watcher must still be able to surface.
 - [ ] In direct mode: `gh pr checks` is fully green; each fix reproduced a local red loop and has a red-before/green-after regression test.
 - [ ] Direct mode captured the remote PR context locally before edits and refreshed it after each push.
 - [ ] No failure was silenced (no skipped/deleted test, no lint-suppression, no loosened assertion).
-- [ ] Every review comment is fixed+resolved, or replied+flagged as an author decision left open.
+- [ ] Every actionable review comment is fixed+resolved, or replied+flagged as an author decision
+      left open; non-actionable comments received no reply, reaction, or resolution.
 - [ ] Every agent reply carries the marker with that item's exact `answers` token and the visible disclosure, and was posted on the same source it answers.
 - [ ] All conflicts resolved forward (no abort), both intents researched and preserved, validation re-run after.
 - [ ] After any rebase, confirmed my branch's commits survived (still in `git log`; net diff vs base still carries my changes).
