@@ -351,7 +351,7 @@ func activeProjectViewWithRepository(
 	}
 	merged := false
 	if base != "" && manifest.StartSHA != "" {
-		baseRef := base
+		var baseRef string
 		remoteRef := "refs/remotes/origin/" + base
 		remoteExists, err := gitx.RefExists(manifest.Repo, remoteRef)
 		if err != nil {
