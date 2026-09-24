@@ -3,6 +3,52 @@ package programview
 // SchemaVersion identifies the program snapshot JSON contract.
 const SchemaVersion = "relay.program.v1"
 
+// OverviewSchemaVersion identifies the cross-program overview JSON contract.
+const OverviewSchemaVersion = "relay.program.overview.v1"
+
+// OverviewSnapshot is the complete read-only JSON model for active programs.
+type OverviewSnapshot struct {
+	Schema      string                  `json:"schema"`
+	GeneratedAt string                  `json:"generated_at"`
+	Refresh     RefreshDTO              `json:"refresh"`
+	Programs    []ProgramOverviewDTO    `json:"programs"`
+	Work        []OverviewWorkItemDTO   `json:"work"`
+	Diagnostics []OverviewDiagnosticDTO `json:"diagnostics"`
+}
+
+// ProgramOverviewDTO summarizes one active program.
+type ProgramOverviewDTO struct {
+	Slug          string      `json:"slug"`
+	Title         string      `json:"title"`
+	DisplayTitle  string      `json:"display_title"`
+	Summary       string      `json:"summary,omitempty"`
+	State         string      `json:"state"`
+	UpdatedAt     string      `json:"updated_at"`
+	Progress      ProgressDTO `json:"progress"`
+	Ready         int         `json:"ready"`
+	InFlight      int         `json:"in_flight"`
+	Blocked       int         `json:"blocked"`
+	OpenDecisions int         `json:"open_decisions"`
+	NextAction    string      `json:"next_action"`
+}
+
+// OverviewWorkItemDTO is one attention item in the overview Kanban.
+type OverviewWorkItemDTO struct {
+	ProgramSlug  string   `json:"program_slug"`
+	ProgramTitle string   `json:"program_title"`
+	ID           string   `json:"id"`
+	Title        string   `json:"title"`
+	Priority     string   `json:"priority"`
+	Status       string   `json:"status"`
+	Reasons      []string `json:"reasons,omitempty"`
+}
+
+// OverviewDiagnosticDTO reports one isolated discovery or local-read problem.
+type OverviewDiagnosticDTO struct {
+	Directory string `json:"directory"`
+	Message   string `json:"message"`
+}
+
 // Snapshot is the complete read-only JSON model for one Relay program.
 type Snapshot struct {
 	Schema            string          `json:"schema"`
