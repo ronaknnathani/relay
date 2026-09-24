@@ -47,6 +47,7 @@ func BuildOverview(
 		if diagnostic != nil {
 			snapshot.Diagnostics = append(snapshot.Diagnostics, *diagnostic)
 		}
+		progress := progressDTO(observed.Items)
 		snapshot.Programs = append(snapshot.Programs, ProgramOverviewDTO{
 			Slug:          current.Slug,
 			Title:         current.Title,
@@ -54,10 +55,10 @@ func BuildOverview(
 			Summary:       summary,
 			State:         string(current.State),
 			UpdatedAt:     current.UpdatedAt,
-			Progress:      progressDTO(observed.Items),
+			Progress:      progress,
 			Ready:         len(plan.Ready),
 			InFlight:      len(plan.InFlight),
-			Blocked:       len(plan.Blocked),
+			Blocked:       progress.Blocked,
 			OpenDecisions: len(plan.OpenDecisions),
 			NextAction:    plan.NextAction,
 		})

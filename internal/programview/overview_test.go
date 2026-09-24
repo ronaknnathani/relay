@@ -84,7 +84,7 @@ func TestBuildOverviewDerivesProgramsAndAttentionWork(t *testing.T) {
 		t.Fatalf("alpha identity = %+v", got.Programs[0])
 	}
 	if got.Programs[0].Ready != 0 || got.Programs[0].InFlight != 2 ||
-		got.Programs[0].Blocked != 2 || got.Programs[0].OpenDecisions != 1 ||
+		got.Programs[0].Blocked != 1 || got.Programs[0].OpenDecisions != 1 ||
 		got.Programs[0].NextAction != "resolve d1" {
 		t.Fatalf("alpha planning = %+v", got.Programs[0])
 	}
