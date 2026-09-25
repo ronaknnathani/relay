@@ -42,6 +42,7 @@ func TestOverviewBrowser(t *testing.T) {
 				{
 					Slug: "alpha", Title: "Alpha", DisplayTitle: "Alpha program",
 					Summary: "The first active program.", State: "active",
+					CreatedAt: "2026-09-20T16:00:00Z",
 					UpdatedAt: "2026-09-24T16:00:00Z",
 					Progress:  programview.ProgressDTO{Total: 2, Merged: 1, Completed: 2, Percent: 50},
 					Ready:     3, InFlight: 1, Blocked: 2, OpenDecisions: 4,
@@ -50,6 +51,7 @@ func TestOverviewBrowser(t *testing.T) {
 				{
 					Slug: "beta", Title: "Beta", DisplayTitle: "Beta program",
 					Summary: "The second active program.", State: "held",
+					CreatedAt: "2026-09-22T16:00:00Z",
 					UpdatedAt: "2026-09-24T16:30:00Z",
 					Progress:  programview.ProgressDTO{Total: 2, Blocked: 1},
 					Blocked:   1, NextAction: "resume program",
@@ -66,7 +68,7 @@ func TestOverviewBrowser(t *testing.T) {
 		case 1:
 			snapshot.Programs = append(snapshot.Programs, programview.ProgramOverviewDTO{
 				Slug: "gamma", Title: "Gamma", DisplayTitle: "Gamma program",
-				State: "draft", UpdatedAt: "2026-09-24T17:01:00Z",
+				State: "draft", CreatedAt: "2026-09-24T15:00:00Z", UpdatedAt: "2026-09-24T17:01:00Z",
 				Progress: programview.ProgressDTO{}, NextAction: "request approval",
 			})
 			snapshot.Work = snapshot.Work[:1]
@@ -80,7 +82,7 @@ func TestOverviewBrowser(t *testing.T) {
 		case 3:
 			snapshot.Programs = append(snapshot.Programs, programview.ProgramOverviewDTO{
 				Slug: "gamma", Title: "Gamma", DisplayTitle: "Gamma program",
-				State: "draft", UpdatedAt: "2026-09-24T17:03:00Z",
+				State: "draft", CreatedAt: "2026-09-24T15:00:00Z", UpdatedAt: "2026-09-24T17:03:00Z",
 				Progress: programview.ProgressDTO{}, NextAction: "request approval",
 			})
 			snapshot.Work = []programview.OverviewWorkItemDTO{}
@@ -165,6 +167,8 @@ func TestOverviewBrowser(t *testing.T) {
 			return {
 				href: card.getAttribute("href"),
 				state: card.querySelector(".program-state").textContent,
+				age: card.querySelector(".program-age").textContent.startsWith("started "),
+				ageTitle: card.querySelector(".program-age").title,
 				updated: card.querySelector(".program-updated").textContent.startsWith("updated "),
 				updatedTitle: card.querySelector(".program-updated").title,
 				title: card.querySelector("h3").textContent,
@@ -182,7 +186,7 @@ func TestOverviewBrowser(t *testing.T) {
 	})`, &initial)); err != nil {
 		t.Fatal(err)
 	}
-	if initial != `{"programs":["Alpha program","Beta program"],"lanes":["Dispatched","In review","Blocked"],"work":["programs/alpha/#task=w1","programs/alpha/#task=w2","programs/beta/#task=w3"],"alpha":{"href":"programs/alpha/","state":"active","updated":true,"updatedTitle":"2026-09-24T16:00:00Z","title":"Alpha program","slug":"alpha","summary":"The first active program.","stats":[{"value":"50%","label":"merged"},{"value":"1","label":"in flight"},{"value":"2","label":"blocked"},{"value":"4","label":"decisions"}],"progress":"50% merged","next":"Next: reconcile in-flight work","queue":"3 ready · 1 of 2 merged"}}` {
+	if initial != `{"programs":["Alpha program","Beta program"],"lanes":["Dispatched","In review","Blocked"],"work":["programs/alpha/#task=w1","programs/alpha/#task=w2","programs/beta/#task=w3"],"alpha":{"href":"programs/alpha/","state":"active","age":true,"ageTitle":"2026-09-20T16:00:00Z","updated":true,"updatedTitle":"2026-09-24T16:00:00Z","title":"Alpha program","slug":"alpha","summary":"The first active program.","stats":[{"value":"50%","label":"merged"},{"value":"1","label":"in flight"},{"value":"2","label":"blocked"},{"value":"4","label":"decisions"}],"progress":"50% merged","next":"Next: reconcile in-flight work","queue":"3 ready · 1 of 2 merged"}}` {
 		t.Fatalf("overview DOM = %s", initial)
 	}
 

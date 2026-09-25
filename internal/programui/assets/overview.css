@@ -309,12 +309,19 @@ main > section + section {
   font-size: 9px;
 }
 
+.program-age,
 .program-updated,
 .program-meta {
   color: var(--muted);
   font-size: 12.5px;
 }
 
+.program-card__timing {
+  display: grid;
+  text-align: right;
+}
+
+.program-age,
 .program-updated {
   font-family: var(--font-mono);
   white-space: nowrap;

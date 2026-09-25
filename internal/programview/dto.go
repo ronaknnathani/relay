@@ -23,6 +23,7 @@ type ProgramOverviewDTO struct {
 	DisplayTitle  string      `json:"display_title"`
 	Summary       string      `json:"summary,omitempty"`
 	State         string      `json:"state"`
+	CreatedAt     string      `json:"created_at"`
 	UpdatedAt     string      `json:"updated_at"`
 	Progress      ProgressDTO `json:"progress"`
 	Ready         int         `json:"ready"`

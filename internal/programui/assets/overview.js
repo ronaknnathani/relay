@@ -74,11 +74,15 @@ function programCard(program) {
   link.dataset.state = program.state;
 
   const top = make("div", "program-card__top");
+  const timing = make("div", "program-card__timing");
+  const age = make("span", "program-age", `started ${formatRelative(program.created_at)}`);
+  age.title = program.created_at;
   const updated = make("span", "program-updated", `updated ${formatRelative(program.updated_at)}`);
   updated.title = program.updated_at;
+  timing.append(age, updated);
   top.append(
     make("span", "program-state", program.state.replaceAll("-", " ")),
-    updated,
+    timing,
   );
   const title = make("h3", "", program.display_title);
   const slug = make("p", "program-meta program-slug", program.slug);

@@ -35,9 +35,7 @@ func BuildOverview(
 	}
 
 	sortedPrograms := append([]program.Program(nil), programs...)
-	sort.Slice(sortedPrograms, func(i, j int) bool {
-		return sortedPrograms[i].Slug < sortedPrograms[j].Slug
-	})
+	sortProgramsByCreatedAt(sortedPrograms)
 	for _, current := range sortedPrograms {
 		observed, plan, diagnostics := overviewProgramState(current, generatedAt)
 		snapshot.Diagnostics = append(snapshot.Diagnostics, diagnostics...)
@@ -52,6 +50,7 @@ func BuildOverview(
 			DisplayTitle:  displayTitle,
 			Summary:       summary,
 			State:         string(current.State),
+			CreatedAt:     current.CreatedAt,
 			UpdatedAt:     current.UpdatedAt,
 			Progress:      progress,
 			Ready:         len(plan.Ready),
@@ -64,6 +63,23 @@ func BuildOverview(
 	}
 	sortOverviewWork(snapshot.Work)
 	return snapshot
+}
+
+func sortProgramsByCreatedAt(programs []program.Program) {
+	sort.SliceStable(programs, func(i, j int) bool {
+		left, leftErr := time.Parse(time.RFC3339Nano, programs[i].CreatedAt)
+		right, rightErr := time.Parse(time.RFC3339Nano, programs[j].CreatedAt)
+		if leftErr == nil && rightErr == nil && !left.Equal(right) {
+			return left.Before(right)
+		}
+		if (leftErr == nil) != (rightErr == nil) {
+			return leftErr == nil
+		}
+		if programs[i].CreatedAt != programs[j].CreatedAt {
+			return programs[i].CreatedAt < programs[j].CreatedAt
+		}
+		return programs[i].Slug < programs[j].Slug
+	})
 }
 
 func overviewProgramState(

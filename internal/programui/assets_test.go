@@ -121,6 +121,7 @@ func TestOverviewAssetsExposeProgramsAndAttentionBoard(t *testing.T) {
 		`const THEME_KEY = "relay.program.theme"`,
 		`dom.themeToggle.addEventListener("click", onThemeToggle)`,
 		`dom.refresh.addEventListener("click", () => refresh(true))`,
+		"formatRelative(program.created_at)",
 		"formatRelative(program.updated_at)",
 		`link.href = ` + "`programs/${encodeURIComponent(program.slug)}/`",
 		`link.href = ` + "`programs/${encodeURIComponent(item.program_slug)}/#task=${encodeURIComponent(item.id)}`",

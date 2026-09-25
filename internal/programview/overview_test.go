@@ -80,6 +80,9 @@ func TestBuildOverviewDerivesProgramsAndAttentionWork(t *testing.T) {
 	if len(got.Programs) != 2 || got.Programs[0].Slug != "alpha" || got.Programs[1].Slug != "beta" {
 		t.Fatalf("programs = %+v", got.Programs)
 	}
+	if got.Programs[0].CreatedAt != at {
+		t.Fatalf("alpha created_at = %q, want %q", got.Programs[0].CreatedAt, at)
+	}
 	if got.Programs[0].DisplayTitle != "Alpha display" ||
 		got.Programs[0].Summary != "Alpha summary for the overview." {
 		t.Fatalf("alpha identity = %+v", got.Programs[0])
@@ -115,6 +118,26 @@ func TestBuildOverviewEmpty(t *testing.T) {
 	got := BuildOverview(nil, nil, time.Now)
 	if got.Schema != OverviewSchemaVersion || got.Programs == nil || got.Work == nil || got.Diagnostics == nil {
 		t.Fatalf("empty overview = %+v", got)
+	}
+}
+
+func TestSortProgramsByCreatedAtOldestFirst(t *testing.T) {
+	programs := []program.Program{
+		{Slug: "newest", CreatedAt: "2026-09-24T18:00:00Z"},
+		{Slug: "same-zeta", CreatedAt: "2026-09-24T16:00:00Z"},
+		{Slug: "oldest", CreatedAt: "2026-09-24T08:00:00-04:00"},
+		{Slug: "same-alpha", CreatedAt: "2026-09-24T16:00:00Z"},
+	}
+
+	sortProgramsByCreatedAt(programs)
+
+	got := make([]string, 0, len(programs))
+	for _, current := range programs {
+		got = append(got, current.Slug)
+	}
+	want := []string{"oldest", "same-alpha", "same-zeta", "newest"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
 	}
 }
 
