@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"html"
 	"io/fs"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,7 +20,7 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-1g52aODucP5iIOZr/bOY8JbexyHXUG7wjvDZrNoq3u0=' 'sha256-d4ewkrvmsfNKGKZZbGcm1G6R0hLpwlFa3k8N9sFm/gc='; style-src 'self' 'sha256-QQS7K0wdFiLoNZ/B/RqzgfFru3cJyNzuACTk6uXZ69w='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	contentSecurityPolicy = "default-src 'self'; script-src 'self' 'sha256-pqjMZFRpuSBTGEtDcvCiSmrjIxI0HGulAYQ/FH55NAU=' 'sha256-d4ewkrvmsfNKGKZZbGcm1G6R0hLpwlFa3k8N9sFm/gc='; style-src 'self' 'sha256-SldAG++B98eXTNu3QThPUCHHYN9DlqbJmry5+R4skS4='; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	roadmapCoreToken      = "__RELAY_ROADMAP_CORE__"
 	cssTemplateToken      = "/*!__RELAY_CSS__*/"
 	roadmapJSONToken      = "__RELAY_ROADMAP_JSON__"
@@ -157,7 +156,7 @@ type roadmapBootstrapConnectors struct {
 
 func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	setSecurityHeaders(response.Header())
-	if !h.allowedHost(request.Host) {
+	if !allowedLoopbackHost(request.Host, h.port) {
 		http.Error(response, "forbidden host", http.StatusForbidden)
 		return
 	}
@@ -384,14 +383,6 @@ func pluralSuffix(count int) string {
 		return ""
 	}
 	return "s"
-}
-
-func (h *handler) allowedHost(hostport string) bool {
-	host, port, err := net.SplitHostPort(hostport)
-	if err != nil || port != h.port {
-		return false
-	}
-	return host == "127.0.0.1" || strings.EqualFold(host, "localhost")
 }
 
 func (h *handler) serveAsset(response http.ResponseWriter, request *http.Request, name, contentType string) {

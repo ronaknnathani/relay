@@ -19,9 +19,8 @@ const LANES = ["pending", "dispatched", "in-review", "blocked", "merged", "cance
 const TABS = ["roadmap", "kanban", "tasks", "decisions", "goal"];
 const ACTIVE_STATUSES = ["dispatched", "in-review"];
 
-/* Work item IDs must match what /api/program accepts, or a stale hash makes
-   every poll fail with 400 and the view never recovers. Keep in sync with
-   normalizeDetailItem in cache.go. */
+/* Hash task IDs become api/artifact selectors. Keep this validation aligned
+   with normalizeDetailItem in cache.go. */
 const ITEM_ID = /^w[1-9][0-9]*$/;
 const MAX_ITEM_ID = 32;
 
@@ -115,7 +114,7 @@ function loadDeferredStyle() {
   deferredStylePromise = new Promise((resolve, reject) => {
     const styles = document.createElement("link");
     styles.rel = "stylesheet";
-    styles.href = "/app-deferred.css";
+    styles.href = "app-deferred.css";
     styles.onload = () => {
       deferredStyleReady = true;
       resolve();
@@ -139,7 +138,7 @@ function loadDeferredScript() {
   }
   deferredScriptPromise = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "/app-deferred.js";
+    script.src = "app-deferred.js";
     script.onload = () => {
       deferredScriptReady = true;
       resolve();
@@ -1107,6 +1106,7 @@ function decorateTaskCard(card, node, item, lane) {
       foot.append(make("span", "flag flag--ready", "ready"));
     }
   }
+  card.dataset.meta = foot.textContent;
   card.setAttribute("aria-label", taskCardLabel(node, item, lane));
 }
 
@@ -1594,7 +1594,7 @@ let pollTimer = null;
 let programController = null;
 
 function requestProgram(controller, view) {
-  return fetch(view ? `/api/program?view=${view}` : "/api/program", {
+  return fetch(view ? `api/program?view=${view}` : "api/program", {
     cache: "no-store",
     signal: controller.signal,
     headers: { Accept: "application/json" },
@@ -1609,6 +1609,11 @@ function schedule(delay) {
     pollTimer = null;
     poll();
   }, delay);
+}
+
+function nextPollDelay(snapshot) {
+  const refresh = snapshot.refresh || {};
+  return refresh.refreshing || refresh.status === "partial" ? 1000 : POLL_INTERVAL;
 }
 
 function signatureOf(body) {
@@ -1685,6 +1690,7 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
           });
         }
       });
+      schedule(nextPollDelay(snapshot));
       return true;
     }
     const signature = signatureOf(body);
@@ -1696,7 +1702,7 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
       state.signature = signature;
     } else if (roadmapUnchanged && state.tab === "roadmap") {
       renderHeader();
-      window.requestAnimationFrame(drawConnectorsForCurrentGraph);
+      renderRoadmap();
       TABS.filter((tab) => tab !== "roadmap").forEach((tab) => state.dirtyTabs.add(tab));
       state.signature = signature;
     } else {
@@ -1712,7 +1718,7 @@ async function poll(preloadedRequest, preloadedController, preloadedSnapshot) {
     } else if (state.drawerOpen) {
       withDeferredUI(() => loadCurrentArtifact(true, true));
     }
-    schedule(POLL_INTERVAL);
+    schedule(nextPollDelay(snapshot));
     return true;
   } catch (error) {
     if (controller.signal.aborted) {

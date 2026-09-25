@@ -29,6 +29,310 @@ const (
 	canonicalCancelledHeading = "Cancelled" //nolint:misspell // Display spelling for the persisted Relay status.
 )
 
+func TestOverviewBrowser(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	var phase atomic.Int32
+	overview := func() (programview.OverviewSnapshot, error) {
+		snapshot := programview.OverviewSnapshot{
+			Schema:      programview.OverviewSchemaVersion,
+			GeneratedAt: "2026-09-24T17:00:00Z",
+			Programs: []programview.ProgramOverviewDTO{
+				{
+					Slug: "alpha", Title: "Alpha", DisplayTitle: "Alpha program",
+					Summary: "The first active program.", State: "active",
+					CreatedAt: "2026-09-20T16:00:00Z",
+					UpdatedAt: "2026-09-24T16:00:00Z",
+					Progress:  programview.ProgressDTO{Total: 2, Merged: 1, Completed: 2, Percent: 50},
+					Ready:     3, InFlight: 1, Blocked: 2, OpenDecisions: 4,
+					NextAction: "reconcile in-flight work",
+				},
+				{
+					Slug: "beta", Title: "Beta", DisplayTitle: "Beta program",
+					Summary: "The second active program.", State: "held",
+					CreatedAt: "2026-09-22T16:00:00Z",
+					UpdatedAt: "2026-09-24T16:30:00Z",
+					Progress:  programview.ProgressDTO{Total: 2, Blocked: 1},
+					Blocked:   1, NextAction: "resume program",
+				},
+			},
+			Work: []programview.OverviewWorkItemDTO{
+				{ProgramSlug: "alpha", ProgramTitle: "Alpha program", ID: "w1", Title: "First task", Priority: "P0", Status: "dispatched"},
+				{ProgramSlug: "alpha", ProgramTitle: "Alpha program", ID: "w2", Title: "Review task", Priority: "P1", Status: "in-review"},
+				{ProgramSlug: "beta", ProgramTitle: "Beta program", ID: "w3", Title: "Blocked task", Priority: "P2", Status: "blocked", Reasons: []string{"owner needed"}},
+			},
+			Diagnostics: []programview.OverviewDiagnosticDTO{},
+		}
+		switch phase.Load() {
+		case 1:
+			snapshot.Programs = append(snapshot.Programs, programview.ProgramOverviewDTO{
+				Slug: "gamma", Title: "Gamma", DisplayTitle: "Gamma program",
+				State: "draft", CreatedAt: "2026-09-24T15:00:00Z", UpdatedAt: "2026-09-24T17:01:00Z",
+				Progress: programview.ProgressDTO{}, NextAction: "request approval",
+			})
+			snapshot.Work = snapshot.Work[:1]
+			snapshot.Diagnostics = []programview.OverviewDiagnosticDTO{{
+				Directory: "malformed-program",
+				Message:   "parse program manifest",
+			}}
+			snapshot.GeneratedAt = "2026-09-24T17:01:00Z"
+		case 2:
+			return programview.OverviewSnapshot{}, errors.New("overview refresh unavailable")
+		case 3:
+			snapshot.Programs = append(snapshot.Programs, programview.ProgramOverviewDTO{
+				Slug: "gamma", Title: "Gamma", DisplayTitle: "Gamma program",
+				State: "draft", CreatedAt: "2026-09-24T15:00:00Z", UpdatedAt: "2026-09-24T17:03:00Z",
+				Progress: programview.ProgressDTO{}, NextAction: "request approval",
+			})
+			snapshot.Work = []programview.OverviewWorkItemDTO{}
+			snapshot.GeneratedAt = "2026-09-24T17:03:00Z"
+		case 4:
+			snapshot.Programs = []programview.ProgramOverviewDTO{}
+			snapshot.Work = []programview.OverviewWorkItemDTO{}
+			snapshot.GeneratedAt = "2026-09-24T17:04:00Z"
+		}
+		return snapshot, nil
+	}
+	detail := func(slug, item string) (programview.Snapshot, error) {
+		snapshot := browserTestSnapshot()
+		snapshot.Program.Slug = slug
+		snapshot.Program.Title = strings.ToUpper(slug)
+		snapshot.Program.DisplayTitle = strings.ToUpper(slug)
+		snapshot.DetailItem = item
+		return snapshot, nil
+	}
+
+	output := newLineWriter()
+	serverContext, cancelServer := context.WithCancel(context.Background())
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- Serve(serverContext, Options{
+			Port: 0, Open: false, Out: output,
+			OverviewBuilder: overview,
+			LocalBuilder:    detail,
+			Builder:         detail,
+		})
+	}()
+	t.Cleanup(func() {
+		cancelServer()
+		select {
+		case err := <-serverDone:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("unified program UI did not stop")
+		}
+	})
+	url := waitForProgramURL(t, output, serverDone)
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 60*time.Second)
+	defer cancelTimeout()
+
+	if err := chromedp.Run(browser,
+		chromedp.Navigate(url),
+		chromedp.Poll(`document.querySelectorAll(".program-card").length === 2`, nil),
+		chromedp.Poll(`document.querySelectorAll(".work-card").length === 3`, nil),
+		chromedp.Poll(`document.querySelector('[data-status="blocked"]').textContent.includes("owner needed")`, nil),
+		chromedp.Poll(`document.querySelector(".program-card").textContent.includes("alpha") &&
+			document.querySelector(".program-card").textContent.includes("1 of 2 merged") &&
+			!document.querySelector(".program-card").textContent.includes("complete")`, nil),
+		chromedp.Poll(`document.querySelector('[data-status="blocked"] .work-card').textContent.includes("P2") &&
+			document.querySelector('[data-status="blocked"] .work-card').textContent.includes("blocked") &&
+			document.querySelector('[data-status="blocked"] .work-card').textContent.includes("Beta program · beta") &&
+			document.querySelector('[data-status="blocked"] .work-card').textContent.includes("owner needed") &&
+			!document.querySelector('[data-status="blocked"] .work-card').hasAttribute("aria-label")`, nil),
+	); err != nil {
+		t.Fatalf("render overview: %v", err)
+	}
+	var initial string
+	if err := chromedp.Run(browser, chromedp.Evaluate(`JSON.stringify({
+		programs: Array.from(document.querySelectorAll(".program-card h3"), (node) => node.textContent),
+		lanes: Array.from(document.querySelectorAll(".lane > header h3"), (node) => node.textContent),
+		work: Array.from(document.querySelectorAll(".work-card"), (node) => node.getAttribute("href")),
+		alpha: (() => {
+			const card = document.querySelector('.program-card[href="programs/alpha/"]');
+			return {
+				href: card.getAttribute("href"),
+				state: card.querySelector(".program-state").textContent,
+				age: card.querySelector(".program-age").textContent.startsWith("started "),
+				ageTitle: card.querySelector(".program-age").title,
+				updated: card.querySelector(".program-updated").textContent.startsWith("updated "),
+				updatedTitle: card.querySelector(".program-updated").title,
+				title: card.querySelector("h3").textContent,
+				slug: card.querySelector(".program-slug").textContent,
+				summary: card.querySelector(".program-summary").textContent,
+				stats: Array.from(card.querySelectorAll(".program-card__stats span"), (stat) => ({
+					value: stat.querySelector("strong").textContent,
+					label: stat.querySelector("small").textContent,
+				})),
+				progress: card.querySelector(".program-progress").getAttribute("aria-label"),
+				next: card.querySelectorAll(":scope > .program-meta")[1].textContent,
+				queue: card.querySelectorAll(":scope > .program-meta")[2].textContent,
+			};
+		})(),
+	})`, &initial)); err != nil {
+		t.Fatal(err)
+	}
+	if initial != `{"programs":["Alpha program","Beta program"],"lanes":["Dispatched","In review","Blocked"],"work":["programs/alpha/#task=w1","programs/alpha/#task=w2","programs/beta/#task=w3"],"alpha":{"href":"programs/alpha/","state":"active","age":true,"ageTitle":"2026-09-20T16:00:00Z","updated":true,"updatedTitle":"2026-09-24T16:00:00Z","title":"Alpha program","slug":"alpha","summary":"The first active program.","stats":[{"value":"50%","label":"merged"},{"value":"1","label":"in flight"},{"value":"2","label":"blocked"},{"value":"4","label":"decisions"}],"progress":"50% merged","next":"Next: reconcile in-flight work","queue":"3 ready · 1 of 2 merged"}}` {
+		t.Fatalf("overview DOM = %s", initial)
+	}
+
+	if err := chromedp.Run(browser,
+		chromedp.Click("#theme-toggle"),
+		chromedp.Poll(`document.documentElement.dataset.theme === "dark" &&
+			localStorage.getItem("relay.program.theme") === "dark" &&
+			document.querySelector("#theme-text").textContent === "Light"`, nil),
+		chromedp.Click("#theme-toggle"),
+		chromedp.Poll(`document.documentElement.dataset.theme === "light" &&
+			localStorage.getItem("relay.program.theme") === "light" &&
+			document.querySelector("#theme-text").textContent === "Dark"`, nil),
+	); err != nil {
+		t.Fatalf("toggle overview theme: %v", err)
+	}
+
+	if err := chromedp.Run(browser,
+		chromedp.Focus(".work-card"),
+		chromedp.Poll(`document.activeElement?.matches("a.work-card")`, nil),
+		chromedp.KeyEvent(kb.Enter),
+	); err != nil {
+		t.Fatalf("activate focused work card with Enter: %v", err)
+	}
+	var detailLocation string
+	if err := chromedp.Run(browser,
+		chromedp.Sleep(500*time.Millisecond),
+		chromedp.Location(&detailLocation),
+		chromedp.Poll(`location.pathname === "/programs/alpha/" && location.hash === "#task=w1"`, nil),
+	); err != nil {
+		t.Fatalf("detail location %q: %v", detailLocation, err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Poll(`typeof state !== "undefined" &&
+			state.selected === "w1" &&
+			document.querySelector("#drawer-title").textContent === "First task"`, nil),
+	); err != nil {
+		t.Fatalf("detail hydration at %q: %v", detailLocation, err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Reload(),
+		chromedp.Poll(`location.hash === "#task=w1" &&
+			typeof state !== "undefined" &&
+			state.selected === "w1" &&
+			document.querySelector("#drawer-title").textContent === "First task"`, nil),
+	); err != nil {
+		t.Fatalf("reload hydrated selected detail: %v", err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Click("#drawer-close"),
+		chromedp.Poll(`document.querySelector("#drawer").hidden`, nil),
+	); err != nil {
+		t.Fatalf("close detail before returning to overview: %v", err)
+	}
+	var backHref string
+	if err := chromedp.Run(browser,
+		chromedp.AttributeValue(".back-link", "href", &backHref, nil),
+	); err != nil || backHref != "/" {
+		t.Fatalf("back button href = %q: %v", backHref, err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Navigate(url),
+		chromedp.Poll(`location.pathname === "/" && document.querySelectorAll(".program-card").length === 2`, nil),
+		chromedp.Focus(`.program-card[href="programs/beta/"]`),
+		chromedp.Poll(`document.activeElement?.getAttribute("href") === "programs/beta/"`, nil),
+	); err != nil {
+		t.Fatalf("return to overview: %v", err)
+	}
+
+	phase.Store(1)
+	if err := chromedp.Run(browser,
+		chromedp.Poll(`document.querySelectorAll(".program-card").length === 3`, nil,
+			chromedp.WithPollingTimeout(10*time.Second)),
+		chromedp.Poll(`document.activeElement?.getAttribute("href") === "programs/beta/"`, nil,
+			chromedp.WithPollingTimeout(10*time.Second)),
+		chromedp.Poll(`document.querySelectorAll(".work-card").length === 1`, nil,
+			chromedp.WithPollingTimeout(10*time.Second)),
+		chromedp.Poll(`document.querySelector("#lane-dispatched-count").textContent === "1" &&
+			document.querySelector("#lane-in-review-count").textContent === "0" &&
+			document.querySelector("#lane-blocked-count").textContent === "0" &&
+			document.querySelector("#lane-dispatched-empty").hidden &&
+			!document.querySelector("#lane-in-review-empty").hidden &&
+			!document.querySelector("#lane-blocked-empty").hidden &&
+			document.querySelector("#diagnostics").hidden === false &&
+			document.querySelector("#diagnostic-list").textContent.includes("malformed-program")`, nil),
+	); err != nil {
+		t.Fatalf("partial overview state: %v", err)
+	}
+
+	phase.Store(2)
+	if err := chromedp.Run(browser,
+		chromedp.Poll(`document.querySelectorAll(".work-card").length === 1 &&
+			document.querySelector("#connection-status").textContent.includes("Showing the last local snapshot.") &&
+			document.querySelector("#connection-status").textContent.includes("overview refresh unavailable") &&
+			document.querySelector("#diagnostic-list").textContent.includes("malformed-program") &&
+			document.querySelector("#diagnostic-list").textContent.includes("refresh program overview")`, nil,
+			chromedp.WithPollingTimeout(10*time.Second)),
+	); err != nil {
+		t.Fatalf("failed overview refresh retention: %v", err)
+	}
+
+	phase.Store(3)
+	if err := chromedp.Run(browser,
+		chromedp.Poll(`document.querySelectorAll(".work-card").length === 0 &&
+			!document.querySelector("#work-empty").hidden &&
+			!document.querySelector("#lane-dispatched-empty").hidden &&
+			!document.querySelector("#lane-in-review-empty").hidden &&
+			!document.querySelector("#lane-blocked-empty").hidden &&
+			document.querySelector("#diagnostics").hidden`, nil,
+			chromedp.WithPollingTimeout(10*time.Second)),
+	); err != nil {
+		t.Fatalf("fully empty overview work state: %v", err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Focus(".program-card:nth-child(2)"),
+		chromedp.Poll(`document.activeElement?.matches(".program-card:nth-child(2)")`, nil),
+		chromedp.KeyEvent(kb.Enter),
+	); err != nil {
+		t.Fatalf("activate focused program card with Enter: %v", err)
+	}
+	var programLocation string
+	if err := chromedp.Run(browser,
+		chromedp.Sleep(250*time.Millisecond),
+		chromedp.Location(&programLocation),
+		chromedp.Poll(`location.pathname === "/programs/beta/"`, nil),
+	); err != nil {
+		t.Fatalf("keyboard detail location %q: %v", programLocation, err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.NavigateBack(),
+		chromedp.Poll(`location.pathname === "/"`, nil),
+	); err != nil {
+		t.Fatalf("return from pointer navigation: %v", err)
+	}
+
+	phase.Store(4)
+	if err := chromedp.Run(browser,
+		chromedp.Poll(`document.querySelector("#program-count").textContent === "0" &&
+			document.querySelectorAll(".program-card").length === 0 &&
+			!document.querySelector("#program-empty").hidden &&
+			document.querySelector("#program-empty").textContent === "No active programs."`, nil,
+			chromedp.WithPollingTimeout(10*time.Second)),
+	); err != nil {
+		t.Fatalf("empty program overview state: %v", err)
+	}
+}
+
 func TestBrowserHydratesAndPollsWhenDeferredBundleFails(t *testing.T) {
 	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
 		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
@@ -154,7 +458,6 @@ func TestBrowserHydratesAndPollsWhenDeferredBundleFails(t *testing.T) {
 	phase.Store(1)
 	nowNanos.Store(initialNow.Add(6 * time.Second).UnixNano())
 	if err := chromedp.Run(browser,
-		chromedp.Evaluate(`document.querySelector("#refresh").click()`, nil),
 		chromedp.Poll(`document.querySelector("#task-total").textContent === "7" &&
 			document.querySelector('.card[data-item="w1"]').textContent.includes(
 				"Updated roadmap task") &&
@@ -175,6 +478,89 @@ func TestBrowserHydratesAndPollsWhenDeferredBundleFails(t *testing.T) {
 	}
 	if builds.Load() < 2 {
 		t.Fatalf("snapshot builds = %d, want at least 2", builds.Load())
+	}
+}
+
+func TestBrowserFastPollsPartialSnapshotThenReturnsToNormalInterval(t *testing.T) {
+	if testing.Short() || getenv("RELAY_BROWSER_TESTS") == "" {
+		t.Skip("set RELAY_BROWSER_TESTS=1 to run browser tests")
+	}
+	seed := browserTestSnapshot()
+	releaseRefresh := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(releaseRefresh) })
+	})
+
+	output := newLineWriter()
+	serverContext, cancelServer := context.WithCancel(context.Background())
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- Serve(serverContext, Options{
+			Slug: "browser-test", Port: 0, Open: false, Out: output,
+			LocalBuilder: func(string, string) (programview.Snapshot, error) {
+				return seed, nil
+			},
+			Builder: func(string, string) (programview.Snapshot, error) {
+				<-releaseRefresh
+				return seed, nil
+			},
+		})
+	}()
+	t.Cleanup(func() {
+		cancelServer()
+		select {
+		case err := <-serverDone:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("program UI did not stop")
+		}
+	})
+	url := waitForProgramURL(t, output, serverDone)
+
+	allocator, cancelAllocator := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(chromeExecutable(t)),
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+		)...,
+	)
+	defer cancelAllocator()
+	browser, cancelBrowser := chromedp.NewContext(allocator)
+	defer cancelBrowser()
+	browser, cancelTimeout := context.WithTimeout(browser, 15*time.Second)
+	defer cancelTimeout()
+
+	programRequests := `performance.getEntriesByType("resource").filter((entry) => {
+		const request = new URL(entry.name);
+		return request.pathname.endsWith("/api/program") && request.search === "";
+	})`
+	if err := chromedp.Run(browser,
+		chromedp.Navigate(url),
+		chromedp.Poll(programRequests+`.length >= 1`, nil),
+	); err != nil {
+		t.Fatalf("initial partial snapshot request: %v", err)
+	}
+	releaseOnce.Do(func() { close(releaseRefresh) })
+
+	var requestTimes []float64
+	if err := chromedp.Run(browser,
+		chromedp.Poll(programRequests+`.length >= 3`, nil,
+			chromedp.WithPollingTimeout(8*time.Second)),
+		chromedp.Evaluate(programRequests+`.slice(0, 3).map((entry) => entry.startTime)`, &requestTimes),
+	); err != nil {
+		t.Fatalf("automatic detail polling: %v", err)
+	}
+	fastDelay := time.Duration(requestTimes[1]-requestTimes[0]) * time.Millisecond
+	normalDelay := time.Duration(requestTimes[2]-requestTimes[1]) * time.Millisecond
+	if fastDelay < 500*time.Millisecond || fastDelay > 2*time.Second {
+		t.Fatalf("partial snapshot poll delay = %s, want about 1s", fastDelay)
+	}
+	if normalDelay < 2500*time.Millisecond || normalDelay > 4*time.Second {
+		t.Fatalf("fresh snapshot poll delay = %s, want about 3s", normalDelay)
 	}
 }
 

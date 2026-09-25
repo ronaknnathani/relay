@@ -1,0 +1,227 @@
+package programui
+
+import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/ronaknnathani/relay/internal/program"
+	"github.com/ronaknnathani/relay/internal/programview"
+)
+
+func TestUnifiedRouterServesOverviewAndPrefixedDetail(t *testing.T) {
+	feed := newOverviewFeed(
+		programview.OverviewSnapshot{
+			Schema: programview.OverviewSchemaVersion,
+			Programs: []programview.ProgramOverviewDTO{
+				{Slug: "alpha"},
+				{Slug: "100%-done"},
+				{Slug: "a%41b"},
+			},
+			Work:        []programview.OverviewWorkItemDTO{},
+			Diagnostics: []programview.OverviewDiagnosticDTO{},
+		},
+		time.Hour,
+		time.Now,
+		nil,
+	)
+	var created atomic.Int32
+	router := newUnifiedRouter("4321", feed, func(slug string) (http.Handler, error) {
+		created.Add(1)
+		if slug != "alpha" && slug != "100%-done" && slug != "a%41b" {
+			return nil, errors.New("unexpected slug")
+		}
+		return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			response.Header().Set("Content-Type", "text/plain")
+			_, _ = response.Write([]byte(slug + ":" + request.URL.RequestURI()))
+		}), nil
+	})
+
+	for _, path := range []string{"/", "/overview.css", "/overview.js", "/api/overview"} {
+		response := serveUnifiedRequest(router, http.MethodGet, path, "localhost:4321")
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d: %s", path, response.Code, response.Body.String())
+		}
+		if response.Header().Get("Cache-Control") != "no-store" ||
+			response.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Fatalf("GET %s security headers = %v", path, response.Header())
+		}
+	}
+
+	redirect := serveUnifiedRequest(router, http.MethodGet, "/programs/alpha", "localhost:4321")
+	if redirect.Code != http.StatusPermanentRedirect ||
+		redirect.Header().Get("Location") != "/programs/alpha/" {
+		t.Fatalf("redirect = %d %q", redirect.Code, redirect.Header().Get("Location"))
+	}
+	detail := serveUnifiedRequest(router, http.MethodGet, "/programs/alpha/api/program", "localhost:4321")
+	if detail.Code != http.StatusOK || detail.Body.String() != "alpha:/api/program" {
+		t.Fatalf("detail = %d %q", detail.Code, detail.Body.String())
+	}
+	for path, expected := range map[string]string{
+		"/programs/alpha/api/program?view=roadmap":                    "alpha:/api/program?view=roadmap",
+		"/programs/alpha/api/artifact?item=plan.md&ref=feature%2Fone": "alpha:/api/artifact?item=plan.md&ref=feature%2Fone",
+	} {
+		response := serveUnifiedRequest(router, http.MethodGet, path, "localhost:4321")
+		if response.Code != http.StatusOK || response.Body.String() != expected {
+			t.Errorf("GET %s = %d %q, want 200 %q", path, response.Code, response.Body.String(), expected)
+		}
+	}
+	second := serveUnifiedRequest(router, http.MethodGet, "/programs/alpha/app.js", "localhost:4321")
+	if second.Code != http.StatusOK || second.Body.String() != "alpha:/app.js" || created.Load() != 1 {
+		t.Fatalf("second detail = %d %q, created %d", second.Code, second.Body.String(), created.Load())
+	}
+	for path, expected := range map[string]string{
+		"/programs/100%25-done/api/program": "100%-done:/api/program",
+		"/programs/a%2541b/api/program":     "a%41b:/api/program",
+	} {
+		response := serveUnifiedRequest(router, http.MethodGet, path, "localhost:4321")
+		if response.Code != http.StatusOK || response.Body.String() != expected {
+			t.Errorf("GET %s = %d %q, want 200 %q", path, response.Code, response.Body.String(), expected)
+		}
+	}
+	if response := serveUnifiedRequest(router, http.MethodGet, "/programs/missing/", "localhost:4321"); response.Code != http.StatusNotFound {
+		t.Fatalf("unknown detail status = %d", response.Code)
+	}
+}
+
+func TestUnifiedRouterRejectsInvalidHostMethodAndPaths(t *testing.T) {
+	feed := newOverviewFeed(
+		programview.OverviewSnapshot{
+			Schema:      programview.OverviewSchemaVersion,
+			Programs:    []programview.ProgramOverviewDTO{},
+			Work:        []programview.OverviewWorkItemDTO{},
+			Diagnostics: []programview.OverviewDiagnosticDTO{},
+		},
+		time.Hour,
+		time.Now,
+		nil,
+	)
+	router := newUnifiedRouter("4321", feed, func(string) (http.Handler, error) {
+		t.Fatal("detail factory called")
+		return nil, nil
+	})
+	if response := serveUnifiedRequest(router, http.MethodGet, "/", "example.com:4321"); response.Code != http.StatusForbidden {
+		t.Fatalf("invalid host status = %d", response.Code)
+	}
+	response := serveUnifiedRequest(router, http.MethodPost, "/", "localhost:4321")
+	if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET, HEAD" {
+		t.Fatalf("POST status = %d, Allow = %q", response.Code, response.Header().Get("Allow"))
+	}
+	if response := serveUnifiedRequest(router, http.MethodGet, "/missing", "localhost:4321"); response.Code != http.StatusNotFound {
+		t.Fatalf("missing path status = %d", response.Code)
+	}
+	head := serveUnifiedRequest(router, http.MethodHead, "/api/overview", "localhost:4321")
+	if head.Code != http.StatusOK || strings.TrimSpace(head.Body.String()) != "" {
+		t.Fatalf("HEAD response = %d %q", head.Code, head.Body.String())
+	}
+}
+
+func TestUnifiedRouterDetailRequestsDoNotRefreshOverview(t *testing.T) {
+	now := time.Date(2026, 9, 24, 18, 0, 0, 0, time.UTC)
+	refreshed := make(chan struct{}, 1)
+	feed := newOverviewFeed(
+		programview.OverviewSnapshot{
+			Schema:      programview.OverviewSchemaVersion,
+			Programs:    []programview.ProgramOverviewDTO{{Slug: "alpha"}},
+			Work:        []programview.OverviewWorkItemDTO{},
+			Diagnostics: []programview.OverviewDiagnosticDTO{},
+		},
+		time.Second,
+		func() time.Time { return now },
+		func() (programview.OverviewSnapshot, error) {
+			refreshed <- struct{}{}
+			return programview.OverviewSnapshot{}, nil
+		},
+	)
+	router := newUnifiedRouter("4321", feed, func(string) (http.Handler, error) {
+		return http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			response.WriteHeader(http.StatusOK)
+		}), nil
+	})
+	now = now.Add(2 * time.Second)
+
+	for range 3 {
+		response := serveUnifiedRequest(
+			router,
+			http.MethodGet,
+			"/programs/alpha/api/program",
+			"localhost:4321",
+		)
+		if response.Code != http.StatusOK {
+			t.Fatalf("detail status = %d", response.Code)
+		}
+	}
+
+	select {
+	case <-refreshed:
+		t.Fatal("detail request refreshed the cross-program overview")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestUnifiedRouterFindsProgramCreatedAfterServerStart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	feed := newOverviewFeed(
+		programview.OverviewSnapshot{
+			Schema:      programview.OverviewSchemaVersion,
+			Programs:    []programview.ProgramOverviewDTO{},
+			Work:        []programview.OverviewWorkItemDTO{},
+			Diagnostics: []programview.OverviewDiagnosticDTO{},
+		},
+		time.Hour,
+		time.Now,
+		func() (programview.OverviewSnapshot, error) {
+			return programview.OverviewSnapshot{
+				Schema:      programview.OverviewSchemaVersion,
+				Programs:    []programview.ProgramOverviewDTO{{Slug: "new-program"}},
+				Work:        []programview.OverviewWorkItemDTO{},
+				Diagnostics: []programview.OverviewDiagnosticDTO{},
+			}, nil
+		},
+	)
+	router := newUnifiedRouter("4321", feed, func(slug string) (http.Handler, error) {
+		return http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			_, _ = response.Write([]byte(slug))
+		}), nil
+	})
+
+	if response := serveUnifiedRequest(
+		router, http.MethodGet, "/programs/new-program/", "localhost:4321",
+	); response.Code != http.StatusNotFound {
+		t.Fatalf("program before creation status = %d", response.Code)
+	}
+
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	current, err := program.New("new-program", "New program", repo, "copilot", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := program.Create(current); err != nil {
+		t.Fatal(err)
+	}
+
+	response := serveUnifiedRequest(
+		router, http.MethodGet, "/programs/new-program/", "localhost:4321",
+	)
+	if response.Code != http.StatusOK || response.Body.String() != "new-program" {
+		t.Fatalf("new program detail = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func serveUnifiedRequest(handler http.Handler, method, path, host string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, "http://"+host+path, nil)
+	request.Host = host
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}

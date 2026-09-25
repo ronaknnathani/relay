@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -75,6 +76,277 @@ func TestServeUsesLoopbackDynamicPortOpensAndStopsOnContext(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("server did not stop after cancellation")
 	}
+}
+
+func TestServeUnifiedModeIsLazyAndUsesOneServer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	output := newLineWriter()
+	done := make(chan error, 1)
+	var localCalls atomic.Int32
+	var fullCalls atomic.Int32
+	go func() {
+		done <- Serve(ctx, Options{
+			Port: 0, Open: false, Out: output,
+			OverviewBuilder: func() (programview.OverviewSnapshot, error) {
+				return programview.OverviewSnapshot{
+					Schema:      programview.OverviewSchemaVersion,
+					Programs:    []programview.ProgramOverviewDTO{{Slug: "alpha"}},
+					Work:        []programview.OverviewWorkItemDTO{},
+					Diagnostics: []programview.OverviewDiagnosticDTO{},
+				}, nil
+			},
+			LocalBuilder: func(slug, detail string) (programview.Snapshot, error) {
+				localCalls.Add(1)
+				return programview.Snapshot{
+					Schema:     programview.SchemaVersion,
+					Program:    programview.ProgramDTO{Slug: slug},
+					DetailItem: detail,
+					Items:      []programview.ItemDTO{}, Contracts: []programview.ContractDTO{},
+					Warnings: []string{},
+				}, nil
+			},
+			Builder: func(slug, detail string) (programview.Snapshot, error) {
+				fullCalls.Add(1)
+				return programview.Snapshot{
+					Schema:     programview.SchemaVersion,
+					Program:    programview.ProgramDTO{Slug: slug},
+					DetailItem: detail,
+					Items:      []programview.ItemDTO{}, Contracts: []programview.ContractDTO{},
+					Warnings: []string{},
+				}, nil
+			},
+		})
+	}()
+
+	url := waitForProgramURL(t, output, done)
+	if localCalls.Load() != 0 || fullCalls.Load() != 0 {
+		t.Fatalf("detail builders ran before navigation: local=%d full=%d", localCalls.Load(), fullCalls.Load())
+	}
+	response, err := http.Get(url + "/api/overview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("overview status = %d", response.StatusCode)
+	}
+	response, err = http.Get(url + "/programs/alpha/api/program")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || localCalls.Load() != 1 {
+		t.Fatalf("detail status = %d, local calls = %d", response.StatusCode, localCalls.Load())
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("unified server did not stop after cancellation")
+	}
+}
+
+func TestServeUnifiedModeDiscoversOnlyActivePrograms(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, fixture := range []struct {
+		slug  string
+		title string
+		state program.State
+	}{
+		{slug: "draft", title: "Draft", state: program.StateDraft},
+		{slug: "pending-approval", title: "Pending approval", state: program.StatePendingApproval},
+		{slug: "active", title: "Active", state: program.StateActive},
+		{slug: "held", title: "Held", state: program.StateHeld},
+		{slug: "completed", title: "Completed", state: program.StateCompleted},
+		{slug: "abandoned", title: "Abandoned", state: program.StateAbandoned},
+		{slug: "archived", title: "Archived", state: program.StateDraft},
+	} {
+		repo := filepath.Join(home, "repos", fixture.slug)
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		current, err := program.New(fixture.slug, fixture.title, repo, "copilot", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch fixture.state {
+		case program.StateDraft:
+		case program.StatePendingApproval:
+			if err := current.Transition(program.StatePendingApproval, ""); err != nil {
+				t.Fatal(err)
+			}
+		case program.StateActive, program.StateHeld, program.StateCompleted:
+			if err := current.Transition(program.StatePendingApproval, ""); err != nil {
+				t.Fatal(err)
+			}
+			if err := current.Transition(program.StateActive, "ceo"); err != nil {
+				t.Fatal(err)
+			}
+			if fixture.state != program.StateActive {
+				if err := current.Transition(fixture.state, "tl"); err != nil {
+					t.Fatal(err)
+				}
+			}
+		case program.StateAbandoned:
+			if err := current.Transition(program.StateAbandoned, "tl"); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatalf("unsupported fixture state %q", fixture.state)
+		}
+		if err := program.Create(current); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(program.ArchivedDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(
+		program.ProgramDir(program.ActiveDir(), "archived"),
+		program.ProgramDir(program.ArchivedDir(), "archived"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := serveOverviewSnapshot(t)
+	if len(snapshot.Programs) != 6 {
+		t.Fatalf("overview program count = %d, want 6", len(snapshot.Programs))
+	}
+	got := make([]string, 0, len(snapshot.Programs))
+	for _, current := range snapshot.Programs {
+		got = append(got, current.Slug+":"+current.State)
+	}
+	want := []string{
+		"abandoned:abandoned",
+		"active:active",
+		"completed:completed",
+		"draft:draft",
+		"held:held",
+		"pending-approval:pending-approval",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("overview programs = %v, want %v", got, want)
+	}
+}
+
+func TestServeUnifiedModeTreatsMissingActiveDirectoryAsEmpty(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	snapshot := serveOverviewSnapshot(t)
+	if len(snapshot.Programs) != 0 || len(snapshot.Work) != 0 || len(snapshot.Diagnostics) != 0 {
+		t.Fatalf("missing active directory overview = %+v, want empty", snapshot)
+	}
+}
+
+func TestServeUnifiedModeDoesNotRefreshOverviewWhileIdle(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	output := newLineWriter()
+	done := make(chan error, 1)
+	refreshed := make(chan struct{}, 1)
+	var calls atomic.Int32
+	go func() {
+		done <- Serve(ctx, Options{
+			Port: 0, Open: false, Out: output,
+			OverviewBuilder: func() (programview.OverviewSnapshot, error) {
+				if calls.Add(1) > 1 {
+					refreshed <- struct{}{}
+				}
+				return programview.OverviewSnapshot{
+					Schema:      programview.OverviewSchemaVersion,
+					Programs:    []programview.ProgramOverviewDTO{},
+					Work:        []programview.OverviewWorkItemDTO{},
+					Diagnostics: []programview.OverviewDiagnosticDTO{},
+				}, nil
+			},
+		})
+	}()
+
+	_ = waitForProgramURL(t, output, done)
+	select {
+	case <-refreshed:
+		t.Fatal("overview refreshed without a browser request")
+	case <-time.After(overviewRefreshTTL + 500*time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not stop after cancellation")
+	}
+}
+
+func TestServeUnifiedModeFailsBeforeListeningWhenOverviewFails(t *testing.T) {
+	output := newLineWriter()
+	err := Serve(context.Background(), Options{
+		OverviewBuilder: func() (programview.OverviewSnapshot, error) {
+			return programview.OverviewSnapshot{}, errors.New("active root unreadable")
+		},
+		Open: false,
+		Out:  output,
+	})
+	if err == nil || !strings.Contains(err.Error(), "active root unreadable") {
+		t.Fatalf("Serve error = %v", err)
+	}
+	select {
+	case line := <-output.lines:
+		t.Fatalf("server printed URL before failed overview: %q", line)
+	default:
+	}
+}
+
+func serveOverviewSnapshot(t *testing.T) programview.OverviewSnapshot {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	output := newLineWriter()
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, Options{Port: 0, Open: false, Out: output})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("unified server did not stop")
+		}
+	})
+
+	url := waitForProgramURL(t, output, done)
+	response, err := http.Get(url + "/api/overview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Errorf("close overview response: %v", err)
+		}
+	}()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("overview status = %d", response.StatusCode)
+	}
+	var snapshot programview.OverviewSnapshot
+	if err := json.NewDecoder(response.Body).Decode(&snapshot); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
 }
 
 func TestServeWarnsAndContinuesWhenBrowserOpenFails(t *testing.T) {

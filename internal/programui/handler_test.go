@@ -40,7 +40,7 @@ func TestHandlerCachesRenderedIndex(t *testing.T) {
 		bytes.Contains(response.Body.Bytes(), []byte(cssTemplateToken)) ||
 		bytes.Contains(response.Body.Bytes(), []byte("<style></style>")) ||
 		!bytes.Contains(response.Body.Bytes(), []byte("--canvas:")) ||
-		!bytes.Contains(response.Body.Bytes(), []byte("/app.js")) {
+		!bytes.Contains(response.Body.Bytes(), []byte(`href="app.js"`)) {
 		t.Fatal("rendered index must contain the complete first-paint CSS and bootstrap with no template token")
 	}
 }
@@ -562,6 +562,70 @@ func TestGitHubCacheTTLAndStaleFallback(t *testing.T) {
 	}
 	if calls != 4 || expired != (programview.PullRequestDTO{}) {
 		t.Fatalf("expired stale refresh = calls %d, PR %+v", calls, expired)
+	}
+}
+
+func TestGitHubCacheKeepsPullRequestRepositoryIdentity(t *testing.T) {
+	var calls int
+	cache := newGitHubCache(
+		fetcherFunc(func(context.Context, string, string) (programview.PullRequestDTO, error) {
+			calls++
+			return programview.PullRequestDTO{Number: calls, State: "open"}, nil
+		}),
+		time.Minute,
+		time.Now,
+	)
+	local, err := cache.Fetch(context.Background(), "/repo", "#42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := cache.Fetch(
+		context.Background(),
+		"/repo",
+		"https://github.example/other/repo/pull/42",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignFiles, err := cache.Fetch(
+		context.Background(),
+		"/repo",
+		"https://github.example/other/repo/pull/42/files",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || local.Number != 1 || foreign.Number != 2 || foreignFiles.Number != 2 {
+		t.Fatalf(
+			"fetch calls = %d, local = %d, foreign = %d, foreign files = %d",
+			calls, local.Number, foreign.Number, foreignFiles.Number,
+		)
+	}
+}
+
+func TestGitHubCacheIsolatesPullRequestURLsByLocalRepository(t *testing.T) {
+	var calls int
+	cache := newGitHubCache(
+		fetcherFunc(func(_ context.Context, repo, _ string) (programview.PullRequestDTO, error) {
+			calls++
+			if repo == "/checkout/two" {
+				return programview.PullRequestDTO{}, errors.New("pull request repository does not match checkout")
+			}
+			return programview.PullRequestDTO{Number: 42, State: "merged"}, nil
+		}),
+		time.Minute,
+		time.Now,
+	)
+	ref := "https://github.example/acme/repo/pull/42"
+	if _, err := cache.Fetch(context.Background(), "/checkout/one", ref); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.Fetch(context.Background(), "/checkout/two", ref); err == nil ||
+		!strings.Contains(err.Error(), "does not match checkout") {
+		t.Fatalf("second checkout error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("fetch calls = %d, want 2", calls)
 	}
 }
 

@@ -3,6 +3,8 @@ package programui
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -265,7 +267,7 @@ func newGitHubCache(fetcher programview.Fetcher, ttl time.Duration, now func() t
 }
 
 func (c *githubCache) Fetch(ctx context.Context, repo, ref string) (programview.PullRequestDTO, error) {
-	key := repo + "\x00" + ref
+	key := pullRequestCacheKey(repo, ref)
 	c.mu.Lock()
 	stale, hasStale := c.entries[key]
 	if hasStale && c.now().Before(stale.expiresAt) {
@@ -317,4 +319,20 @@ func (c *githubCache) Fetch(ctx context.Context, repo, ref string) (programview.
 	close(flight.done)
 	c.mu.Unlock()
 	return flight.pullRequest, flight.err
+}
+
+func pullRequestCacheKey(repo, ref string) string {
+	trimmed := strings.TrimSpace(ref)
+	number, ok := programview.PullRequestNumber(trimmed)
+	if !ok {
+		return repo + "\x00" + trimmed
+	}
+	if strings.HasPrefix(trimmed, "#") {
+		return repo + "\x00" + strconv.Itoa(number)
+	}
+	repository, err := programview.PullRequestRepository(trimmed)
+	if err != nil {
+		return repo + "\x00" + trimmed
+	}
+	return repo + "\x00" + strings.ToLower(repository) + "\x00" + strconv.Itoa(number)
 }

@@ -1149,7 +1149,7 @@ function artifactURL(selector) {
   } else {
     query.set("ref", selector.ref);
   }
-  return `/api/artifact?${query.toString()}`;
+  return `api/artifact?${query.toString()}`;
 }
 
 function appendArtifactContent(section, selector, metadata) {

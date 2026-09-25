@@ -13,6 +13,12 @@ import (
 
 // assetNames lists every file the browser is allowed to load.
 var assetNames = []string{
+	"assets/overview.html",
+	"assets/overview.min.html",
+	"assets/overview.css",
+	"assets/overview.min.css",
+	"assets/overview.js",
+	"assets/overview.min.js",
 	"assets/index.html",
 	"assets/index.min.html",
 	"assets/app.css",
@@ -79,6 +85,99 @@ func requireAbsent(t *testing.T, name, content string, unwanted []string) {
 	}
 }
 
+func TestOverviewAssetsExposeProgramsAndAttentionBoard(t *testing.T) {
+	index := readAsset(t, "assets/overview.html")
+	for _, name := range []string{"assets/overview.html", "assets/overview.min.html"} {
+		requireContains(t, name, readAsset(t, name), []string{
+			`<main id="overview">`,
+			`id="programs"`,
+			`id="program-list"`,
+			`id="program-empty"`,
+			`id="work"`,
+			`id="work-empty"`,
+			`id="diagnostics"`,
+			`id="diagnostic-list"`,
+			`aria-live="polite"`,
+			`data-status="dispatched"`,
+			`data-status="in-review"`,
+			`data-status="blocked"`,
+			`id="theme-toggle"`,
+			`id="refresh"`,
+			`href="overview.css"`,
+			`src="overview.js"`,
+		})
+	}
+	if strings.Index(index, `data-status="dispatched"`) >
+		strings.Index(index, `data-status="in-review"`) ||
+		strings.Index(index, `data-status="in-review"`) >
+			strings.Index(index, `data-status="blocked"`) {
+		t.Fatal("overview lanes must be ordered dispatched, in-review, blocked")
+	}
+
+	script := readAsset(t, "assets/overview.js")
+	requireContains(t, "overview.js", script, []string{
+		`fetch("api/overview"`,
+		"window.setInterval(refresh, 3000)",
+		`const THEME_KEY = "relay.program.theme"`,
+		`dom.themeToggle.addEventListener("click", onThemeToggle)`,
+		`dom.refresh.addEventListener("click", () => refresh(true))`,
+		"formatRelative(program.created_at)",
+		"formatRelative(program.updated_at)",
+		`link.href = ` + "`programs/${encodeURIComponent(program.slug)}/`",
+		`link.href = ` + "`programs/${encodeURIComponent(item.program_slug)}/#task=${encodeURIComponent(item.id)}`",
+		`make("p", "program-meta program-slug", program.slug)`,
+		`${program.progress.merged} of ${program.progress.total} merged`,
+		`make("span", "work-card__status", item.status.replaceAll("-", " "))`,
+		`${item.program_title} · ${item.program_slug}`,
+		"data-focus-key",
+		"focus({ preventScroll: true })",
+		"window.scrollTo(scrollX, scrollY)",
+		`console.error("Unable to render program overview.", error)`,
+		"`Unable to render overview. ${error.message}`",
+		"textContent",
+		"replaceChildren",
+		`["dispatched", "in-review", "blocked"]`,
+	})
+	requireAbsent(t, "overview.js", script, []string{
+		`link.setAttribute("aria-label"`,
+		"program.progress.completed",
+	})
+	for _, name := range []string{"assets/overview.html", "assets/overview.min.html"} {
+		requireContains(t, name, readAsset(t, name), []string{
+			"No active programs.",
+			"No attention items.",
+			"No items in this lane.",
+		})
+	}
+	requireContains(t, "overview.min.js", readAsset(t, "assets/overview.min.js"), []string{
+		"program-slug",
+		"work-card__status",
+		"program_slug",
+		"progress.merged",
+	})
+	styles := readAsset(t, "assets/overview.css")
+	requireContains(t, "overview.css", styles, []string{
+		".program-grid",
+		".kanban",
+		".work-card",
+		":focus-visible",
+		`[data-theme="dark"]`,
+		`@media (hover: hover) and (pointer: fine)`,
+		"@media",
+	})
+	for _, pair := range [][2]string{
+		{"assets/overview.html", "assets/overview.min.html"},
+		{"assets/overview.css", "assets/overview.min.css"},
+		{"assets/overview.js", "assets/overview.min.js"},
+	} {
+		source := readAsset(t, pair[0])
+		minified := readAsset(t, pair[1])
+		if len(minified) >= len(source) {
+			t.Errorf("%s must be smaller than %s", pair[1], pair[0])
+		}
+	}
+}
+
 func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 	for _, name := range assetNames {
 		content := readAsset(t, name)
@@ -110,7 +209,7 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 		`class="visually-hidden"`,
 		"<caption",
 		`<a class="skip-link"`,
-		`<link rel="preload" href="/app.js" as="script">`,
+		`<link rel="preload" href="app.js" as="script">`,
 	})
 
 	if strings.Count(index, "<script") != 3 ||
@@ -125,6 +224,42 @@ func TestEmbeddedAssetsStayLocalAndSemantic(t *testing.T) {
 	}
 }
 
+func TestDetailAssetsUseRelativeURLs(t *testing.T) {
+	for _, name := range []string{
+		"assets/index.html",
+		"assets/index.min.html",
+		"assets/roadmap.js",
+		"assets/roadmap.min.js",
+		"assets/app.js",
+		"assets/app.min.js",
+		"assets/app-deferred.js",
+		"assets/app-deferred.min.js",
+	} {
+		requireAbsent(t, name, readAsset(t, name), []string{
+			`"/app.js"`,
+			`"/app-deferred.css"`,
+			`"/app-deferred.js"`,
+			`"/api/program`,
+			`"/api/artifact`,
+			`href="/app.js"`,
+		})
+	}
+	requireContains(t, "index.html", readAsset(t, "assets/index.html"), []string{
+		`<link rel="preload" href="app.js" as="script">`,
+	})
+	requireContains(t, "roadmap.js", readAsset(t, "assets/roadmap.js"), []string{
+		`script.src = "app.js"`,
+	})
+	requireContains(t, "app.js", readAsset(t, "assets/app.js"), []string{
+		`styles.href = "app-deferred.css"`,
+		`script.src = "app-deferred.js"`,
+		`fetch(view ? ` + "`api/program?view=${view}`" + ` : "api/program"`,
+	})
+	requireContains(t, "app-deferred.js", readAsset(t, "assets/app-deferred.js"), []string{
+		"return `api/artifact?${query.toString()}`;",
+	})
+}
+
 func TestOverviewRendersMergedProgressContract(t *testing.T) {
 	script := readAsset(t, "assets/app.js")
 	requireContains(t, "app.js", script, []string{
@@ -136,6 +271,8 @@ func TestOverviewRendersMergedProgressContract(t *testing.T) {
 	index := readAsset(t, "assets/index.html")
 	requireContains(t, "index.html", index, []string{
 		"<dt>Completion</dt>",
+		`class="button button--quiet back-link" href="/"`,
+		`aria-label="Back to all programs"`,
 		`<span id="progress-percent" class="signal__value mono">`,
 		`<span class="signal__unit">%</span>`,
 		`<p id="progress-counts" class="signal__note">__RELAY_PROGRESS_COUNTS__</p>`,
@@ -163,6 +300,11 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 		"document.documentElement.dataset.theme",
 		"function toggleTheme()",
 		`dom.themeToggle.setAttribute("aria-label"`,
+	})
+	requireContains(t, "app.css", readAsset(t, "assets/app.css"), []string{
+		".brief__nav",
+		".back-link",
+		"text-decoration: none",
 	})
 	if !strings.Contains(script, "function start()") ||
 		!strings.HasSuffix(strings.TrimSpace(readAsset(t, "assets/app.js")), "start();") {
@@ -1171,8 +1313,8 @@ func TestStylesGateHoverStayResponsiveAndRespectReducedMotion(t *testing.T) {
 func TestScriptKeepsPollingSelectionAndLinkSafety(t *testing.T) {
 	script := readScriptAssets(t)
 	requireContains(t, "app.js", script, []string{
-		"/api/program",
-		"/api/artifact",
+		"api/program",
+		"api/artifact",
 		"AbortController",
 		"programGeneration",
 		"artifactGeneration",
@@ -1190,6 +1332,7 @@ func TestScriptKeepsPollingSelectionAndLinkSafety(t *testing.T) {
 		"Pull request · stale GitHub cache",
 		"Stale since",
 		"pr.stale",
+		"card.dataset.meta = foot.textContent;",
 		"function writeHash()",
 		"function readHash()",
 		"function matchesFilter(",
@@ -1198,6 +1341,12 @@ func TestScriptKeepsPollingSelectionAndLinkSafety(t *testing.T) {
 		`event.key === "ArrowDown"`,
 		`event.key === "ArrowUp"`,
 		"File content loads with the external refresh.",
+	})
+	if strings.Count(readAsset(t, "assets/app.js"), "schedule(nextPollDelay(snapshot));") != 2 {
+		t.Error("app.js must schedule polling after both initial and subsequent snapshots")
+	}
+	requireContains(t, "app.min.js", readAsset(t, "assets/app.min.js"), []string{
+		"nextPollDelay",
 	})
 
 	if !strings.Contains(script, `event.key === "/" && state.tab === "tasks"`) {

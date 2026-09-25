@@ -249,7 +249,7 @@
 
   const loadFullApp = () => {
     const script = document.createElement("script");
-    script.src = "/app.js";
+    script.src = "app.js";
     script.onerror = () => {
       reconnect.hidden = false;
       reconnect.textContent = "The complete Program UI bundle failed to load. Reload the page to retry.";

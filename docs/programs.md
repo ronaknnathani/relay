@@ -639,17 +639,26 @@ working so the tech lead can fix the child.
 
 ### Local program UI
 
-Each program has a live, read-only mission-control view:
+Relay provides one live, read-only overview for every active program:
 
 ```bash
-relay program ui auth-platform
+relay program ui
 ```
 
 Relay binds an embedded web application to `127.0.0.1` on an available port, opens the browser, and
-serves until interrupted with Ctrl-C. Use `--no-open` when another process will open the URL, or
-`--port <number>` to request a fixed local port.
+serves until interrupted with Ctrl-C. Later `relay program ui` commands reuse that server and port
+instead of starting another process. Use `--no-open` when another process will open the URL, or
+`--port <number>` to request a fixed local port when starting the server.
 
-The UI refreshes automatically and visualizes:
+The overview discovers membership from `~/.relay/programs/active/`; archived programs are excluded.
+It summarizes lifecycle state, progress, planning queues, open decisions, and next action for each
+program. Its Work in progress board contains only dispatched, in-review, and blocked items, grouped
+into those three fixed lanes with blocked reasons. The browser polls every three seconds. When the
+cached overview expires, a poll starts a background discovery and status refresh while returning the
+last snapshot; a temporary refresh failure preserves that snapshot with a diagnostic.
+
+Open a program or work card to enter that program's existing mission-control view on the same local
+server. The detail UI refreshes automatically and visualizes:
 
 - The approved goal and background from program artifacts.
 - Overall completion and pull-request capacity.
@@ -666,9 +675,18 @@ reconnecting. GitHub reads are cached and shared, so one snapshot performs at mo
 recorded pull request and the UI reports exactly the capacity, status, and readiness the strict CLI
 reports.
 
+Use the optional program name as a shortcut to an active program on the same server:
+
+```bash
+relay program ui auth-platform
+```
+
+This opens `/programs/auth-platform/`. Running it while the overview is already serving reuses the
+existing port. Program pages include a back button to return to `/`. Archived programs aren't served
+by the active-program UI.
+
 The server accepts only `GET` and `HEAD`, binds only to loopback, rejects unexpected Host headers,
 loads no external assets, and never changes program, project, mailbox, git, Herdr, or GitHub state.
-Archived programs are viewable with the same command.
 
 ## State ownership
 
