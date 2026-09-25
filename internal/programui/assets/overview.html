@@ -1,32 +1,44 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>Relay Programs</title>
+  <script>try{const t=localStorage.getItem("relay.program.theme");document.documentElement.dataset.theme=t==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
   <link rel="stylesheet" href="overview.css">
   <script src="overview.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#overview">Skip to program overview</a>
   <header class="masthead">
-    <div>
-      <p class="eyebrow">Relay</p>
-      <h1>Active programs</h1>
-      <p class="lede">A local view of coordinated work that needs attention.</p>
+    <div class="masthead__bar">
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <span>Relay</span>
+        <span aria-hidden="true">/</span>
+        <span class="crumbs__leaf mono">programs</span>
+      </nav>
+      <div class="masthead__tools">
+        <p id="connection-status" class="connection-status" aria-live="polite">Loading current programs…</p>
+        <button id="theme-toggle" class="button button--quiet" type="button" aria-label="Switch to dark theme">
+          <span id="theme-glyph" aria-hidden="true">☾</span>
+          <span id="theme-text">Dark</span>
+        </button>
+        <button id="refresh" class="button" type="button">Refresh</button>
+      </div>
     </div>
-    <p id="connection-status" class="connection-status" aria-live="polite">Loading current programs…</p>
+    <h1>Programs</h1>
+    <p class="lede">Active programs and the work across them that needs attention.</p>
   </header>
 
   <main id="overview">
     <section id="programs" aria-labelledby="programs-title">
       <div class="section-heading">
-        <div>
-          <p class="eyebrow">Portfolio</p>
-          <h2 id="programs-title">Programs</h2>
+        <div class="section-heading__title">
+          <h2 id="programs-title">Active programs</h2>
+          <span id="program-count" class="count" aria-label="Program count">0</span>
         </div>
-        <span id="program-count" class="count" aria-label="Program count">0</span>
+        <p class="section-note">Open a program for its roadmap, tasks, and decisions.</p>
       </div>
       <div id="program-list" class="program-grid"></div>
       <p id="program-empty" class="empty-state" hidden>No active programs.</p>
@@ -34,11 +46,11 @@
 
     <section id="work" aria-labelledby="work-title">
       <div class="section-heading">
-        <div>
-          <p class="eyebrow">Attention</p>
-          <h2 id="work-title">Work in progress</h2>
+        <div class="section-heading__title">
+          <h2 id="work-title">Attention</h2>
+          <span id="work-count" class="count" aria-label="Attention item count">0</span>
         </div>
-        <span id="work-count" class="count" aria-label="Attention item count">0</span>
+        <p class="section-note">Dispatched, in-review, and blocked work across every active program.</p>
       </div>
       <p id="work-empty" class="empty-state" hidden>No attention items.</p>
       <div class="kanban" aria-label="Attention work by status">
@@ -71,11 +83,10 @@
 
     <section id="diagnostics" class="diagnostics" aria-labelledby="diagnostics-title" hidden>
       <div class="section-heading">
-        <div>
-          <p class="eyebrow">Local reads</p>
+        <div class="section-heading__title">
           <h2 id="diagnostics-title">Diagnostics</h2>
+          <span id="diagnostic-count" class="count">0</span>
         </div>
-        <span id="diagnostic-count" class="count">0</span>
       </div>
       <ul id="diagnostic-list"></ul>
     </section>

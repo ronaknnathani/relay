@@ -1,10 +1,15 @@
 "use strict";
 
 const STATUSES = ["dispatched", "in-review", "blocked"];
+const THEME_KEY = "relay.program.theme";
 
 const byID = (id) => document.getElementById(id);
 const dom = {
   connectionStatus: byID("connection-status"),
+  refresh: byID("refresh"),
+  themeToggle: byID("theme-toggle"),
+  themeGlyph: byID("theme-glyph"),
+  themeText: byID("theme-text"),
   programCount: byID("program-count"),
   programList: byID("program-list"),
   programEmpty: byID("program-empty"),
@@ -26,15 +31,54 @@ const make = (tag, className, text) => {
   return node;
 };
 
+function formatRelative(value) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  const seconds = Math.round((Date.now() - parsed.getTime()) / 1000);
+  if (seconds < 45) {
+    return "just now";
+  }
+  if (seconds < 3600) {
+    return `${Math.round(seconds / 60)}m ago`;
+  }
+  if (seconds < 86400) {
+    return `${Math.round(seconds / 3600)}h ago`;
+  }
+  return `${Math.round(seconds / 86400)}d ago`;
+}
+
+function applyTheme(theme) {
+  const dark = theme === "dark";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  dom.themeGlyph.textContent = dark ? "☀" : "☾";
+  dom.themeText.textContent = dark ? "Light" : "Dark";
+  dom.themeToggle.setAttribute("aria-label", `Switch to ${dark ? "light" : "dark"} theme`);
+}
+
+function onThemeToggle() {
+  const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  applyTheme(theme);
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+  } catch (_) {
+    // Theme persistence is optional in restricted local browser contexts.
+  }
+}
+
 function programCard(program) {
   const link = make("a", "program-card");
   link.href = `programs/${encodeURIComponent(program.slug)}/`;
   link.dataset.focusKey = `program:${program.slug}`;
+  link.dataset.state = program.state;
 
   const top = make("div", "program-card__top");
+  const updated = make("span", "program-updated", `updated ${formatRelative(program.updated_at)}`);
+  updated.title = program.updated_at;
   top.append(
     make("span", "program-state", program.state.replaceAll("-", " ")),
-    make("span", "program-updated", program.updated_at),
+    updated,
   );
   const title = make("h3", "", program.display_title);
   const slug = make("p", "program-meta program-slug", program.slug);
@@ -69,6 +113,7 @@ function workCard(item) {
   const link = make("a", "work-card");
   link.href = `programs/${encodeURIComponent(item.program_slug)}/#task=${encodeURIComponent(item.id)}`;
   link.dataset.focusKey = `work:${item.program_slug}:${item.id}`;
+  link.dataset.status = item.status;
   const meta = make("div", "work-card__meta");
   meta.append(
     make("span", "priority", item.priority),
@@ -127,7 +172,7 @@ function render(snapshot) {
     focusTarget.focus({ preventScroll: true });
   }
   window.scrollTo(scrollX, scrollY);
-  const refreshed = new Date(snapshot.generated_at).toLocaleTimeString();
+  const refreshed = formatRelative(snapshot.generated_at);
   if (snapshot.refresh.status === "failed") {
     dom.connectionStatus.textContent = `Showing the last local snapshot. ${snapshot.refresh.error}`;
     return;
@@ -135,7 +180,17 @@ function render(snapshot) {
   dom.connectionStatus.textContent = `Updated ${refreshed}`;
 }
 
-async function refresh() {
+let refreshing = false;
+
+async function refresh(manual = false) {
+  if (refreshing) {
+    return;
+  }
+  refreshing = true;
+  if (manual) {
+    dom.refresh.disabled = true;
+    dom.connectionStatus.textContent = "Refreshing…";
+  }
   let snapshot;
   try {
     const response = await fetch("api/overview", {
@@ -152,6 +207,9 @@ async function refresh() {
   } catch (error) {
     dom.connectionStatus.textContent = `Unable to refresh. ${error.message}`;
     return;
+  } finally {
+    refreshing = false;
+    dom.refresh.disabled = false;
   }
   try {
     render(snapshot);
@@ -161,5 +219,8 @@ async function refresh() {
   }
 }
 
+applyTheme(document.documentElement.dataset.theme);
+dom.themeToggle.addEventListener("click", onThemeToggle);
+dom.refresh.addEventListener("click", () => refresh(true));
 refresh();
 window.setInterval(refresh, 3000);

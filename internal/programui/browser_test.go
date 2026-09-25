@@ -165,7 +165,8 @@ func TestOverviewBrowser(t *testing.T) {
 			return {
 				href: card.getAttribute("href"),
 				state: card.querySelector(".program-state").textContent,
-				updated: card.querySelector(".program-updated").textContent,
+				updated: card.querySelector(".program-updated").textContent.startsWith("updated "),
+				updatedTitle: card.querySelector(".program-updated").title,
 				title: card.querySelector("h3").textContent,
 				slug: card.querySelector(".program-slug").textContent,
 				summary: card.querySelector(".program-summary").textContent,
@@ -181,8 +182,21 @@ func TestOverviewBrowser(t *testing.T) {
 	})`, &initial)); err != nil {
 		t.Fatal(err)
 	}
-	if initial != `{"programs":["Alpha program","Beta program"],"lanes":["Dispatched","In review","Blocked"],"work":["programs/alpha/#task=w1","programs/alpha/#task=w2","programs/beta/#task=w3"],"alpha":{"href":"programs/alpha/","state":"active","updated":"2026-09-24T16:00:00Z","title":"Alpha program","slug":"alpha","summary":"The first active program.","stats":[{"value":"50%","label":"merged"},{"value":"1","label":"in flight"},{"value":"2","label":"blocked"},{"value":"4","label":"decisions"}],"progress":"50% merged","next":"Next: reconcile in-flight work","queue":"3 ready · 1 of 2 merged"}}` {
+	if initial != `{"programs":["Alpha program","Beta program"],"lanes":["Dispatched","In review","Blocked"],"work":["programs/alpha/#task=w1","programs/alpha/#task=w2","programs/beta/#task=w3"],"alpha":{"href":"programs/alpha/","state":"active","updated":true,"updatedTitle":"2026-09-24T16:00:00Z","title":"Alpha program","slug":"alpha","summary":"The first active program.","stats":[{"value":"50%","label":"merged"},{"value":"1","label":"in flight"},{"value":"2","label":"blocked"},{"value":"4","label":"decisions"}],"progress":"50% merged","next":"Next: reconcile in-flight work","queue":"3 ready · 1 of 2 merged"}}` {
 		t.Fatalf("overview DOM = %s", initial)
+	}
+
+	if err := chromedp.Run(browser,
+		chromedp.Click("#theme-toggle"),
+		chromedp.Poll(`document.documentElement.dataset.theme === "dark" &&
+			localStorage.getItem("relay.program.theme") === "dark" &&
+			document.querySelector("#theme-text").textContent === "Light"`, nil),
+		chromedp.Click("#theme-toggle"),
+		chromedp.Poll(`document.documentElement.dataset.theme === "light" &&
+			localStorage.getItem("relay.program.theme") === "light" &&
+			document.querySelector("#theme-text").textContent === "Dark"`, nil),
+	); err != nil {
+		t.Fatalf("toggle overview theme: %v", err)
 	}
 
 	if err := chromedp.Run(browser,

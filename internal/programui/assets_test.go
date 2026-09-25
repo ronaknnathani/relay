@@ -101,6 +101,8 @@ func TestOverviewAssetsExposeProgramsAndAttentionBoard(t *testing.T) {
 			`data-status="dispatched"`,
 			`data-status="in-review"`,
 			`data-status="blocked"`,
+			`id="theme-toggle"`,
+			`id="refresh"`,
 			`href="overview.css"`,
 			`src="overview.js"`,
 		})
@@ -116,6 +118,10 @@ func TestOverviewAssetsExposeProgramsAndAttentionBoard(t *testing.T) {
 	requireContains(t, "overview.js", script, []string{
 		`fetch("api/overview"`,
 		"window.setInterval(refresh, 3000)",
+		`const THEME_KEY = "relay.program.theme"`,
+		`dom.themeToggle.addEventListener("click", onThemeToggle)`,
+		`dom.refresh.addEventListener("click", () => refresh(true))`,
+		"formatRelative(program.updated_at)",
 		`link.href = ` + "`programs/${encodeURIComponent(program.slug)}/`",
 		`link.href = ` + "`programs/${encodeURIComponent(item.program_slug)}/#task=${encodeURIComponent(item.id)}`",
 		`make("p", "program-meta program-slug", program.slug)`,
@@ -154,6 +160,8 @@ func TestOverviewAssetsExposeProgramsAndAttentionBoard(t *testing.T) {
 		".kanban",
 		".work-card",
 		":focus-visible",
+		`[data-theme="dark"]`,
+		`@media (hover: hover) and (pointer: fine)`,
 		"@media",
 	})
 	for _, pair := range [][2]string{
