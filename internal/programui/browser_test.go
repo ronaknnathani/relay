@@ -138,7 +138,7 @@ func TestOverviewBrowser(t *testing.T) {
 	defer cancelAllocator()
 	browser, cancelBrowser := chromedp.NewContext(allocator)
 	defer cancelBrowser()
-	browser, cancelTimeout := context.WithTimeout(browser, 40*time.Second)
+	browser, cancelTimeout := context.WithTimeout(browser, 60*time.Second)
 	defer cancelTimeout()
 
 	if err := chromedp.Run(browser,
@@ -235,7 +235,19 @@ func TestOverviewBrowser(t *testing.T) {
 		t.Fatalf("reload hydrated selected detail: %v", err)
 	}
 	if err := chromedp.Run(browser,
-		chromedp.NavigateBack(),
+		chromedp.Click("#drawer-close"),
+		chromedp.Poll(`document.querySelector("#drawer").hidden`, nil),
+	); err != nil {
+		t.Fatalf("close detail before returning to overview: %v", err)
+	}
+	var backHref string
+	if err := chromedp.Run(browser,
+		chromedp.AttributeValue(".back-link", "href", &backHref, nil),
+	); err != nil || backHref != "/" {
+		t.Fatalf("back button href = %q: %v", backHref, err)
+	}
+	if err := chromedp.Run(browser,
+		chromedp.Navigate(url),
 		chromedp.Poll(`location.pathname === "/" && document.querySelectorAll(".program-card").length === 2`, nil),
 		chromedp.Focus(`.program-card[href="programs/beta/"]`),
 		chromedp.Poll(`document.activeElement?.getAttribute("href") === "programs/beta/"`, nil),

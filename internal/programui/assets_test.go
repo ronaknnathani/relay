@@ -271,6 +271,8 @@ func TestOverviewRendersMergedProgressContract(t *testing.T) {
 	index := readAsset(t, "assets/index.html")
 	requireContains(t, "index.html", index, []string{
 		"<dt>Completion</dt>",
+		`class="button button--quiet back-link" href="/"`,
+		`aria-label="Back to all programs"`,
 		`<span id="progress-percent" class="signal__value mono">`,
 		`<span class="signal__unit">%</span>`,
 		`<p id="progress-counts" class="signal__note">__RELAY_PROGRESS_COUNTS__</p>`,
@@ -298,6 +300,11 @@ func TestIndexBootstrapsTheLightThemeBeforePaint(t *testing.T) {
 		"document.documentElement.dataset.theme",
 		"function toggleTheme()",
 		`dom.themeToggle.setAttribute("aria-label"`,
+	})
+	requireContains(t, "app.css", readAsset(t, "assets/app.css"), []string{
+		".brief__nav",
+		".back-link",
+		"text-decoration: none",
 	})
 	if !strings.Contains(script, "function start()") ||
 		!strings.HasSuffix(strings.TrimSpace(readAsset(t, "assets/app.js")), "start();") {

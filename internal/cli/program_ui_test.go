@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ronaknnathani/relay/internal/program"
@@ -26,7 +27,7 @@ func TestProgramViewCompatibilityWrappers(t *testing.T) {
 	}
 }
 
-func TestProgramUICommandPassesOpenFlagsAndAllowsArchivedPrograms(t *testing.T) {
+func TestProgramUICommandRejectsArchivedPrograms(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	p, err := program.New("relay-v1", "Relay V1", filepath.Join(home, "repo"), "copilot", 3)
@@ -43,9 +44,8 @@ func TestProgramUICommandPassesOpenFlagsAndAllowsArchivedPrograms(t *testing.T) 
 
 	originalServe := serveProgramUI
 	t.Cleanup(func() { serveProgramUI = originalServe })
-	var got programui.Options
 	serveProgramUI = func(_ context.Context, options programui.Options) error {
-		got = options
+		t.Fatalf("server unexpectedly called with %+v", options)
 		return nil
 	}
 
@@ -53,11 +53,9 @@ func TestProgramUICommandPassesOpenFlagsAndAllowsArchivedPrograms(t *testing.T) 
 	command.SetArgs([]string{"program", "ui", p.Slug, "--port", "0", "--no-open"})
 	command.SetOut(io.Discard)
 	command.SetErr(io.Discard)
-	if err := command.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	if got.Slug != p.Slug || got.Port != 0 || got.Open {
-		t.Fatalf("server options = %+v", got)
+	if err := command.Execute(); err == nil ||
+		!strings.Contains(err.Error(), "is archived; the program UI shows active programs only") {
+		t.Fatalf("archived program error = %v", err)
 	}
 }
 
@@ -77,7 +75,8 @@ func TestProgramUICommandStartsUnifiedModeWithoutSlug(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if got.Slug != "" || got.Port != 1234 || got.Open {
+	if got.Slug != "" || got.Port != 1234 || !got.PortExplicit ||
+		got.InitialPath != "/" || got.Open {
 		t.Fatalf("server options = %+v", got)
 	}
 }
@@ -98,7 +97,7 @@ func TestProgramUICommandOpensUnifiedModeByDefault(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if got.Slug != "" || !got.Open {
+	if got.Slug != "" || got.InitialPath != "/" || !got.Open {
 		t.Fatalf("server options = %+v", got)
 	}
 }
@@ -121,6 +120,9 @@ func TestProgramUICommandOpensByDefaultAndRejectsUnknownSlug(t *testing.T) {
 		calls++
 		if !options.Open {
 			t.Error("program UI did not open by default")
+		}
+		if options.Slug != "" || options.InitialPath != "/programs/relay-v1/" {
+			t.Errorf("program UI shortcut options = %+v", options)
 		}
 		return nil
 	}

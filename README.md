@@ -121,7 +121,7 @@ relay program resume <program-slug>          # reopen the tech lead session
 relay program worker list <program-slug>     # live worker sessions
 relay program worker cleanup <program-slug> <item>  # retire a merged item's runtime
 relay program ui                             # unified active-program UI
-relay program ui <program-slug>              # direct active or archived program UI
+relay program ui <program-slug>              # open one active program in the unified UI
 relay program patrol status <program-slug>   # scheduler and wake status
 relay program patrol start <program-slug>    # start the program patrol
 ```

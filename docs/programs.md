@@ -646,8 +646,9 @@ relay program ui
 ```
 
 Relay binds an embedded web application to `127.0.0.1` on an available port, opens the browser, and
-serves until interrupted with Ctrl-C. Use `--no-open` when another process will open the URL, or
-`--port <number>` to request a fixed local port.
+serves until interrupted with Ctrl-C. Later `relay program ui` commands reuse that server and port
+instead of starting another process. Use `--no-open` when another process will open the URL, or
+`--port <number>` to request a fixed local port when starting the server.
 
 The overview discovers membership from `~/.relay/programs/active/`; archived programs are excluded.
 It summarizes lifecycle state, progress, planning queues, open decisions, and next action for each
@@ -674,15 +675,18 @@ reconnecting. GitHub reads are cached and shared, so one snapshot performs at mo
 recorded pull request and the UI reports exactly the capacity, status, and readiness the strict CLI
 reports.
 
-Use the compatibility form to open one active or archived program directly at the server root:
+Use the optional program name as a shortcut to an active program on the same server:
 
 ```bash
 relay program ui auth-platform
 ```
 
+This opens `/programs/auth-platform/`. Running it while the overview is already serving reuses the
+existing port. Program pages include a back button to return to `/`. Archived programs aren't served
+by the active-program UI.
+
 The server accepts only `GET` and `HEAD`, binds only to loopback, rejects unexpected Host headers,
 loads no external assets, and never changes program, project, mailbox, git, Herdr, or GitHub state.
-Archived programs remain available only through the direct form.
 
 ## State ownership
 

@@ -6,9 +6,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/ronaknnathani/relay/internal/program"
+	"github.com/ronaknnathani/relay/internal/project"
 )
 
 type detailHandlerFactory func(string) (http.Handler, error)
@@ -139,7 +143,17 @@ func (r *unifiedRouter) serveDetail(response http.ResponseWriter, request *http.
 }
 
 func (r *unifiedRouter) active(slug string) bool {
-	return r.overview.hasProgram(slug)
+	if r.overview.hasProgram(slug) {
+		return true
+	}
+	if err := project.ValidateSlug(slug); err != nil {
+		return false
+	}
+	if _, err := os.Stat(program.ManifestPath(program.ActiveDir(), slug)); err != nil {
+		return false
+	}
+	r.overview.Refresh()
+	return true
 }
 
 func (r *unifiedRouter) detailHandler(slug string) (http.Handler, error) {

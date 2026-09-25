@@ -4,11 +4,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/ronaknnathani/relay/internal/program"
 	"github.com/ronaknnathani/relay/internal/programview"
 )
 
@@ -159,6 +162,59 @@ func TestUnifiedRouterDetailRequestsDoNotRefreshOverview(t *testing.T) {
 	case <-refreshed:
 		t.Fatal("detail request refreshed the cross-program overview")
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestUnifiedRouterFindsProgramCreatedAfterServerStart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	feed := newOverviewFeed(
+		programview.OverviewSnapshot{
+			Schema:      programview.OverviewSchemaVersion,
+			Programs:    []programview.ProgramOverviewDTO{},
+			Work:        []programview.OverviewWorkItemDTO{},
+			Diagnostics: []programview.OverviewDiagnosticDTO{},
+		},
+		time.Hour,
+		time.Now,
+		func() (programview.OverviewSnapshot, error) {
+			return programview.OverviewSnapshot{
+				Schema:      programview.OverviewSchemaVersion,
+				Programs:    []programview.ProgramOverviewDTO{{Slug: "new-program"}},
+				Work:        []programview.OverviewWorkItemDTO{},
+				Diagnostics: []programview.OverviewDiagnosticDTO{},
+			}, nil
+		},
+	)
+	router := newUnifiedRouter("4321", feed, func(slug string) (http.Handler, error) {
+		return http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			_, _ = response.Write([]byte(slug))
+		}), nil
+	})
+
+	if response := serveUnifiedRequest(
+		router, http.MethodGet, "/programs/new-program/", "localhost:4321",
+	); response.Code != http.StatusNotFound {
+		t.Fatalf("program before creation status = %d", response.Code)
+	}
+
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	current, err := program.New("new-program", "New program", repo, "copilot", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := program.Create(current); err != nil {
+		t.Fatal(err)
+	}
+
+	response := serveUnifiedRequest(
+		router, http.MethodGet, "/programs/new-program/", "localhost:4321",
+	)
+	if response.Code != http.StatusOK || response.Body.String() != "new-program" {
+		t.Fatalf("new program detail = %d %q", response.Code, response.Body.String())
 	}
 }
 

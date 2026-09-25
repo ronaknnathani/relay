@@ -415,6 +415,17 @@ pre {
   flex-wrap: wrap;
 }
 
+.brief__nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.back-link {
+  padding-inline: 9px;
+  text-decoration: none;
+}
+
 .crumbs {
   display: flex;
   align-items: center;

@@ -28,6 +28,8 @@ var programUIHerdrCommandTimeout = 5 * time.Second
 type Options struct {
 	Slug            string
 	Port            int
+	PortExplicit    bool
+	InitialPath     string
 	Open            bool
 	Out             io.Writer
 	Builder         Builder
@@ -37,6 +39,7 @@ type Options struct {
 	Agents          programview.AgentLister
 	Now             func() time.Time
 	OpenBrowser     func(string) error
+	onReady         func(string) error
 }
 
 // Serve starts the loopback Program UI and blocks until cancellation. A non-empty
@@ -88,7 +91,7 @@ func Serve(ctx context.Context, options Options) error {
 		closeErr := listener.Close()
 		return errors.Join(fmt.Errorf("resolve program UI listener address %s: %w", listener.Addr(), err), closeErr)
 	}
-	url := "http://127.0.0.1:" + actualPort
+	baseURL := "http://127.0.0.1:" + actualPort
 	var handler http.Handler
 	if options.Slug == "" {
 		overview := newOverviewFeed(
@@ -116,12 +119,19 @@ func Serve(ctx context.Context, options Options) error {
 	go func() {
 		serveError <- server.Serve(listener)
 	}()
+	if options.onReady != nil {
+		if err := options.onReady(baseURL); err != nil {
+			stopErr := stopServer(server, serveError)
+			return errors.Join(fmt.Errorf("record program UI runtime: %w", err), stopErr)
+		}
+	}
 
 	out := options.Out
 	if out == nil {
 		out = os.Stdout
 	}
-	if _, err := fmt.Fprintln(out, url); err != nil {
+	targetURL := programUITargetURL(baseURL, options.InitialPath)
+	if _, err := fmt.Fprintln(out, targetURL); err != nil {
 		stopErr := stopServer(server, serveError)
 		return errors.Join(fmt.Errorf("print program UI URL: %w", err), stopErr)
 	}
@@ -130,7 +140,7 @@ func Serve(ctx context.Context, options Options) error {
 		if openBrowser == nil {
 			openBrowser = ui.OpenBrowser
 		}
-		if err := openBrowser(url); err != nil {
+		if err := openBrowser(targetURL); err != nil {
 			if _, printErr := fmt.Fprintf(out, "warning: open program UI: %v\n", err); printErr != nil {
 				stopErr := stopServer(server, serveError)
 				return errors.Join(fmt.Errorf("print browser warning: %w", printErr), stopErr)
