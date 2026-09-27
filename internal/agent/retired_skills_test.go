@@ -44,6 +44,34 @@ func TestRemoveRetiredSkillRemovesRelayManagedLink(t *testing.T) {
 	}
 }
 
+func TestRemoveRetiredSkillRemovesHistoricalClaudeDistLink(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := t.TempDir()
+	target := filepath.Join(root, "dist", "claude", "skills", "cto")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	installed := filepath.Join(home, ".claude", "skills")
+	if err := os.MkdirAll(installed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(installed, "cto")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveRetiredSkill(claude{}, "cto", SkillSyncOptions{
+		PackageDir:   filepath.Join(home, ".relay", "agents", "claude"),
+		ManagedRoots: []string{root},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("historical Claude link still exists: %v", err)
+	}
+}
+
 // A symlink pointing outside every managed root belongs to the user. Removal is
 // surgical, never a sweep of everything Relay does not recognize.
 func TestRemoveRetiredSkillKeepsForeignLink(t *testing.T) {

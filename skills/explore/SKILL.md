@@ -1,6 +1,6 @@
 ---
 name: explore
-description: Build a verified, read-only understanding of a codebase or a slice of it — entry points, code flow, architecture, module boundaries, dependencies, data flow, build/test systems, and existing patterns. A shared sub-skill that clarify, plan, implement, and review call on demand when they need codebase context; not invoked directly by users. Never edits anything.
+description: Build a verified, read-only understanding of a codebase or a slice of it — entry points, code flow, architecture, module boundaries, dependencies, data flow, build/test systems, and existing patterns. Use standalone or as a shared foundation for clarify, plan, implement, and review. Never edits anything except its requested report.
 ---
 
 # Explore
@@ -10,6 +10,9 @@ act on it. The output is understanding, not change: this skill **observes and re
 never modify a file, run a mutating command, or write anything except its report.** The bar is a map a
 reader can trust because every claim is either backed by a `file:line` reference or explicitly flagged
 as unverified. Scope to the topic the caller named; do not map the whole repo when asked about a slice.
+The skill is standalone: it needs only a repository or source tree, a scoped question, and an optional
+output path. Workflow systems may supply additional freshness metadata, but no workflow CLI or project
+layout is required.
 
 ## Shared vocabulary
 
@@ -44,7 +47,13 @@ Use these terms so downstream skills that act on this map share one language:
    invariants, error/validation paths, configuration, and the build/test commands that exercise this
    area — each with a `file:line`. **Identify and cite these commands; do not run them** — a build or
    test can mutate state (codegen, dependency installs, caches, network), which this skill must not.
-6. **Close with the essential-files list** (see below) — the compact handoff artifact. Dispatch a
+6. **Record a source identity.** If the caller provides a caller-supplied freshness context, copy its
+   opaque repository and task-input identifiers into the report without interpreting or recomputing
+   them. In standalone use inside Git, record the repository root, `git rev-parse HEAD`, and the
+   sorted dirty paths from `git status --porcelain=v1`; both commands are read-only. Outside Git,
+   record the source root and mark repository identity unavailable. Always list the relevant files
+   whose content supports the report. Never claim freshness from timestamps alone.
+7. **Close with the essential-files list** (see below) — the compact handoff artifact. Dispatch a
    sub-agent per independent entry point or area when sub-agents are available; otherwise trace each
    inline, one at a time.
 
@@ -54,6 +63,22 @@ Use these terms so downstream skills that act on this map share one language:
   over prose whenever one exists.
 - Mark every claim you could not confirm in the code as **(unverified)**, and say what would confirm it.
   Never present an inference as a fact.
+
+## Report contract
+
+Write one reusable report at the caller-selected path, or return it directly when no path is given.
+`exploration.md` is the conventional filename, not a required project layout. Include:
+
+- source identity and any caller-supplied freshness context;
+- scoped question and cited findings;
+- relevant files (the paths whose changes invalidate reuse);
+- build/test commands discovered but not run;
+- uncertainty and the essential-files list.
+
+Downstream consumers may reuse the report only while its source identity and scoped inputs still
+match. If the caller's freshness context or standalone Git identity changes, replace it with one new
+exploration; do not layer a second report onto stale findings. When identity cannot be verified,
+re-read the cited relevant files before reuse.
 
 ## Essential files (required closing artifact)
 
@@ -85,4 +110,5 @@ topic, each with a one-line why and the seam or role it plays:
 - [ ] Every claim has a `file:line` or is tagged **(unverified)**.
 - [ ] Seams are named, and deep vs. shallow modules are distinguished in the shared vocabulary.
 - [ ] The report closes with a tight essential-files list (the load-bearing few, not an inventory).
+- [ ] The report records source identity, scoped inputs, and any caller-supplied freshness context.
 - [ ] Nothing was modified — no files written beyond this report, no mutating commands run.

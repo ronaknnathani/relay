@@ -173,3 +173,24 @@ func (c *Client) PullRequest(ctx context.Context, number int) (PullRequest, erro
 	pr.DefaultBranch = defaultBranch
 	return pr, nil
 }
+
+// FindOpenPullRequests returns open pull requests for one exact head/base pair.
+func (c *Client) FindOpenPullRequests(
+	ctx context.Context,
+	head string,
+	base string,
+) ([]PullRequest, error) {
+	repo, defaultBranch, err := c.repo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	prs, err := c.findOpenPullRequests(ctx, head, base)
+	if err != nil {
+		return nil, err
+	}
+	for i := range prs {
+		prs[i].Repo = repo
+		prs[i].DefaultBranch = defaultBranch
+	}
+	return prs, nil
+}

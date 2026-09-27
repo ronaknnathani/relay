@@ -187,6 +187,240 @@ func TestCreateProjectRejectsAnyArchivedMetadataDirectory(t *testing.T) {
 	}
 }
 
+func TestRunNewWithHEADBaseDoesNotCreateRemoteBaseBinding(t *testing.T) {
+	repo := initCLIGitRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(repo)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/", DefaultAgent: "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runNew(newOpts{
+		task: "head based task", name: "head-base", base: "HEAD", noLaunch: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), "head-base"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.BaseBranch != "HEAD" || manifest.RemoteBaseSHA != "" {
+		t.Fatalf("HEAD-based manifest has invalid remote binding: %+v", manifest)
+	}
+}
+
+func TestRunNewExplicitLocalBaseIsNotReplacedByStaleSameNameRemote(t *testing.T) {
+	repo := initCLIGitRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(repo)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/", DefaultAgent: "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mainSHA := gitRevParse(t, repo, "main")
+	gitOutput(t, repo, "push", "-q", "origin", mainSHA+":refs/heads/stack/parent")
+	gitOutput(t, repo, "checkout", "-q", "-b", "stack/parent")
+	if err := os.WriteFile(filepath.Join(repo, "parent.txt"), []byte("parent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", "parent.txt")
+	gitOutput(t, repo, "commit", "-q", "-m", "parent")
+	localParent := gitRevParse(t, repo, "stack/parent")
+
+	if err := runNew(newOpts{
+		task: "child task", name: "child", base: "stack/parent", noLaunch: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), "child"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.StartSHA != localParent || manifest.RemoteBaseSHA != "" {
+		t.Fatalf("explicit local base was replaced by stale remote: %+v", manifest)
+	}
+	if got := gitRevParse(t, *manifest.Worktree, "HEAD"); got != localParent {
+		t.Fatalf("child worktree HEAD = %q, want local parent %q", got, localParent)
+	}
+}
+
+func TestRunNewAutomaticBaseUsesRemoteDefaultCommit(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		prepare func(t *testing.T, repo string)
+	}{
+		{
+			name: "remote-only default branch",
+			prepare: func(t *testing.T, repo string) {
+				t.Helper()
+				gitOutput(t, repo, "remote", "set-head", "origin", "main")
+				gitOutput(t, repo, "checkout", "-q", "--detach", "origin/main")
+				gitOutput(t, repo, "branch", "-D", "main")
+			},
+		},
+		{
+			name: "divergent local default branch",
+			prepare: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(repo, "local.txt"), []byte("local\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitOutput(t, repo, "add", "local.txt")
+				gitOutput(t, repo, "commit", "-q", "-m", "local only")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := initCLIGitRepo(t)
+			t.Setenv("HOME", t.TempDir())
+			t.Chdir(repo)
+			if err := config.Save(config.Config{
+				BranchPrefix: "test/", DefaultAgent: "copilot",
+				PermissionModes: map[string]string{"copilot": "allow-all"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			test.prepare(t, repo)
+			remoteMain := gitRevParse(t, repo, "origin/main")
+
+			if err := runNew(newOpts{
+				task: "remote based task", name: "remote-base", noLaunch: true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), "remote-base"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if manifest.StartSHA != remoteMain || manifest.RemoteBaseSHA != remoteMain {
+				t.Fatalf("automatic base manifest = %+v, want remote commit %q", manifest, remoteMain)
+			}
+			if got := gitRevParse(t, *manifest.Worktree, "HEAD"); got != remoteMain {
+				t.Fatalf("worktree HEAD = %q, want remote default %q", got, remoteMain)
+			}
+		})
+	}
+}
+
+func TestRunNewPersistsForcedFullDeliveryMode(t *testing.T) {
+	repo := newTestRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(repo)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/", DefaultAgent: "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runNew(newOpts{task: "full task", name: "full", full: true, noLaunch: true}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), "full"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.DeliveryMode != project.DeliveryModeFull {
+		t.Fatalf("delivery mode = %q, want full", manifest.DeliveryMode)
+	}
+}
+
+func TestRunNewQuickAliasPersistsAdaptiveDeliveryMode(t *testing.T) {
+	repo := newTestRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(repo)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/", DefaultAgent: "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runNew(newOpts{task: "quick task", name: "quick", quick: true, noLaunch: true}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), "quick"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.DeliveryMode != project.DeliveryModeAdaptive {
+		t.Fatalf("delivery mode = %q, want adaptive", manifest.DeliveryMode)
+	}
+}
+
+func TestFreshStackProjectCanLogProgressWithoutWorkflowState(t *testing.T) {
+	repo := newTestRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(repo)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/", DefaultAgent: "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runNew(newOpts{
+		task: "stack task", name: "stack", workflow: "stack-ship", noLaunch: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runState(t, "log", "stack", "planned first child"); err != nil {
+		t.Fatalf("fresh stack progress log: %v", err)
+	}
+	data, err := os.ReadFile(project.ProgressPath("stack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "planned first child") {
+		t.Fatalf("progress = %q", data)
+	}
+}
+
+func TestRunNewCreatesStackChildFromExplicitParentBase(t *testing.T) {
+	repo := newTestRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(repo)
+	if err := config.Save(config.Config{
+		BranchPrefix: "test/", DefaultAgent: "copilot",
+		PermissionModes: map[string]string{"copilot": "allow-all"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "checkout", "-q", "-b", "stack/parent").CombinedOutput(); err != nil {
+		t.Fatalf("create parent branch: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "parent.txt"), []byte("parent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "add", "parent.txt").CombinedOutput(); err != nil {
+		t.Fatalf("add parent change: %v\n%s", err, out)
+	}
+	command := exec.Command("git", "-C", repo, "commit", "-q", "-m", "parent")
+	command.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=relay", "GIT_AUTHOR_EMAIL=relay@example.com",
+		"GIT_COMMITTER_NAME=relay", "GIT_COMMITTER_EMAIL=relay@example.com",
+	)
+	if out, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("commit parent change: %v\n%s", err, out)
+	}
+	parentSHA := gitx.RevParse(repo, "stack/parent")
+	if err := runNew(newOpts{
+		task: "child task", name: "child", base: "stack/parent", noLaunch: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := project.Load(project.ManifestPath(project.ActiveDir(), "child"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.BaseBranch != "stack/parent" || manifest.StartSHA != parentSHA ||
+		manifest.Worktree == nil || gitx.RevParse(*manifest.Worktree, "HEAD") != parentSHA {
+		t.Fatalf("stack child manifest = %+v", manifest)
+	}
+}
+
 func TestReclaimLeftoversRemovesBranchWorktreeAndDir(t *testing.T) {
 	repo := newTestRepo(t)
 	worktreeDir := filepath.Join(repo, ".worktrees", "wt")

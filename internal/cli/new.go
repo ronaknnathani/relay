@@ -21,21 +21,25 @@ type newOpts struct {
 	task     string
 	name     string
 	quick    bool
+	full     bool
 	noLaunch bool
 	agent    string
 	workflow string
 	reclaim  bool
+	base     string
 }
 
 type projectCreateOpts struct {
-	task        string
-	name        string
-	agent       string
-	workflow    string
-	reclaim     bool
-	repo        string
-	program     string
-	programItem string
+	task         string
+	name         string
+	agent        string
+	workflow     string
+	deliveryMode string
+	reclaim      bool
+	repo         string
+	program      string
+	programItem  string
+	base         string
 }
 
 type projectCreateResult struct {
@@ -52,48 +56,45 @@ const defaultWorkflow = "deliver-pr"
 // newCmdNew exposes `relay new <task>` explicitly. The public form is
 // `relay "<task>"`, so this command is hidden. Flags are local here since
 // root's matching flags are no longer persistent (see root.go).
-func newCmdNew(_ *rootFlags) *cobra.Command {
-	var (
-		name      string
-		quick     bool
-		noLaunch  bool
-		agentName string
-		workflow  string
-		reclaim   bool
-	)
+func newCmdNew() *cobra.Command {
+	opts := newOpts{workflow: defaultWorkflow}
 	cmd := &cobra.Command{
 		Use:    "new <task>",
 		Short:  "Create a new project and launch the coding agent",
 		Args:   cobra.MinimumNArgs(1),
 		Hidden: true,
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runNew(newOpts{
-				task:     strings.Join(args, " "),
-				name:     name,
-				quick:    quick,
-				noLaunch: noLaunch,
-				agent:    agentName,
-				workflow: workflow,
-				reclaim:  reclaim,
-			})
+			opts.task = strings.Join(args, " ")
+			return runNew(opts)
 		},
 	}
-	cmd.Flags().BoolVar(&quick, "quick", false, "skip brainstorming")
-	cmd.Flags().BoolVar(&noLaunch, "no-launch", false, "create project but don't launch the coding agent")
-	cmd.Flags().StringVarP(&name, "name", "n", "", "custom project slug")
-	cmd.Flags().StringVar(&agentName, "agent", "", "coding agent to launch (default from config)")
-	cmd.Flags().StringVar(&workflow, "workflow", defaultWorkflow, "workflow skill to launch (deliver-pr or stack-ship)")
-	cmd.Flags().BoolVar(&reclaim, "reclaim", false, "reclaim leftover branch/worktree from an interrupted setup without prompting")
+	cmd.Flags().BoolVar(&opts.quick, "quick", false, "deprecated alias for adaptive delivery")
+	cmd.Flags().BoolVar(&opts.full, "full", false, "force the full delivery workflow")
+	cmd.Flags().BoolVar(&opts.noLaunch, "no-launch", false, "create project but don't launch the coding agent")
+	cmd.Flags().StringVarP(&opts.name, "name", "n", "", "custom project slug")
+	cmd.Flags().StringVar(&opts.agent, "agent", "", "coding agent to launch (default from config)")
+	cmd.Flags().StringVar(&opts.workflow, "workflow", defaultWorkflow, "workflow skill to launch (deliver-pr or stack-ship)")
+	cmd.Flags().BoolVar(&opts.reclaim, "reclaim", false, "reclaim leftover branch/worktree from an interrupted setup without prompting")
+	cmd.Flags().StringVar(&opts.base, "base", "", "base branch or commit for the new project")
 	return cmd
 }
 
 func runNew(opts newOpts) error {
+	if opts.quick && opts.full {
+		return fmt.Errorf("--quick and --full cannot be used together")
+	}
+	deliveryMode := ""
+	if opts.full {
+		deliveryMode = project.DeliveryModeFull
+	}
 	created, err := createProject(projectCreateOpts{
-		task:     opts.task,
-		name:     opts.name,
-		agent:    opts.agent,
-		workflow: opts.workflow,
-		reclaim:  opts.reclaim,
+		task:         opts.task,
+		name:         opts.name,
+		agent:        opts.agent,
+		workflow:     opts.workflow,
+		deliveryMode: deliveryMode,
+		reclaim:      opts.reclaim,
+		base:         opts.base,
 	})
 	if err != nil {
 		return err
@@ -114,12 +115,8 @@ func runNew(opts newOpts) error {
 	fmt.Printf("  %s\n", ui.Color(ui.Dim, fmt.Sprintf("Launching %s…", created.agent.Name())))
 	fmt.Println()
 
-	mode := "full"
-	if opts.quick {
-		mode = "quick"
-	}
-	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s. Mode: %s.",
-		created.manifest.Slug, created.manifest.Workflow, mode)
+	systemPrompt := fmt.Sprintf("Active relay project: %s. Workflow: %s. Delivery mode: %s.",
+		created.manifest.Slug, created.manifest.Workflow, created.manifest.DeliveryMode)
 	o := relayLaunchOptions(
 		created.worktreeDir,
 		created.projectDir,
@@ -172,9 +169,29 @@ func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResu
 		return projectCreateResult{}, fmt.Errorf("not in a git repository")
 	}
 
-	baseBranch := gitx.DetectDefaultBranch(repoRoot)
+	baseBranch := strings.TrimSpace(opts.base)
+	explicitBase := baseBranch != ""
+	if baseBranch == "" {
+		baseBranch = gitx.DetectDefaultBranch(repoRoot)
+	}
 	if baseBranch == "" {
 		return projectCreateResult{}, fmt.Errorf("could not determine default branch (no origin/HEAD, main, or master)")
+	}
+
+	startPoint := baseBranch
+	remoteBaseSHA := ""
+	if !explicitBase && gitx.HasOrigin(repoRoot) && gitx.ValidBranchName(repoRoot, baseBranch) {
+		if out, err := gitx.Fetch(repoRoot, baseBranch); err != nil {
+			ui.Warn("%s\n%s", err, out)
+		}
+		remoteRef := "origin/" + baseBranch
+		if remoteSHA := gitx.RevParse(repoRoot, remoteRef); remoteSHA != "" {
+			startPoint = remoteRef
+			remoteBaseSHA = remoteSHA
+		}
+	}
+	if gitx.RevParse(repoRoot, startPoint) == "" {
+		return projectCreateResult{}, fmt.Errorf("base %q does not resolve to a commit", baseBranch)
 	}
 
 	cfg, err := config.EnsureForAgent(opts.agent)
@@ -216,15 +233,6 @@ func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResu
 		}
 	}
 
-	startPoint := baseBranch
-	if gitx.HasOrigin(repoRoot) {
-		if out, err := gitx.Fetch(repoRoot, baseBranch); err != nil {
-			ui.Warn("%s\n%s", err, out)
-		}
-		if gitx.RevParse(repoRoot, "origin/"+baseBranch) != "" {
-			startPoint = "origin/" + baseBranch
-		}
-	}
 	startSHA := gitx.RevParse(repoRoot, startPoint)
 
 	if err := gitx.WorktreeAdd(repoRoot, worktreeDir, branch, startPoint); err != nil {
@@ -240,6 +248,10 @@ func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResu
 	if wf == "" {
 		wf = defaultWorkflow
 	}
+	deliveryMode := opts.deliveryMode
+	if deliveryMode == "" {
+		deliveryMode = project.DeliveryModeAdaptive
+	}
 	m := project.Manifest{
 		Slug:            slug,
 		Title:           opts.task,
@@ -248,9 +260,11 @@ func createProjectLocked(opts projectCreateOpts, slug string) (projectCreateResu
 		Agent:           a.Name(),
 		BaseBranch:      baseBranch,
 		StartSHA:        startSHA,
+		RemoteBaseSHA:   remoteBaseSHA,
 		Worktree:        &worktreeDir,
 		Status:          "initialized",
 		Workflow:        wf,
+		DeliveryMode:    deliveryMode,
 		Program:         opts.program,
 		ProgramItem:     opts.programItem,
 		Phase:           "plan",

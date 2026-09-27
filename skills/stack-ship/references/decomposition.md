@@ -1,4 +1,4 @@
-# Phase 0 — Intake & Decomposition
+# Decompose — Intake and stack design
 
 Goal: turn whatever the author handed you into two artifacts the rest of the run depends on —
 `goal.md` (what "done" means) and `plan.md` (the stack). Get these right and the run is mostly
@@ -14,7 +14,7 @@ Either way, **never start building until `goal.md` and `plan.md` exist.**
 ## `goal.md` — the definition of done
 Write the goal in one paragraph, then a **checkable acceptance-criteria list**. Criteria must be
 verifiable by a subagent at the end (a test exists, a field is plumbed end-to-end, a behavior holds).
-This list is your `/goal` and the Phase-3 verification gate. Example shape:
+This list is your `/goal` and the acceptance gate in the `Stop` contract. Example shape:
 
 ```
 # Goal
@@ -58,7 +58,7 @@ Each PR entry in `plan.md`:
 - intent: one sentence (one PR = one intent; renames are their own PR)
 - scope: files/areas; what it deliberately does NOT touch
 - depends-on: [PR ids]  (empty = independent → parallelizable)
-- branch: <prefix>/<slug>   base: <parent branch or master>
+- branch: <prefix>/<slug>   base: <parent branch or default branch>
 - acceptance: which goal.md criteria this PR satisfies
 - review-shape: prose summary (why/what, not a file list); Testing Done = commands only
 ```

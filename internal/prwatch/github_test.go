@@ -85,6 +85,7 @@ const prViewFixture = `{
   "baseRefOid": "base111",
   "headRefName": "feature",
   "headRefOid": "head222",
+  "headRepository": {"nameWithOwner": "acme/widgets"},
   "mergeStateStatus": "BLOCKED",
   "mergeable": "MERGEABLE",
   "reviewDecision": "CHANGES_REQUESTED",
@@ -174,6 +175,7 @@ func TestObserveReadsEveryPullRequestSurface(t *testing.T) {
 	wantPR := PullRequest{
 		Number: 42, URL: "https://github.com/acme/widgets/pull/42", Title: "Add widgets",
 		State: "OPEN", BaseRef: "main", BaseSHA: "base111", HeadRef: "feature", HeadSHA: "head222",
+		HeadRepo:         "acme/widgets",
 		MergeStateStatus: "BLOCKED", Mergeable: "MERGEABLE", ReviewDecision: "CHANGES_REQUESTED",
 		Author: "author-human", DefaultBranch: "main", Repo: "acme/widgets",
 	}

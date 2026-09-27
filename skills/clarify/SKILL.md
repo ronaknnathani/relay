@@ -10,13 +10,19 @@ planner never has to guess. The bar: every requirement is measurable and every a
 checkable — you could hand the artifact to someone else and they'd build the right thing. This is a
 peer phase to `plan`, not its parent: it grounds itself in the code via `explore`, then hands its
 artifact to `plan`. It does **not** design the implementation and does **not** invoke `plan`.
+The skill is standalone: it needs a task or problem statement and may optionally receive repository
+context, an exploration report, existing requirements, and an output path.
 
 ## Process
 
-1. **Resolve from the codebase before asking.** If a question's answer is discoverable in the code —
-   how a thing currently works, what the existing convention is, where an integration point lives —
-   call `explore` (dispatch a sub-agent when available; otherwise do it inline) and find it. Only ask
-   the user what you genuinely cannot determine. Bothering them with a discoverable fact erodes trust.
+1. **Reuse exploration before asking.** Consume a fresh `exploration.md` or equivalent report when
+   its source identity and scoped inputs match the current task. If the caller supplied a
+   caller-supplied freshness context, compare it as an opaque value. In standalone use, compare the
+   recorded Git HEAD and dirty paths when available; otherwise re-read the report's relevant files
+   before reuse. Do not repeat broad discovery or ask a question already answered by the request,
+   repository, existing requirements, or artifact. If the evidence is stale, run one replacement
+   exploration; otherwise explore only a genuinely missing narrow fact. Only ask the user what the
+   available evidence cannot determine.
 2. **Form an explicit hypothesis of the whole task.** Write down, for yourself, the outcome you think
    they want and the success criteria you'd accept. This is what you'll test against the stop
    condition — and it makes your questions sharper.
@@ -46,8 +52,9 @@ artifact to `plan`. It does **not** design the implementation and does **not** i
    would react to your next three questions — i.e. their answers wouldn't change the artifact. Don't
    pad with low-value questions once you're there; don't stop early while a checklist dimension is
    still genuinely open.
-7. **Write the artifact** in the schema below and hand it to `plan`. List anything still unresolved
-   under *Open assumptions* with the default you're proceeding on — never silently pick.
+7. **Write the artifact** in the schema below at the caller-selected path, or return it directly when
+   no path is given. List anything still unresolved under *Open assumptions* with the default you're
+   proceeding on — never silently pick.
 
 ## Reject vague delegation
 
@@ -95,6 +102,8 @@ pull back to the outcome.
 ## Verification checklist
 
 - [ ] Every discoverable fact was resolved via `explore`, not asked of the user.
+- [ ] A fresh exploration artifact was reused using standalone source identity or caller-supplied
+      freshness context, or one replacement exploration was recorded when stale.
 - [ ] Questions were asked one at a time, each with a visible GUESS and a recommended default.
 - [ ] The coverage checklist was walked; each dimension is settled or listed under Open assumptions.
 - [ ] Every Success criterion is testable/checkable — no vague adjectives.

@@ -1,17 +1,23 @@
 package cli
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/patrollock"
+	"github.com/ronaknnathani/relay/internal/project"
 	"github.com/ronaknnathani/relay/internal/prwatch"
 	"github.com/spf13/cobra"
 )
@@ -100,6 +106,7 @@ func newCmdPRWatch() *cobra.Command {
 		newCmdPRWatchStop(),
 		newCmdPRWatchTick(),
 		newCmdPRWatchDigest(),
+		newCmdPRWatchHandoff(),
 	)
 	return command
 }
@@ -189,7 +196,24 @@ func startPRWatcher(
 		return prWatchStartOutput{}, err
 	}
 	if running {
+		state, err := prWatchReadState(slug)
+		if err != nil {
+			return prWatchStartOutput{}, err
+		}
+		if mismatch := adoptedWatcherWarning(slug, state, mode, owner); mismatch != "" {
+			return prWatchStartOutput{}, errors.New(mismatch)
+		}
+		if mode == prwatch.ModeStack {
+			if err := validateStackPRWatchReadiness(slug); err != nil {
+				return prWatchStartOutput{}, err
+			}
+		}
 		return adoptRunningPRWatcher(slug, mode, owner, readiness.WorkspaceID)
+	}
+	if mode == prwatch.ModeStack {
+		if err := validateStackPRWatchReadiness(slug); err != nil {
+			return prWatchStartOutput{}, err
+		}
 	}
 
 	var warning string
@@ -302,7 +326,7 @@ func startPRWatcher(
 }
 
 // adoptRunningPRWatcher reports the watcher process that already observes this
-// project, warning when it was started for a different owner.
+// project. Mode or owner mismatches are refused; workspace drift is warned.
 func adoptRunningPRWatcher(
 	slug string, mode prwatch.Mode, owner, workspaceID string,
 ) (prWatchStartOutput, error) {
@@ -310,7 +334,10 @@ func adoptRunningPRWatcher(
 	if err != nil {
 		return prWatchStartOutput{}, err
 	}
-	warning := adoptedWatcherWarning(slug, state, mode, owner)
+	if mismatch := adoptedWatcherWarning(slug, state, mode, owner); mismatch != "" {
+		return prWatchStartOutput{}, errors.New(mismatch)
+	}
+	var warning string
 	incomplete := state.WorkspaceID == "" || state.WorkspaceID != workspaceID
 	if incomplete {
 		recordedWorkspace := state.WorkspaceID
@@ -557,8 +584,8 @@ func prWatchWorkspaceLabel(slug string) string {
 	return "relay-pr-watch:" + slug
 }
 
-// adoptedWatcherWarning reports an adopted watcher that is watching for someone
-// other than the caller asked for, which a stack retarget must notice.
+// adoptedWatcherWarning reports why an existing watcher's mode or owner prevents
+// the caller from adopting it.
 func adoptedWatcherWarning(slug string, state prwatch.State, mode prwatch.Mode, owner string) string {
 	if state.Mode == mode && state.OwnerSlug == owner {
 		return ""
@@ -582,6 +609,58 @@ func prWatchStartTimeoutError(slug, tabID string, stateErr error) error {
 			"inspect Herdr tab %s, then run `relay pr watch status %s` to see the recorded state",
 		slug, prWatchStartTimeout, stateErr, tabID, slug,
 	)
+}
+
+func validateStackPRWatchReadiness(slug string) error {
+	state, statePath, err := loadStateAt(slug)
+	if err != nil {
+		return err
+	}
+	if !state.UsesAdaptiveDelivery() {
+		return nil
+	}
+	if state.FinalResult == nil || state.FinalResult.Status != "opened" ||
+		state.Phases["open-pr"].Status != project.PhaseDone {
+		return fmt.Errorf(
+			"stack watcher requires a fresh completed open-pr result for the current route; "+
+				"redispatch the child with `relay resume %s` and finish review, validation, "+
+				"and open-pr reconciliation first",
+			slug,
+		)
+	}
+	manifest, err := project.Load(filepath.Join(filepath.Dir(statePath), "manifest.json"))
+	if err != nil {
+		return err
+	}
+	snapshot, err := project.RepositorySnapshotForManifest(manifest, filepath.Dir(statePath))
+	if err != nil {
+		return err
+	}
+	if state.Route == nil || state.Route.Snapshot != snapshot ||
+		state.FinalResult.RouteRevision != state.Route.Revision ||
+		state.FinalResult.RouteDigest != state.Route.Digest ||
+		state.FinalResult.Snapshot != snapshot {
+		return fmt.Errorf(
+			"stack watcher requires the live repository snapshot to match the completed delivery; "+
+				"redispatch the child with `relay resume %s` and finish review, validation, "+
+				"and open-pr reconciliation first",
+			slug,
+		)
+	}
+	if state.PR.Number <= 0 || strings.TrimSpace(state.PR.URL) == "" {
+		return fmt.Errorf("stack watcher requires a recorded pull request for project %q", slug)
+	}
+	remote, err := readPRForRecording(context.Background(), *manifest.Worktree, state.PR.Number)
+	if err != nil {
+		return fmt.Errorf("observe pull request #%d for stack watcher: %w", state.PR.Number, err)
+	}
+	if err := validatePRCandidate(manifest, remote, state.PR.Number, state.PR.URL); err != nil {
+		return err
+	}
+	if err := validatePRMetadata(manifest, snapshot, remote, true); err != nil {
+		return err
+	}
+	return nil
 }
 
 func renderPRWatchStart(out io.Writer, result prWatchStartOutput, jsonOutput bool) error {
@@ -1086,6 +1165,181 @@ func newCmdPRWatchDigest() *cobra.Command {
 	command.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 	_ = command.MarkFlagRequired("fingerprint")
 	return command
+}
+
+func newCmdPRWatchHandoff() *cobra.Command {
+	var jsonOutput bool
+	var fingerprint string
+	flags := &prWatchModeFlags{}
+	command := &cobra.Command{
+		Use:   "handoff <project-slug> --fingerprint <fingerprint>",
+		Short: "Read one digest with CLI-validated watcher provenance",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			slug := args[0]
+			digest, err := prwatch.ReadDigest(slug, fingerprint)
+			if err != nil {
+				return err
+			}
+			digest, owner, err := validatePRWatchHandoffProvenance(
+				command.Context(), slug, digest, flags,
+			)
+			if err != nil {
+				return err
+			}
+			digest.OwnerSlug = owner
+			digest.BranchMutationAllowed = prWatchBranchMutationAllowed(digest.PR)
+			digest.HandoffCapability, err = prWatchHandoffCapability(digest)
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return writeProgramJSON(command.OutOrStdout(), digest)
+			}
+			renderPRWatchDigest(command.OutOrStdout(), digest)
+			fmt.Fprintf(command.OutOrStdout(), "Owner: %s\nCapability: %s\n",
+				digest.OwnerSlug, digest.HandoffCapability)
+			return nil
+		},
+	}
+	flags.bind(command)
+	command.Flags().StringVar(&fingerprint, "fingerprint", "", "digest fingerprint (64 lowercase hex characters)")
+	command.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
+	_ = command.MarkFlagRequired("fingerprint")
+	return command
+}
+
+func validatePRWatchHandoffProvenance(
+	ctx context.Context,
+	slug string,
+	digest prwatch.Digest,
+	flags *prWatchModeFlags,
+) (prwatch.Digest, string, error) {
+	if digest.Project != slug {
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"digest project %q does not match requested project %q", digest.Project, slug,
+		)
+	}
+	var mode prwatch.Mode
+	var owner string
+	state, err := prWatchReadState(slug)
+	switch {
+	case err == nil:
+		if state.Project != slug || state.Mode != digest.Mode {
+			return prwatch.Digest{}, "", fmt.Errorf(
+				"watcher identity does not match digest %s", digest.Fingerprint,
+			)
+		}
+		if state.OwnerSlug == "" {
+			return prwatch.Digest{}, "", fmt.Errorf("watcher state for %q has no owner", slug)
+		}
+		mode, owner = state.Mode, state.OwnerSlug
+	case !errors.Is(err, os.ErrNotExist):
+		return prwatch.Digest{}, "", err
+	default:
+		mode, owner, err = flags.resolve(slug)
+		if err != nil {
+			return prwatch.Digest{}, "", err
+		}
+		if mode == prwatch.ModeStack {
+			return prwatch.Digest{}, "", fmt.Errorf(
+				"stack handoff requires a running watcher state",
+			)
+		}
+		if mode == prwatch.ModeManaged {
+			if err := prWatchRequireManaged(slug); err != nil {
+				return prwatch.Digest{}, "", err
+			}
+		}
+	}
+	if digest.Mode != mode {
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"digest mode %q does not match validated mode %q", digest.Mode, mode,
+		)
+	}
+	fresh, err := prWatchTickOnce(ctx, slug, prwatch.Options{Mode: mode, Locate: prWatchLocate})
+	if err != nil {
+		return prwatch.Digest{}, "", err
+	}
+	if fresh.Project != slug || fresh.Mode != mode {
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"fresh watcher observation identity does not match digest %s", digest.Fingerprint,
+		)
+	}
+	if fresh.PR.Number != digest.PR.Number {
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"digest PR #%d does not match current project PR #%d",
+			digest.PR.Number, fresh.PR.Number,
+		)
+	}
+	if fresh.HeadSHA != digest.HeadSHA {
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"digest head %q does not match current pull request head %q",
+			digest.HeadSHA, fresh.HeadSHA,
+		)
+	}
+	if !prWatchHandoffAllowsState(fresh) {
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"pull request #%d is %s or protected and its actionable items require branch mutation",
+			fresh.PR.Number, strings.ToLower(fresh.PR.State),
+		)
+	}
+	if fresh.Fingerprint == "" {
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"digest %s is no longer actionable in the latest watcher observation",
+			digest.Fingerprint,
+		)
+	}
+	if fresh.Fingerprint != digest.Fingerprint {
+		return prwatch.Digest{}, "", fmt.Errorf(
+			"digest %s was superseded by the latest watcher observation %s",
+			digest.Fingerprint, fresh.Fingerprint,
+		)
+	}
+	return fresh, owner, nil
+}
+
+func prWatchHandoffAllowsState(digest prwatch.Digest) bool {
+	switch digest.PR.State {
+	case prwatch.StateMerged:
+		return digest.Mode == prwatch.ModeStack &&
+			prWatchItemsOnlyHaveReason(digest.Items, prwatch.ReasonStackFrontMerged)
+	case prwatch.StateClosed:
+		return prWatchItemsOnlyHaveReason(digest.Items, prwatch.ReasonClosedUnmerged)
+	case prwatch.StateOpen:
+		return true
+	default:
+		return false
+	}
+}
+
+func prWatchItemsOnlyHaveReason(items []prwatch.Item, reason string) bool {
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if item.Reason != reason {
+			return false
+		}
+	}
+	return true
+}
+
+func prWatchBranchMutationAllowed(pr prwatch.PullRequest) bool {
+	return pr.State == prwatch.StateOpen &&
+		pr.ReviewDecision != prwatch.ReviewApproved &&
+		pr.MergeStateStatus != prwatch.MergeStateQueued
+}
+
+func prWatchHandoffCapability(digest prwatch.Digest) (string, error) {
+	digest.HandoffCapability = ""
+	digest.ObservedAt = ""
+	data, err := json.Marshal(digest)
+	if err != nil {
+		return "", fmt.Errorf("encode watcher handoff: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // renderPRWatchDigest prints a digest summary. Bodies stay out of the terminal

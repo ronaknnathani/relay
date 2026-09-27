@@ -41,9 +41,9 @@ func TestCodexPackageInvariants(t *testing.T) {
 		}
 	})
 
-	todo := readFile(t, filepath.Join(out, "skills", "todo", "SKILL.md"))
-	if !strings.Contains(todo, "Launch a Codex subagent") {
-		t.Errorf("todo did not render Codex subagent instructions")
+	delegatingSkill := readFile(t, filepath.Join(out, "skills", "build-write-like-me", "SKILL.md"))
+	if !strings.Contains(delegatingSkill, "Launch a Codex subagent") {
+		t.Errorf("delegating skill did not render Codex subagent instructions")
 	}
 
 	plan := readFile(t, filepath.Join(out, "skills", "plan", "SKILL.md"))

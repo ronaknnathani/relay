@@ -448,6 +448,16 @@ func IsBranchReachable(repo, branch, base string) bool {
 	return exec.Command("git", "-C", repo, "merge-base", "--is-ancestor", branch, base).Run() == nil
 }
 
+// ValidBranchName reports whether value is a complete local branch name.
+func ValidBranchName(repo, value string) bool {
+	return exec.Command("git", "-C", repo, "check-ref-format", "--branch", value).Run() == nil
+}
+
+// CommitExists reports whether value names an existing commit object.
+func CommitExists(repo, value string) bool {
+	return exec.Command("git", "-C", repo, "cat-file", "-e", value+"^{commit}").Run() == nil
+}
+
 // WorkMerged reports whether branch has commits beyond startSHA and those
 // commits are reachable from base. Missing branches and normal non-ancestor
 // results are not errors.

@@ -590,7 +590,7 @@
           <p class="tagline">Agent orchestration for shipping production software.</p>
           <p class="subtitle">
             <span>Foundation skills do one job.</span>
-            <span>Workflow skills route those primitives through one PR.</span>
+            <span>Route selects proportional phases and snapshot-bound evidence for one PR.</span>
             <span>Orchestration coordinates a tree of Deliver PR runs and monitors the front PR to merge.</span>
           </p>
         </header>
@@ -639,7 +639,7 @@
               <article class="monitor-card">
                 <span class="skill">pr-monitor</span>
                 <h3>Front PR monitor</h3>
-                <p>Ticks on the front PR. When it merges, the orchestrator retargets and rebases the next node.</p>
+                <p>Handles one PR attention event. When the front merges, the orchestrator retargets and rebases the next node.</p>
               </article>
             </div>
           </section>
@@ -656,27 +656,27 @@
               <article class="workflow-card">
                 <span class="skill">deliver-pr</span>
                 <h3>Deliver PR</h3>
-                <p>Routes one scoped change through the foundation skill pipeline to an open PR.</p>
-        <div class="phase-flow" aria-label="Deliver PR workflow phases">
-                  <span class="step">clarify</span>
-                  <span class="phase-arrow" aria-hidden="true"></span>
-                  <span class="step">plan</span>
+                <p>Classifies risk, skips unnecessary work with reasons, and escalates conservatively.</p>
+                <div class="phase-flow" aria-label="Deliver PR adaptive workflow">
+                  <span class="step">route</span>
                   <span class="phase-arrow" aria-hidden="true"></span>
                   <span class="step">implement</span>
                   <span class="phase-arrow" aria-hidden="true"></span>
-                  <span class="step">simplify</span>
-                  <span class="phase-arrow" aria-hidden="true"></span>
-                  <span class="step">review</span>
-                  <span class="phase-arrow" aria-hidden="true"></span>
-                  <span class="step">validate</span>
-                  <span class="phase-arrow" aria-hidden="true"></span>
                   <span class="step">open-pr</span>
+                </div>
+                <div class="steps">
+                  <span class="pill">Easy path</span>
+                  <span class="chip">current facts + implement evidence</span>
+                  <span class="pill">Standard / high-risk</span>
+                  <span class="chip">clarify / plan / simplify as selected</span>
+                  <span class="chip">specialist review + validate</span>
+                  <span class="chip">snapshot evidence</span>
                 </div>
               </article>
               <article class="workflow-card">
                 <span class="skill">pr-monitor</span>
                 <h3>PR Monitor</h3>
-                <p>Monitors one open PR to merged, delegating real failures, comments, and conflicts.</p>
+                <p>Handles one PR attention event, delegating real failures, comments, and conflicts.</p>
                 <div class="composed-skills">
                   <span class="composed-label">Delegates to</span>
                   <span class="step monitor-step">pr-fix</span>
@@ -698,6 +698,7 @@
                 <h3>Before implementation</h3>
                 <p>Find context and turn intent into an executable plan.</p>
                 <div class="chips">
+                  <span class="chip">route</span>
                   <span class="chip">explore</span>
                   <span class="chip">clarify</span>
                   <span class="chip">plan</span>

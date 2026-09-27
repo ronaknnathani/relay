@@ -17,6 +17,7 @@ func TestNewStateAllPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewState: %v", err)
 	}
+
 	if !reflect.DeepEqual(ws.Order, deliverPhases) {
 		t.Errorf("order = %v, want %v", ws.Order, deliverPhases)
 	}
@@ -25,8 +26,56 @@ func TestNewStateAllPending(t *testing.T) {
 			t.Errorf("phase %q = %q, want pending", p, ws.Phases[p].Status)
 		}
 	}
+
 	if got := ws.Next(); got != "clarify" {
 		t.Errorf("Next() = %q, want clarify", got)
+	}
+}
+
+func TestEffectiveManifestUsesAdaptiveStateWithoutMutatingLegacyManifest(t *testing.T) {
+	number := 7
+	url := "https://example.test/pull/7"
+	manifest := Manifest{
+		Slug: "demo", Status: "in-progress", Phase: "plan",
+		PhasesCompleted: []string{"clarify"},
+		PhasesRemaining: []string{"plan", "implement", "review", "validate", "open-pr"},
+	}
+	state := validAdaptiveState(t)
+	state.Phases["route"] = PhaseState{Status: PhaseDone}
+	state.Phases["clarify"] = PhaseState{
+		Status: PhaseSkipped, Reason: "explicit", Outcome: PhaseOutcomeNoOp,
+	}
+	state.Phases["plan"] = PhaseState{Status: PhaseDone}
+	state.Phases["implement"] = PhaseState{
+		Status: PhaseBlocked, Reason: "author decision required",
+	}
+	state.PR = PRRef{Number: number, URL: url}
+
+	got := EffectiveManifest(manifest, state)
+	if got.Phase != "implement" || got.Status != PhaseBlocked ||
+		!reflect.DeepEqual(got.PhasesCompleted, []string{"route", "clarify", "plan"}) ||
+		!reflect.DeepEqual(got.PhasesRemaining, []string{
+			"implement", "simplify", "review", "validate", "open-pr",
+		}) ||
+		got.PR.Number == nil || *got.PR.Number != number ||
+		got.PR.URL == nil || *got.PR.URL != url {
+		t.Fatalf("effective adaptive manifest = %+v", got)
+	}
+	if manifest.Phase != "plan" || !reflect.DeepEqual(manifest.PhasesCompleted, []string{"clarify"}) {
+		t.Fatalf("effective view mutated source manifest: %+v", manifest)
+	}
+
+	archivedAt := "2026-09-15T00:10:00Z"
+	manifest.Archived = &archivedAt
+	archived := EffectiveManifest(manifest, state)
+	if archived.Status != "archived" || archived.Phase != "implement" {
+		t.Fatalf("archived adaptive manifest = %+v", archived)
+	}
+
+	state.Version = 0
+	versionZero := EffectiveManifest(manifest, state)
+	if versionZero.Status != "archived" || versionZero.Phase != "implement" {
+		t.Fatalf("version-zero routed manifest bypassed adaptive state: %+v", versionZero)
 	}
 }
 
@@ -124,10 +173,12 @@ func TestSetPhaseRejectsBadInput(t *testing.T) {
 
 func TestLoadStateRejectsCorrupt(t *testing.T) {
 	cases := map[string]string{
-		"empty order":        `{"slug":"x","order":[],"phases":{}}`,
-		"missing phase":      `{"slug":"x","order":["a","b"],"phases":{"a":{"status":"done"}}}`,
-		"bad status":         `{"slug":"x","order":["a"],"phases":{"a":{"status":"bogus"}}}`,
-		"duplicate in order": `{"slug":"x","order":["a","a"],"phases":{"a":{"status":"pending"}}}`,
+		"empty order":         `{"slug":"x","order":[],"phases":{}}`,
+		"missing phase":       `{"slug":"x","order":["a","b"],"phases":{"a":{"status":"done"}}}`,
+		"bad status":          `{"slug":"x","order":["a"],"phases":{"a":{"status":"bogus"}}}`,
+		"duplicate in order":  `{"slug":"x","order":["a","a"],"phases":{"a":{"status":"pending"}}}`,
+		"skip without reason": `{"slug":"x","order":["a"],"phases":{"a":{"status":"skipped"}}}`,
+		"future version":      `{"version":99,"slug":"x","order":["a"],"phases":{"a":{"status":"pending"}}}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

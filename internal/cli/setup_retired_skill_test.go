@@ -45,9 +45,9 @@ func TestSetupInstallsTLAndRemovesRelayManagedCTOLink(t *testing.T) {
 	}
 }
 
-// Foreign directories, files, and foreign symlinks that happen to share the
+// Foreign directories, files, and foreign symlinks that happen to share a
 // retired name are the user's own and survive setup untouched.
-func TestSetupPreservesForeignCTOEntries(t *testing.T) {
+func TestSetupPreservesForeignRetiredEntries(t *testing.T) {
 	tests := []struct {
 		name   string
 		create func(t *testing.T, path, foreign string)
@@ -108,24 +108,26 @@ func TestSetupPreservesForeignCTOEntries(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("USER", "tester")
-			source := writeSetupSource(t, "tl")
-			installedDir := filepath.Join(home, ".copilot", "skills")
-			if err := os.MkdirAll(installedDir, 0755); err != nil {
-				t.Fatal(err)
-			}
-			path := filepath.Join(installedDir, "cto")
-			foreign := filepath.Join(t.TempDir(), "cto")
-			test.create(t, path, foreign)
+		for _, retired := range retiredSkills {
+			t.Run(retired+"/"+test.name, func(t *testing.T) {
+				home := t.TempDir()
+				t.Setenv("HOME", home)
+				t.Setenv("USER", "tester")
+				source := writeSetupSource(t, "tl")
+				installedDir := filepath.Join(home, ".copilot", "skills")
+				if err := os.MkdirAll(installedDir, 0755); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(installedDir, retired)
+				foreign := filepath.Join(t.TempDir(), retired)
+				test.create(t, path, foreign)
 
-			if _, err := runSetup(t, "copilot", "--src", source); err != nil {
-				t.Fatalf("setup copilot: %v", err)
-			}
-			test.verify(t, path, foreign)
-		})
+				if _, err := runSetup(t, "copilot", "--src", source); err != nil {
+					t.Fatalf("setup copilot: %v", err)
+				}
+				test.verify(t, path, foreign)
+			})
+		}
 	}
 }
 

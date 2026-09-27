@@ -31,9 +31,20 @@ Author each skill with these sections (scale them to the skill — a small skill
 ## State, not context
 
 Workflow skills are **resume-first**: they read `relay state next <slug>` to learn where they are and
-never assume a fresh start. They mutate state only through the `relay state` CLI (`init`, `next`,
-`current`, `set`, `advance`, `pr`, `log`) — never by hand-editing `state.json` — so the schema stays
-valid across agents.
+never assume a fresh start. New adaptive delivery uses `relay route` for deterministic classification
+and the state commands `dispatch`, `finish`, and `evidence`; legacy callers may continue using
+`set`/`advance`. `done` and `skipped` are terminal, while `skipped`, `blocked`, and `escalated` require
+durable reasons. Never hand-edit `state.json`.
+
+Review and validation evidence is keyed to the active phase dispatch token, route revision, and exact
+repository snapshot and exact required gate set. Any relevant route or content revision makes older
+evidence stale. Easy routes are limited to changes that satisfy the current-fact safety rules;
+validation commands persist only a gate ID, redacted display, exact digest, and exit status.
+`open-pr` requires fresh passing evidence and performs no duplicate review.
+
+The non-writing `SKILL.md` corpus has a 15,000 words aggregate budget. Named high-churn skills have
+tighter checked-in budgets in `internal/generate/skill_size_test.go`; remove duplicated procedure and
+reference its authoritative owner rather than raising a threshold.
 
 ## The generate / test loop
 
@@ -47,6 +58,16 @@ go build ./... && go vet ./... && go test ./...
 
 Inspect the generated package locally when changing renderer behavior. The coupling test fails the
 build if a forbidden plugin namespace leaks into the rendered package.
+
+Regenerate the skill-layer image at a desktop viewport with:
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --headless=new --disable-gpu --hide-scrollbars --window-size=1600,4000 \
+  --screenshot="$PWD/docs/skill-layers.png" \
+  "file://$PWD/docs/skill-layers.html"
+magick docs/skill-layers.png -crop 1600x1400+0+0 +repage docs/skill-layers.png
+```
 
 ## Pull requests
 
