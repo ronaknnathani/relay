@@ -1166,6 +1166,78 @@ func WorktreeAdd(repo, dir, branch, startPoint string) error {
 	return nil
 }
 
+// WorktreeAddDetached creates a worktree at dir with HEAD detached at commit.
+func WorktreeAddDetached(repo, dir, commit string) error {
+	out, err := boundedCombinedOutput(
+		exec.Command("git", "-C", repo, "worktree", "add", "--detach", dir, commit),
+	)
+	if err != nil {
+		return gitCommandError("git worktree add --detach "+dir, err, out)
+	}
+	return nil
+}
+
+// CheckoutDetached moves the worktree at dir to commit with a detached HEAD.
+func CheckoutDetached(dir, commit string) error {
+	out, err := boundedCombinedOutput(
+		exec.Command("git", "-C", dir, "checkout", "--quiet", "--detach", commit),
+	)
+	if err != nil {
+		return gitCommandError("git -C "+dir+" checkout --detach "+commit, err, out)
+	}
+	return nil
+}
+
+// WorktreePrune drops registrations for worktrees whose directories are gone.
+func WorktreePrune(repo string) error {
+	out, err := boundedCombinedOutput(exec.Command("git", "-C", repo, "worktree", "prune"))
+	if err != nil {
+		return gitCommandError("git worktree prune", err, out)
+	}
+	return nil
+}
+
+// Remote is one configured git remote.
+type Remote struct {
+	Name string
+	URL  string
+}
+
+// Remotes lists the repo's remotes and their configured URLs (before any
+// url.<base>.insteadOf rewriting), in config order.
+func Remotes(repo string) ([]Remote, error) {
+	out, err := exec.Command("git", "-C", repo, "config", "--get-regexp", `^remote\..*\.url$`).Output()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, gitOutputError("git config --get-regexp remote urls", err)
+	}
+	var remotes []Remote
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		key, url, ok := strings.Cut(line, " ")
+		name := strings.TrimSuffix(strings.TrimPrefix(key, "remote."), ".url")
+		if !ok || seen[name] {
+			continue
+		}
+		seen[name] = true
+		remotes = append(remotes, Remote{Name: name, URL: strings.TrimSpace(url)})
+	}
+	return remotes, nil
+}
+
+// FetchRefspecs fetches refspecs from remote without touching the worktree.
+func FetchRefspecs(repo, remote string, refspecs ...string) error {
+	args := append([]string{"-C", repo, "fetch", "--quiet", "--no-tags", remote}, refspecs...)
+	out, err := boundedCombinedOutput(exec.Command("git", args...))
+	if err != nil {
+		return gitCommandError("git fetch "+remote, err, out)
+	}
+	return nil
+}
+
 // IsWorktree reports whether dir is registered as a git worktree of repo.
 // The returned bool is only meaningful when err is nil.
 func IsWorktree(repo, dir string) (bool, error) {

@@ -134,6 +134,31 @@ and highlights dispatched, in-review, and blocked work across programs.
 
 Read [Relay Programs](docs/programs.md) for the full model and command reference.
 
+## Reviewing other people's pull requests
+
+`relay review` reviews a pull request you didn't write and leaves a draft GitHub review for you to
+edit and submit.
+
+```bash
+relay review https://github.com/<owner>/<repo>/pull/<number>
+relay review <owner>/<repo>#<number>
+```
+
+Inside a clone of the pull request's repository, Relay checks the head out in a detached worktree at
+`.worktrees/review-pr-<number>`. Anywhere else it keeps one blobless clone per repository under
+`/tmp/relay-reviews/<host>/<owner>/<repo>/` with a worktree per pull request. Running the command
+again reuses that checkout and moves it to the latest head.
+
+The `review-pr` skill reviews against your global and repository `AGENTS.md`, reading the repository
+guidance from the base commit. It runs `review` and `simplify` in report mode, so it never edits the
+checkout. It writes the comments with `write-like-me` and creates a pending review marked as
+AI-drafted. It never submits the review.
+
+State lives under `~/.relay/reviews/<host>/<owner>/<repo>/<number>/`: `review.json` (written by
+Relay), `context.md` (what the change does), `findings.md` (a ledger of findings with stable IDs and
+status), and `rounds.md` (each reviewed head and its draft). A later run re-verifies every open
+finding against the new head before it raises anything new.
+
 ## Pull request watcher
 
 The PR watcher moves deterministic polling out of the agent:
@@ -198,8 +223,10 @@ Relay-managed state:
 ~/.relay/config.json        user configuration
 ~/.relay/projects/          individual and worker projects
 ~/.relay/programs/          managed programs
+~/.relay/reviews/           pull request reviews
 ~/.relay/run/               patrol and watcher runtime state
-<repo>/.worktrees/          project worktrees
+<repo>/.worktrees/          project and review worktrees
+/tmp/relay-reviews/         clones for reviews started outside the repository
 ```
 
 ## Contributing
