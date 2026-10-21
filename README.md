@@ -149,6 +149,10 @@ Inside a clone of the pull request's repository, Relay checks the head out in a 
 `/tmp/relay-reviews/<host>/<owner>/<repo>/` with a worktree per pull request. Running the command
 again reuses that checkout and moves it to the latest head.
 
+You can also skip the command and ask any agent session to run the `review-pr` skill on a pull
+request. The skill runs `relay review <pull-request> --no-launch` itself, which prepares the same
+checkout and state without starting another session.
+
 The `review-pr` skill reviews against your global and repository `AGENTS.md`, reading the repository
 guidance from the base commit. It runs `review` and `simplify` in report mode, so it never edits the
 checkout. It writes the comments with `write-like-me` and creates a pending review marked as

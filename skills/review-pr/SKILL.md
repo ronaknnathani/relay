@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: Review someone else's pull request against the user's AGENTS.md, run `review` and `simplify` in report mode, and leave a pending (draft) GitHub review written in the user's voice — re-verifying every earlier finding on later rounds. Launched by `relay review <pull-request>`; resumes from the review's saved state.
+description: Review someone else's pull request (a PR URL or owner/repo#N) and leave a pending (draft) GitHub review in the user's voice, checked against their AGENTS.md with `review` and `simplify` in report mode. Use when asked to review, re-review, or follow up on a pull request the user did not write, including checking whether the author addressed earlier feedback.
 ---
 
 # Review PR
@@ -10,24 +10,32 @@ leave a **draft** GitHub review they can edit and submit. The bar: every comment
 user would raise themselves, in their voice, anchored to the right line, and no earlier finding is
 forgotten or raised twice. You never submit, approve, or request changes. The user does.
 
-## Inputs
+## Prepare the checkout and state
 
-`relay review` prepared everything before launching you. The launch context names:
+Bind `$PR` to the pull request the user named (a URL or `<owner>/<repo>#<number>`). If none was
+named and the launch context does not name one, ask for it. Then run:
 
-- the pull request URL and `<owner>/<repo>#<number>`
-- the **review state dir** (`$REVIEW_DIR`, your working directory), holding `review.json`, which
-  relay writes
-- the **checkout** (`$CHECKOUT`), detached at the pull request head (`$HEAD_SHA`)
-- the base branch and its fetched commit (`$BASE_SHA`)
+```bash
+relay review "$PR" --no-launch
+```
 
-Read `$REVIEW_DIR/review.json` and bind `HOST`, `OWNER`, `REPO`, `NUMBER`, `HEAD_SHA`, `BASE_SHA`,
-and `CHECKOUT` (its `checkout` field) from it. You start outside the checkout, and it is not one of
-your workspace directories, on purpose: agents auto-load instructions and skills from those, and the
-pull request controls the checkout. Read code only through git at pinned commits:
+It is idempotent. It fetches the pull request, leaves a clean checkout detached at the current head,
+and writes `review.json`. Run it even when `relay review` launched this session, so a resumed
+session always starts from the live head. Inside a clone of the repository, the checkout is a
+worktree under `.worktrees/review-pr-<number>`. Elsewhere it lives under `/tmp/relay-reviews`. If it
+fails, report its error and stop.
+
+The review state dir is `$REVIEW_DIR=$HOME/.relay/reviews/<host>/<owner>/<repo>/<number>`, with host,
+owner, and repo lowercased (the command prints it as `Review state`). Read `$REVIEW_DIR/review.json`
+and bind `HOST`, `OWNER`, `REPO`, `NUMBER`, `HEAD_SHA`, `BASE_SHA` (the base branch's fetched
+commit), and `CHECKOUT` (its `checkout` field) from it.
+
+The checkout holds code the pull request controls, and agents auto-load instructions and skills from
+their working and workspace directories. So never `cd` into `$CHECKOUT`, open its files with file
+tools, or add it as a workspace directory. Read code only through git at pinned commits:
 `git -C "$CHECKOUT" show "$HEAD_SHA:<path>"`, `git -C "$CHECKOUT" diff`, `git -C "$CHECKOUT" grep`,
-and `git -C "$CHECKOUT" log`. Do not open files under `$CHECKOUT` with file tools or add it as a
-workspace directory. Use `gh api --hostname "$HOST"` and `gh ... --repo "$HOST/$OWNER/$REPO"` for every GitHub
-call so Enterprise hosts work.
+and `git -C "$CHECKOUT" log`. For every GitHub call use `gh api --hostname "$HOST"` or
+`gh ... --repo "$HOST/$OWNER/$REPO"` so Enterprise hosts work.
 
 You own three files in `$REVIEW_DIR`. Never edit `review.json`.
 
@@ -64,8 +72,8 @@ gh api --hostname "$HOST" --paginate "repos/$OWNER/$REPO/issues/$NUMBER/comments
 Your drafts carry a hidden marker in their body: `<!-- relay-review round=<n> head=<sha> -->`.
 
 - **Merged or closed:** record it in `rounds.md`, report, and stop.
-- **The live `headRefOid` differs from `$HEAD_SHA`:** the author pushed after `relay review` ran.
-  Stop and tell the user to rerun `relay review` so the checkout moves to the new head.
+- **The live `headRefOid` differs from `$HEAD_SHA`:** the author pushed after the checkout was
+  prepared. Run `relay review "$PR" --no-launch` again, re-read `review.json`, and restart from step 1.
 - **An interrupted replacement:** `drafts/` holds a payload for a round that `rounds.md` does not
   record and no marked pending review exists. An earlier session deleted the old draft and stopped
   before posting. Resume step 8 with that payload, or restore the old draft from its snapshot if the
@@ -164,9 +172,9 @@ Save the payload to `$REVIEW_DIR/drafts/round-<n>.json`:
 ```
 
 Omit `event`. That is what keeps the review pending. Right before posting, check again that the live
-`headRefOid` still equals `$HEAD_SHA`. If it moved, save the payload, stop, and tell the user to
-rerun `relay review`. If step 2 found an older marked draft to replace and the user confirmed,
-delete it right before posting:
+`headRefOid` still equals `$HEAD_SHA`. If it moved, save the payload, run
+`relay review "$PR" --no-launch` again, and restart from step 1. If step 2 found an older marked
+draft to replace and the user confirmed, delete it right before posting:
 
 ```bash
 gh api --hostname "$HOST" -X DELETE "repos/$OWNER/$REPO/pulls/$NUMBER/reviews/<old-id>"
