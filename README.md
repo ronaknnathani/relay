@@ -155,8 +155,10 @@ checkout and state without starting another session.
 
 The `review-pr` skill reviews against your global and repository `AGENTS.md`, reading the repository
 guidance from the base commit. It runs `review` and `simplify` in report mode, so it never edits the
-checkout. It writes the comments with `write-like-me` and creates a pending review marked as
-AI-drafted, at most one per pull request head. It never submits the review.
+checkout. It writes inline comments with `write-like-me`, plus a top-level comment only when the
+overall approach needs one, and leaves them in a pending review marked as AI-drafted, at most one per
+pull request head. It never submits the review. The summary stays in the session, and when nothing
+is left to fix it tells you to approve.
 
 State lives under `~/.relay/reviews/<host>/<owner>/<repo>/<number>/`: `review.json` (written by
 Relay), `context.md` (what the change does), `findings.md` (a ledger of findings with stable IDs and

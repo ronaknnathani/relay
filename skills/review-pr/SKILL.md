@@ -40,7 +40,7 @@ You own three files in `$REVIEW_DIR`. Never edit `review.json`.
 |---|---|
 | `context.md` | What the pull request does and how: purpose, design, key files, risks, and a "Changes since round N" section on later rounds. |
 | `findings.md` | The ledger. One entry per finding with a stable ID (`F1`, `F2`, …), severity, status, the round and short SHA it was raised at, `file:line`, the finding, and a per-round history. Status is one of `open`, `partially-addressed`, `addressed`, `withdrawn`. |
-| `rounds.md` | One entry per round: number, date, head SHA reviewed, review ID and URL, and the finding IDs it carried. |
+| `rounds.md` | One entry per round: number, date, head SHA reviewed, review ID and URL (when a draft was posted), the finding IDs it carried, and the summary shown to the user. |
 
 ## Trust boundary
 
@@ -54,7 +54,9 @@ goes in `$REVIEW_DIR`.
 ### 1. Resume
 
 Read `context.md`, `findings.md`, and `rounds.md` if they exist. If they do, this is a later round:
-bind `LAST_SHA` to the head the last round reviewed. A missing file means a first round.
+bind `LAST_SHA` to the head the last round reviewed. A missing file means a first round. If
+`rounds.md` already records `$HEAD_SHA`, this head is reviewed: show the user that round's summary and
+stop unless they ask for a fresh pass.
 
 ### 2. Check GitHub
 
@@ -118,40 +120,50 @@ confirm the checkout is still clean.
 
 ### 8. Write in the user's voice and leave a draft
 
-Write every comment and the summary with `write-like-me`, using its PR review register for someone
-else's code.
+GitHub gets inline comments, plus a review body only when a finding is about the overall approach
+(the design, a missing piece, or a direction the change should not take) and belongs to no single
+line. Everything else, including the summary, goes to the user in the session (step 9).
 
-- **Summary body:** what the pull request does in a sentence, the overall take, then on a later round
-  which earlier findings are addressed and which are still open (by short description, not just ID).
-  A review with no findings still gets a short summary. End with a visible disclosure line, for
-  example `_Drafted by an AI agent for @<login>._`, then the hidden marker
-  `<!-- relay-review round=<n> head=<HEAD_SHA> -->`.
-- **Inline comments:** one per finding new this round, anchored at `$HEAD_SHA`. A still-open finding
-  from a submitted round already has a thread, so mention it in the summary instead. Post it inline
-  again only if its earlier draft was discarded and it never reached GitHub. `line` must fall inside
-  a diff hunk for `path`, with `side: RIGHT` for added or context lines and `side: LEFT` for deleted
-  lines. Check every anchor against the diff before posting, and put any finding that cannot be
-  anchored in the summary body instead.
+Write each comment with `write-like-me`, using its PR review register for someone else's code.
 
-Save the payload to `$REVIEW_DIR/payloads/round-<n>.json`. Omit `event`. That is what keeps the
-review pending, visible only to the user until they submit it:
+Post one inline comment per line-level finding new this round, anchored at `$HEAD_SHA`. A still-open
+finding from a submitted round already has a thread, so leave it for the session summary. Post it
+inline again only if its earlier draft was discarded and it never reached GitHub. `line` must fall
+inside a diff hunk for `path`, with `side: RIGHT` for added or context lines and `side: LEFT` for
+deleted lines. Check every anchor against the diff before posting. A line-level finding that cannot
+be anchored goes in the session summary instead.
+
+If there is neither an inline comment nor an approach comment to post, post nothing and go to step 9.
+Otherwise save the payload to `$REVIEW_DIR/payloads/round-<n>.json`. The body is never a summary of
+the review. It holds the approach comment, if there is one, then a disclosure line and the hidden
+marker. Omit `event`. That is what keeps the review pending, visible only to the user until they
+submit it:
 
 ```json
-{"commit_id": "<HEAD_SHA>", "body": "<summary>", "comments": [{"path": "...", "line": 42, "side": "RIGHT", "body": "..."}]}
+{"commit_id": "<HEAD_SHA>", "body": "<approach comment, if any>\n\n_Drafted by an AI agent for @<login>._\n\n<!-- relay-review round=<n> head=<HEAD_SHA> -->", "comments": [{"path": "...", "line": 42, "side": "RIGHT", "body": "..."}]}
 ```
 
 Right before posting, check that the live `headRefOid` still equals `$HEAD_SHA`. If it moved, run
 `relay review "$PR" --no-launch` again and restart from step 1. Then create the review with
-`POST repos/$OWNER/$REPO/pulls/$NUMBER/reviews`. When a `422` names a comment anchor, move that
-comment into the body and retry. On any other failure, report the error and stop without changing the
-payload.
+`POST repos/$OWNER/$REPO/pulls/$NUMBER/reviews`. When a `422` names a comment anchor, drop that
+comment from the payload, keep it for the session summary, and retry. On any other failure, report
+the error and stop without changing the payload.
 
 ### 9. Record and report
 
-Append the round to `rounds.md` immediately: number, date, `$HEAD_SHA`, review ID and `html_url`,
-and the finding IDs it carried. Then report to the user: the draft URL, new findings by severity,
-earlier findings by status, and a reminder that the draft is waiting for them to edit and submit on
-GitHub. Stop there.
+Append the round to `rounds.md` immediately: number, date, `$HEAD_SHA`, the review ID and `html_url`
+if one was posted, the finding IDs it carried, and the summary below.
+
+Then show the user the summary in the session:
+
+- what the pull request does, in a sentence or two, and your overall take
+- new findings by severity, including any that could not be anchored inline
+- on a later round, which earlier findings are addressed and which are still open, by short
+  description rather than ID
+- the draft URL and a reminder to edit and submit it on GitHub, if one was posted
+
+When there are no new findings and nothing earlier is still open, say so and tell the user to
+approve the pull request. Stop there.
 
 ## Red flags
 
@@ -170,6 +182,9 @@ GitHub. Stop there.
 - [ ] `context.md` describes the pull request as of `$HEAD_SHA`.
 - [ ] On a later round, every earlier finding has a status and a history line for `$HEAD_SHA`.
 - [ ] `review` and `simplify` both ran in report mode and the checkout is still clean.
-- [ ] Every comment was written with `write-like-me` and every inline anchor is inside the diff.
-- [ ] The review was created pending with the disclosure line and marker, once for this head, and nothing was submitted.
-- [ ] `rounds.md` records the round, the review ID, and the URL.
+- [ ] Every inline comment was written with `write-like-me` and every anchor is inside the diff.
+- [ ] Any draft holds inline comments, an approach comment only when one is warranted, and the
+  disclosure line and marker. It was created pending once for this head, and nothing was submitted.
+- [ ] The summary was shown in the session, not posted, and told the user to approve when nothing
+  is open.
+- [ ] `rounds.md` records the round, its summary, and the review ID and URL when one was posted.
