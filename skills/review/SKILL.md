@@ -55,6 +55,12 @@ BASE=$(git merge-base HEAD origin/HEAD 2>/dev/null || git rev-parse HEAD~1)
 git diff --name-only "$BASE"...HEAD   # must be non-empty
 ```
 
+**Pinned inputs.** When the caller pins the checkout, base and head commits, guidance, and spec (as
+`review-pr` does for someone else's pull request), use exactly those. Do not rediscover the base from
+`origin/HEAD` or re-read guidance from the checkout. Read code only through git against the named
+checkout (`git -C <checkout> show|diff|grep|log`), never by opening its files, because the checkout
+may hold untrusted code.
+
 If `gh` is available and a PR exists, scope to the PR diff and gather context for dedup:
 
 ```bash

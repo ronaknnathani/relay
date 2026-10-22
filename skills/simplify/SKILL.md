@@ -49,6 +49,14 @@ Simplifying is a balance, not a race to fewer lines. Pair every "look for" with 
 
 If the "simplified" version is longer or harder to follow, it isn't a simplification — revert it.
 
+## Report mode
+
+When the caller asks for **report mode** (for example `review-pr`, reviewing someone else's pull
+request), do not edit anything. Run the scan, the deletion test, and the guardrail below against the
+caller's diff, then return each candidate as a finding: `file:line`, the bucket (structural, naming,
+or redundancy), what to change, and why it is clearer. Mark every finding `Suggestion` unless the
+complexity hides a real defect. Skip the Process steps, which only apply when you own the code.
+
 ## Process
 
 1. **Establish a baseline.** Run the tests covering the change — or, if there is no suite or it cannot
