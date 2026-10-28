@@ -198,11 +198,13 @@ The library has three layers:
    Relay program.
 
 Run `relay setup <agent>` after changing skills or updating Relay. Setup generates the agent package
-and links Relay-managed skills into the agent's personal skill directory.
+and links Relay-managed skills into the agent's personal skill directory. Each setup also runs
+`herdr --skill` and refreshes the installed `herdr` skill from its output.
 
 ## Installation and configuration
 
-Relay requires Go 1.25+ and at least one supported coding-agent CLI on `PATH`.
+Relay requires Go 1.25+ and at least one supported coding-agent CLI on `PATH`. Setup also requires
+[Herdr](https://herdr.dev) on `PATH` with support for `herdr --skill`.
 
 ```bash
 make install

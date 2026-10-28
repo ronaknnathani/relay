@@ -99,12 +99,30 @@ func runSetupCommand(opts setupOptions) error {
 		return removeRetiredSkills(opts.agent, syncOpts)
 	}
 
-	if err := regeneratePackage(opts.agent, sourceRoot, packageDir); err != nil {
-		return err
+	command := exec.Command("herdr", "--skill")
+	command.Stderr = opts.stdout
+	herdrSkill, err := command.Output()
+	if err != nil {
+		return fmt.Errorf("read Herdr skill with herdr --skill (install or update Herdr, then retry setup): %w", err)
 	}
+	if len(strings.TrimSpace(string(herdrSkill))) == 0 {
+		return fmt.Errorf("herdr --skill returned an empty skill; update Herdr, then retry setup")
+	}
+	packageDirs := []string{packageDir}
 	if opts.agent.Name() == "claude" {
-		if err := regeneratePackage(opts.agent, sourceRoot, filepath.Join(sourceRoot, "dist", "claude")); err != nil {
+		packageDirs = append(packageDirs, filepath.Join(sourceRoot, "dist", "claude"))
+	}
+	for _, dir := range packageDirs {
+		if err := regeneratePackage(opts.agent, sourceRoot, dir); err != nil {
 			return err
+		}
+		skillDir := filepath.Join(dir, "skills", "herdr")
+		if err := os.MkdirAll(skillDir, 0755); err != nil {
+			return fmt.Errorf("create Herdr skill directory %s: %w", skillDir, err)
+		}
+		skillFile := filepath.Join(skillDir, "SKILL.md")
+		if err := os.WriteFile(skillFile, herdrSkill, 0644); err != nil {
+			return fmt.Errorf("write Herdr skill %s: %w", skillFile, err)
 		}
 	}
 	if err := agent.LinkSkills(opts.agent, syncOpts); err != nil {
