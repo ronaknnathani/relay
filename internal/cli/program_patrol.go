@@ -118,7 +118,7 @@ func runProgramPatrolStart(out io.Writer, slug string, jsonOutput bool) error {
 		return err
 	}
 	client := newHerdrClient()
-	tab, err := client.CreateTab(readiness.WorkspaceID, p.Repo, "relay-patrol:"+slug)
+	tab, err := prepareProgramPatrolTab(client, readiness.WorkspaceID, p.Repo, slug)
 	if err != nil {
 		return err
 	}
@@ -153,6 +153,40 @@ func runProgramPatrolStart(out io.Writer, slug string, jsonOutput bool) error {
 		}
 		patrolSleep(patrolPollInterval)
 	}
+}
+
+func prepareProgramPatrolTab(client herdrRuntimeClient, workspaceID, repo, slug string) (herdr.Tab, error) {
+	label := "relay-patrol:" + slug
+	tabs, err := client.Tabs(workspaceID)
+	if err != nil {
+		return herdr.Tab{}, fmt.Errorf("find patrol tab %q in workspace %q: %w", label, workspaceID, err)
+	}
+	for _, tab := range tabs {
+		if tab.WorkspaceID != workspaceID || tab.Label != label {
+			continue
+		}
+		panes, err := client.Panes(workspaceID)
+		if err != nil {
+			return herdr.Tab{}, fmt.Errorf("find pane for patrol tab %q: %w", tab.ID, err)
+		}
+		var matching []herdr.Pane
+		for _, pane := range panes {
+			if pane.WorkspaceID == workspaceID && pane.TabID == tab.ID {
+				matching = append(matching, pane)
+			}
+		}
+		if len(matching) != 1 {
+			return herdr.Tab{}, fmt.Errorf(
+				"patrol tab %q has %d panes; inspect the Herdr tab and leave a single pane before retrying",
+				tab.ID, len(matching),
+			)
+		}
+		return herdr.Tab{
+			ID: tab.ID, RootPaneID: matching[0].ID,
+			WorkspaceID: workspaceID, TerminalID: matching[0].TerminalID,
+		}, nil
+	}
+	return client.CreateTab(workspaceID, repo, label)
 }
 
 // programPatrolStartTimeout reports why start never confirmed a running patrol,

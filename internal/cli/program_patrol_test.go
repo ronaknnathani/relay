@@ -102,6 +102,120 @@ func TestProgramPatrolStartCreatesPlainHerdrTabAndAdoptsRunning(t *testing.T) {
 	}
 }
 
+func TestProgramPatrolStartReusesTabAfterFailedStart(t *testing.T) {
+	for _, failure := range []string{"timeout", "pane command"} {
+		t.Run(failure, func(t *testing.T) {
+			p := createPatrolProgram(t, "retry", program.StateActive)
+			t.Setenv("HERDR_ENV", "1")
+			t.Setenv("HERDR_WORKSPACE_ID", "workspace-1")
+			client := &fakeHerdrClient{tab: herdr.Tab{ID: "tab-1", RootPaneID: "pane-1"}}
+			installPatrolFakes(t, client)
+			client.tabsHook = func(workspace string) ([]herdr.TabInfo, error) {
+				if workspace != "workspace-1" {
+					t.Fatalf("listed tabs in workspace %q", workspace)
+				}
+				tabs := []herdr.TabInfo{
+					{ID: "foreign-tab", WorkspaceID: "workspace-2", Label: "relay-patrol:" + p.Slug},
+					{ID: "other-program", WorkspaceID: workspace, Label: "relay-patrol:" + p.Slug + "-other"},
+				}
+				if len(client.created) == 0 {
+					return tabs, nil
+				}
+				return append(tabs, herdr.TabInfo{
+					ID: "tab-1", WorkspaceID: workspace, Label: "relay-patrol:" + p.Slug, PaneCount: 1,
+				}), nil
+			}
+			client.panesHook = func(workspace string) ([]herdr.Pane, error) {
+				if workspace != "workspace-1" {
+					t.Fatalf("listed panes in workspace %q", workspace)
+				}
+				return []herdr.Pane{
+					{ID: "other-pane", TabID: "other-program", WorkspaceID: workspace},
+					{ID: "pane-1", TabID: "tab-1", WorkspaceID: workspace},
+				}, nil
+			}
+			running := false
+			patrolIsRunning = func(string) (bool, error) { return running, nil }
+			patrolReadState = func(slug string) (patrol.State, error) {
+				return patrol.State{ProgramSlug: slug, Status: patrol.StatusRunning, PID: 77}, nil
+			}
+			launchErr := errors.New("pane command failed")
+			if failure == "pane command" {
+				client.runPaneErr = launchErr
+			}
+
+			_, err := runProgramCommand(t, "patrol", "start", p.Slug)
+			if failure == "pane command" {
+				if !errors.Is(err, launchErr) {
+					t.Fatalf("first start error = %v, want %v", err, launchErr)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "inspect Herdr tab tab-1") {
+				t.Fatalf("first start error = %v, want a timeout naming tab-1", err)
+			}
+
+			client.runPaneHook = func(string, string) error { running = true; return nil }
+			if _, err := runProgramCommand(t, "patrol", "start", p.Slug); err != nil {
+				t.Fatalf("retry start: %v", err)
+			}
+			wantCreated := []fakeCreatedTab{{workspace: "workspace-1", cwd: p.Repo, label: "relay-patrol:" + p.Slug}}
+			if !reflect.DeepEqual(client.created, wantCreated) {
+				t.Fatalf("created tabs = %#v, want %#v", client.created, wantCreated)
+			}
+			command := fakePaneCommand{pane: "pane-1", command: "relay program patrol run 'retry'"}
+			if want := []fakePaneCommand{command, command}; !reflect.DeepEqual(client.runPane, want) {
+				t.Fatalf("pane commands = %#v, want %#v", client.runPane, want)
+			}
+		})
+	}
+}
+
+func TestProgramPatrolStartFailsWithoutCreatingTabWhenReuseCannotBeResolved(t *testing.T) {
+	inventoryErr := errors.New("inventory unavailable")
+	tests := []struct {
+		name     string
+		tabsErr  error
+		panesErr error
+		panes    []herdr.Pane
+		want     string
+	}{
+		{name: "tab inventory", tabsErr: inventoryErr, want: `find patrol tab "relay-patrol:retry" in workspace "workspace-1"`},
+		{name: "pane inventory", panesErr: inventoryErr, want: `find pane for patrol tab "tab-1"`},
+		{name: "missing pane", want: `patrol tab "tab-1" has 0 panes`},
+		{
+			name: "multiple panes",
+			panes: []herdr.Pane{
+				{ID: "pane-1", TabID: "tab-1", WorkspaceID: "workspace-1"},
+				{ID: "pane-2", TabID: "tab-1", WorkspaceID: "workspace-1"},
+			},
+			want: `patrol tab "tab-1" has 2 panes`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := createPatrolProgram(t, "retry", program.StateActive)
+			t.Setenv("HERDR_ENV", "1")
+			t.Setenv("HERDR_WORKSPACE_ID", "workspace-1")
+			client := &fakeHerdrClient{
+				tabs:    []herdr.TabInfo{{ID: "tab-1", WorkspaceID: "workspace-1", Label: "relay-patrol:" + p.Slug}},
+				tabsErr: test.tabsErr, panesErr: test.panesErr, panes: test.panes,
+			}
+			installPatrolFakes(t, client)
+			patrolIsRunning = func(string) (bool, error) { return false, nil }
+
+			_, err := runProgramCommand(t, "patrol", "start", p.Slug)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("start error = %v, want %q", err, test.want)
+			}
+			if (test.tabsErr != nil || test.panesErr != nil) && !errors.Is(err, inventoryErr) {
+				t.Fatalf("start error = %v, want wrapped inventory error", err)
+			}
+			if len(client.created) != 0 || len(client.runPane) != 0 {
+				t.Fatalf("unresolved reuse launched a tab: created=%+v commands=%+v", client.created, client.runPane)
+			}
+		})
+	}
+}
+
 func TestProgramPatrolStartOutsideHerdrFailsClosed(t *testing.T) {
 	p := createPatrolProgram(t, "manual", program.StateDraft)
 	t.Setenv("HERDR_ENV", "")

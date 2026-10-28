@@ -127,6 +127,9 @@ func TestServeUnifiedModeIsLazyAndUsesOneServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := io.Copy(io.Discard, response.Body); err != nil {
+		t.Fatal(err)
+	}
 	if err := response.Body.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -135,6 +138,9 @@ func TestServeUnifiedModeIsLazyAndUsesOneServer(t *testing.T) {
 	}
 	response, err = http.Get(url + "/programs/alpha/api/program")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, response.Body); err != nil {
 		t.Fatal(err)
 	}
 	if err := response.Body.Close(); err != nil {
@@ -764,6 +770,9 @@ func getProgramSnapshot(t *testing.T, url string) programview.Snapshot {
 	defer response.Body.Close()
 	var snapshot programview.Snapshot
 	if err := json.NewDecoder(response.Body).Decode(&snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, response.Body); err != nil {
 		t.Fatal(err)
 	}
 	return snapshot

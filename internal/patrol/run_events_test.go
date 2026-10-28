@@ -338,7 +338,10 @@ func TestRunPrintsNothingForEarlyTickerWakeups(t *testing.T) {
 		done <- Run(ctx, "quiet", Options{
 			Now: clock.Now, Ticker: func(time.Duration) Ticker { return ticker },
 			BuildSnapshot: attentionSnapshot(),
-			Out:           out, Err: errOut,
+			Agents: patrolAgentListerFunc(func() ([]herdr.Agent, error) {
+				return nil, nil
+			}),
+			Out: out, Err: errOut,
 		})
 	}()
 

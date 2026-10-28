@@ -494,8 +494,9 @@ relay program patrol tick auth-platform --json
 relay program patrol stop auth-platform
 ```
 
-`start` adopts an existing lock holder or creates an unfocused plain Herdr tab labeled
-`relay-patrol:<program>` in the program repository; it does not launch a coding agent. Both `start`
+`start` adopts an existing lock holder or reuses the `relay-patrol:<program>` Herdr tab in the
+current workspace. If no matching tab exists, it creates an unfocused plain tab in the program
+repository. Retrying a failed start uses the same tab; it does not launch a coding agent. Both `start`
 and `run` require Herdr and fail closed with setup instructions when it is missing. The interactive
 tech lead checks patrol status on entry and then stays available to the CEO. A patrol doorbell tells
 that
