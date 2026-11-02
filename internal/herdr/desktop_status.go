@@ -65,6 +65,38 @@ func ReportDesktopStatus(state, kind, app string, hookInput []byte) error {
 	return err
 }
 
+// RecordDesktopSession stores the agent's session id from its hook input as a
+// label on the agent's terminal, where the desktop backend reads it back as
+// NativeSessionID. Input without a session id, or from a subagent, is ignored.
+func RecordDesktopSession(hookInput []byte) error {
+	if !DesktopEnvironment() || firedInSubagent(hookInput) {
+		return nil
+	}
+	sessionID := hookSessionID(hookInput)
+	if sessionID == "" {
+		return nil
+	}
+	terminal := os.Getenv("HC_TERMINAL_ID")
+	output, err := exec.Command("hc", "label", "--json", terminal, desktopSessionLabel+"="+sessionID).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("label terminal %s with session %s: %w: %s", terminal, sessionID, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func hookSessionID(hookInput []byte) string {
+	var input map[string]any
+	if json.Unmarshal(hookInput, &input) != nil {
+		return ""
+	}
+	for _, key := range []string{"session_id", "sessionId"} {
+		if value, ok := input[key].(string); ok && value != "" && !strings.ContainsAny(value, "= \t\n") {
+			return value
+		}
+	}
+	return ""
+}
+
 func firedInSubagent(hookInput []byte) bool {
 	var input map[string]any
 	if json.Unmarshal(hookInput, &input) != nil {

@@ -254,3 +254,33 @@ func TestDesktopExitAgentWaitsThroughTheExitTurn(t *testing.T) {
 		t.Fatalf("ExitAgent = %#v; hc calls %#v", result, hc.calls)
 	}
 }
+
+func TestDesktopAgentsReadTheRecordedSessionID(t *testing.T) {
+	owner := strings.Replace(desktopOwner, `"herdr.tab":"tb1"`, `"herdr.tab":"tb1","relay.session":"abc-123"`, 1)
+	client, _, _ := newFakeDesktop(t, map[string][]string{
+		"ls --json":     {`{"terminals":[{"address":"t8","state":"live","status":"idle"}]}`},
+		"get --json t8": {owner},
+	})
+
+	agents, err := client.Agents()
+	if err != nil {
+		t.Fatalf("Agents: %v", err)
+	}
+	if len(agents) != 1 || agents[0].NativeSessionID != "abc-123" {
+		t.Fatalf("Agents = %#v", agents)
+	}
+}
+
+func TestHookSessionID(t *testing.T) {
+	for input, want := range map[string]string{
+		`{"session_id":"s1"}`: "s1",
+		`{"sessionId":"s2"}`:  "s2",
+		`{"sessionId":"a=b"}`: "",
+		`{"cwd":"/repo"}`:     "",
+		`not json`:            "",
+	} {
+		if got := hookSessionID([]byte(input)); got != want {
+			t.Errorf("hookSessionID(%s) = %q, want %q", input, got, want)
+		}
+	}
+}

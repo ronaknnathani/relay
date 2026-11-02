@@ -28,6 +28,9 @@ const (
 	desktopTabLabel       = "herdr.tab"
 	desktopRelayTabLabel  = "relay.tab"
 	desktopRelayNameLabel = "relay.name"
+	// desktopSessionLabel holds the agent's own session id, which the agent's
+	// hook records because the desktop app has no field for it.
+	desktopSessionLabel = "relay.session"
 )
 
 // DesktopEnvironment reports whether Relay runs in a Herdr desktop app
@@ -322,15 +325,16 @@ func (d *desktopBackend) agents() ([]Agent, error) {
 	agents := make([]Agent, 0, len(terminals))
 	for _, terminal := range terminals {
 		agents = append(agents, Agent{
-			Status:         terminal.status(),
-			StateChangeSeq: terminal.StatusMS,
-			PaneID:         terminal.Address,
-			TabID:          terminal.Labels[desktopTabLabel],
-			WorkspaceID:    terminal.Labels[desktopSpaceLabel],
-			TerminalID:     terminal.Address,
-			TerminalTitle:  terminal.Title,
-			CWD:            terminal.CWD,
-			ForegroundCWD:  terminal.foregroundCWD(),
+			Status:          terminal.status(),
+			StateChangeSeq:  terminal.StatusMS,
+			PaneID:          terminal.Address,
+			TabID:           terminal.Labels[desktopTabLabel],
+			WorkspaceID:     terminal.Labels[desktopSpaceLabel],
+			TerminalID:      terminal.Address,
+			TerminalTitle:   terminal.Title,
+			CWD:             terminal.CWD,
+			ForegroundCWD:   terminal.foregroundCWD(),
+			NativeSessionID: terminal.Labels[desktopSessionLabel],
 		})
 	}
 	sort.SliceStable(agents, func(i, j int) bool { return agents[i].PaneID < agents[j].PaneID })

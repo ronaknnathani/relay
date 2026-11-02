@@ -27,8 +27,9 @@ func newCmdHerdrApp() *cobra.Command {
 
 func newCmdHerdrAppReport() *cobra.Command {
 	var kind, app string
+	var session bool
 	cmd := &cobra.Command{
-		Use:    "report <idle|working|done|blocked|error>",
+		Use:    "report <idle|working|done|blocked|error|clear>",
 		Short:  "Report the calling agent's status to the Herdr desktop app (hook target)",
 		Hidden: true,
 		Args:   cobra.ExactArgs(1),
@@ -41,11 +42,17 @@ func newCmdHerdrAppReport() *cobra.Command {
 			if err := herdr.ReportDesktopStatus(args[0], kind, app, input); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "relay herdr-app report: %v\n", err)
 			}
+			if session {
+				if err := herdr.RecordDesktopSession(input); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "relay herdr-app report: %v\n", err)
+				}
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&kind, "kind", "", "why the agent is blocked: permission, question or auth")
 	cmd.Flags().StringVar(&app, "app", "", "agent name shown by the app")
+	cmd.Flags().BoolVar(&session, "session", false, "also record the session id from the hook input on the agent's terminal")
 	return cmd
 }
 
@@ -126,11 +133,17 @@ func copilotDesktopHooks(relayPath string) ([]byte, error) {
 		report("blocked", "permission", "permission_prompt"),
 		report("blocked", "question", "elicitation_dialog")...,
 	)
+	// sessionStart can wait for the first prompt, so the prompt records the
+	// session id too.
+	withSession := func(hooks []hook) []hook {
+		hooks[0].Args = append(hooks[0].Args, "--session")
+		return hooks
+	}
 	config := map[string]any{
 		"version": 1,
 		"hooks": map[string][]hook{
-			"sessionStart":        report("idle", "", ""),
-			"userPromptSubmitted": report("working", "", ""),
+			"sessionStart":        withSession(report("idle", "", "")),
+			"userPromptSubmitted": withSession(report("working", "", "")),
 			"postToolUse":         report("working", "", ""),
 			"postToolUseFailure":  report("working", "", ""),
 			"agentStop":           report("idle", "", ""),
