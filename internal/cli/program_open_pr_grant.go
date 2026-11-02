@@ -3,10 +3,10 @@ package cli
 import (
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/ronaknnathani/relay/internal/herdr"
 	"github.com/ronaknnathani/relay/internal/mailbox"
 	"github.com/ronaknnathani/relay/internal/program"
 	"github.com/ronaknnathani/relay/internal/role"
@@ -229,7 +229,7 @@ func openPRRevokeMessage(by, reason string) string {
 }
 
 func notifyProgramWorkerBestEffort(programSlug, itemID string) (string, error) {
-	if os.Getenv("HERDR_ENV") != "1" {
+	if !herdr.InManagedTerminal() {
 		return "skipped outside Herdr", nil
 	}
 	result, err := notifyLiveProgramWorker(programSlug, itemID)
