@@ -11,16 +11,21 @@ const (
 )
 
 // displayIdentity derives a short human title and one-line summary for a
-// program. The title prefers the first H1 in goal.md; without one it falls
-// back to a shortened program title so the UI never renders a raw prompt as
-// its heading.
+// program. The first H1 in goal.md is used as-is when it fits the title limit;
+// otherwise the first sentence of the H1 (or of the program title when there
+// is no H1) is clamped, so the UI never renders a long raw prompt as its
+// heading.
 func displayIdentity(title, goal string) (string, string) {
 	heading, paragraph := goalHeadingAndParagraph(goal)
-	displayTitle := heading
-	if displayTitle == "" {
-		displayTitle = shorten(firstSentence(title), displayTitleLimit)
+	summary := shorten(paragraph, summaryLimit)
+	if heading != "" && len([]rune(heading)) <= displayTitleLimit {
+		return heading, summary
 	}
-	return displayTitle, shorten(paragraph, summaryLimit)
+	source := heading
+	if source == "" {
+		source = title
+	}
+	return shorten(firstSentence(source), displayTitleLimit), summary
 }
 
 // goalHeadingAndParagraph reads the first H1 and the first prose paragraph

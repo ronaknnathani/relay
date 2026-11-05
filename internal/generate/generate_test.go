@@ -195,6 +195,7 @@ func TestTLProgramGuidanceIsGeneratedForEveryHarness(t *testing.T) {
 				"Writing production code yourself",
 				"genuine human GitHub approval",
 				"Never invoke `stack-ship`",
+				"Replace the `goal.md` H1 with a short one-line program title",
 			} {
 				if !strings.Contains(body, want) {
 					t.Errorf("%s tl skill is missing program guidance %q", agentName, want)
