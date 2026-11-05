@@ -350,3 +350,56 @@ func TestProgramDocsDescribeMultiRepositoryPreparation(t *testing.T) {
 		})
 	}
 }
+
+// The tab sweep closes runtime the tech lead would otherwise close by hand, so
+// the skill and both guides must name the command, the identity each kind of
+// tab is closed through, and what the sweep never touches.
+func TestProgramDocsDescribeTabSweep(t *testing.T) {
+	root := repoRoot(t)
+	for _, test := range []struct {
+		path     string
+		required []string
+	}{
+		{
+			path: filepath.Join("skills", "tl", "SKILL.md"),
+			required: []string{
+				`relay program sweep "$PROGRAM" --json`,
+				"every tech lead entry and every patrol wake, after `worker ensure`",
+				"closes only when that program holds no patrol lock",
+				"only\n`worker cleanup` archives the child project",
+				"report every `errors` entry to the CEO",
+				"Ran `program sweep` on this entry/wake",
+			},
+		},
+		{
+			path: filepath.Join("docs", "programs.md"),
+			required: []string{
+				"### Sweeping finished tabs",
+				"relay program sweep <program> --json",
+				"`closed`, `preserved`, and `errors`",
+				"never archives",
+				"tab Relay did not create",
+			},
+		},
+		{
+			path: filepath.Join("docs", "pr-watch.md"),
+			required: []string{
+				"`relay program sweep` closes a finished watcher's tab through the same recorded identity",
+				"never a tab that only carries the watcher label",
+			},
+		},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(root, test.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(data)
+			for _, want := range test.required {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s is missing %q", test.path, want)
+				}
+			}
+		})
+	}
+}

@@ -65,6 +65,7 @@ relay program message list "$PROGRAM" --json
 relay program status "$PROGRAM" --json
 relay program tick "$PROGRAM" --json
 relay program worker ensure "$PROGRAM" --json
+relay program sweep "$PROGRAM" --json
 relay program patrol tick "$PROGRAM" --json
 ```
 
@@ -84,9 +85,23 @@ sure every active worker has one live owner in Herdr. For an item with a recorde
 also makes sure the PR-backed worker has one managed watcher in a dedicated tab in this workspace.
 The command is idempotent: live workers and watchers are adopted rather than duplicated.
 
+Run `program sweep` on every tech lead entry and every patrol wake, after `worker ensure`. It closes
+the Relay tabs in this workspace that nothing needs anymore: a pull request watcher's tab once that
+watcher has stopped, closed through the exact tab its runtime record names; the worker tab of a
+`merged` or `cancelled` item whose worker is idle or done, after the worker exits with `/exit`; and a
+`relay-patrol:<program>` tab whose program holds no patrol lock. It never closes your own tab, a
+running patrol's or watcher's tab, a `working` or `blocked` agent, the worker of a `pending`,
+`dispatched`, `in-review`, or `blocked` item, a tab Relay did not create, or a tab in another
+workspace, and it never archives anything. `--json` returns `{program, workspace_id, closed,
+preserved, errors}`, each a list of `{tab_id, kind, subject, reason}`. Errors are reported per tab
+and one failure never stops the rest; report every `errors` entry to the CEO instead of retrying the
+close by hand. A second sweep right after the first closes nothing.
+
 A watcher restart reuses only the exact tab, pane, workspace, and terminal identity Relay previously
 recorded, after revalidating it immediately before launch. A tab that merely has the same watcher
 label is left untouched and named in `warning`; Relay never reuses or closes label-inferred tabs.
+The one label-matched exception is a `relay-patrol:<program>` tab: `program sweep`
+closes only when that program holds no patrol lock.
 `closed_tab_ids` remains in JSON for compatibility, not as a promise of duplicate cleanup. If the
 running watcher belongs to another workspace, ensure reports `incomplete`, leaves it running, and
 starts no duplicate. Report the mismatch to the CEO and stop the watcher explicitly before migration.
@@ -217,6 +232,10 @@ readable — it never closes its own tab. Cleanup's first step is what closes it
 archived: it clears only when the recorded tab and pane ids are cleared, the worker session and its
 tab are gone, and the child project is archived with its worktree removed. Never conclude the item is
 retired from the watcher no longer running.
+
+`program sweep` may already have closed the merged item's watcher tab and worker tab, but only
+`worker cleanup` archives the child project, so the reason stays on the board until cleanup runs.
+Run cleanup either way; it treats a tab the sweep closed as already done.
 
 If cleanup reports a warning and a `next_command`, the tab it names is still open and the ids were
 kept on purpose. Run that exact command again — it is safe on an already-archived child with no
@@ -422,6 +441,7 @@ a program decision or follow-up. Do not silently turn it into recurring automati
       and started patrol in Herdr.
 - [ ] Reloaded durable state after a patrol doorbell before acting.
 - [ ] Ran `worker ensure` so every active worker and every PR-backed managed watcher is live.
+- [ ] Ran `program sweep` on this entry/wake and reported any `errors` entries.
 - [ ] Sent complete replies through worker inboxes and rang each new durable doorbell exactly once,
       with later retries delegated to the CLI's unnotified/status checks.
 - [ ] Serialized unread `pr-open` requests with `grant-open-pr` and reported reserved capacity.

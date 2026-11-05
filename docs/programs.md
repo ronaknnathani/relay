@@ -297,6 +297,35 @@ outstanding runtime, so the reason survives the watcher exiting and a failed tab
 w2". The patrol only observes: it probes a watcher's lock with a shared non-blocking `flock` and reads
 its runtime record without writing it.
 
+### Sweeping finished tabs
+
+`relay program sweep <program> --json` closes the Relay tabs in the tech lead's current Herdr
+workspace that nothing needs anymore. The tech lead runs it on every entry and every patrol wake,
+right after `worker ensure`. Each kind of tab is closed through the identity Relay already trusts for
+it:
+
+- **Pull request watcher tabs** (`relay-pr-watch:<child-slug>`) close once that watcher is not
+  running, and only when its `watch.json` names this exact tab. The close is the same revalidated,
+  recorded-identity close `relay pr watch stop` performs, under the watcher's lifecycle lock, and the
+  record's tab and pane ids are cleared afterwards. A running watcher is never signaled.
+- **Worker tabs** of this program's `merged` and `cancelled` items close once the item's one live
+  worker session is `idle` or `done`. The session is matched by its project identity, sent `/exit`
+  without taking focus, and its exact tab is closed after Herdr is re-read, just as `worker cleanup`
+  does. A tab whose agent already exited has no session identity and is left alone.
+- **Patrol tabs** (`relay-patrol:<program>`) close once that program holds no patrol lock. Liveness
+  is checked immediately before the close. This is the only kind matched by label, because the
+  patrol tab is already reused by label.
+
+The sweep never closes the tech lead's own tab, a running patrol's or watcher's tab, a tab whose
+agent is `working` or `blocked`, the worker of a `pending`, `dispatched`, `in-review`, or `blocked`
+item, a tab Relay did not create, or a tab in another workspace. It never archives anything: a merged
+item's child project is still retired by `worker cleanup`, and `merged-worker-cleanup:<item>` still
+clears only once that archive completes.
+
+The JSON reports `closed`, `preserved`, and `errors`, each a list of `{tab_id, kind, subject,
+reason}`. One tab's failure never stops the rest; every failure is listed with its tab id and the
+command exits non-zero. A second sweep right after the first closes nothing.
+
 ### Durable managed-worker mailboxes
 
 Every managed child project has filesystem mail that survives worker and Herdr restarts:
