@@ -41,7 +41,7 @@ func TestDisplayIdentityFallsBackToShortenedProgramTitle(t *testing.T) {
 	}
 }
 
-func TestDisplayIdentityShortensHeadingThatRepeatsRawTitle(t *testing.T) {
+func TestDisplayIdentityShortensOverlongHeadingThatRepeatsRawTitle(t *testing.T) {
 	longTitle := "Redesign the whole workload platform so that every team can schedule batch work. " +
 		"Also migrate the legacy scheduler and delete it afterwards."
 	goal := "# " + longTitle + "\n\n## Approved outcome\n\nOne place to schedule shared batch work.\n"
@@ -52,6 +52,14 @@ func TestDisplayIdentityShortensHeadingThatRepeatsRawTitle(t *testing.T) {
 	}
 	if summary != "One place to schedule shared batch work." {
 		t.Errorf("summary = %q, want the first prose paragraph", summary)
+	}
+}
+
+func TestDisplayIdentityKeepsShortHeadingThatRepeatsRawTitle(t *testing.T) {
+	title, _ := displayIdentity("Add retries. Keep it simple", "# Add retries. Keep it simple\n")
+
+	if title != "Add retries. Keep it simple" {
+		t.Errorf("display title = %q, want the short H1 verbatim", title)
 	}
 }
 
