@@ -257,6 +257,9 @@ partial run finishes the job, and the work item stays `merged` throughout.
 
 1. **Shape a draft program with the CEO.**
    - Update `goal.md` with the approved outcome, priorities, architecture, and guardrails.
+   - Replace the `goal.md` H1 with a short one-line program title (at most 60 characters, e.g.
+     `# List admission webhooks`); the program UI shows it as the card heading. The raw request stays
+     the program title in `program.json`.
    - Explore the repository through a sub-agent when code context is needed; otherwise work from the
      durable program artifacts.
    - Record any unresolved matter:
