@@ -13,6 +13,7 @@ import (
 
 func writeSetupSource(t *testing.T, skillNames ...string) string {
 	t.Helper()
+	writeSetupHerdr(t, "# Herdr\n")
 	source := t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "plugin.json"), []byte(`{"name":"relay"}`+"\n"), 0644); err != nil {
 		t.Fatalf("write plugin manifest: %v", err)
@@ -168,6 +169,7 @@ func TestSetupPromptsForSourceWhenDiscoveryFails(t *testing.T) {
 }
 
 func TestSetupPromptAcceptsHomeRelativeSourceAfterBlankInput(t *testing.T) {
+	writeSetupHerdr(t, "# Herdr\n")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USER", "tester")
