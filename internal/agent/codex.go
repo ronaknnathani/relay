@@ -42,6 +42,7 @@ func (codex) Capabilities() Capabilities {
 
 func (codex) LaunchArgs(o LaunchOptions) []string {
 	args := []string{
+		"-c", `shell_environment_policy.inherit="all"`,
 		"-C", o.Worktree,
 	}
 	if o.ProjectDir != "" {

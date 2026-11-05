@@ -223,6 +223,11 @@ relay config default-agent <agent>
 relay config permission-mode <agent> <mode>
 ```
 
+Claude sessions default to `--permission-mode auto`; explicitly configured
+`default` and `bypass` modes are honored. Every Codex session starts with
+`-c 'shell_environment_policy.inherit="all"'`. These settings apply to both
+individual projects and managed program launches.
+
 Relay-managed state:
 
 ```text

@@ -38,14 +38,14 @@ func (claude) Capabilities() Capabilities {
 }
 
 // PermissionModes lists Claude's permission modes; "auto" (the default)
-// auto-accepts edits, "bypass" skips all prompts, "default" prompts normally.
+// uses Claude's auto mode, "bypass" skips all prompts, "default" prompts normally.
 func (claude) PermissionModes() []string { return []string{"auto", "bypass", "default"} }
 
 func (claude) LaunchArgs(o LaunchOptions) []string {
 	var args []string
 	switch resolvePermissionMode(claude{}, o.PermissionMode) {
 	case "auto":
-		args = append(args, "--permission-mode", "acceptEdits")
+		args = append(args, "--permission-mode", "auto")
 	case "bypass":
 		args = append(args, "--dangerously-skip-permissions")
 		// "default": no flag — Claude prompts for permissions normally.
