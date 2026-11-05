@@ -46,10 +46,9 @@ messages and PR descriptions. Execute git/`gh` operations through this skill's b
    back to the body in step 7 when none exists. Use the helper's `pr-template` command to fetch it.
 
 7. **Open the PR.** Title follows the repo's PR-title style. The summary follows
-   `~/.config/agents/AGENTS.md` Part 3 "PR summaries", with repo `AGENTS.md` taking precedence: one or
-   two short prose paragraphs on why and what, not how; no bullet list; no enumeration of the files or
-   callers the change touches; no explanation of how the code mirrors an existing pattern; no
-   explanation of rejected alternatives; and a `Testing Done` section that is a bare list of the
+   `~/.config/agents/AGENTS.md` Part 3 "PR summaries" (repo `AGENTS.md` takes precedence): one or two
+   short prose paragraphs on why and what, not how — no bullets, no file or caller enumeration, no
+   pattern-mirroring, no rejected alternatives — and a `Testing Done` section listing only the
    commands run. Disclose automated authorship with the actual agent/model
    used, not a hardcoded Claude footer. Add `--draft` to the helper call only when the caller passed it,
    and invoke `create-pr --title <title> --body-file <body-file>`.

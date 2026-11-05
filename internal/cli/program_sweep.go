@@ -148,18 +148,16 @@ func runProgramSweep(out io.Writer, programSlug string, jsonOutput bool) error {
 // record files one tab under closed, preserved, or errors. A tab can be both
 // closed and in error when the close happened but a follow-up step failed.
 func (s *programSweep) record(entry programSweepEntry, closed bool, reason string, err error) {
-	if closed {
-		closedEntry := entry
-		closedEntry.Reason = reason
-		s.output.Closed = append(s.output.Closed, closedEntry)
-	}
 	if err != nil {
-		entry.Reason = err.Error()
-		s.output.Errors = append(s.output.Errors, entry)
-		return
+		failed := entry
+		failed.Reason = err.Error()
+		s.output.Errors = append(s.output.Errors, failed)
 	}
-	if !closed {
-		entry.Reason = reason
+	entry.Reason = reason
+	switch {
+	case closed:
+		s.output.Closed = append(s.output.Closed, entry)
+	case err == nil:
 		s.output.Preserved = append(s.output.Preserved, entry)
 	}
 }
