@@ -488,6 +488,15 @@ For every issue, deviation, review request, or pre-PR request, send durable mail
   the instruction unread; acknowledge the grant inbox message only after open-pr succeeds and the PR
   is recorded.
 - A tech lead-worker conflict is escalated to the CEO for resolution. Do not continue the affected work while it is unresolved.
+
+## Published output
+
+**Published output names no internal program bookkeeping.** PR titles and bodies, commit messages,
+PR and review replies, code, code comments, and test names never mention work-item ids (`+"`w<N>`"+`),
+decision ids (`+"`d<N>`"+`), worker or session names derived from them, or that the change came from a
+Relay program, tech lead, CEO, or managed worker. Describe the change on its own terms. Machinery
+that is not prose stays: the hidden `+"`relay-agent-reply`"+` marker, the branch name, and the
+`+"`🤖 <agent> on behalf of <author>`"+` disclosure (which never says "Relay program").
 `,
 		p.Slug, p.Title, item.ID, item.Title, item.Priority, dependencies, contractLines.String(),
 		p.Slug, item.ID,

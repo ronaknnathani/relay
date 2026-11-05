@@ -49,6 +49,15 @@ plan step that can't be followed as written, an instruction you don't understand
 that fails repeatedly for a reason the plan doesn't cover. A plan gap is the planner's to resolve —
 flag it; don't silently redesign around it.
 
+## Published output
+
+**Published output names no internal program bookkeeping.** PR titles and bodies, commit messages,
+PR and review replies, code, code comments, and test names never mention work-item ids (`w<N>`),
+decision ids (`d<N>`), worker or session names derived from them, or that the change came from a
+Relay program, tech lead, CEO, or managed worker. Describe the change on its own terms. Machinery
+that is not prose stays: the hidden `relay-agent-reply` marker, the branch name, and the
+`🤖 <agent> on behalf of <author>` disclosure (which never says "Relay program").
+
 ## Red flags
 
 - More than ~100 lines written without running a test — you've left tracer-bullet TDD.
@@ -60,6 +69,7 @@ flag it; don't silently redesign around it.
 - Assuming a build/test command instead of using the repo's own (Makefile / package.json / CI).
 - Ignoring repo/global AGENTS.md guidance or silently choosing between conflicting instructions.
 - Inventing a different design because a plan decision seemed wrong — stop and surface it instead.
+- Published text that names a work-item id, decision id, derived worker name, or a Relay program / tech lead / CEO / managed-worker origin.
 
 ## Verification checklist
 
@@ -70,5 +80,6 @@ flag it; don't silently redesign around it.
 - [ ] Build and existing tests were green between every slice — no red state was committed.
 - [ ] Only files in the plan's scope were touched; no unrelated changes rode along.
 - [ ] The repo's own build/test commands were used, not an assumed toolchain.
+- [ ] No code, comment, or test name cites a work-item or decision id or a Relay program origin.
 - [ ] Blockers and plan gaps were surfaced, not worked around by guessing.
 - [ ] No PR was opened and no next skill was invoked — implementation just returned.

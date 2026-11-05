@@ -66,6 +66,13 @@ runtime an agent wrote a reply. A reply without it is read as fresh human feedba
 owner again forever; the emoji line alone is not enough, because a human can type an emoji. The
 disclosure line is the human-visible half of the same promise: never write as if you were the author.
 
+**Published output names no internal program bookkeeping.** PR titles and bodies, commit messages,
+PR and review replies, code, code comments, and test names never mention work-item ids (`w<N>`),
+decision ids (`d<N>`), worker or session names derived from them, or that the change came from a
+Relay program, tech lead, CEO, or managed worker. Describe the change on its own terms. Machinery
+that is not prose stays: the hidden `relay-agent-reply` marker, the branch name, and the
+`🤖 <agent> on behalf of <author>` disclosure (which never says "Relay program").
+
 **The marker must name the exact item it answers — copy the item's `answers` field verbatim.** Every
 digest item carries one, and the watcher matches replies by that id, never by time. A marker that
 names nothing (`<!-- relay-agent-reply answers= -->` or the bare marker) answers nothing on a
@@ -170,6 +177,7 @@ item the watcher must still be able to surface.
 - A reply missing the marker, naming no `answers` token, naming an id you invented instead of the
   item's own, or posted on a different source than the one it answers — every one of those either
   keeps waking the owner or answers something nobody asked about.
+- Published text that names a work-item id, decision id, derived worker name, or a Relay program / tech lead / CEO / managed-worker origin.
 - Running `git rebase --abort` / `git merge --abort` instead of resolving the conflict.
 - Resolving a conflict by keeping one side without understanding why the other side exists.
 - Assuming `npm`/`make`/etc. instead of the command the repo's own config actually uses.
@@ -187,6 +195,7 @@ item the watcher must still be able to surface.
 - [ ] Every actionable review comment is fixed+resolved, or replied+flagged as an author decision
       left open; non-actionable comments received no reply, reaction, or resolution.
 - [ ] Every agent reply carries the marker with that item's exact `answers` token and the visible disclosure, and was posted on the same source it answers.
+- [ ] No reply, commit, code, or comment names a work-item or decision id or a Relay program origin.
 - [ ] All conflicts resolved forward (no abort), both intents researched and preserved, validation re-run after.
 - [ ] After any rebase, confirmed my branch's commits survived (still in `git log`; net diff vs base still carries my changes).
 - [ ] Findings reported with the shared severity vocabulary (Critical / Important / Suggestion).

@@ -26,4 +26,16 @@ Based on the changes above, create one commit:
 
 4. Commit with `git commit`.
 
+**Published output names no internal program bookkeeping.** PR titles and bodies, commit messages,
+PR and review replies, code, code comments, and test names never mention work-item ids (`w<N>`),
+decision ids (`d<N>`), worker or session names derived from them, or that the change came from a
+Relay program, tech lead, CEO, or managed worker. Describe the change on its own terms. Machinery
+that is not prose stays: the hidden `relay-agent-reply` marker, the branch name, and the
+`🤖 <agent> on behalf of <author>` disclosure (which never says "Relay program").
+
 Use only `git add`, `git status`, and `git commit`. Do not push, do not run other tools, and do not take any other action.
+
+## Red flags
+
+- Published text that names a work-item id, decision id, derived worker name, or a Relay program / tech lead / CEO / managed-worker origin.
+- A commit message that restates the diff instead of saying why the change exists.

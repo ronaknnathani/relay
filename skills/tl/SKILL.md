@@ -269,6 +269,9 @@ partial run finishes the job, and the work item stays `merged` throughout.
 - The limit may change only after an explicit CEO decision. Apply it with
   `relay program set-max-open-prs <program> <count> --by ceo`; never raise it to work around stale or
   unrelated project records.
+- Item ids (`w<N>`) and decision ids (`d<N>`) are internal program bookkeeping. Use them in program
+  state, mail, and contracts, but write contracts and decision replies so the worker can describe the
+  change without them, and never ask a worker to cite them in a PR, commit, comment, or code.
 - Never invoke `stack-ship`. The program is already the multi-PR orchestrator: decompose work into
   program items and dispatch each item through `deliver-pr`.
 
@@ -427,6 +430,7 @@ a program decision or follow-up. Do not silently turn it into recurring automati
 - Waiting synchronously on a Herdr worker or treating Herdr `done`/`idle` as workflow completion.
 - Sending worker-to-worker prompts instead of coordinating through contracts, the tech lead, and
   mailboxes.
+- Asking a worker to cite an item or decision id in a published artifact.
 - Invoking `stack-ship` inside a program and creating a second nested orchestrator.
 - Continuing without checking or starting the Relay patrol on TL entry.
 - Improvising a non-Herdr fallback after a Herdr readiness error instead of reporting its instructions.
