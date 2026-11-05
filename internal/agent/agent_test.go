@@ -47,10 +47,10 @@ func TestClaudeLaunchArgs(t *testing.T) {
 			},
 		},
 		{
-			name: "auto mode → acceptEdits",
+			name: "auto mode",
 			opts: func() LaunchOptions { o := base; o.PermissionMode = "auto"; return o }(),
 			want: []string{
-				"--permission-mode", "acceptEdits",
+				"--permission-mode", "auto",
 				"--append-system-prompt", "Active relay project: demo. Phase: plan. Mode: full.",
 				"-n", "relay:demo",
 				"/plan demo",
@@ -60,7 +60,7 @@ func TestClaudeLaunchArgs(t *testing.T) {
 			name: "empty mode falls back to auto",
 			opts: func() LaunchOptions { o := base; o.PermissionMode = ""; return o }(),
 			want: []string{
-				"--permission-mode", "acceptEdits",
+				"--permission-mode", "auto",
 				"--append-system-prompt", "Active relay project: demo. Phase: plan. Mode: full.",
 				"-n", "relay:demo",
 				"/plan demo",
@@ -286,6 +286,7 @@ func TestCodexLaunchArgs(t *testing.T) {
 		CommandArgs:  "demo",
 	}
 	want := []string{
+		"-c", `shell_environment_policy.inherit="all"`,
 		"-C", "/tmp/wt",
 		"--add-dir", "/tmp/proj",
 		"--sandbox", "workspace-write",
@@ -294,6 +295,16 @@ func TestCodexLaunchArgs(t *testing.T) {
 	}
 	if got := (codex{}).LaunchArgs(o); !reflect.DeepEqual(got, want) {
 		t.Errorf("LaunchArgs mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+	for _, mode := range []string{"", "auto", "prompt", "bypass", "unknown"} {
+		t.Run("environment inheritance with mode="+mode, func(t *testing.T) {
+			opts := o
+			opts.PermissionMode = mode
+			got := (codex{}).LaunchArgs(opts)
+			if !slices.Equal(got[:2], want[:2]) {
+				t.Errorf("launch prefix = %#v, want %#v", got[:2], want[:2])
+			}
+		})
 	}
 
 	oGoal := o
