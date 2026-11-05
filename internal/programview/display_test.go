@@ -41,6 +41,29 @@ func TestDisplayIdentityFallsBackToShortenedProgramTitle(t *testing.T) {
 	}
 }
 
+func TestDisplayIdentityShortensHeadingThatRepeatsRawTitle(t *testing.T) {
+	longTitle := "Redesign the whole workload platform so that every team can schedule batch work. " +
+		"Also migrate the legacy scheduler and delete it afterwards."
+	goal := "# " + longTitle + "\n\n## Approved outcome\n\nOne place to schedule shared batch work.\n"
+	title, summary := displayIdentity(longTitle, goal)
+
+	if title != "Redesign the whole workload platform so that every team can schedule…" {
+		t.Errorf("display title = %q, want the clamped first sentence", title)
+	}
+	if summary != "One place to schedule shared batch work." {
+		t.Errorf("summary = %q, want the first prose paragraph", summary)
+	}
+}
+
+func TestDisplayIdentityShortensOverlongHeading(t *testing.T) {
+	goal := "# List every admission webhook registered in the cluster and report which ones are failing open\n"
+	title, _ := displayIdentity("Workloads", goal)
+
+	if title != "List every admission webhook registered in the cluster and report which…" {
+		t.Errorf("display title = %q, want the clamped heading", title)
+	}
+}
+
 func TestDisplayIdentitySkipsCodeListsAndQuotesWhenSummarizing(t *testing.T) {
 	goal := "# Relay V1\n\n```\nnot prose\n```\n\n> quoted\n\n1. numbered\n\nRelay coordinates dependent pull requests for one program.\n"
 	title, summary := displayIdentity("Relay V1", goal)
