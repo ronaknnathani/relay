@@ -116,6 +116,12 @@ func cancelProgramItem(t *testing.T, programSlug, itemID string) {
 	}
 }
 
+// workerTab is the tab Relay opened for an item's worker, labeled as launch
+// labels it.
+func workerTab(item program.WorkItem) herdr.TabInfo {
+	return herdr.TabInfo{ID: workerTabID, WorkspaceID: "w7", Label: workerTabLabel(item), PaneCount: 1}
+}
+
 func deadPatrolTab() herdr.TabInfo {
 	return herdr.TabInfo{ID: deadPatrolTabID, WorkspaceID: "w7", Label: "relay-patrol:old", PaneCount: 1}
 }
@@ -199,6 +205,7 @@ func TestProgramSweepClosesMergedAndCancelledWorkerTabs(t *testing.T) {
 			p, item, manifest := test.fixture(t)
 			worker := liveWorkerAgent(manifest, test.workerStatus)
 			client := installSweepHerdr(t, worker)
+			client.tabs = append(client.tabs, workerTab(item))
 
 			got, err := runSweep(t, p.Slug)
 			if err != nil {
@@ -258,6 +265,7 @@ func TestProgramSweepPreservesActiveItemWorkers(t *testing.T) {
 				test.adjust(t, p, item.ID)
 			}
 			client := installSweepHerdr(t, liveWorkerAgent(manifest, herdr.StatusIdle))
+			client.tabs = append(client.tabs, workerTab(item))
 
 			got, err := runSweep(t, p.Slug)
 			if err != nil {
@@ -302,6 +310,7 @@ func TestProgramSweepPreservesBusyWorkers(t *testing.T) {
 			p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
 			cancelProgramItem(t, p.Slug, item.ID)
 			client := installSweepHerdr(t, liveWorkerAgent(manifest, test.workerStatus))
+			client.tabs = append(client.tabs, workerTab(item))
 			if test.exit != nil {
 				client.exitHook = test.exit
 			}
@@ -321,6 +330,103 @@ func TestProgramSweepPreservesBusyWorkers(t *testing.T) {
 				t.Fatalf("closed tabs = %v, want the worker tab kept", client.closedTabs)
 			}
 		})
+	}
+}
+
+func TestProgramSweepPreservesUserAgentInWorkerTab(t *testing.T) {
+	p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+	cancelProgramItem(t, p.Slug, item.ID)
+	userAgent := liveWorkerAgent(manifest, herdr.StatusIdle)
+	userAgent.TerminalTitle = "Claude Code"
+	client := installSweepHerdr(t, userAgent)
+	client.tabs = append(client.tabs, workerTab(item))
+
+	got, err := runSweep(t, p.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertSweepOutput(t, got, sweepOutput(nil, []programSweepEntry{{
+		TabID: workerTabID, Kind: sweepKindWorker, Subject: item.ID, Reason: sweepReasonForeignSession,
+	}}, nil))
+	if len(client.exited) != 0 || len(client.closedTabs) != 0 {
+		t.Fatalf("exits = %v, closed tabs = %v; want the user's agent untouched", client.exited, client.closedTabs)
+	}
+}
+
+func TestProgramSweepExitedWorkerTabs(t *testing.T) {
+	tests := []struct {
+		name       string
+		paneCWD    func(worktree string) string
+		wantClosed bool
+		wantReason string
+	}{
+		{
+			name:       "shell left in the worktree",
+			paneCWD:    func(worktree string) string { return worktree },
+			wantClosed: true,
+			wantReason: "item " + string(program.ItemCancelled) + "; worker exited",
+		},
+		{
+			name:       "shell moved outside the worktree",
+			paneCWD:    func(string) string { return t.TempDir() },
+			wantReason: sweepReasonOutsideWorktree,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+			cancelProgramItem(t, p.Slug, item.ID)
+			client := installSweepHerdr(t)
+			client.tabs = append(client.tabs, workerTab(item))
+			client.panes = append(client.panes, herdr.Pane{
+				ID: "w7:p9", TabID: workerTabID, WorkspaceID: "w7", CWD: test.paneCWD(*manifest.Worktree),
+			})
+
+			got, err := runSweep(t, p.Slug)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			entry := []programSweepEntry{{
+				TabID: workerTabID, Kind: sweepKindWorker, Subject: item.ID, Reason: test.wantReason,
+			}}
+			want, wantClosedTabs := sweepOutput(nil, entry, nil), []string(nil)
+			if test.wantClosed {
+				want, wantClosedTabs = sweepOutput(entry, nil, nil), []string{workerTabID}
+			}
+			assertSweepOutput(t, got, want)
+			if !reflect.DeepEqual(client.closedTabs, wantClosedTabs) || len(client.exited) != 0 {
+				t.Fatalf("closed tabs = %v, exits = %v; want closed tabs %v and no exits",
+					client.closedTabs, client.exited, wantClosedTabs)
+			}
+		})
+	}
+}
+
+func TestProgramSweepLeavesWorkersInOtherWorkspaces(t *testing.T) {
+	p, item, manifest := createCleanupFixture(t)
+	local := liveWorkerAgent(manifest, herdr.StatusIdle)
+	elsewhere := local
+	elsewhere.PaneID, elsewhere.TabID, elsewhere.WorkspaceID = "w8:p9", "w8:t9", "w8"
+	client := installSweepHerdr(t, local, elsewhere)
+	otherTab := workerTab(item)
+	otherTab.ID, otherTab.WorkspaceID = "w8:t9", "w8"
+	client.tabs = append(client.tabs, workerTab(item), otherTab)
+
+	got, err := runSweep(t, p.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertSweepOutput(t, got, sweepOutput([]programSweepEntry{{
+		TabID: workerTabID, Kind: sweepKindWorker, Subject: item.ID, Reason: "item merged; worker idle",
+	}}, nil, nil))
+	if !reflect.DeepEqual(client.exited, []herdr.SessionIdentity{local.Identity()}) {
+		t.Fatalf("exits = %#v, want only this workspace's worker", client.exited)
+	}
+	if !reflect.DeepEqual(client.closedTabs, []string{workerTabID}) {
+		t.Fatalf("closed tabs = %v, want only this workspace's worker tab", client.closedTabs)
 	}
 }
 
@@ -375,22 +481,24 @@ func installFinishedWorkspace(t *testing.T) (program.Program, program.WorkItem, 
 	client := installSweepHerdr(t, liveWorkerAgent(manifest, herdr.StatusIdle))
 	installCompletedWatcherState(t, manifest.Slug)
 	client.tabs = append(client.tabs,
-		herdr.TabInfo{ID: workerTabID, WorkspaceID: "w7", Label: item.ID + ": " + item.Title, PaneCount: 1},
+		workerTab(item),
 		deadPatrolTab(),
 	)
 	return p, item, manifest, client
 }
 
 func TestProgramSweepIsIdempotent(t *testing.T) {
-	p, _, _, client := installFinishedWorkspace(t)
+	p, item, manifest, client := installFinishedWorkspace(t)
 
 	first, err := runSweep(t, p.Slug)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first.Closed) != 3 {
-		t.Fatalf("first sweep closed %+v, want the watcher, worker, and patrol tabs", first.Closed)
-	}
+	assertSweepOutput(t, first, sweepOutput([]programSweepEntry{
+		{TabID: watcherTabID, Kind: sweepKindPRWatch, Subject: manifest.Slug, Reason: sweepReasonWatcherNotRunning},
+		{TabID: deadPatrolTabID, Kind: sweepKindPatrol, Subject: "old", Reason: sweepReasonPatrolNotRunning},
+		{TabID: workerTabID, Kind: sweepKindWorker, Subject: item.ID, Reason: "item merged; worker idle"},
+	}, nil, nil))
 	second, err := runSweep(t, p.Slug)
 	if err != nil {
 		t.Fatal(err)
@@ -414,7 +522,7 @@ func TestProgramSweepAggregatesCloseFailures(t *testing.T) {
 	}
 
 	got, err := runSweep(t, p.Slug)
-	if err == nil || !strings.Contains(err.Error(), "2 tab(s) could not be closed") {
+	if err == nil || !strings.Contains(err.Error(), "2 error(s)") {
 		t.Fatalf("sweep error = %v, want both failures counted", err)
 	}
 

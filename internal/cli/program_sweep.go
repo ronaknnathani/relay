@@ -20,11 +20,6 @@ const (
 	sweepKindPatrol  = "patrol"
 )
 
-const (
-	prWatchTabLabelPrefix = "relay-pr-watch:"
-	patrolTabLabelPrefix  = "relay-patrol:"
-)
-
 // Reasons the sweep reports for a closed or preserved tab.
 const (
 	sweepReasonWatcherNotRunning = "watcher not running"
@@ -36,6 +31,9 @@ const (
 	sweepReasonTechLeadTab       = "tech lead tab"
 	sweepReasonWorkerBusy        = "worker became busy"
 	sweepReasonPaneReplaced      = "pane now hosts a different session"
+	sweepReasonForeignSession    = "tab hosts a session that is not the item's Relay worker"
+	sweepReasonOutsideWorktree   = "pane is not rooted in the item's worktree"
+	sweepReasonNoPanes           = "tab lists no panes"
 	sweepReasonInvalidSlug       = "label names no valid slug"
 )
 
@@ -75,9 +73,10 @@ func newCmdProgramSweep() *cobra.Command {
 		Short: "Close Relay tabs in this workspace that are no longer needed",
 		Long: "Close the Relay-created tabs in the current Herdr workspace that nothing needs anymore.\n\n" +
 			"A pull request watcher's tab is closed once its watcher has stopped, through the exact\n" +
-			"tab its runtime record names. A worker's tab is closed once its item is merged or\n" +
-			"canceled and the worker is idle or done: the worker is asked to exit first. A patrol\n" +
-			"tab is closed once no patrol runs for its program. The tech lead's own tab, any busy\n" +
+			"tab its runtime record names. A worker's tab, found by the label Relay gave it, is\n" +
+			"closed once its item is merged or canceled and it hosts either the item's own idle\n" +
+			"or done session, which is asked to exit first, or no agent in the item's worktree.\n" +
+			"A patrol tab is closed once no patrol runs for its program. The tech lead's own tab, any busy\n" +
 			"agent, running watchers and patrols, tabs Relay did not create, and other workspaces\n" +
 			"are never touched. The sweep never archives anything.",
 		Args: cobra.ExactArgs(1),
@@ -134,13 +133,13 @@ func runProgramSweep(out io.Writer, programSlug string, jsonOutput bool) error {
 			sweep.sweepLabeledTab(tab, sweepKindPatrol, patrolTabLabelPrefix, sweep.closeDeadPatrolTab)
 		}
 	}
-	sweep.sweepWorkerTabs(p, readiness.Agents)
+	sweep.sweepWorkerTabs(p, tabs, readiness.Agents)
 
 	if err := renderProgramSweep(out, *sweep.output, jsonOutput); err != nil {
 		return err
 	}
 	if failed := len(sweep.output.Errors); failed > 0 {
-		return fmt.Errorf("sweep %s: %d tab(s) could not be closed", p.Slug, failed)
+		return fmt.Errorf("sweep %s: %d error(s), each listed under errors", p.Slug, failed)
 	}
 	return nil
 }
@@ -247,10 +246,11 @@ func (s *programSweep) closeDeadPatrolTab(tab herdr.TabInfo, slug string) (bool,
 	return true, sweepReasonPatrolNotRunning, nil
 }
 
-// sweepWorkerTabs ends the idle sessions of this program's merged and canceled
-// items and closes their exact tabs. Only live sessions are found, so a tab
-// whose agent already exited is left alone.
-func (s *programSweep) sweepWorkerTabs(p program.Program, agents []herdr.Agent) {
+// sweepWorkerTabs closes the worker tabs of this program's merged and canceled
+// items. A tab qualifies only when it carries the label Relay gave the item's
+// worker tab at launch, and then only when it hosts the item's own Relay
+// session or no agent at all; closeWorkerTab decides which.
+func (s *programSweep) sweepWorkerTabs(p program.Program, tabs []herdr.TabInfo, agents []herdr.Agent) {
 	local := make([]herdr.Agent, 0, len(agents))
 	for _, agent := range agents {
 		if agent.WorkspaceID == s.workspaceID {
@@ -258,41 +258,56 @@ func (s *programSweep) sweepWorkerTabs(p program.Program, agents []herdr.Agent) 
 		}
 	}
 	for _, item := range p.Items {
-		if item.ProjectSlug == "" ||
+		if item.ProjectSlug == "" || item.ProjectWorktree == "" ||
 			(item.Status != program.ItemMerged && item.Status != program.ItemCancelled) {
 			continue
 		}
-		matches := herdr.LiveWorkers(local, item.ProjectSlug, item.Repo, item.ProjectWorktree)
-		if len(matches) == 0 {
-			continue
-		}
-		entry := programSweepEntry{Kind: sweepKindWorker, Subject: item.ID}
-		if len(matches) > 1 {
-			panes := make([]string, 0, len(matches))
-			for _, match := range matches {
-				panes = append(panes, match.PaneID)
+		label := workerTabLabel(item)
+		var labeled []herdr.TabInfo
+		for _, tab := range tabs {
+			if tab.WorkspaceID == s.workspaceID && tab.Label == label {
+				labeled = append(labeled, tab)
 			}
-			s.record(entry, false, "", fmt.Errorf(
-				"%d live sessions claim project %q (panes %s); exit all but one, then rerun the sweep",
-				len(matches), item.ProjectSlug, strings.Join(panes, ", "),
-			))
+		}
+		if len(labeled) == 0 {
 			continue
 		}
-		worker := matches[0]
-		entry.TabID = worker.TabID
-		closed, reason, err := s.closeIdleWorker(item, worker)
-		s.record(entry, closed, reason, err)
+		owner, err := herdr.FindLiveProjectOwner(local, item.ProjectSlug)
+		if err != nil && !errors.Is(err, herdr.ErrNoLiveProjectOwner) {
+			s.record(programSweepEntry{Kind: sweepKindWorker, Subject: item.ID}, false, "", err)
+			continue
+		}
+		for _, tab := range labeled {
+			entry := programSweepEntry{TabID: tab.ID, Kind: sweepKindWorker, Subject: item.ID}
+			closed, reason, err := s.closeWorkerTab(item, tab, owner, local)
+			s.record(entry, closed, reason, err)
+		}
 	}
 }
 
-// closeIdleWorker asks an idle or done worker to exit and then closes its exact
-// tab. A working or blocked worker is never interrupted.
-func (s *programSweep) closeIdleWorker(item program.WorkItem, worker herdr.Agent) (_ bool, _ string, retErr error) {
-	if s.isTechLeadTab(worker.TabID) {
+// closeWorkerTab closes one labeled worker tab. When the tab hosts the item's
+// own Relay session, that session must be idle or done and is asked to exit
+// first. When it hosts no agent, every pane must still be rooted in the item's
+// worktree, which is what a worker that already exited leaves behind. Any
+// other session, such as the user's own agent in the worktree, keeps its tab.
+func (s *programSweep) closeWorkerTab(
+	item program.WorkItem, tab herdr.TabInfo, owner herdr.Agent, agents []herdr.Agent,
+) (_ bool, _ string, retErr error) {
+	if s.isTechLeadTab(tab.ID) {
 		return false, sweepReasonTechLeadTab, nil
 	}
-	if worker.Status == herdr.StatusWorking || worker.Status == herdr.StatusBlocked {
-		return false, "agent " + string(worker.Status), nil
+	var hosted []herdr.Agent
+	for _, agent := range agents {
+		if agent.TabID == tab.ID {
+			hosted = append(hosted, agent)
+		}
+	}
+	ownsTab := len(hosted) == 1 && hosted[0].PaneID == owner.PaneID
+	if len(hosted) > 0 && !ownsTab {
+		return false, sweepReasonForeignSession, nil
+	}
+	if ownsTab && (owner.Status == herdr.StatusWorking || owner.Status == herdr.StatusBlocked) {
+		return false, "agent " + string(owner.Status), nil
 	}
 	lock, err := acquireWorkerStartLock(item.ProjectSlug, s.command)
 	if err != nil {
@@ -305,6 +320,15 @@ func (s *programSweep) closeIdleWorker(item program.WorkItem, worker herdr.Agent
 			))
 		}
 	}()
+	if ownsTab {
+		return s.closeIdleWorker(item, owner)
+	}
+	return s.closeExitedWorkerTab(item, tab)
+}
+
+// closeIdleWorker asks an idle or done worker to exit and then closes its exact
+// tab. The caller holds the item's worker start lock.
+func (s *programSweep) closeIdleWorker(item program.WorkItem, worker herdr.Agent) (bool, string, error) {
 	identity := worker.Identity()
 	exit, err := s.client.ExitAgent(identity)
 	if errors.Is(err, herdr.ErrAgentBusy) {
@@ -325,6 +349,34 @@ func (s *programSweep) closeIdleWorker(item program.WorkItem, worker herdr.Agent
 	return true, fmt.Sprintf("item %s; worker %s", item.Status, worker.Status), nil
 }
 
+// closeExitedWorkerTab closes a worker tab whose agent is gone, but only when
+// every pane in it is still rooted in the item's worktree. Herdr is re-read
+// before the close, so an agent that started there meanwhile keeps the tab.
+// The caller holds the item's worker start lock.
+func (s *programSweep) closeExitedWorkerTab(item program.WorkItem, tab herdr.TabInfo) (bool, string, error) {
+	panes, err := s.client.Panes(s.workspaceID)
+	if err != nil {
+		return false, "", fmt.Errorf("list panes of worker tab %s for item %s: %w", tab.ID, item.ID, err)
+	}
+	rooted := 0
+	for _, pane := range panes {
+		if pane.TabID != tab.ID {
+			continue
+		}
+		if !pane.RootedIn(item.ProjectWorktree) {
+			return false, sweepReasonOutsideWorktree, nil
+		}
+		rooted++
+	}
+	if rooted == 0 {
+		return false, sweepReasonNoPanes, nil
+	}
+	if _, err := closeCleanupWorkerTab(s.client, herdr.SessionIdentity{TabID: tab.ID}); err != nil {
+		return false, "", fmt.Errorf("close exited worker tab %s for item %s: %w", tab.ID, item.ID, err)
+	}
+	return true, fmt.Sprintf("item %s; worker exited", item.Status), nil
+}
+
 func renderProgramSweep(out io.Writer, result programSweepOutput, jsonOutput bool) error {
 	if jsonOutput {
 		return writeProgramJSON(out, result)
@@ -338,8 +390,11 @@ func renderProgramSweep(out io.Writer, result programSweepOutput, jsonOutput boo
 		{"error", result.Errors},
 	} {
 		for _, entry := range group.entries {
-			fmt.Fprintf(out, "%s %s %s tab %s: %s\n",
-				group.label, entry.Kind, entry.Subject, entry.TabID, entry.Reason)
+			tab := ""
+			if entry.TabID != "" {
+				tab = " tab " + entry.TabID
+			}
+			fmt.Fprintf(out, "%s %s %s%s: %s\n", group.label, entry.Kind, entry.Subject, tab, entry.Reason)
 		}
 	}
 	return nil

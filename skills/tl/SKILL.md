@@ -87,8 +87,8 @@ The command is idempotent: live workers and watchers are adopted rather than dup
 
 Run `program sweep` on every tech lead entry and every patrol wake, after `worker ensure`. It closes
 the Relay tabs in this workspace that nothing needs anymore: a stopped pull request watcher's tab,
-through the exact tab its runtime record names; the worker tab of a `merged` or `cancelled` item
-whose worker is idle or done, after `/exit`; and a `relay-patrol:<program>` tab whose program holds no
+through the exact tab its runtime record names; the labeled worker tab of a `merged` or `cancelled`
+item whose own worker is idle or done, after `/exit`, or whose worker already exited; and a `relay-patrol:<program>` tab whose program holds no
 patrol lock. It never closes your own tab, a busy agent, a running watcher or patrol, the worker of an
 unfinished item, a tab Relay did not create, or another workspace's tab, and it never archives
 anything. One tab's failure never stops the rest; report every `errors` entry to the CEO instead of
@@ -97,8 +97,8 @@ retrying the close by hand.
 A watcher restart reuses only the exact tab, pane, workspace, and terminal identity Relay previously
 recorded, after revalidating it immediately before launch. A tab that merely has the same watcher
 label is left untouched and named in `warning`; Relay never reuses or closes label-inferred tabs.
-The one label-matched exception is a `relay-patrol:<program>` tab, which `program sweep`
-closes only when that program holds no patrol lock.
+The label-matched exceptions are a finished item's worker tab, described above, and a
+`relay-patrol:<program>` tab, which `program sweep` closes only when that program holds no patrol lock.
 `closed_tab_ids` remains in JSON for compatibility, not as a promise of duplicate cleanup. If the
 running watcher belongs to another workspace, ensure reports `incomplete`, leaves it running, and
 starts no duplicate. Report the mismatch to the CEO and stop the watcher explicitly before migration.

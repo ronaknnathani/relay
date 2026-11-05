@@ -137,6 +137,12 @@ func FindLiveTL(agents []Agent, programSlug string) (Agent, error) {
 	return Agent{}, &DuplicateTLError{ProgramSlug: programSlug, PaneIDs: panes}
 }
 
+// RootedIn reports whether a pane's shell and any foreground process both sit
+// inside dir, as a tab Relay opened in a worktree does once its agent exits.
+func (p Pane) RootedIn(dir string) bool {
+	return pathWithin(p.CWD, dir) && (p.ForegroundCWD == "" || pathWithin(p.ForegroundCWD, dir))
+}
+
 func matchesRelayTitle(title, identity string) bool {
 	return title == identity || strings.HasPrefix(title, identity+" - ")
 }

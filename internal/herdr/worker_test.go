@@ -170,3 +170,29 @@ func TestWorkerNameIsStableValidAndCollisionResistantWhenTruncated(t *testing.T)
 		t.Fatalf("truncated worker names collided: %q", first)
 	}
 }
+
+func TestPaneRootedIn(t *testing.T) {
+	root := t.TempDir()
+	inside := filepath.Join(root, "sub")
+	if err := os.Mkdir(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := t.TempDir()
+	for _, test := range []struct {
+		name string
+		pane Pane
+		want bool
+	}{
+		{name: "shell at the root", pane: Pane{CWD: root}, want: true},
+		{name: "shell and foreground inside", pane: Pane{CWD: root, ForegroundCWD: inside}, want: true},
+		{name: "shell elsewhere", pane: Pane{CWD: elsewhere}, want: false},
+		{name: "foreground elsewhere", pane: Pane{CWD: root, ForegroundCWD: elsewhere}, want: false},
+		{name: "no directory reported", pane: Pane{ForegroundCWD: root}, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.pane.RootedIn(root); got != test.want {
+				t.Fatalf("RootedIn(%q) for %+v = %v, want %v", root, test.pane, got, test.want)
+			}
+		})
+	}
+}

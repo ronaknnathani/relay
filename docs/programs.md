@@ -308,13 +308,15 @@ it:
   running, and only when its `watch.json` names this exact tab. The close is the same revalidated,
   recorded-identity close `relay pr watch stop` performs, under the watcher's lifecycle lock, and the
   record's tab and pane ids are cleared afterwards. A running watcher is never signaled.
-- **Worker tabs** of this program's `merged` and `cancelled` items close once the item's one live
-  worker session is `idle` or `done`. The session is matched by its project identity, sent `/exit`
+- **Worker tabs** of this program's `merged` and `cancelled` items are found by the `<item>: <title>`
+  label Relay gave them at launch. A labeled tab closes in two cases. If it hosts the item's own
+  session, titled `relay:<child-slug>`, that session must be `idle` or `done`; it is sent `/exit`
   without taking focus, and its exact tab is closed after Herdr is re-read, just as `worker cleanup`
-  does. A tab whose agent already exited has no session identity and is left alone.
+  does. If it hosts no agent and every pane is still rooted in the item's worktree, the worker
+  already exited and the leftover shell tab is closed. Any other session in the tab, such as your
+  own agent in the worktree, keeps it open.
 - **Patrol tabs** (`relay-patrol:<program>`) close once that program holds no patrol lock. Liveness
-  is checked immediately before the close. This is the only kind matched by label, because the
-  patrol tab is already reused by label.
+  is checked immediately before the close.
 
 The sweep never closes the tech lead's own tab, a running patrol's or watcher's tab, a tab whose
 agent is `working` or `blocked`, the worker of a `pending`, `dispatched`, `in-review`, or `blocked`

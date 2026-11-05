@@ -155,8 +155,11 @@ func runProgramPatrolStart(out io.Writer, slug string, jsonOutput bool) error {
 	}
 }
 
+// patrolTabLabelPrefix starts the label of every program patrol tab.
+const patrolTabLabelPrefix = "relay-patrol:"
+
 func prepareProgramPatrolTab(client herdrRuntimeClient, workspaceID, repo, slug string) (herdr.Tab, error) {
-	label := "relay-patrol:" + slug
+	label := patrolTabLabelPrefix + slug
 	tabs, err := client.Tabs(workspaceID)
 	if err != nil {
 		return herdr.Tab{}, fmt.Errorf("find patrol tab %q in workspace %q: %w", label, workspaceID, err)
