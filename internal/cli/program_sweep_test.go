@@ -560,3 +560,113 @@ func TestProgramSweepThenCleanupArchivesMergedItem(t *testing.T) {
 		t.Fatalf("cleanup after sweep = %+v, want a clean archive with no worker left to exit", result)
 	}
 }
+
+func TestProgramSweepPreservesReusedWorkerTabID(t *testing.T) {
+	// Herdr gave the worker tab's id to a new tab before the lock was taken.
+	reused := []herdr.TabInfo{{ID: workerTabID, WorkspaceID: "w7", Label: "notes", PaneCount: 1}}
+	tests := []struct {
+		name  string
+		later []herdr.TabInfo
+		owner bool
+	}{
+		{name: "owner tab id now labels another tab", later: reused, owner: true},
+		{name: "agent-less tab id now labels another tab", later: reused},
+		{name: "agent-less tab is gone"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p, item, manifest := createWorkerFixture(t, program.ItemDispatched)
+			cancelProgramItem(t, p.Slug, item.ID)
+			var agents []herdr.Agent
+			if test.owner {
+				agents = append(agents, liveWorkerAgent(manifest, herdr.StatusIdle))
+			}
+			client := installSweepHerdr(t, agents...)
+			client.panes = append(client.panes, herdr.Pane{
+				ID: "w7:p9", TabID: workerTabID, WorkspaceID: "w7", CWD: *manifest.Worktree,
+			})
+			listed := 0
+			client.tabsHook = func(string) ([]herdr.TabInfo, error) {
+				listed++
+				if listed == 1 {
+					return []herdr.TabInfo{workerTab(item)}, nil
+				}
+				return test.later, nil
+			}
+
+			got, err := runSweep(t, p.Slug)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			assertSweepOutput(t, got, sweepOutput(nil, []programSweepEntry{{
+				TabID: workerTabID, Kind: sweepKindWorker, Subject: item.ID, Reason: sweepReasonTabChanged,
+			}}, nil))
+			if len(client.exited) != 0 || len(client.closedTabs) != 0 {
+				t.Fatalf("exits = %v, closed tabs = %v; want the reused tab untouched", client.exited, client.closedTabs)
+			}
+		})
+	}
+}
+
+func TestProgramSweepItemWithoutWorktree(t *testing.T) {
+	tests := []struct {
+		name          string
+		owner         bool
+		wantClosed    bool
+		wantReason    string
+		wantExitCount int
+	}{
+		{
+			name:  "live owner still exits",
+			owner: true, wantClosed: true, wantReason: "item merged; worker idle", wantExitCount: 1,
+		},
+		{name: "agent-less tab is kept", wantReason: sweepReasonNoWorktree},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p, item, manifest := createCleanupFixture(t)
+			path := program.ManifestPath(program.ActiveDir(), p.Slug)
+			loaded, err := program.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range loaded.Items {
+				if loaded.Items[i].ID == item.ID {
+					loaded.Items[i].ProjectBranch = ""
+					loaded.Items[i].ProjectWorktree = ""
+				}
+			}
+			if err := program.Save(path, loaded); err != nil {
+				t.Fatal(err)
+			}
+			var agents []herdr.Agent
+			if test.owner {
+				agents = append(agents, liveWorkerAgent(manifest, herdr.StatusIdle))
+			}
+			client := installSweepHerdr(t, agents...)
+			client.tabs = append(client.tabs, workerTab(item))
+			client.panes = append(client.panes, herdr.Pane{
+				ID: "w7:p9", TabID: workerTabID, WorkspaceID: "w7", CWD: *manifest.Worktree,
+			})
+
+			got, err := runSweep(t, p.Slug)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			entry := []programSweepEntry{{
+				TabID: workerTabID, Kind: sweepKindWorker, Subject: item.ID, Reason: test.wantReason,
+			}}
+			want, wantClosedTabs := sweepOutput(nil, entry, nil), []string(nil)
+			if test.wantClosed {
+				want, wantClosedTabs = sweepOutput(entry, nil, nil), []string{workerTabID}
+			}
+			assertSweepOutput(t, got, want)
+			if !reflect.DeepEqual(client.closedTabs, wantClosedTabs) || len(client.exited) != test.wantExitCount {
+				t.Fatalf("closed tabs = %v, exits = %v; want closed tabs %v and %d exit(s)",
+					client.closedTabs, client.exited, wantClosedTabs, test.wantExitCount)
+			}
+		})
+	}
+}

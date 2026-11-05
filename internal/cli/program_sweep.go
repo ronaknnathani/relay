@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/ronaknnathani/relay/internal/herdr"
@@ -35,6 +36,8 @@ const (
 	sweepReasonOutsideWorktree   = "pane is not rooted in the item's worktree"
 	sweepReasonNoPanes           = "tab lists no panes"
 	sweepReasonInvalidSlug       = "label names no valid slug"
+	sweepReasonNoWorktree        = "item records no worktree"
+	sweepReasonTabChanged        = "tab is gone or no longer carries the worker label"
 )
 
 // programSweepEntry is one tab the sweep closed, kept, or failed to close.
@@ -76,9 +79,9 @@ func newCmdProgramSweep() *cobra.Command {
 			"tab its runtime record names. A worker's tab, found by the label Relay gave it, is\n" +
 			"closed once its item is merged or canceled and it hosts either the item's own idle\n" +
 			"or done session, which is asked to exit first, or no agent in the item's worktree.\n" +
-			"A patrol tab is closed once no patrol runs for its program. The tech lead's own tab, any busy\n" +
-			"agent, running watchers and patrols, tabs Relay did not create, and other workspaces\n" +
-			"are never touched. The sweep never archives anything.",
+			"A patrol tab is closed once no patrol runs for its program. The tech lead's own\n" +
+			"tab, any busy agent, running watchers and patrols, tabs Relay did not create, and\n" +
+			"other workspaces are never touched. The sweep never archives anything.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runProgramSweep(cmd.OutOrStdout(), args[0], jsonOutput)
@@ -258,7 +261,7 @@ func (s *programSweep) sweepWorkerTabs(p program.Program, tabs []herdr.TabInfo, 
 		}
 	}
 	for _, item := range p.Items {
-		if item.ProjectSlug == "" || item.ProjectWorktree == "" ||
+		if item.ProjectSlug == "" ||
 			(item.Status != program.ItemMerged && item.Status != program.ItemCancelled) {
 			continue
 		}
@@ -290,6 +293,7 @@ func (s *programSweep) sweepWorkerTabs(p program.Program, tabs []herdr.TabInfo, 
 // first. When it hosts no agent, every pane must still be rooted in the item's
 // worktree, which is what a worker that already exited leaves behind. Any
 // other session, such as the user's own agent in the worktree, keeps its tab.
+// Herdr reuses tab ids, so under the lock the tab must still carry its label.
 func (s *programSweep) closeWorkerTab(
 	item program.WorkItem, tab herdr.TabInfo, owner herdr.Agent, agents []herdr.Agent,
 ) (_ bool, _ string, retErr error) {
@@ -309,6 +313,9 @@ func (s *programSweep) closeWorkerTab(
 	if ownsTab && (owner.Status == herdr.StatusWorking || owner.Status == herdr.StatusBlocked) {
 		return false, "agent " + string(owner.Status), nil
 	}
+	if !ownsTab && item.ProjectWorktree == "" {
+		return false, sweepReasonNoWorktree, nil
+	}
 	lock, err := acquireWorkerStartLock(item.ProjectSlug, s.command)
 	if err != nil {
 		return false, "", err
@@ -320,6 +327,15 @@ func (s *programSweep) closeWorkerTab(
 			))
 		}
 	}()
+	current, err := s.client.Tabs(s.workspaceID)
+	if err != nil {
+		return false, "", fmt.Errorf("list tabs to recheck worker tab %s for item %s: %w", tab.ID, item.ID, err)
+	}
+	if !slices.ContainsFunc(current, func(t herdr.TabInfo) bool {
+		return t.ID == tab.ID && t.WorkspaceID == s.workspaceID && t.Label == tab.Label
+	}) {
+		return false, sweepReasonTabChanged, nil
+	}
 	if ownsTab {
 		return s.closeIdleWorker(item, owner)
 	}

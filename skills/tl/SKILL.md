@@ -88,8 +88,8 @@ The command is idempotent: live workers and watchers are adopted rather than dup
 Run `program sweep` on every tech lead entry and every patrol wake, after `worker ensure`. It closes
 the Relay tabs in this workspace that nothing needs anymore: a stopped pull request watcher's tab,
 through the exact tab its runtime record names; the labeled worker tab of a `merged` or `cancelled`
-item whose own worker is idle or done, after `/exit`, or whose worker already exited; and a `relay-patrol:<program>` tab whose program holds no
-patrol lock. It never closes your own tab, a busy agent, a running watcher or patrol, the worker of an
+item whose own worker is idle or done, after `/exit`, or whose worker already exited; and a
+`relay-patrol:<program>` tab whose program holds no patrol lock. It never closes your own tab, a busy agent, a running watcher or patrol, the worker of an
 unfinished item, a tab Relay did not create, or another workspace's tab, and it never archives
 anything. One tab's failure never stops the rest; report every `errors` entry to the CEO instead of
 retrying the close by hand.
