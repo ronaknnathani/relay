@@ -553,8 +553,11 @@ func occupiedHerdrStatus(status herdr.Status) bool {
 	}
 }
 
+// prWatchTabLabelPrefix starts the label of every pull request watcher tab.
+const prWatchTabLabelPrefix = "relay-pr-watch:"
+
 func prWatchWorkspaceLabel(slug string) string {
-	return "relay-pr-watch:" + slug
+	return prWatchTabLabelPrefix + slug
 }
 
 // adoptedWatcherWarning reports an adopted watcher that is watching for someone

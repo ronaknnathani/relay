@@ -31,7 +31,9 @@ repurposed shell or a Herdr-reused id from being commandeered or closed.
 does not report label-inferred cleanup; Relay never closes those tabs automatically. `stop` and
 merged-worker cleanup close only the exact recorded watcher terminal after re-reading Herdr and
 matching its workspace, tab, pane, and terminal identity. Missing or changed identity is preserved
-with an actionable warning.
+with an actionable warning. In a managed program,
+`relay program sweep` closes a finished watcher's tab through the same recorded identity as `stop`,
+and never a tab that only carries the watcher label.
 
 Start, stop, and watcher cleanup acquire one per-project lifecycle lock before their first liveness
 or state check. The lock is

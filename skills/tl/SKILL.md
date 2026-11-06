@@ -65,6 +65,7 @@ relay program message list "$PROGRAM" --json
 relay program status "$PROGRAM" --json
 relay program tick "$PROGRAM" --json
 relay program worker ensure "$PROGRAM" --json
+relay program sweep "$PROGRAM" --json
 relay program patrol tick "$PROGRAM" --json
 ```
 
@@ -84,9 +85,20 @@ sure every active worker has one live owner in Herdr. For an item with a recorde
 also makes sure the PR-backed worker has one managed watcher in a dedicated tab in this workspace.
 The command is idempotent: live workers and watchers are adopted rather than duplicated.
 
+Run `program sweep` on every tech lead entry and every patrol wake, after `worker ensure`. It closes
+the Relay tabs in this workspace that nothing needs anymore: a stopped pull request watcher's tab,
+through the exact tab its runtime record names; the labeled worker tab of a `merged` or `cancelled`
+item whose own worker is idle or done, after `/exit`, or whose worker already exited; and a
+`relay-patrol:<program>` tab whose program holds no patrol lock. It never closes your own tab, a busy agent, a running watcher or patrol, the worker of an
+unfinished item, a tab Relay did not create, or another workspace's tab, and it never archives
+anything. One tab's failure never stops the rest; report every `errors` entry to the CEO instead of
+retrying the close by hand.
+
 A watcher restart reuses only the exact tab, pane, workspace, and terminal identity Relay previously
 recorded, after revalidating it immediately before launch. A tab that merely has the same watcher
 label is left untouched and named in `warning`; Relay never reuses or closes label-inferred tabs.
+The label-matched exceptions are a finished item's worker tab, described above, and a
+`relay-patrol:<program>` tab, which `program sweep` closes only when that program holds no patrol lock.
 `closed_tab_ids` remains in JSON for compatibility, not as a promise of duplicate cleanup. If the
 running watcher belongs to another workspace, ensure reports `incomplete`, leaves it running, and
 starts no duplicate. Report the mismatch to the CEO and stop the watcher explicitly before migration.
@@ -218,6 +230,10 @@ archived: it clears only when the recorded tab and pane ids are cleared, the wor
 tab are gone, and the child project is archived with its worktree removed. Never conclude the item is
 retired from the watcher no longer running.
 
+`program sweep` may already have closed the merged item's watcher tab and worker tab, but only
+`worker cleanup` archives the child project, so the reason stays on the board until cleanup runs.
+Run cleanup either way; it treats a tab the sweep closed as already done.
+
 If cleanup reports a warning and a `next_command`, the tab it names is still open and the ids were
 kept on purpose. Run that exact command again — it is safe on an already-archived child with no
 worker left, and it has nothing to do once the tab is closed.
@@ -250,6 +266,9 @@ partial run finishes the job, and the work item stays `merged` throughout.
 - The limit may change only after an explicit CEO decision. Apply it with
   `relay program set-max-open-prs <program> <count> --by ceo`; never raise it to work around stale or
   unrelated project records.
+- Item ids (`w<N>`) and decision ids (`d<N>`) are internal program bookkeeping. Use them in program
+  state, mail, and contracts, but write contracts and decision replies so the worker can describe the
+  change without them, and never ask a worker to cite them in a PR, commit, comment, or code.
 - Never invoke `stack-ship`. The program is already the multi-PR orchestrator: decompose work into
   program items and dispatch each item through `deliver-pr`.
 
@@ -411,6 +430,7 @@ a program decision or follow-up. Do not silently turn it into recurring automati
 - Waiting synchronously on a Herdr worker or treating Herdr `done`/`idle` as workflow completion.
 - Sending worker-to-worker prompts instead of coordinating through contracts, the tech lead, and
   mailboxes.
+- Asking a worker to cite an item or decision id in a published artifact.
 - Invoking `stack-ship` inside a program and creating a second nested orchestrator.
 - Continuing without checking or starting the Relay patrol on TL entry.
 - Improvising a non-Herdr fallback after a Herdr readiness error instead of reporting its instructions.
@@ -425,6 +445,7 @@ a program decision or follow-up. Do not silently turn it into recurring automati
       and started patrol in Herdr.
 - [ ] Reloaded durable state after a patrol doorbell before acting.
 - [ ] Ran `worker ensure` so every active worker and every PR-backed managed watcher is live.
+- [ ] Ran `program sweep` on this entry/wake and reported any `errors` entries.
 - [ ] Sent complete replies through worker inboxes and rang each new durable doorbell exactly once,
       with later retries delegated to the CLI's unnotified/status checks.
 - [ ] Serialized unread `pr-open` requests with `grant-open-pr` and reported reserved capacity.

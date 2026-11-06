@@ -45,9 +45,11 @@ messages and PR descriptions. Execute git/`gh` operations through this skill's b
 6. **Prefer the repo's PR template.** Fetch it and fill each section from the actual change; only fall
    back to the body in step 7 when none exists. Use the helper's `pr-template` command to fetch it.
 
-7. **Open the PR.** Title follows the repo's PR-title style. Body follows AGENTS.md: one or two short
-   prose paragraphs focused on why/what, no bullet list, no per-file walkthrough, and a `Testing Done`
-   section containing only the commands run. Disclose automated authorship with the actual agent/model
+7. **Open the PR.** Title follows the repo's PR-title style. The summary follows
+   `~/.config/agents/AGENTS.md` Part 3 "PR summaries" (repo `AGENTS.md` takes precedence): one or two
+   short prose paragraphs on why and what, not how — no bullets, no file or caller enumeration, no
+   pattern-mirroring, no rejected alternatives — and a `Testing Done` section listing only the
+   commands run. Disclose automated authorship with the actual agent/model
    used, not a hardcoded Claude footer. Add `--draft` to the helper call only when the caller passed it,
    and invoke `create-pr --title <title> --body-file <body-file>`.
 
@@ -61,11 +63,20 @@ there:
 - **Disclose agent authorship** in any PR comment you post — mark it as written by an automated agent on
   the author's behalf; never phrase it as the author's own words.
 
+**Published output names no internal program bookkeeping.** PR titles and bodies, commit messages,
+PR and review replies, code, code comments, and test names never mention work-item ids (`w<N>`),
+decision ids (`d<N>`), worker or session names derived from them, or that the change came from a
+Relay program, tech lead, CEO, or managed worker. Describe the change on its own terms. Machinery
+that is not prose stays: the hidden `relay-agent-reply` marker, the branch name, and the
+`🤖 <agent> on behalf of <author>` disclosure (which never says "Relay program").
+
 ## Red flags
 
 - Committing onto the default branch instead of branching first.
 - `git add .` / `git add -A` instead of staging the specific files.
 - A PR summary that is a bullet list, or that enumerates each file/caller and how the code works.
+- A PR summary that explains rejected alternatives or how the change mirrors an existing pattern.
+- Published text that names a work-item id, decision id, derived worker name, or a Relay program / tech lead / CEO / managed-worker origin.
 - A `Testing Done` section padded with prose or per-command descriptions instead of bare commands.
 - Refactor squashed into the same commit as a feature/fix; formatting churn mixed with behavior.
 - A commit body that restates the diff ("what") instead of the reason ("why").
@@ -78,6 +89,7 @@ there:
 - [ ] Only the intended files were staged (no `git add .`); diff has no secrets or stray formatting.
 - [ ] Commit message matches repo/AGENTS.md style, includes the actual-model `Co-authored-by` trailer, and keeps refactor separate.
 - [ ] PR summary is 1–2 prose paragraphs on why/what — not bullets, not a file-by-file how.
+- [ ] Title, body, and commit message name no work-item or decision id and no Relay program origin.
 - [ ] `Testing Done` is just the list of commands run; body discloses the actual automated agent/model.
 - [ ] Repo PR template used when present; base branch detected dynamically; `--draft` applied only if requested.
 - [ ] The PR URL was returned to the caller.

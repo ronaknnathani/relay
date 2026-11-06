@@ -160,6 +160,11 @@ func TestProgramDispatchCreatesManagedChildWithoutLaunch(t *testing.T) {
 		"Do not send another pr-open request while one is unread",
 		"acknowledge the grant inbox message only after open-pr succeeds",
 		"clarify", "plan", "tech lead", "CEO",
+		"## Published output",
+		"work-item ids (`w<N>`)",
+		"decision ids (`d<N>`)",
+		"Relay program, tech lead, CEO, or managed worker",
+		"relay-agent-reply",
 	} {
 		if !strings.Contains(string(assignment), want) {
 			t.Errorf("assignment missing %q:\n%s", want, assignment)
