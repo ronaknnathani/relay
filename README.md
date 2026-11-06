@@ -95,6 +95,11 @@ Pull requests
 Managed programs require [Herdr](https://herdr.dev) and currently support Copilot and Claude. Herdr
 keeps the tech lead, workers, program patrol, and PR watchers visible in separate terminal tabs.
 
+Relay also runs from a tab in the Herdr desktop app, where it drives the app through `hc` and
+`herdr-app`. The app only learns whether an agent is idle or working from status reports the agent
+sends, so run `relay herdr-app install-hooks` once and restart open Copilot sessions. Only Copilot
+reports status there today. `relay setup` still needs the `herdr` binary for its skill.
+
 Create a program from a Herdr pane:
 
 ```bash
