@@ -29,6 +29,9 @@ type Client struct {
 	promptTimeout      time.Duration
 	promptPollInterval time.Duration
 	sleep              func(time.Duration)
+	// desktop, when set, drives the Herdr desktop app through hc instead of
+	// the Herdr TUI CLI.
+	desktop *desktopBackend
 }
 
 // ErrPromptDeliveryUncertain means Herdr staged a prompt but Relay could not
@@ -101,6 +104,9 @@ type Agent struct {
 
 // NewClient creates a Client backed by the installed herdr binary.
 func NewClient() *Client {
+	if DesktopEnvironment() {
+		return newDesktopClient(context.Background(), 0)
+	}
 	return newClientWithRunners(func(args ...string) ([]byte, error) {
 		return exec.Command("herdr", args...).CombinedOutput()
 	}, func(input []byte, args ...string) ([]byte, error) {
@@ -113,6 +119,9 @@ func NewClient() *Client {
 // NewClientWithCommandTimeout creates a Client whose commands are canceled
 // with ctx and bounded by timeout.
 func NewClientWithCommandTimeout(ctx context.Context, timeout time.Duration) *Client {
+	if DesktopEnvironment() {
+		return newDesktopClient(ctx, timeout)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -163,6 +172,9 @@ func newClientWithRunners(runner CommandRunner, inputRunner InputCommandRunner) 
 
 // Workspaces lists Herdr workspaces.
 func (c *Client) Workspaces() ([]Workspace, error) {
+	if c.desktop != nil {
+		return c.desktop.workspaces()
+	}
 	var response struct {
 		Result struct {
 			Workspaces []Workspace `json:"workspaces"`
@@ -176,6 +188,9 @@ func (c *Client) Workspaces() ([]Workspace, error) {
 
 // Tabs lists tabs in one Herdr workspace.
 func (c *Client) Tabs(workspaceID string) ([]TabInfo, error) {
+	if c.desktop != nil {
+		return c.desktop.tabs(workspaceID)
+	}
 	var response struct {
 		Result struct {
 			Tabs []TabInfo `json:"tabs"`
@@ -189,6 +204,9 @@ func (c *Client) Tabs(workspaceID string) ([]TabInfo, error) {
 
 // Panes lists panes in one Herdr workspace.
 func (c *Client) Panes(workspaceID string) ([]Pane, error) {
+	if c.desktop != nil {
+		return c.desktop.panes(workspaceID)
+	}
 	var response struct {
 		Result struct {
 			Panes []Pane `json:"panes"`
@@ -202,6 +220,9 @@ func (c *Client) Panes(workspaceID string) ([]Pane, error) {
 
 // CreateTab creates an unfocused tab in workspace.
 func (c *Client) CreateTab(workspaceID, cwd, label string) (Tab, error) {
+	if c.desktop != nil {
+		return c.desktop.createTab(workspaceID, cwd, label)
+	}
 	var response struct {
 		Result struct {
 			Tab struct {
@@ -235,6 +256,12 @@ func (c *Client) CloseTab(tabID string) error {
 	if strings.TrimSpace(tabID) == "" {
 		return errors.New("close Herdr tab: no tab was named")
 	}
+	if c.desktop != nil {
+		if err := c.desktop.closeTab(tabID); err != nil {
+			return fmt.Errorf("close Herdr desktop tab %q: %w", tabID, err)
+		}
+		return nil
+	}
 	if err := c.runOptionalJSON("tab", "close", tabID); err != nil {
 		return fmt.Errorf("close Herdr tab %q: %w", tabID, err)
 	}
@@ -247,6 +274,12 @@ func (c *Client) ClosePane(paneID string) error {
 	if strings.TrimSpace(paneID) == "" {
 		return errors.New("close Herdr pane: no pane was named")
 	}
+	if c.desktop != nil {
+		if err := c.desktop.closeTerminal(paneID); err != nil {
+			return fmt.Errorf("close Herdr desktop terminal %q: %w", paneID, err)
+		}
+		return nil
+	}
 	if err := c.runOptionalJSON("pane", "close", paneID); err != nil {
 		return fmt.Errorf("close Herdr pane %q: %w", paneID, err)
 	}
@@ -255,6 +288,9 @@ func (c *Client) ClosePane(paneID string) error {
 
 // Agents lists live agents recognized by Herdr.
 func (c *Client) Agents() ([]Agent, error) {
+	if c.desktop != nil {
+		return c.desktop.agents()
+	}
 	var response struct {
 		Result struct {
 			Agents []struct {
@@ -299,6 +335,12 @@ func (c *Client) Agents() ([]Agent, error) {
 
 // RunPane submits command to an interactive shell pane.
 func (c *Client) RunPane(paneID, command string) error {
+	if c.desktop != nil {
+		if err := c.desktop.send(paneID, command); err != nil {
+			return fmt.Errorf("run command in Herdr desktop terminal %q: %w", paneID, err)
+		}
+		return nil
+	}
 	args := []string{"pane", "run", paneID, command}
 	if err := c.runOptionalJSON(args...); err != nil {
 		return fmt.Errorf("run command in Herdr pane %q: %w", paneID, err)
@@ -308,6 +350,12 @@ func (c *Client) RunPane(paneID, command string) error {
 
 // RenameAgent assigns name to the live agent targeted by target.
 func (c *Client) RenameAgent(target, name string) error {
+	if c.desktop != nil {
+		if err := c.desktop.rename(target, name); err != nil {
+			return fmt.Errorf("label Herdr desktop agent %q as %q: %w", target, name, err)
+		}
+		return nil
+	}
 	if err := c.runJSON(&struct{}{}, "agent", "rename", target, name); err != nil {
 		return fmt.Errorf("rename Herdr agent %q to %q: %w", target, name, err)
 	}
@@ -330,7 +378,7 @@ func (c *Client) PromptAgent(target, text string) error {
 		)
 	}
 
-	err = c.runJSON(&struct{}{}, "agent", "prompt", target, text)
+	err = c.stagePrompt(target, text)
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return fmt.Errorf(
 			"%w for agent %q: prompt command ended before delivery could be confirmed: %w",
@@ -370,14 +418,20 @@ func (c *Client) PromptAgent(target, text string) error {
 			before.Status, before.StateChangeSeq, afterGrace.Status, afterGrace.StateChangeSeq,
 		)
 	}
-	size, err := c.paneSize(target)
-	if err != nil {
-		return fmt.Errorf(
-			"%w for agent %q: prompt text may be staged, then pane dimensions could not be read: %v",
-			ErrPromptDeliveryUncertain, target, err,
-		)
+	var submitErr error
+	if c.desktop != nil {
+		submitErr = c.desktop.pressEnter(target)
+	} else {
+		size, err := c.paneSize(target)
+		if err != nil {
+			return fmt.Errorf(
+				"%w for agent %q: prompt text may be staged, then pane dimensions could not be read: %v",
+				ErrPromptDeliveryUncertain, target, err,
+			)
+		}
+		submitErr = c.sendTerminalInput(target, size, []byte{'\r'})
 	}
-	if submitErr := c.sendTerminalInput(target, size, []byte{'\r'}); submitErr != nil {
+	if submitErr != nil {
 		return fmt.Errorf(
 			"%w for agent %q: prompt text was staged, then Enter failed: %v",
 			ErrPromptDeliveryUncertain, target, submitErr,
@@ -391,6 +445,15 @@ func (c *Client) PromptAgent(target, text string) error {
 		)
 	}
 	return nil
+}
+
+// stagePrompt hands text to an agent. Herdr's TUI may leave it staged in the
+// composer; hc pastes it and presses Enter itself.
+func (c *Client) stagePrompt(target, text string) error {
+	if c.desktop != nil {
+		return c.desktop.send(target, text)
+	}
+	return c.runJSON(&struct{}{}, "agent", "prompt", target, text)
 }
 
 type paneSize struct {
@@ -602,6 +665,12 @@ func promptStillStaged(before, after Agent) bool {
 
 // FocusAgent focuses the agent targeted by target.
 func (c *Client) FocusAgent(target string) error {
+	if c.desktop != nil {
+		if err := c.desktop.focus(target); err != nil {
+			return fmt.Errorf("focus Herdr desktop agent %q: %w", target, err)
+		}
+		return nil
+	}
 	if err := c.runJSON(&struct{}{}, "agent", "focus", target); err != nil {
 		return fmt.Errorf("focus Herdr agent %q: %w", target, err)
 	}
@@ -611,6 +680,12 @@ func (c *Client) FocusAgent(target string) error {
 // ShowNotification raises a desktop notification. Callers treat it as a
 // courtesy: Relay correctness never depends on a notification being delivered.
 func (c *Client) ShowNotification(title, body string) error {
+	if c.desktop != nil {
+		if err := c.desktop.notify(title, body); err != nil {
+			return fmt.Errorf("show notification %q: %w", title, err)
+		}
+		return nil
+	}
 	if err := c.runJSON(
 		&struct{}{},
 		"notification", "show", title, "--body", body, "--sound", "request",

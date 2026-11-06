@@ -152,7 +152,7 @@ func (c *Client) ExitAgent(identity SessionIdentity) (ExitResult, error) {
 		)
 	}
 
-	err = c.runJSON(&struct{}{}, "agent", "prompt", identity.PaneID, ExitCommand)
+	err = c.stagePrompt(identity.PaneID, ExitCommand)
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return ExitResult{}, fmt.Errorf(
 			"%w for agent %s: the exit command ended before delivery could be confirmed: %w",
@@ -173,6 +173,20 @@ func (c *Client) ExitAgent(identity SessionIdentity) (ExitResult, error) {
 	if gone {
 		return c.exitResult(identity, ExitedNow)
 	}
+	if c.desktop != nil && !promptStillStaged(before, current) {
+		// The desktop app learns of the submit from the agent's own prompt hook,
+		// so the session reports working before it shuts down.
+		gone, current, waitErr = c.awaitSessionExit(identity, c.promptTimeout)
+		if waitErr != nil {
+			return ExitResult{}, fmt.Errorf(
+				"%w for agent %s: the exit command was submitted, then agent state could not be read: %w",
+				ErrExitUncertain, identity, waitErr,
+			)
+		}
+		if gone {
+			return c.exitResult(identity, ExitedNow)
+		}
+	}
 	if !promptStillStaged(before, current) {
 		return ExitResult{}, fmt.Errorf(
 			"%w for agent %s: state moved from %s/%d to %s/%d without the session ending; "+
@@ -181,14 +195,20 @@ func (c *Client) ExitAgent(identity SessionIdentity) (ExitResult, error) {
 			before.Status, before.StateChangeSeq, current.Status, current.StateChangeSeq,
 		)
 	}
-	size, err := c.paneSize(identity.PaneID)
-	if err != nil {
-		return ExitResult{}, fmt.Errorf(
-			"%w for agent %s: the exit command may be staged, then pane dimensions could not be read: %w",
-			ErrExitUncertain, identity, err,
-		)
+	var submitErr error
+	if c.desktop != nil {
+		submitErr = c.desktop.pressEnter(identity.PaneID)
+	} else {
+		size, err := c.paneSize(identity.PaneID)
+		if err != nil {
+			return ExitResult{}, fmt.Errorf(
+				"%w for agent %s: the exit command may be staged, then pane dimensions could not be read: %w",
+				ErrExitUncertain, identity, err,
+			)
+		}
+		submitErr = c.sendTerminalInput(identity.PaneID, size, []byte{'\r'})
 	}
-	if submitErr := c.sendTerminalInput(identity.PaneID, size, []byte{'\r'}); submitErr != nil {
+	if submitErr != nil {
 		return ExitResult{}, fmt.Errorf(
 			"%w for agent %s: the exit command was staged, then Enter failed: %w",
 			ErrExitUncertain, identity, submitErr,

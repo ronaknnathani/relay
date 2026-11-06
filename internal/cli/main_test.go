@@ -9,7 +9,7 @@ import (
 // program and managed child tests exercise the readiness gate deterministically
 // instead of inheriting a live workspace.
 func TestMain(m *testing.M) {
-	for _, name := range []string{"HERDR_ENV", "HERDR_WORKSPACE_ID"} {
+	for _, name := range []string{"HERDR_ENV", "HERDR_WORKSPACE_ID", "HC_TERMINAL_ID"} {
 		if err := os.Unsetenv(name); err != nil {
 			panic(err)
 		}

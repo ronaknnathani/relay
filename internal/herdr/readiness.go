@@ -40,7 +40,8 @@ func RequireContext(requirement Requirement) (string, error) {
 	if !available() {
 		return "", fmt.Errorf(
 			"%s requires Herdr, but the herdr binary is not on PATH; "+
-				"install Herdr, approve its Copilot or Claude integration, start the Herdr server, then retry",
+				"install Herdr, approve its Copilot or Claude integration, start the Herdr server, then retry "+
+				"(in the Herdr desktop app, hc must be on PATH instead)",
 			command,
 		)
 	}
@@ -50,7 +51,8 @@ func RequireContext(requirement Requirement) (string, error) {
 	workspaceID, err := RequireEnvironment()
 	if err != nil {
 		return "", fmt.Errorf(
-			"%s requires a Herdr-managed pane: %w; start or attach Herdr and run %s from a Herdr pane",
+			"%s requires a Herdr-managed pane: %w; start or attach Herdr and run %s from a Herdr pane "+
+				"or a Herdr desktop app tab",
 			command, err, command,
 		)
 	}
@@ -82,7 +84,8 @@ func Require(requirement Requirement) (Readiness, error) {
 	if err != nil {
 		return Readiness{}, fmt.Errorf(
 			"%s requires a running Herdr server, but listing agents failed: %w; "+
-				"start or attach Herdr, verify it with `herdr agent list`, then retry",
+				"start or attach Herdr, verify it with `herdr agent list` (or `hc ls` in the Herdr desktop app), "+
+				"then retry",
 			command, err,
 		)
 	}

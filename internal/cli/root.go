@@ -99,6 +99,7 @@ func newRootCmd() *cobra.Command {
 		newCmdProgram(),
 		newCmdPR(),
 		newCmdReview(),
+		newCmdHerdrApp(),
 	)
 	return cmd
 }

@@ -9,9 +9,14 @@ import (
 
 var lookPath = exec.LookPath
 
-// Available reports whether the Herdr CLI is installed.
+// Available reports whether the CLI for the current Herdr frontend is
+// installed: hc in the desktop app, herdr otherwise.
 func Available() bool {
-	_, err := lookPath("herdr")
+	binary := "herdr"
+	if DesktopEnvironment() {
+		binary = "hc"
+	}
+	_, err := lookPath(binary)
 	return err == nil
 }
 
@@ -19,8 +24,12 @@ func Available() bool {
 // returns the current workspace ID. Callers guarding managed sessions use
 // Require instead, which also verifies the binary and the running server.
 func RequireEnvironment() (string, error) {
+	if DesktopEnvironment() {
+		return currentDesktopSpace()
+	}
 	if os.Getenv("HERDR_ENV") != "1" {
-		return "", errors.New("managed Relay commands require HERDR_ENV=1; run this command from a Herdr-managed pane")
+		return "", errors.New("managed Relay commands require HERDR_ENV=1 or a Herdr desktop app terminal; " +
+			"run this command from a Herdr-managed pane or a Herdr app tab")
 	}
 	workspaceID := strings.TrimSpace(os.Getenv("HERDR_WORKSPACE_ID"))
 	if workspaceID == "" {

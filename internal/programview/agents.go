@@ -2,7 +2,6 @@ package programview
 
 import (
 	"context"
-	"os/exec"
 	"time"
 
 	"github.com/ronaknnathani/relay/internal/herdr"
@@ -19,7 +18,7 @@ func NewHerdrAgentListerWithCommandTimeout(
 	ctx context.Context,
 	timeout time.Duration,
 ) AgentLister {
-	if _, err := exec.LookPath("herdr"); err != nil {
+	if !herdr.Available() {
 		return nil
 	}
 	return herdr.NewClientWithCommandTimeout(ctx, timeout)
